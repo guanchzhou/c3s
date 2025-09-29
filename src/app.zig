@@ -8,6 +8,7 @@ const Body = @import("body.zig").Body;
 const Footer = @import("footer.zig").Footer;
 const Help = @import("help.zig").Help;
 const CommandInput = @import("command_input.zig").CommandInput;
+const ThemeSelector = @import("theme_selector.zig").ThemeSelector;
 const Theme = @import("theme.zig");
 const Cli = @import("cli.zig");
 const Config = @import("config.zig");
@@ -20,7 +21,8 @@ pub const App = struct {
     body: Body,
     footer: Footer,
     help: Help,
-    command_input: CommandInput, // Add command input component
+    command_input: CommandInput,
+    theme_selector: ThemeSelector,
     config: Cli.Config,
     running: bool = true,
     prev_width: u16 = 0,
@@ -29,6 +31,7 @@ pub const App = struct {
     dirty: bool = true,
     last_render_time: i128 = 0,
     min_frame_time_ns: i128 = 16_666_667, // ~60 FPS (16.67ms)
+    current_theme_name: []const u8,
 
     pub fn init(allocator: std.mem.Allocator, config: Cli.Config) !App {
         // Initialize terminal
@@ -47,6 +50,7 @@ pub const App = struct {
         const footer = try Footer.init(allocator);
         const help = try Help.init(allocator);
         const command_input = CommandInput.init(allocator);
+        const theme_selector = try ThemeSelector.init(allocator, ui_config.ui.theme);
         
         // Apply UI config
         header.setCompact(ui_config.ui.compact);
@@ -59,7 +63,9 @@ pub const App = struct {
             .footer = footer,
             .help = help,
             .command_input = command_input,
+            .theme_selector = theme_selector,
             .config = config,
+            .current_theme_name = try allocator.dupe(u8, ui_config.ui.theme),
         };
     }
 
@@ -69,6 +75,8 @@ pub const App = struct {
         self.footer.deinit();
         self.help.deinit();
         self.command_input.deinit();
+        self.theme_selector.deinit();
+        self.allocator.free(self.current_theme_name);
         self.terminal.deinit();
     }
 
@@ -162,6 +170,10 @@ pub const App = struct {
             if (self.help.visible and body_height > 0) {
                 try self.help.render(&self.terminal, 0, body_start, size.width, body_height);
             }
+            
+            if (self.theme_selector.visible and body_height > 0) {
+                try self.theme_selector.render(&self.terminal, 0, body_start, size.width, body_height);
+            }
 
             if (size.height >= footer_height and size.height > 0) {
                 const footer_y = if (body_height > 0)
@@ -200,6 +212,10 @@ pub const App = struct {
                 try self.help.render(&self.terminal, 0, body_start, size.width, body_height);
             }
             
+            if (self.theme_selector.visible and body_height > 0) {
+                try self.theme_selector.render(&self.terminal, 0, body_start, size.width, body_height);
+            }
+            
             if (size.height >= footer_height and size.height > 0) {
                 const footer_y = if (body_height > 0)
                     body_start + body_height
@@ -228,6 +244,31 @@ pub const App = struct {
     }
 
     fn handleKey(self: *App, key: Key) !void {
+        if (self.theme_selector.visible) {
+            switch (key) {
+                .char => |c| switch (c) {
+                    'j' => { try self.theme_selector.navigateDown(); self.dirty = true; },
+                    'k' => { try self.theme_selector.navigateUp(); self.dirty = true; },
+                    else => {},
+                },
+                .up => { try self.theme_selector.navigateUp(); self.dirty = true; },
+                .down => { try self.theme_selector.navigateDown(); self.dirty = true; },
+                .enter => {
+                    // Save selected theme to config
+                    const selected_theme = self.theme_selector.getSelectedThemeName();
+                    try self.saveThemeToConfig(selected_theme);
+                    self.theme_selector.hide();
+                    self.dirty = true;
+                },
+                .escape => {
+                    self.theme_selector.hide();
+                    self.dirty = true;
+                },
+                else => {},
+            }
+            return;
+        }
+        
         if (self.command_input.visible) {
             switch (key) {
                 .char => |c| {
@@ -252,6 +293,8 @@ pub const App = struct {
                         // Process command
                         if (std.mem.eql(u8, cmd_text, "q") or std.mem.eql(u8, cmd_text, "quit")) {
                             self.running = false;
+                        } else if (std.mem.eql(u8, cmd_text, "themes")) {
+                            self.theme_selector.show();
                         }
                         // TODO: Add more commands here
                     }
@@ -331,5 +374,86 @@ pub const App = struct {
                 self.dirty = true;
             },
         }
+    }
+    
+    fn saveThemeToConfig(self: *App, theme_name: []const u8) !void {
+        const xdg = @import("xdg.zig");
+        const paths = try xdg.ensurePaths();
+        
+        // Read existing config or create new one
+        const existing_content = std.fs.cwd().readFileAlloc(
+            self.allocator,
+            paths.config_file,
+            1024 * 1024,
+        ) catch "";
+        defer if (existing_content.len > 0) self.allocator.free(existing_content);
+        
+        // Build new config with updated theme
+        var new_config = try std.ArrayList(u8).initCapacity(self.allocator, 1024);
+        defer new_config.deinit(self.allocator);
+        
+        var found_theme_line = false;
+        var in_ui_section = false;
+        
+        var lines = std.mem.splitScalar(u8, existing_content, '\n');
+        while (lines.next()) |line| {
+            const trimmed = std.mem.trim(u8, line, " \t\r");
+            
+            // Check for ui section
+            if (std.mem.indexOf(u8, trimmed, "ui:")) |_| {
+                in_ui_section = true;
+                try new_config.appendSlice(self.allocator, line);
+                try new_config.append(self.allocator, '\n');
+                continue;
+            }
+            
+            // Update theme line if in ui section
+            if (in_ui_section) {
+                if (std.mem.indexOf(u8, trimmed, "theme:")) |_| {
+                    const theme_line = try std.fmt.allocPrint(self.allocator, "    theme: {s}\n", .{theme_name});
+                    defer self.allocator.free(theme_line);
+                    try new_config.appendSlice(self.allocator, theme_line);
+                    found_theme_line = true;
+                    continue;
+                }
+            }
+            
+            // Check if we left ui section
+            if (in_ui_section and trimmed.len > 0 and trimmed[0] != ' ') {
+                // Add theme line if not found yet
+                if (!found_theme_line) {
+                    const theme_line = try std.fmt.allocPrint(self.allocator, "    theme: {s}\n", .{theme_name});
+                    defer self.allocator.free(theme_line);
+                    try new_config.appendSlice(self.allocator, theme_line);
+                    found_theme_line = true;
+                }
+                in_ui_section = false;
+            }
+            
+            try new_config.appendSlice(self.allocator, line);
+            try new_config.append(self.allocator, '\n');
+        }
+        
+        // If no config existed, create minimal one
+        if (existing_content.len == 0) {
+            const default_config = try std.fmt.allocPrint(self.allocator, "c3s:\n  ui:\n    compact: false\n    theme: {s}\n", .{theme_name});
+            defer self.allocator.free(default_config);
+            try new_config.appendSlice(self.allocator, default_config);
+        } else if (!found_theme_line) {
+            // Config exists but no theme line, append it
+            const theme_line = try std.fmt.allocPrint(self.allocator, "    theme: {s}\n", .{theme_name});
+            defer self.allocator.free(theme_line);
+            try new_config.appendSlice(self.allocator, theme_line);
+        }
+        
+        // Write config file
+        try std.fs.cwd().writeFile(.{
+            .sub_path = paths.config_file,
+            .data = new_config.items,
+        });
+        
+        // Update current theme name
+        self.allocator.free(self.current_theme_name);
+        self.current_theme_name = try self.allocator.dupe(u8, theme_name);
     }
 };
