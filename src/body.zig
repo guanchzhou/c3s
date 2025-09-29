@@ -33,6 +33,7 @@ pub const Body = struct {
     last_selected_row: u32 = 0, // Track previous selection for minimal redraw
     last_scroll_offset: u32 = 0, // Track previous scroll for minimal redraw
     title: []const u8 = "pods(all)[7]", // Dynamic title that can change
+    allocated_title: ?[]u8 = null, // Track if title was allocated
     visible_rows: u32 = 0,
 
     pub fn init(allocator: std.mem.Allocator) !Body {
@@ -250,11 +251,20 @@ pub const Body = struct {
         }
         self.pods.deinit(self.allocator);
         self.filtered_indices.deinit(self.allocator);
+        if (self.allocated_title) |allocated| {
+            self.allocator.free(allocated);
+        }
     }
     
     pub fn applyFilter(self: *Body, filter: []const u8) !void {
         self.filter_text = filter;
         self.filtered_indices.clearRetainingCapacity();
+        
+        // Free previously allocated title if exists
+        if (self.allocated_title) |allocated| {
+            self.allocator.free(allocated);
+            self.allocated_title = null;
+        }
         
         // If no filter, include all pods
         if (filter.len == 0) {
@@ -287,9 +297,15 @@ pub const Body = struct {
         self.selected_row = 0;
         self.scroll_offset = 0;
         
-        // Update title to show filter is active
-        // For now use static title, later we can make it dynamic
-        self.title = "pods(all)[7] </tra>";
+        // Update title to show the actual filter
+        const filtered_count = self.filtered_indices.items.len;
+        const new_title = try std.fmt.allocPrint(
+            self.allocator,
+            "pods(all)[{d}] </{s}>",
+            .{ filtered_count, filter }
+        );
+        self.allocated_title = new_title;
+        self.title = new_title;
     }
     
 
