@@ -305,10 +305,12 @@ pub const App = struct {
                 // Esc never exits the app
             },
             .ctrl_c => {
-                // Ctrl+C doesn't exit, use Ctrl+F12 instead
+                // Ctrl+C doesn't exit, use :q command instead
             },
-            .ctrl_f12 => {
-                // Ctrl+F12 is the backup exit key
+            .cmd_q => {
+                // Cmd+Q (macOS standard quit)
+                // Note: Most terminals intercept this and close the window
+                // before it reaches the app, so this might never trigger
                 self.running = false;
             },
             .ctrl_d => {},
