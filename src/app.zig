@@ -118,38 +118,56 @@ pub const App = struct {
         self.header_height = self.header.height();
         const footer_height: u16 = 1;
 
+        // Only clear on resize, never on normal updates
         if (size_changed) {
             try self.terminal.clear();
-        }
+            
+            // On resize, render everything
+            if (size.height >= self.header_height) {
+                try self.header.render(&self.terminal, 0, 0, size.width, self.header_height);
+            }
 
-        if (size.height >= self.header_height) {
-            try self.header.render(&self.terminal, 0, 0, size.width, self.header_height);
-        }
+            const body_start = if (size.height >= self.header_height) self.header_height else size.height;
+            var body_height: u16 = 0;
+            if (size.height > body_start) {
+                const remaining = size.height - body_start;
+                body_height = if (remaining > footer_height) remaining - footer_height else remaining;
+            }
 
-        const body_start = if (size.height >= self.header_height) self.header_height else size.height;
-        var body_height: u16 = 0;
-        if (size.height > body_start) {
-            const remaining = size.height - body_start;
-            body_height = if (remaining > footer_height) remaining - footer_height else remaining;
-        }
+            if (body_height > 0) {
+                try self.body.render(&self.terminal, 0, body_start, size.width, body_height);
+            }
 
-        if (body_height > 0) {
-            try self.body.render(&self.terminal, 0, body_start, size.width, body_height);
-        }
+            if (self.help.visible and body_height > 0) {
+                try self.help.render(&self.terminal, 0, body_start, size.width, body_height);
+            }
 
-        if (self.help.visible and body_height > 0) {
-            try self.help.render(&self.terminal, 0, body_start, size.width, body_height);
-        }
+            if (size.height >= footer_height and size.height > 0) {
+                const footer_y = if (body_height > 0)
+                    body_start + body_height
+                else if (size.height > 0)
+                    size.height - 1
+                else
+                    0;
+                if (footer_y < size.height) {
+                    try self.footer.render(&self.terminal, 0, footer_y, size.width, footer_height);
+                }
+            }
+        } else {
+            // Normal update - only redraw body (where selection changes)
+            const body_start = if (size.height >= self.header_height) self.header_height else size.height;
+            var body_height: u16 = 0;
+            if (size.height > body_start) {
+                const remaining = size.height - body_start;
+                body_height = if (remaining > footer_height) remaining - footer_height else remaining;
+            }
 
-        if (size.height >= footer_height and size.height > 0) {
-            const footer_y = if (body_height > 0)
-                body_start + body_height
-            else if (size.height > 0)
-                size.height - 1
-            else
-                0;
-            if (footer_y < size.height) {
-                try self.footer.render(&self.terminal, 0, footer_y, size.width, footer_height);
+            if (body_height > 0) {
+                try self.body.render(&self.terminal, 0, body_start, size.width, body_height);
+            }
+
+            if (self.help.visible and body_height > 0) {
+                try self.help.render(&self.terminal, 0, body_start, size.width, body_height);
             }
         }
 

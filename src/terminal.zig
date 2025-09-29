@@ -13,17 +13,21 @@ pub const Terminal = struct {
     height: u16 = 24,
     raw_enabled: bool = false,
     original_termios: ?c.termios = null,
+    write_buffer: std.ArrayList(u8),
 
     pub fn init(allocator: std.mem.Allocator) !Terminal {
         const stdin = std.fs.File.stdin();
         const stdout = std.fs.File.stdout();
         const stderr = std.fs.File.stderr();
+        
+        const write_buffer = try std.ArrayList(u8).initCapacity(allocator, 32768); // Pre-allocate 32KB for smooth rendering
 
         return Terminal{
             .allocator = allocator,
             .stdin = stdin,
             .stdout = stdout,
             .stderr = stderr,
+            .write_buffer = write_buffer,
         };
     }
 
@@ -31,6 +35,7 @@ pub const Terminal = struct {
         if (self.raw_enabled) {
             self.disableRawMode();
         }
+        self.write_buffer.deinit(self.allocator);
     }
 
     pub fn enableRawMode(self: *Terminal) !void {
@@ -131,43 +136,54 @@ pub const Terminal = struct {
         return .{ .width = 120, .height = 40 };
     }
 
+    fn bufferWrite(self: *Terminal, data: []const u8) !void {
+        try self.write_buffer.appendSlice(self.allocator, data);
+    }
+    
+    // Wrapper for components that need to write directly
+    pub fn writeAll(self: *Terminal, data: []const u8) !void {
+        try self.bufferWrite(data);
+    }
+
     pub fn clear(self: *Terminal) !void {
         // Clear screen using ANSI escape codes
-        try self.stdout.writeAll("\x1b[2J");
-        try self.stdout.writeAll("\x1b[H");
+        try self.bufferWrite("\x1b[2J");
+        try self.bufferWrite("\x1b[H");
     }
 
     pub fn hideCursor(self: *Terminal) !void {
-        try self.stdout.writeAll("\x1b[?25l");
+        try self.bufferWrite("\x1b[?25l");
     }
 
     pub fn showCursor(self: *Terminal) !void {
-        try self.stdout.writeAll("\x1b[?25h");
+        try self.bufferWrite("\x1b[?25h");
     }
 
     pub fn enterAlternateScreen(self: *Terminal) !void {
         try self.stdout.writeAll("\x1b[?1049h");
+        try self.stdout.writeAll("\x1b[?25l"); // Hide cursor immediately
     }
 
     pub fn exitAlternateScreen(self: *Terminal) !void {
+        try self.stdout.writeAll("\x1b[?25h"); // Show cursor before exit
         try self.stdout.writeAll("\x1b[?1049l");
     }
 
     pub fn setCursor(self: *Terminal, x: u16, y: u16) !void {
         var buf: [32]u8 = undefined;
         const s = try std.fmt.bufPrint(&buf, "\x1b[{};{}H", .{ y + 1, x + 1 });
-        try self.stdout.writeAll(s);
+        try self.bufferWrite(s);
     }
 
     pub fn writeString(self: *Terminal, x: u16, y: u16, text: []const u8) !void {
         try self.setCursor(x, y);
-        try self.stdout.writeAll(text);
+        try self.bufferWrite(text);
     }
 
     pub fn writeStringWithColor(self: *Terminal, x: u16, y: u16, text: []const u8, fg: Color, bg: Color) !void {
         try self.setCursor(x, y);
         try self.setColor(fg, bg);
-        try self.stdout.writeAll(text);
+        try self.bufferWrite(text);
         try self.resetColor();
     }
 
@@ -177,17 +193,22 @@ pub const Terminal = struct {
         const raw_bg: u8 = @intFromEnum(bg);
         const bg_code: u8 = if (raw_bg == 39) 49 else (raw_bg - 30 + 40);
         const s = try std.fmt.bufPrint(&buf, "\x1b[{};{}m", .{ fg_code, bg_code });
-        try self.stdout.writeAll(s);
+        try self.bufferWrite(s);
     }
 
     pub fn resetColor(self: *Terminal) !void {
-        try self.stdout.writeAll("\x1b[0m");
+        try self.bufferWrite("\x1b[0m");
     }
 
     pub fn flush(self: *Terminal) !void {
         // Ensure cursor stays hidden
-        _ = self.hideCursor() catch {};
-        // No-op for unbuffered writes on stdout in Zig 0.15.1
+        try self.hideCursor();
+        
+        // Write entire buffer to stdout at once for flicker-free rendering
+        if (self.write_buffer.items.len > 0) {
+            try self.stdout.writeAll(self.write_buffer.items);
+            self.write_buffer.clearRetainingCapacity();
+        }
     }
     
     pub fn fillRow(self: *Terminal, x: u16, y: u16, width: u16, fg_color: []const u8, bg_color: []const u8) !void {
@@ -196,8 +217,8 @@ pub const Terminal = struct {
         try self.setCursor(x, y);
         
         // Write color codes once
-        try self.stdout.writeAll(fg_color);
-        try self.stdout.writeAll(bg_color);
+        try self.bufferWrite(fg_color);
+        try self.bufferWrite(bg_color);
         
         // Fill with spaces in chunks for efficiency
         var spaces_buf: [256]u8 = undefined;
@@ -206,12 +227,12 @@ pub const Terminal = struct {
         var remaining: usize = width;
         while (remaining > 0) {
             const chunk = @min(remaining, spaces_buf.len);
-            try self.stdout.writeAll(spaces_buf[0..chunk]);
+            try self.bufferWrite(spaces_buf[0..chunk]);
             remaining -= chunk;
         }
         
         // Reset colors
-        try self.stdout.writeAll("\x1b[0m");
+        try self.bufferWrite("\x1b[0m");
     }
 
     pub fn readKey(self: *Terminal) !?Key {

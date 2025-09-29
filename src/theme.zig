@@ -52,7 +52,7 @@ pub fn writeStringWithTheme(
     var buffer: [512]u8 = undefined;
     const formatted = try std.fmt.bufPrint(&buffer, "{s}{s}{s}{s}", .{ fg_color, bg_color, text, reset });
     try terminal.setCursor(x, y);
-    try terminal.stdout.writeAll(formatted);
+    try terminal.writeAll(formatted);
 }
 
 // Simplified color-only function for basic usage
@@ -79,7 +79,7 @@ pub fn writeStringWithBold(
     var buffer: [512]u8 = undefined;
     const formatted = try std.fmt.bufPrint(&buffer, "{s}{s}{s}{s}{s}", .{ bold, fg_color, bg_color, text, reset });
     try terminal.setCursor(x, y);
-    try terminal.stdout.writeAll(formatted);
+    try terminal.writeAll(formatted);
 }
 
 // btop-style shortcut rendering: key in red + command in bold
@@ -98,7 +98,7 @@ pub fn writeShortcut(
         bold, command, reset
     });
     try terminal.setCursor(x, y);
-    try terminal.stdout.writeAll(formatted);
+    try terminal.writeAll(formatted);
 }
 
 // btop-style shortcut for commands with highlighted letter in middle
@@ -114,14 +114,14 @@ pub fn writeShortcutWithHighlight(
     _ = bg_color; // Unused parameter
     // Write each part separately to avoid format string complexity
     try terminal.setCursor(x, y);
-    try terminal.stdout.writeAll(bold);
-    try terminal.stdout.writeAll(before);
-    try terminal.stdout.writeAll(key_highlight);
-    try terminal.stdout.writeAll(highlight_char);
-    try terminal.stdout.writeAll(reset);
-    try terminal.stdout.writeAll(bold);
-    try terminal.stdout.writeAll(after);
-    try terminal.stdout.writeAll(reset);
+    try terminal.writeAll(bold);
+    try terminal.writeAll(before);
+    try terminal.writeAll(key_highlight);
+    try terminal.writeAll(highlight_char);
+    try terminal.writeAll(reset);
+    try terminal.writeAll(bold);
+    try terminal.writeAll(after);
+    try terminal.writeAll(reset);
 }
 
 // NO background filling - btop uses terminal default background

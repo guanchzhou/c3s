@@ -73,7 +73,7 @@ pub const Header = struct {
             var remaining: usize = width;
             while (remaining > 0) {
                 const chunk = @min(remaining, spaces_buf.len);
-                try terminal.stdout.writeAll(spaces_buf[0..chunk]);
+                try terminal.writeAll(spaces_buf[0..chunk]);
                 remaining -= chunk;
             }
         }
@@ -92,7 +92,7 @@ pub const Header = struct {
                 var remaining: usize = width;
                 while (remaining > 0) {
                     const chunk = @min(remaining, spaces_buf.len);
-                    try terminal.stdout.writeAll(spaces_buf[0..chunk]);
+                    try terminal.writeAll(spaces_buf[0..chunk]);
                     remaining -= chunk;
                 }
             }
@@ -125,16 +125,16 @@ pub const Header = struct {
             var current_x: u16 = x + offset;
             // Render "c3s" in bold white
             try terminal.setCursor(current_x, y);
-            try terminal.stdout.writeAll(Theme.app_name);
-            try terminal.stdout.writeAll("c3s");
-            try terminal.stdout.writeAll(Theme.reset);
+            try terminal.writeAll(Theme.app_name);
+            try terminal.writeAll("c3s");
+            try terminal.writeAll(Theme.reset);
             current_x += 3; // "c3s" is 3 characters
             
             // Render version in normal color
-            try terminal.stdout.writeAll(" ");
-            try terminal.stdout.writeAll(Theme.title);
-            try terminal.stdout.writeAll(self.title_with_version);
-            try terminal.stdout.writeAll(Theme.reset);
+            try terminal.writeAll(" ");
+            try terminal.writeAll(Theme.title);
+            try terminal.writeAll(self.title_with_version);
+            try terminal.writeAll(Theme.reset);
             current_x += @as(u16, @intCast(1 + self.title_with_version.len));
 
             for (segments) |segment| {
@@ -164,15 +164,15 @@ pub const Header = struct {
         
         // "c3s" in bold white
         try terminal.setCursor(title_x + 1, title_y);
-        try terminal.stdout.writeAll(Theme.app_name);
-        try terminal.stdout.writeAll("c3s");
-        try terminal.stdout.writeAll(Theme.reset);
+        try terminal.writeAll(Theme.app_name);
+        try terminal.writeAll("c3s");
+        try terminal.writeAll(Theme.reset);
         
         // Version in normal color
-        try terminal.stdout.writeAll(" ");
-        try terminal.stdout.writeAll(Theme.title);
-        try terminal.stdout.writeAll(self.title_with_version);
-        try terminal.stdout.writeAll(Theme.reset);
+        try terminal.writeAll(" ");
+        try terminal.writeAll(Theme.title);
+        try terminal.writeAll(self.title_with_version);
+        try terminal.writeAll(Theme.reset);
         
         const title_end_x = title_x + 1 + 3 + 1 + @as(u16, @intCast(self.title_with_version.len));
         try Theme.writeText(terminal, title_end_x, title_y, BoxDrawing.Symbols.title_right, Theme.div_line);
