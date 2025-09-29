@@ -266,7 +266,10 @@ pub const App = struct {
 
         switch (key) {
             .char => |c| switch (c) {
-                'q' => self.running = false,
+                'q' => {
+                    // 'q' is the standard quit key
+                    self.running = false;
+                },
                 'h' => { try self.body.navigateLeft(); self.dirty = true; },
                 'j' => { try self.body.navigateDown(); self.dirty = true; },
                 'k' => { try self.body.navigateUp(); self.dirty = true; },
@@ -293,17 +296,21 @@ pub const App = struct {
             .page_down => { try self.body.pageDown(); self.dirty = true; },
             .escape => {
                 if (self.help.visible) {
-                    // First Esc closes help
+                    // Esc closes help
                     self.help.hide();
                     self.body.setHelpMode(false);
                     self.footer.setHelpMode(false);
                     self.dirty = true;
-                } else {
-                    // Second Esc (nothing open) exits app
-                    self.running = false;
                 }
+                // Esc never exits the app
             },
-            .ctrl_c => self.running = false,
+            .ctrl_c => {
+                // Ctrl+C doesn't exit, use Ctrl+F12 instead
+            },
+            .ctrl_f12 => {
+                // Ctrl+F12 is the backup exit key
+                self.running = false;
+            },
             .ctrl_d => {},
             .shift_g => { try self.body.gotoBottom(); self.dirty = true; },
             .ctrl_f => { try self.body.pageDown(); self.dirty = true; },

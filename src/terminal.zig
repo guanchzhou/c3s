@@ -280,6 +280,10 @@ pub const Terminal = struct {
                         if (bytes_read >= 4 and buf[3] == '~') {
                             break;
                         }
+                        // Modified function key sequences: ESC[24;5~ (7 bytes total)
+                        if (bytes_read >= 7 and buf[6] == '~') {
+                            break;
+                        }
                     }
                 }
                 
@@ -340,6 +344,12 @@ pub const Terminal = struct {
                 };
             }
             
+            // Function keys with modifiers: ESC[24;5~
+            // Ctrl+F12 is ESC[24;5~ (F12=24, Ctrl modifier=5)
+            if (seq.len >= 7 and seq[2] == '2' and seq[3] == '4' and seq[4] == ';' and seq[5] == '5' and seq[6] == '~') {
+                return Key.ctrl_f12;
+            }
+            
             return Key.unsupported;
         }
         
@@ -376,6 +386,7 @@ pub const Key = union(enum) {
     shift_g,
     ctrl_f,
     ctrl_b,
+    ctrl_f12,
     question_mark,
     colon,
     backspace,
