@@ -310,8 +310,63 @@ pub const Body = struct {
     
 
     pub fn render(self: *Body, terminal: *Terminal, x: u16, y: u16, width: u16, height: u16) !void {
-        // Create a border around the entire body with btop theme colors and rounded corners
-        try BoxDrawing.Box.createBox(terminal, x, y, width, height, Theme.proc_box, Theme.main_bg, self.title, .rounded);
+        // Create a border around the entire body with btop theme colors and rounded corners (no title)
+        try BoxDrawing.Box.createBox(terminal, x, y, width, height, Theme.proc_box, Theme.main_bg, null, .rounded);
+        
+        // Render custom title with colored text
+        const title_x = x + 2;
+        const title_y = y;
+        try Theme.writeText(terminal, title_x, title_y, BoxDrawing.Symbols.title_left, Theme.proc_box);
+        
+        var current_x = title_x + 1;
+        
+        // Render "pods"
+        try terminal.setCursor(current_x, title_y);
+        try terminal.writeAll(Theme.title);
+        try terminal.writeAll("pods");
+        current_x += 4;
+        
+        // Render "(" 
+        try terminal.writeAll("(");
+        current_x += 1;
+        
+        // Check if we have a filter or showing "all"
+        const is_filtered = self.filter_text.len > 0;
+        if (!is_filtered) {
+            // Render "all" in yellow highlight
+            try terminal.writeAll(Theme.title_highlight);
+            try terminal.writeAll("all");
+            try terminal.writeAll(Theme.title);
+            current_x += 3;
+        } else {
+            // Render "all" in normal color when filtered
+            try terminal.writeAll("all");
+            current_x += 3;
+        }
+        
+        // Render ")[count]"
+        try terminal.writeAll(")");
+        current_x += 1;
+        
+        // Render count
+        var count_buf: [16]u8 = undefined;
+        const count_str = std.fmt.bufPrint(&count_buf, "[{d}]", .{self.filtered_indices.items.len}) catch "[?]";
+        try terminal.writeAll(count_str);
+        current_x += @as(u16, @intCast(count_str.len));
+        
+        // Render filter if active
+        if (is_filtered) {
+            try terminal.writeAll(" ");
+            try terminal.writeAll(Theme.hi_fg);
+            try terminal.writeAll("</");
+            try terminal.writeAll(self.filter_text);
+            try terminal.writeAll(">");
+            try terminal.writeAll(Theme.title);
+            current_x += @as(u16, @intCast(3 + self.filter_text.len + 1));
+        }
+        
+        try terminal.writeAll(Theme.reset);
+        try Theme.writeText(terminal, current_x, title_y, BoxDrawing.Symbols.title_right, Theme.proc_box);
 
         // Table header - offset by 1 for border
         const header_y = y + 1;
