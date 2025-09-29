@@ -249,7 +249,11 @@ pub const App = struct {
                         // Apply filter
                         try self.body.applyFilter(cmd_text);
                     } else if (std.mem.eql(u8, prompt, ":")) {
-                        // TODO: Process command
+                        // Process command
+                        if (std.mem.eql(u8, cmd_text, "q") or std.mem.eql(u8, cmd_text, "quit")) {
+                            self.running = false;
+                        }
+                        // TODO: Add more commands here
                     }
                     
                     self.command_input.hide();
@@ -266,10 +270,6 @@ pub const App = struct {
 
         switch (key) {
             .char => |c| switch (c) {
-                'q' => {
-                    // 'q' is the standard quit key
-                    self.running = false;
-                },
                 'h' => { try self.body.navigateLeft(); self.dirty = true; },
                 'j' => { try self.body.navigateDown(); self.dirty = true; },
                 'k' => { try self.body.navigateUp(); self.dirty = true; },
