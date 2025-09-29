@@ -241,6 +241,17 @@ pub const App = struct {
                     self.dirty = true;
                 },
                 .enter => {
+                    // Process command based on prompt
+                    const cmd_text = self.command_input.getCommand();
+                    const prompt = self.command_input.prompt;
+                    
+                    if (std.mem.eql(u8, prompt, "/")) {
+                        // Apply filter
+                        try self.body.applyFilter(cmd_text);
+                    } else if (std.mem.eql(u8, prompt, ":")) {
+                        // TODO: Process command
+                    }
+                    
                     self.command_input.hide();
                     self.dirty = true;
                 },
@@ -263,6 +274,11 @@ pub const App = struct {
                 'g' => { try self.body.gotoTop(); self.dirty = true; },
                 '/' => {
                     self.command_input.showWithPrompt("/");
+                    self.dirty = true;
+                },
+                'x' => {
+                    // Clear filter with 'x' key (like delete)
+                    try self.body.applyFilter("");
                     self.dirty = true;
                 },
                 else => {},

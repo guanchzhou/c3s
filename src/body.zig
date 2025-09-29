@@ -26,6 +26,8 @@ const Pod = struct {
 pub const Body = struct {
     allocator: std.mem.Allocator,
     pods: std.ArrayListUnmanaged(Pod),
+    filtered_indices: std.ArrayListUnmanaged(usize),
+    filter_text: []const u8,
     selected_row: u32 = 0,
     scroll_offset: u32 = 0,
     last_selected_row: u32 = 0, // Track previous selection for minimal redraw
@@ -218,10 +220,17 @@ pub const Body = struct {
             .age = try allocator.dupe(u8, "33d"),
         });
 
-        return Body{
+        var body = Body{
             .allocator = allocator,
             .pods = pods,
+            .filtered_indices = std.ArrayListUnmanaged(usize){},
+            .filter_text = "",
         };
+        
+        // Initialize filter with all pods visible
+        try body.applyFilter("");
+        
+        return body;
     }
 
     pub fn deinit(self: *Body) void {
@@ -240,7 +249,49 @@ pub const Body = struct {
             }
         }
         self.pods.deinit(self.allocator);
+        self.filtered_indices.deinit(self.allocator);
     }
+    
+    pub fn applyFilter(self: *Body, filter: []const u8) !void {
+        self.filter_text = filter;
+        self.filtered_indices.clearRetainingCapacity();
+        
+        // If no filter, include all pods
+        if (filter.len == 0) {
+            for (0..self.pods.items.len) |i| {
+                try self.filtered_indices.append(self.allocator, i);
+            }
+            self.selected_row = 0;
+            self.scroll_offset = 0;
+            self.title = "pods(all)[7]";
+            return;
+        }
+        
+        // Filter pods - check if filter text appears in any column
+        for (self.pods.items, 0..) |pod, i| {
+            const matches = 
+                std.mem.containsAtLeast(u8, pod.namespace, 1, filter) or
+                std.mem.containsAtLeast(u8, pod.name, 1, filter) or
+                std.mem.containsAtLeast(u8, pod.status, 1, filter) or
+                std.mem.containsAtLeast(u8, pod.ready, 1, filter) or
+                std.mem.containsAtLeast(u8, pod.ip, 1, filter) or
+                std.mem.containsAtLeast(u8, pod.node, 1, filter) or
+                std.mem.containsAtLeast(u8, pod.age, 1, filter);
+            
+            if (matches) {
+                try self.filtered_indices.append(self.allocator, i);
+            }
+        }
+        
+        // Reset selection to first filtered item
+        self.selected_row = 0;
+        self.scroll_offset = 0;
+        
+        // Update title to show filter is active
+        // For now use static title, later we can make it dynamic
+        self.title = "pods(all)[7] </tra>";
+    }
+    
 
     pub fn render(self: *Body, terminal: *Terminal, x: u16, y: u16, width: u16, height: u16) !void {
         // Create a border around the entire body with btop theme colors and rounded corners
@@ -293,15 +344,20 @@ pub const Body = struct {
         // Table rows
         const visible_rows = if (height > 3) height - 3 else 0;
         self.visible_rows = @intCast(visible_rows);
+        
+        // Use filtered indices count
+        const total_visible = self.filtered_indices.items.len;
+        
         const start_row = self.scroll_offset;
-        const end_row = @min(start_row + visible_rows, self.pods.items.len);
+        const end_row = @min(start_row + visible_rows, total_visible);
 
-        for (start_row..end_row, 0..) |pod_idx, display_idx| {
+        for (start_row..end_row, 0..) |filter_idx, display_idx| {
+            const pod_idx = self.filtered_indices.items[filter_idx];
             const pod = self.pods.items[pod_idx];
             const row_y = header_y + @as(u16, @intCast(display_idx)) + 1;
 
             // Paint entire row background first (default or selected color)
-            const is_selected = pod_idx == self.selected_row;
+            const is_selected = filter_idx == self.selected_row;
             const bg_color = if (is_selected) Theme.selected_bg else Theme.main_bg;
             const fg_color = if (is_selected) Theme.selected_fg else Theme.main_fg;
             
@@ -404,7 +460,9 @@ pub const Body = struct {
     }
 
     pub fn navigateDown(self: *Body) !void {
-        if (self.selected_row < self.pods.items.len - 1) {
+        const total_items = self.filtered_indices.items.len;
+        
+        if (total_items > 0 and self.selected_row < total_items - 1) {
             self.last_selected_row = self.selected_row;
             self.last_scroll_offset = self.scroll_offset;
             self.selected_row += 1;
@@ -445,8 +503,10 @@ pub const Body = struct {
         }
 
         pub fn gotoBottom(self: *Body) !void {
-            if (self.pods.items.len > 0) {
-                self.selected_row = @intCast(self.pods.items.len - 1);
+            const total_items = self.filtered_indices.items.len;
+            
+            if (total_items > 0) {
+                self.selected_row = @intCast(total_items - 1);
                 const visible = self.viewportHeight();
                 if (self.selected_row >= visible) {
                     self.scroll_offset = self.selected_row - visible + 1;
@@ -470,11 +530,13 @@ pub const Body = struct {
         }
 
         pub fn pageDown(self: *Body) !void {
+            const total_items = self.filtered_indices.items.len;
+            
             const page = self.viewportHeight();
-            if (self.selected_row + page < self.pods.items.len) {
+            if (total_items > 0 and self.selected_row + page < total_items) {
                 self.selected_row += page;
             } else {
-                self.selected_row = @intCast(self.pods.items.len - 1);
+                self.selected_row = @intCast(total_items - 1);
             }
             // Adjust scroll if needed
             const visible_rows = self.viewportHeight();
