@@ -44,6 +44,10 @@ pub const Header = struct {
     pub fn toggleCompact(self: *Header) void {
         self.compact = !self.compact;
     }
+    
+    pub fn setCompact(self: *Header, compact: bool) void {
+        self.compact = compact;
+    }
 
     pub fn height(self: *const Header) u16 {
         return if (self.compact) 1 else 8;

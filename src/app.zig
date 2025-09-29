@@ -10,6 +10,7 @@ const Help = @import("help.zig").Help;
 const CommandInput = @import("command_input.zig").CommandInput;
 const Theme = @import("theme.zig");
 const Cli = @import("cli.zig");
+const Config = @import("config.zig");
 const version = @import("version.zig");
 
 pub const App = struct {
@@ -31,12 +32,22 @@ pub const App = struct {
         // Initialize terminal
         const term = try Terminal.init(allocator);
 
+        // Load UI config from file
+        const ui_config = Config.load(allocator) catch Config.Config{
+            .allocator = allocator,
+            .ui = Config.UiConfig{},
+        };
+        defer ui_config.deinit();
+
         // Initialize components
-        const header = try Header.init(allocator);
+        var header = try Header.init(allocator);
         const body = try Body.init(allocator);
         const footer = try Footer.init(allocator);
         const help = try Help.init(allocator);
         const command_input = CommandInput.init(allocator);
+        
+        // Apply UI config
+        header.setCompact(ui_config.ui.compact);
 
         return App{
             .allocator = allocator,
