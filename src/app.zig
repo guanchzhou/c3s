@@ -267,6 +267,10 @@ pub const App = struct {
                 },
                 .up => { try self.theme_selector.navigateUp(); self.dirty = true; return; },
                 .down => { try self.theme_selector.navigateDown(); self.dirty = true; return; },
+                .home => { try self.theme_selector.gotoTop(); self.dirty = true; return; },
+                .end => { try self.theme_selector.gotoBottom(); self.dirty = true; return; },
+                .page_up => { try self.theme_selector.pageUp(); self.dirty = true; return; },
+                .page_down => { try self.theme_selector.pageDown(); self.dirty = true; return; },
                 .enter => {
                     // Save selected theme to config and update current marker
                     const selected_theme = self.theme_selector.getSelectedThemeName();

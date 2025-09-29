@@ -120,6 +120,40 @@ pub const ThemeSelector = struct {
         }
     }
     
+    pub fn gotoTop(self: *ThemeSelector) !void {
+        if (self.themes.items.len > 0) {
+            self.selected_row = 0;
+            try self.updatePreview();
+        }
+    }
+    
+    pub fn gotoBottom(self: *ThemeSelector) !void {
+        if (self.themes.items.len > 0) {
+            self.selected_row = @intCast(self.themes.items.len - 1);
+            try self.updatePreview();
+        }
+    }
+    
+    pub fn pageUp(self: *ThemeSelector) !void {
+        const page_size: u32 = 10;
+        if (self.selected_row >= page_size) {
+            self.selected_row -= page_size;
+        } else {
+            self.selected_row = 0;
+        }
+        try self.updatePreview();
+    }
+    
+    pub fn pageDown(self: *ThemeSelector) !void {
+        const page_size: u32 = 10;
+        if (self.selected_row + page_size < self.themes.items.len) {
+            self.selected_row += page_size;
+        } else if (self.themes.items.len > 0) {
+            self.selected_row = @intCast(self.themes.items.len - 1);
+        }
+        try self.updatePreview();
+    }
+    
     fn updatePreview(self: *ThemeSelector) !void {
         // Free previous preview if exists
         if (self.preview_theme) |preview| {
