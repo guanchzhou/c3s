@@ -147,39 +147,44 @@ fn parseSkinFile(allocator: mem.Allocator, content: []const u8) !ThemeColors {
     var theme = try defaultTheme(allocator);
     theme.allocator = allocator; // Ensure theme owns its allocated colors
 
+    // Helper to replace allocated string
+    const replaceColor = struct {
+        fn replace(alloc: mem.Allocator, old: *[]const u8, new: []const u8) !void {
+            alloc.free(old.*);
+            old.* = new;
+        }
+    }.replace;
+
     // General colors
-    if (try getYamlValue(allocator, content, "k9s.body.fgColor")) |val| theme.main_fg = try hexToAnsi(allocator, val);
-    if (try getYamlValue(allocator, content, "k9s.body.bgColor")) |val| theme.main_bg = try hexToBgAnsi(allocator, val);
-    if (try getYamlValue(allocator, content, "k9s.frame.title.fgColor")) |val| theme.title = try hexToAnsi(allocator, val);
-    if (try getYamlValue(allocator, content, "k9s.frame.menu.keyColor")) |val| theme.hi_fg = try hexToAnsi(allocator, val);
+    if (try getYamlValue(allocator, content, "k9s.body.fgColor")) |val| try replaceColor(allocator, &theme.main_fg, try hexToAnsi(allocator, val));
+    if (try getYamlValue(allocator, content, "k9s.body.bgColor")) |val| try replaceColor(allocator, &theme.main_bg, try hexToBgAnsi(allocator, val));
+    if (try getYamlValue(allocator, content, "k9s.frame.title.fgColor")) |val| try replaceColor(allocator, &theme.title, try hexToAnsi(allocator, val));
+    if (try getYamlValue(allocator, content, "k9s.frame.menu.keyColor")) |val| try replaceColor(allocator, &theme.hi_fg, try hexToAnsi(allocator, val));
     
     // Selected row
-    if (try getYamlValue(allocator, content, "k9s.views.table.cursorBgColor")) |val| theme.selected_bg = try hexToBgAnsi(allocator, val);
-    if (try getYamlValue(allocator, content, "k9s.views.table.cursorFgColor")) |val| theme.selected_fg = try hexToAnsi(allocator, val);
+    if (try getYamlValue(allocator, content, "k9s.views.table.cursorBgColor")) |val| try replaceColor(allocator, &theme.selected_bg, try hexToBgAnsi(allocator, val));
+    if (try getYamlValue(allocator, content, "k9s.views.table.cursorFgColor")) |val| try replaceColor(allocator, &theme.selected_fg, try hexToAnsi(allocator, val));
 
     // Inactive/Comment color
-    if (try getYamlValue(allocator, content, "k9s.status.completedColor")) |val| theme.inactive_fg = try hexToAnsi(allocator, val);
+    if (try getYamlValue(allocator, content, "k9s.status.completedColor")) |val| try replaceColor(allocator, &theme.inactive_fg, try hexToAnsi(allocator, val));
 
     // Proc box outline (using general outline color)
-    if (try getYamlValue(allocator, content, "k9s.frame.border.fgColor")) |val| theme.proc_box = try hexToAnsi(allocator, val);
+    if (try getYamlValue(allocator, content, "k9s.frame.border.fgColor")) |val| try replaceColor(allocator, &theme.proc_box, try hexToAnsi(allocator, val));
 
     // Divider line
-    if (try getYamlValue(allocator, content, "k9s.frame.border.fgColor")) |val| theme.div_line = try hexToAnsi(allocator, val);
+    if (try getYamlValue(allocator, content, "k9s.frame.border.fgColor")) |val| try replaceColor(allocator, &theme.div_line, try hexToAnsi(allocator, val));
 
     // Status colors (k9s uses named colors, map to our default ANSI codes if not found)
-    if (try getYamlValue(allocator, content, "k9s.status.addColor")) |val| theme.status_running = try hexToAnsi(allocator, val);
-    if (try getYamlValue(allocator, content, "k9s.status.pendingColor")) |val| theme.status_pending = try hexToAnsi(allocator, val);
-    if (try getYamlValue(allocator, content, "k9s.status.errorColor")) |val| theme.status_failed = try hexToAnsi(allocator, val);
-    if (try getYamlValue(allocator, content, "k9s.status.completedColor")) |val| theme.status_succeeded = try hexToAnsi(allocator, val);
+    if (try getYamlValue(allocator, content, "k9s.status.addColor")) |val| try replaceColor(allocator, &theme.status_running, try hexToAnsi(allocator, val));
+    if (try getYamlValue(allocator, content, "k9s.status.pendingColor")) |val| try replaceColor(allocator, &theme.status_pending, try hexToAnsi(allocator, val));
+    if (try getYamlValue(allocator, content, "k9s.status.errorColor")) |val| try replaceColor(allocator, &theme.status_failed, try hexToAnsi(allocator, val));
+    if (try getYamlValue(allocator, content, "k9s.status.completedColor")) |val| try replaceColor(allocator, &theme.status_succeeded, try hexToAnsi(allocator, val));
 
     // Key highlight for shortcuts
-    if (try getYamlValue(allocator, content, "k9s.frame.menu.keyColor")) |val| theme.key_highlight = try hexToAnsi(allocator, val);
+    if (try getYamlValue(allocator, content, "k9s.frame.menu.keyColor")) |val| try replaceColor(allocator, &theme.key_highlight, try hexToAnsi(allocator, val));
 
     // Title highlight for (all) etc.
-    if (try getYamlValue(allocator, content, "k9s.frame.title.highlightColor")) |val| theme.title_highlight = try hexToAnsi(allocator, val);
-
-    // App name is always bold white
-    theme.app_name = try allocator.dupe(u8, "\x1b[1;97m");
+    if (try getYamlValue(allocator, content, "k9s.frame.title.highlightColor")) |val| try replaceColor(allocator, &theme.title_highlight, try hexToAnsi(allocator, val));
 
     return theme;
 }
