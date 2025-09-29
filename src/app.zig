@@ -130,11 +130,13 @@ pub const App = struct {
         try self.terminal.beginSyncOutput();
         defer self.terminal.endSyncOutput() catch {};
 
-        self.header_height = self.header.height();
+        const new_header_height = self.header.height();
+        const header_height_changed = self.header_height != new_header_height;
+        self.header_height = new_header_height;
         const footer_height: u16 = 1;
 
-        // Only clear on resize, never on normal updates
-        if (size_changed) {
+        // Clear on resize OR header size change (compact toggle)
+        if (size_changed or header_height_changed) {
             try self.terminal.clear();
             
             // On resize, render everything
@@ -169,7 +171,13 @@ pub const App = struct {
                 }
             }
         } else {
-            // Normal update - only redraw body (where selection changes)
+            // Normal update - redraw all components
+            // (header might have toggled compact mode, body has selection changes)
+            
+            if (size.height >= self.header_height) {
+                try self.header.render(&self.terminal, 0, 0, size.width, self.header_height);
+            }
+            
             const body_start = if (size.height >= self.header_height) self.header_height else size.height;
             var body_height: u16 = 0;
             if (size.height > body_start) {
@@ -183,6 +191,18 @@ pub const App = struct {
 
             if (self.help.visible and body_height > 0) {
                 try self.help.render(&self.terminal, 0, body_start, size.width, body_height);
+            }
+            
+            if (size.height >= footer_height and size.height > 0) {
+                const footer_y = if (body_height > 0)
+                    body_start + body_height
+                else if (size.height > 0)
+                    size.height - 1
+                else
+                    0;
+                if (footer_y < size.height) {
+                    try self.footer.render(&self.terminal, 0, footer_y, size.width, footer_height);
+                }
             }
         }
 
