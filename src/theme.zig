@@ -27,6 +27,10 @@ pub const status_pending = "\x1b[38;5;226m";  // bright yellow
 pub const status_failed = "\x1b[38;5;196m";   // bright red
 pub const status_succeeded = "\x1b[38;5;51m"; // bright cyan
 
+// Keyboard shortcut colors (btop style)
+pub const key_highlight = "\x1b[38;5;196m";   // bright red for key letters
+pub const shortcut_text = "\x1b[37m";          // white for command text
+
 // Reset sequence
 pub const reset = "\x1b[0m";
 
@@ -75,6 +79,48 @@ pub fn writeStringWithBold(
     const formatted = try std.fmt.bufPrint(&buffer, "{s}{s}{s}{s}{s}", .{ bold, fg_color, bg_color, text, reset });
     try terminal.setCursor(x, y);
     try terminal.stdout.writeAll(formatted);
+}
+
+// btop-style shortcut rendering: key in red + command in bold
+pub fn writeShortcut(
+    terminal: *Terminal,
+    x: u16,
+    y: u16,
+    key: []const u8,
+    command: []const u8,
+    bg_color: []const u8
+) !void {
+    var buffer: [512]u8 = undefined;
+    // Format: <red_key> bold_command
+    const formatted = try std.fmt.bufPrint(&buffer, "{s}{s}<{s}>{s} {s}{s}{s}", .{
+        key_highlight, bg_color, key, reset,
+        bold, command, reset
+    });
+    try terminal.setCursor(x, y);
+    try terminal.stdout.writeAll(formatted);
+}
+
+// btop-style shortcut for commands with highlighted letter in middle
+pub fn writeShortcutWithHighlight(
+    terminal: *Terminal,
+    x: u16,
+    y: u16,
+    before: []const u8,
+    highlight_char: []const u8,
+    after: []const u8,
+    bg_color: []const u8
+) !void {
+    _ = bg_color; // Unused parameter
+    // Write each part separately to avoid format string complexity
+    try terminal.setCursor(x, y);
+    try terminal.stdout.writeAll(bold);
+    try terminal.stdout.writeAll(before);
+    try terminal.stdout.writeAll(key_highlight);
+    try terminal.stdout.writeAll(highlight_char);
+    try terminal.stdout.writeAll(reset);
+    try terminal.stdout.writeAll(bold);
+    try terminal.stdout.writeAll(after);
+    try terminal.stdout.writeAll(reset);
 }
 
 // NO background filling - btop uses terminal default background

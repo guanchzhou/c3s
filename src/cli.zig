@@ -1,4 +1,10 @@
 const std = @import("std");
+const xdg = @import("xdg.zig");
+const build = @import("c3s_build");
+const version = @import("version.zig");
+
+var version_storage: [128]u8 = undefined;
+var version_len: usize = 0;
 
 pub const Config = struct {
     all_namespaces: bool = false,
@@ -158,39 +164,56 @@ fn printHelp() void {
         \\Use "c3s [command] --help" for more information about a command.
         \\
     ;
-    const stdout = std.fs.File.stdout();
-    _ = stdout.writeAll(help_text) catch {};
+    std.debug.print("{s}", .{help_text});
 }
 
-    fn printVersion() void {
-        const version_text = 
-            \\Version:    0.0.1+dev
-            \\Commit:     n/a
-            \\Date:       n/a
-            \\
-        ;
-        const stdout = std.fs.File.stdout();
-        _ = stdout.writeAll(version_text) catch {};
-    }
+fn formatVersion() []const u8 {
+    return version.string();
+}
 
-    fn printInfo() void {
-        const home_dir = std.process.getEnvVarOwned(std.heap.page_allocator, "HOME") catch "/Users/andreymaltsev";
-        const info_text = std.fmt.allocPrint(std.heap.page_allocator, 
-            \\Version:           0.0.1+dev
-            \\Config:            {s}/.config/c3s/config.yaml
-            \\Custom Views:      {s}/.config/c3s/views.yaml
-            \\Plugins:           {s}/.config/c3s/plugins.yaml
-            \\Hotkeys:           {s}/.config/c3s/hotkeys.yaml
-            \\Aliases:           {s}/.config/c3s/aliases.yaml
-            \\Skins:             {s}/.config/c3s/skins
-            \\Context Configs:   {s}/Library/Application Support/c3s/clusters
-            \\Logs:              {s}/Library/Application Support/c3s/c3s.log
-            \\Benchmarks:        {s}/Library/Application Support/c3s/benchmarks
-            \\ScreenDumps:       {s}/Library/Application Support/c3s/screen-dumps
+fn printVersion() void {
+    const ver = formatVersion();
+    std.debug.print("Version:    {s}\nCommit:     n/a\n", .{ver});
+}
+
+fn printInfo() void {
+    const paths = xdg.ensurePaths() catch {
+        std.log.err("Failed to resolve XDG paths", .{});
+        return;
+    };
+
+    const ver = formatVersion();
+
+    var buffer: [1024]u8 = undefined;
+    const info_text = std.fmt.bufPrint(&buffer,
+            \\Version:           {s}
+            \\Config:            {s}
+            \\Custom Views:      {s}
+            \\Plugins:           {s}
+            \\Hotkeys:           {s}
+            \\Aliases:           {s}
+            \\Skins:             {s}
+            \\Context Configs:   {s}
+            \\Logs:              {s}
+            \\Benchmarks:        {s}
+            \\ScreenDumps:       {s}
             \\
-        , .{ home_dir, home_dir, home_dir, home_dir, home_dir, home_dir, home_dir, home_dir, home_dir, home_dir }) catch return;
-        defer std.heap.page_allocator.free(info_text);
-        
-        const stdout = std.fs.File.stdout();
-        _ = stdout.writeAll(info_text) catch {};
+            , .{
+                ver,
+                paths.config_file,
+                paths.views_file,
+                paths.plugins_file,
+                paths.hotkeys_file,
+                paths.aliases_file,
+                paths.skins_dir,
+                paths.contexts_dir,
+                paths.log_file,
+                paths.benchmarks_dir,
+                paths.dumps_dir,
+            }) catch {
+                std.log.err("Failed to format info output", .{});
+                return;
+            };
+
+        std.debug.print("{s}", .{info_text});
     }

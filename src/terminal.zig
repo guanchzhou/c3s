@@ -1,5 +1,5 @@
 const std = @import("std");
-// C ioctl approach removed for portability; we rely on env/stty/tput fallbacks
+const posix = std.posix;
 
 pub const Terminal = struct {
     allocator: std.mem.Allocator,
@@ -15,8 +15,6 @@ pub const Terminal = struct {
         const stdout = std.fs.File.stdout();
         const stderr = std.fs.File.stderr();
 
-        // Keep default blocking mode for portability on macOS.
-
         return Terminal{
             .allocator = allocator,
             .stdin = stdin,
@@ -26,7 +24,42 @@ pub const Terminal = struct {
     }
 
     pub fn deinit(self: *Terminal) void {
-        _ = self;
+        if (self.raw_enabled) {
+            self.disableRawMode();
+        }
+    }
+
+    pub fn enableRawMode(self: *Terminal) void {
+        if (self.raw_enabled) return;
+        var child = std.process.Child.init(&[_][]const u8{
+            "stty",
+            "-echo",
+            "-icanon",
+            "-isig",
+            "min",
+            "1",
+            "time",
+            "0",
+        }, self.allocator);
+        child.stdin_behavior = .Inherit;
+        child.stdout_behavior = .Close;
+        child.stderr_behavior = .Close;
+        if (child.spawn() catch null) |_| {
+            _ = child.wait() catch {};
+            self.raw_enabled = true;
+        }
+    }
+
+    pub fn disableRawMode(self: *Terminal) void {
+        if (!self.raw_enabled) return;
+        var child = std.process.Child.init(&[_][]const u8{ "stty", "sane" }, self.allocator);
+        child.stdin_behavior = .Inherit;
+        child.stdout_behavior = .Close;
+        child.stderr_behavior = .Close;
+        if (child.spawn() catch null) |_| {
+            _ = child.wait() catch {};
+        }
+        self.raw_enabled = false;
     }
 
     pub fn getSize(self: *Terminal) !struct { width: u16, height: u16 } {
@@ -78,8 +111,14 @@ pub const Terminal = struct {
             if (lines_proc.spawn() catch null) |_| {
                 const lines_out = lines_proc.stdout.?.readToEndAlloc(alloc, 64) catch null;
                 _ = lines_proc.wait() catch {};
-                const cols = if (cols_out) |c| std.fmt.parseInt(u16, std.mem.trim(u8, c, " \n\r\t"), 10) catch 0 else 0;
-                const lines = if (lines_out) |l| std.fmt.parseInt(u16, std.mem.trim(u8, l, " \n\r\t"), 10) catch 0 else 0;
+                const cols = if (cols_out) |cols_buffer|
+                    std.fmt.parseInt(u16, std.mem.trim(u8, cols_buffer, " \n\r\t"), 10) catch 0
+                else
+                    0;
+                const lines = if (lines_out) |lines_buffer|
+                    std.fmt.parseInt(u16, std.mem.trim(u8, lines_buffer, " \n\r\t"), 10) catch 0
+                else
+                    0;
                 if (cols > 0 and lines > 0) return .{ .width = cols, .height = lines };
             }
         }
@@ -108,28 +147,6 @@ pub const Terminal = struct {
 
     pub fn exitAlternateScreen(self: *Terminal) !void {
         try self.stdout.writeAll("\x1b[?1049l");
-    }
-
-    pub fn enableRawMode(self: *Terminal) void {
-        var child = std.process.Child.init(&[_][]const u8{"stty", "-echo", "-icanon", "min", "0", "time", "1"}, self.allocator);
-        child.stdin_behavior = .Ignore;
-        child.stdout_behavior = .Close;
-        child.stderr_behavior = .Close;
-        if (child.spawn() catch null) |_| {
-            _ = child.wait() catch {};
-            self.raw_enabled = true;
-        }
-    }
-
-    pub fn disableRawMode(self: *Terminal) void {
-        var child = std.process.Child.init(&[_][]const u8{"stty", "sane"}, self.allocator);
-        child.stdin_behavior = .Ignore;
-        child.stdout_behavior = .Close;
-        child.stderr_behavior = .Close;
-        if (child.spawn() catch null) |_| {
-            _ = child.wait() catch {};
-            self.raw_enabled = false;
-        }
     }
 
     pub fn setCursor(self: *Terminal, x: u16, y: u16) !void {
@@ -170,50 +187,63 @@ pub const Terminal = struct {
     }
 
     pub fn readKey(self: *Terminal) !?Key {
-        // Read up to 3 bytes to decode ANSI escape sequences for arrows: ESC [ A/B/C/D
-        var buf: [16]u8 = undefined;
-        var first: [1]u8 = undefined;
-        const n = self.stdin.read(&first) catch return null;
+        var buf: [8]u8 = undefined;
+        const n = posix.read(self.stdin.handle, buf[0..1]) catch return null;
         if (n == 0) return null;
 
-        buf[0] = first[0];
-        const b0 = first[0];
-        switch (b0) {
-            'q' => return Key{ .char = 'q' },
-            'h' => return Key{ .char = 'h' },
-            'j' => return Key{ .char = 'j' },
-            'k' => return Key{ .char = 'k' },
-            'l' => return Key{ .char = 'l' },
-            3 => return Key{ .ctrl_c = {} }, // Ctrl+C
-            27 => {
-                // Handle escape sequences - be more careful about parsing
-                var idx: usize = 1;
-                while (idx < buf.len - 1) { // Leave space for safety
-                    var b: [1]u8 = undefined;
-                    const rn = self.stdin.read(&b) catch break;
-                    if (rn == 0) break;
-                    buf[idx] = b[0];
-                    idx += 1;
-                    
-                    // Stop reading after reasonable sequence length
-                    if (idx >= 8) break;
+        const first = buf[0];
+        switch (first) {
+            0x02 => return Key.ctrl_b,
+            0x03 => return Key.ctrl_c,
+            0x04 => return Key.ctrl_d,
+            0x05 => return Key.ctrl_e,
+            0x06 => return Key.ctrl_f,
+            0x7f => return Key.backspace,
+            '\r', '\n' => return Key.enter,
+            0x1b => {
+                // This is an escape sequence. Read additional bytes to determine the key.
+                var bytes_read: usize = 0;
+                while (bytes_read < buf.len - 1) : (bytes_read += 1) {
+                    const n_read = posix.read(self.stdin.handle, buf[1 + bytes_read .. 2 + bytes_read]) catch 0;
+                    if (n_read == 0) break; // No more bytes to read, it's just ESC
                 }
-
-                // Handle arrow keys and other escape sequences
-                if (idx >= 3 and buf[1] == '[') {
-                    const last = buf[idx - 1];
-                    switch (last) {
-                        'A' => return Key{ .up = {} },
-                        'B' => return Key{ .down = {} },
-                        'C' => return Key{ .right = {} },
-                        'D' => return Key{ .left = {} },
-                        else => {},
+                
+                // Analyze the sequence. The relevant part is usually after '[' or 'O'.
+                if (bytes_read >= 1 and buf[1] == '[') {
+                    if (bytes_read >= 2) {
+                        const code = buf[2];
+                        return switch (code) {
+                            'A' => Key.up,
+                            'B' => Key.down,
+                            'C' => Key.right,
+                            'D' => Key.left,
+                            'H' => Key.home,
+                            'F' => Key.end,
+                            // Handle sequences like ESC[1~ (Home), ESC[4~ (End)
+                            '~' => if (bytes_read >= 3) switch (buf[3]) {
+                                '1' => Key.home,
+                                '4' => Key.end,
+                                else => Key.unsupported,
+                            } else Key.unsupported,
+                            else => Key.unsupported,
+                        };
+                    }
+                } else if (bytes_read >= 1 and buf[1] == 'O') {
+                    if (bytes_read >= 2) {
+                        const code = buf[2];
+                        return switch (code) {
+                            'H' => Key.home,
+                            'F' => Key.end,
+                            else => Key.unsupported,
+                        };
                     }
                 }
-                // Plain escape key (no sequence following)
-                return Key{ .escape = {} };
+                return Key.escape; // If no specific sequence matched, it's just ESC
             },
-            else => return Key{ .char = b0 },
+            ':' => return Key.colon,
+            '?' => return Key.question_mark,
+            'G' => return Key.shift_g,
+            else => return Key{ .char = first },
         }
     }
 };
@@ -224,8 +254,20 @@ pub const Key = union(enum) {
     down,
     left,
     right,
+    home,
+    end,
     escape,
     ctrl_c,
+    ctrl_d,
+    ctrl_e,
+    shift_g,
+    ctrl_f,
+    ctrl_b,
+    question_mark,
+    colon,
+    backspace,
+    enter,
+    unsupported,
 };
 
 pub const Color = enum(u8) {

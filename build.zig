@@ -12,21 +12,36 @@ pub fn build(b: *std.Build) void {
     // set a preferred release mode, allowing the user to decide how to optimize.
     const optimize = b.standardOptimizeOption(.{});
 
-    // Dependencies
-    const vaxis_dep = b.dependency("vaxis", .{ .target = target, .optimize = optimize });
-
     // Build options for embedding version/build number
-    const base_version: []const u8 = "0.0.1";
+    var date_child = std.process.Child.init(&[_][]const u8{"date", "+v0.%Y.%m.%d.%H.%M"}, b.allocator);
+    date_child.stdin_behavior = .Ignore;
+    date_child.stdout_behavior = .Pipe;
+    date_child.stderr_behavior = .Inherit;
+    const base_version = blk: {
+        if (date_child.spawn() catch null) |_| {
+            const stdout_stream = date_child.stdout orelse {
+                _ = date_child.wait() catch null;
+                break :blk "v0.unknown";
+            };
+            const raw = stdout_stream.readToEndAlloc(b.allocator, 128) catch {
+                _ = date_child.wait() catch null;
+                break :blk "v0.unknown";
+            };
+            _ = date_child.wait() catch null;
+            break :blk std.mem.trimRight(u8, raw, "\n");
+        } else {
+            break :blk "v0.unknown";
+        }
+    };
     var build_number = b.option([]const u8, "build", "Build number to append to version (e.g. 123)");
     if (build_number == null) {
-        // Fallback: read from .build_number file in repo root
         const cwd = std.fs.cwd();
         const file_data = cwd.readFileAlloc(b.allocator, ".build_number", 64) catch null;
         if (file_data) |bytes| {
             const trimmed = std.mem.trim(u8, bytes, " \n\r\t");
             build_number = trimmed;
         } else {
-            build_number = "0"; // default if file missing
+            build_number = "";
         }
     }
     const build_opts = b.addOptions();
@@ -44,7 +59,6 @@ pub fn build(b: *std.Build) void {
     });
 
     // Import dependencies
-    exe.root_module.addImport("vaxis", vaxis_dep.module("vaxis"));
     exe.root_module.addOptions("c3s_build", build_opts);
 
     // Bump step: increments .build_number using a small Zig tool
