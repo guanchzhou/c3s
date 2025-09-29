@@ -1,5 +1,9 @@
 const std = @import("std");
 const posix = std.posix;
+const c = @cImport({
+    @cInclude("fcntl.h");
+    @cInclude("termios.h");
+});
 
 pub const Terminal = struct {
     allocator: std.mem.Allocator,
@@ -9,7 +13,8 @@ pub const Terminal = struct {
     width: u16 = 80,
     height: u16 = 24,
     raw_enabled: bool = false,
-    original_termios: ?std.posix.termios = null,
+    original_termios: ?c.termios = null,
+    original_flags: i32 = 0,
 
     pub fn init(allocator: std.mem.Allocator) !Terminal {
         const stdin = std.fs.File.stdin();
@@ -30,36 +35,48 @@ pub const Terminal = struct {
         }
     }
 
-    pub fn enableRawMode(self: *Terminal) void {
+    pub fn enableRawMode(self: *Terminal) !void {
         if (self.raw_enabled) return;
-        var child = std.process.Child.init(&[_][]const u8{
-            "stty",
-            "-echo",
-            "-icanon",
-            "-isig",
-            "min",
-            "1",
-            "time",
-            "0",
-        }, self.allocator);
-        child.stdin_behavior = .Inherit;
-        child.stdout_behavior = .Close;
-        child.stderr_behavior = .Close;
-        if (child.spawn() catch null) |_| {
-            _ = child.wait() catch {};
-            self.raw_enabled = true;
+        
+        // Save original termios
+        var termios: c.termios = undefined;
+        if (c.tcgetattr(self.stdin.handle, &termios) != 0) {
+            return error.TermiosGetFailed;
         }
+        self.original_termios = termios;
+        
+        // Make stdin non-blocking
+        const flags = c.fcntl(self.stdin.handle, c.F_GETFL, @as(c_int, 0));
+        if (flags < 0) return error.FcntlGetFailed;
+        self.original_flags = flags;
+        
+        if (c.fcntl(self.stdin.handle, c.F_SETFL, flags | c.O_NONBLOCK) < 0) {
+            return error.FcntlSetFailed;
+        }
+        
+        // Configure raw mode
+        c.cfmakeraw(&termios);
+        termios.c_cc[c.VMIN] = 0;  // Non-blocking read
+        termios.c_cc[c.VTIME] = 0; // No timeout
+        
+        if (c.tcsetattr(self.stdin.handle, c.TCSANOW, &termios) != 0) {
+            return error.TermiosSetFailed;
+        }
+        
+        self.raw_enabled = true;
     }
 
     pub fn disableRawMode(self: *Terminal) void {
         if (!self.raw_enabled) return;
-        var child = std.process.Child.init(&[_][]const u8{ "stty", "sane" }, self.allocator);
-        child.stdin_behavior = .Inherit;
-        child.stdout_behavior = .Close;
-        child.stderr_behavior = .Close;
-        if (child.spawn() catch null) |_| {
-            _ = child.wait() catch {};
+        
+        // Restore original termios
+        if (self.original_termios) |termios| {
+            _ = c.tcsetattr(self.stdin.handle, c.TCSANOW, &termios);
         }
+        
+        // Restore original flags
+        _ = c.fcntl(self.stdin.handle, c.F_SETFL, self.original_flags);
+        
         self.raw_enabled = false;
     }
 
@@ -213,7 +230,12 @@ pub const Terminal = struct {
 
     pub fn readKey(self: *Terminal) !?Key {
         var buf: [16]u8 = undefined;
-        const n = posix.read(self.stdin.handle, buf[0..1]) catch return null;
+        
+        // Read first byte
+        const n = posix.read(self.stdin.handle, buf[0..1]) catch |err| switch (err) {
+            error.WouldBlock => return null,
+            else => return err,
+        };
         if (n == 0) return null;
 
         const first = buf[0];
@@ -226,14 +248,34 @@ pub const Terminal = struct {
             0x7f => return Key.backspace,
             '\r', '\n' => return Key.enter,
             0x1b => {
-                // This is an escape sequence. Read additional bytes to determine the key.
-                var bytes_read: usize = 0;
-                while (bytes_read < buf.len - 1) : (bytes_read += 1) {
-                    const n_read = posix.read(self.stdin.handle, buf[1 + bytes_read .. 2 + bytes_read]) catch 0;
-                    if (n_read == 0) break; // No more bytes to read, it's just ESC
+                // Escape sequence - read remaining bytes
+                var bytes_read: usize = 1;
+                
+                // Try to read up to 10 more bytes for escape sequence
+                var attempts: u8 = 0;
+                while (bytes_read < buf.len and attempts < 10) : (attempts += 1) {
+                    const n_read = posix.read(self.stdin.handle, buf[bytes_read..bytes_read+1]) catch |err| switch (err) {
+                        error.WouldBlock => break,
+                        else => break,
+                    };
+                    if (n_read == 0) break;
+                    bytes_read += n_read;
+                    
+                    // Check if we have a complete arrow key sequence
+                    if (bytes_read >= 3 and buf[1] == '[') {
+                        const code = buf[2];
+                        // Simple sequences: ESC[A, ESC[B, ESC[C, ESC[D, ESC[H, ESC[F
+                        if (code == 'A' or code == 'B' or code == 'C' or code == 'D' or code == 'H' or code == 'F') {
+                            break;
+                        }
+                        // Tilde sequences need one more character: ESC[5~, ESC[6~, etc.
+                        if (bytes_read >= 4 and buf[3] == '~') {
+                            break;
+                        }
+                    }
                 }
                 
-                return try decodeCsi(buf[0..bytes_read + 1]);
+                return try decodeCsi(buf[0..bytes_read]);
             },
             ':' => return Key.colon,
             '?' => return Key.question_mark,

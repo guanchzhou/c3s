@@ -77,7 +77,7 @@ pub const App = struct {
         try self.terminal.hideCursor();
         defer _ = self.terminal.showCursor() catch {};
 
-        self.terminal.enableRawMode();
+        try self.terminal.enableRawMode();
         defer self.terminal.disableRawMode();
 
         self.dirty = true;
