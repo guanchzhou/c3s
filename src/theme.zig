@@ -8,6 +8,7 @@ const Terminal = @import("terminal.zig").Terminal;
 pub const main_bg = "\x1b[49m";           // Terminal default background (transparent)
 pub const main_fg = "\x1b[38;2;207;201;194m";     // #cfc9c2 -> light beige/gray
 pub const title = "\x1b[38;2;207;201;194m";       // #cfc9c2 -> light beige/gray
+pub const app_name = "\x1b[1;97m";                // Bold white for "c3s"
 pub const hi_fg = "\x1b[38;2;125;207;255m";       // #7dcfff -> bright cyan
 pub const selected_bg = "\x1b[48;2;65;72;104m";   // #414868 -> dark blue-gray
 pub const selected_fg = "\x1b[38;2;207;201;194m"; // #cfc9c2 -> light beige/gray

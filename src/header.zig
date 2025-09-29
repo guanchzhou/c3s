@@ -22,7 +22,7 @@ pub const Header = struct {
 
     pub fn init(allocator: std.mem.Allocator) !Header {
         const k9s_version = try version.ownedString(allocator);
-        const title_with_version = try std.fmt.allocPrint(allocator, "c3s {s}", .{k9s_version});
+        const title_with_version = k9s_version; // Just store version, we'll render "c3s" separately
         const cpu_str = try std.fmt.allocPrint(allocator, "{}%", .{@as(u8, 2)}); // Initial dummy value
         const mem_str = try std.fmt.allocPrint(allocator, "{}%", .{@as(u8, 27)}); // Initial dummy value
 
@@ -107,7 +107,7 @@ pub const Header = struct {
                 .{ .label = "MEM:", .value = self.mem_str, .value_fg = Theme.hi_fg },
             };
 
-            var total_len: usize = self.title_with_version.len;
+            var total_len: usize = 3 + 1 + self.title_with_version.len; // "c3s " + version
             for (segments) |segment| {
                 total_len += separator.len + segment.label.len + 1 + segment.value.len;
             }
@@ -119,8 +119,19 @@ pub const Header = struct {
                 0;
 
             var current_x: u16 = x + offset;
-            try Theme.writeStringWithTheme(terminal, current_x, y, self.title_with_version, Theme.title, Theme.main_bg);
-            current_x += @as(u16, @intCast(self.title_with_version.len));
+            // Render "c3s" in bold white
+            try terminal.setCursor(current_x, y);
+            try terminal.stdout.writeAll(Theme.app_name);
+            try terminal.stdout.writeAll("c3s");
+            try terminal.stdout.writeAll(Theme.reset);
+            current_x += 3; // "c3s" is 3 characters
+            
+            // Render version in normal color
+            try terminal.stdout.writeAll(" ");
+            try terminal.stdout.writeAll(Theme.title);
+            try terminal.stdout.writeAll(self.title_with_version);
+            try terminal.stdout.writeAll(Theme.reset);
+            current_x += @as(u16, @intCast(1 + self.title_with_version.len));
 
             for (segments) |segment| {
                 try Theme.writeStringWithTheme(terminal, current_x, y, separator, Theme.main_fg, Theme.main_bg);
@@ -140,7 +151,27 @@ pub const Header = struct {
             return;
         }
 
-        try BoxDrawing.Box.createBox(terminal, x, y, width, box_height, Theme.div_line, Theme.main_bg, self.title_with_version, .rounded);
+        try BoxDrawing.Box.createBox(terminal, x, y, width, box_height, Theme.div_line, Theme.main_bg, null, .rounded);
+        
+        // Render custom title with "c3s" in bold white and version in normal color
+        const title_x = x + 2;
+        const title_y = y;
+        try Theme.writeText(terminal, title_x, title_y, BoxDrawing.Symbols.title_left, Theme.div_line);
+        
+        // "c3s" in bold white
+        try terminal.setCursor(title_x + 1, title_y);
+        try terminal.stdout.writeAll(Theme.app_name);
+        try terminal.stdout.writeAll("c3s");
+        try terminal.stdout.writeAll(Theme.reset);
+        
+        // Version in normal color
+        try terminal.stdout.writeAll(" ");
+        try terminal.stdout.writeAll(Theme.title);
+        try terminal.stdout.writeAll(self.title_with_version);
+        try terminal.stdout.writeAll(Theme.reset);
+        
+        const title_end_x = title_x + 1 + 3 + 1 + @as(u16, @intCast(self.title_with_version.len));
+        try Theme.writeText(terminal, title_end_x, title_y, BoxDrawing.Symbols.title_right, Theme.div_line);
 
         // System information (left side) - offset by 1 for border, properly aligned
         const label_width = 9; // Fixed width for all labels for alignment
