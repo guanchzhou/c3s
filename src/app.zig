@@ -252,7 +252,7 @@ pub const App = struct {
                     'j' => { try self.theme_selector.navigateDown(); self.dirty = true; return; },
                     'k' => { try self.theme_selector.navigateUp(); self.dirty = true; return; },
                     '/' => {
-                        self.theme_selector.hide();
+                        // Don't hide theme selector, just show command input on top
                         self.command_input.showWithPrompt("/");
                         self.dirty = true;
                         return;
@@ -260,7 +260,7 @@ pub const App = struct {
                     else => { return; }, // Don't process other chars in theme selector
                 },
                 .colon => {
-                    self.theme_selector.hide();
+                    // Don't hide theme selector, just show command input on top
                     self.command_input.showWithPrompt(":");
                     self.dirty = true;
                     return;
