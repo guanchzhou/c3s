@@ -22,10 +22,10 @@ pub const net_box = "\x1b[38;2;86;95;137m";       // #565f89 -> muted blue-gray
 pub const proc_box = "\x1b[38;2;86;95;137m";      // #565f89 -> muted blue-gray
 pub const div_line = "\x1b[38;2;86;95;137m";      // #565f89 -> muted blue-gray
 
-// Status colors for pods (Tokyo Night palette)
-pub const status_running = "\x1b[38;2;158;206;106m";  // #9ece6a -> green
-pub const status_pending = "\x1b[38;2;224;175;104m";  // #e0af68 -> yellow
-pub const status_failed = "\x1b[38;2;247;118;142m";   // #f7768e -> red
+// Status colors for pods (using brighter, more visible colors)
+pub const status_running = "\x1b[38;2;80;250;123m";    // #50fa7b -> bright green (Dracula)
+pub const status_pending = "\x1b[38;2;224;175;104m";   // #e0af68 -> yellow
+pub const status_failed = "\x1b[38;2;247;118;142m";    // #f7768e -> red
 pub const status_succeeded = "\x1b[38;2;125;207;255m"; // #7dcfff -> cyan
 
 // Keyboard shortcut colors (btop style)
