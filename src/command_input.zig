@@ -5,19 +5,19 @@ const Theme = @import("theme.zig");
 pub const CommandInput = struct {
     allocator: std.mem.Allocator,
     visible: bool = false,
-    input_text: std.ArrayList(u8),
+    input_text: std.ArrayListUnmanaged(u8),
     cursor_pos: u16 = 0,
     prompt: []const u8 = ":",
 
-    pub fn init(allocator: std.mem.Allocator) !CommandInput {
+    pub fn init(allocator: std.mem.Allocator) CommandInput {
         return CommandInput{
             .allocator = allocator,
-            .input_text = std.ArrayList(u8).init(allocator),
+            .input_text = std.ArrayListUnmanaged(u8){},
         };
     }
 
     pub fn deinit(self: *CommandInput) void {
-        self.input_text.deinit();
+        self.input_text.deinit(self.allocator);
     }
 
     pub fn show(self: *CommandInput) void {
@@ -44,7 +44,7 @@ pub const CommandInput = struct {
     pub fn addChar(self: *CommandInput, char: u8) !void {
         if (!self.visible) return;
         
-        try self.input_text.insert(self.cursor_pos, char);
+        try self.input_text.insert(self.allocator, self.cursor_pos, char);
         self.cursor_pos += 1;
     }
 

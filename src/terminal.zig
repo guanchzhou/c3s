@@ -186,18 +186,21 @@ pub const Terminal = struct {
             'l' => return Key{ .char = 'l' },
             3 => return Key{ .ctrl_c = {} }, // Ctrl+C
             27 => {
-                // Read a short tail of the escape sequence (non-blocking due to raw mode VMIN=0 VTIME=1)
+                // Handle escape sequences - be more careful about parsing
                 var idx: usize = 1;
-                while (idx < buf.len) {
+                while (idx < buf.len - 1) { // Leave space for safety
                     var b: [1]u8 = undefined;
-                    const rn = self.stdin.read(&b) catch 0;
+                    const rn = self.stdin.read(&b) catch break;
                     if (rn == 0) break;
                     buf[idx] = b[0];
                     idx += 1;
+                    
+                    // Stop reading after reasonable sequence length
+                    if (idx >= 8) break;
                 }
 
-                // Handle both SS3 (ESC O X) and CSI (ESC [ ... X), and tolerate modifiers (e.g., ESC [ 1 ; 5 A)
-                if (idx >= 2) {
+                // Handle arrow keys and other escape sequences
+                if (idx >= 3 and buf[1] == '[') {
                     const last = buf[idx - 1];
                     switch (last) {
                         'A' => return Key{ .up = {} },
@@ -207,7 +210,8 @@ pub const Terminal = struct {
                         else => {},
                     }
                 }
-                return null;
+                // Plain escape key (no sequence following)
+                return Key{ .escape = {} };
             },
             else => return Key{ .char = b0 },
         }

@@ -32,7 +32,7 @@ pub const App = struct {
         const body = try Body.init(allocator);
         const footer = try Footer.init(allocator);
         const help = try Help.init(allocator);
-        const command_input = try CommandInput.init(allocator);
+        const command_input = CommandInput.init(allocator);
 
         return App{
             .allocator = allocator,
@@ -97,7 +97,10 @@ pub const App = struct {
                     self.dirty = true;
                 },
                 .key_press => |key| {
-                    try self.handleKey(key);
+                    self.handleKey(key) catch |err| {
+                        // Log error but don't crash
+                        std.log.err("Error handling key: {}", .{err});
+                    };
                 },
                 .mouse => |mouse| {
                     // Handle mouse scroll events without excessive redraws
@@ -146,12 +149,15 @@ pub const App = struct {
             }
         }
 
-            // Stop loop before restoring terminal and tearing down vaxis
+            // Graceful shutdown sequence
             loop.stop();
-            // Ensure cursor is hidden before exit
-            _ = self.terminal.hideCursor() catch {};
-            // Restore terminal state
+            
+            // Small delay to ensure clean shutdown
+            std.Thread.sleep(50 * std.time.ns_per_ms);
+            
+            // Restore terminal state safely
             _ = vx.exitAltScreen(tty.writer()) catch {};
+            _ = self.terminal.showCursor() catch {};
     }
 
     fn runWithCustomTerminal(self: *App) !void {
@@ -251,8 +257,8 @@ pub const App = struct {
             self.footer.setHelpMode(self.help.visible);
             self.dirty = true;
         }
-        // Command mode
-        else if (key.matches(':', .{ .shift = true })) {
+        // Command mode - try both ways to capture colon
+        else if (key.matches(':', .{ .shift = true }) or key.matches(':', .{})) {
             self.command_input.show();
             self.dirty = true;
         }
@@ -260,9 +266,13 @@ pub const App = struct {
             else if (key.matches('q', .{}) or key.matches('c', .{ .ctrl = true })) {
                 self.running = false;
             }
-        // Escape - close help if visible, otherwise quit
+        // Escape - close active overlays or quit
         else if (key.matches(Key.escape, .{})) {
-            if (self.help.visible) {
+            // Priority: command input -> help -> quit
+            if (self.command_input.visible) {
+                self.command_input.hide();
+                self.dirty = true;
+            } else if (self.help.visible) {
                 self.help.hide();
                 self.body.setHelpMode(false);
                 self.footer.setHelpMode(false);
