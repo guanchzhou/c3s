@@ -202,8 +202,32 @@ Phase 7: Load k9s Hotkeys Config
 
 Reference: docs/K9S_KEY_COMPATIBILITY.md tracks implementation status
 
-10. Documentation Updates
+10. Theme Subsystem (✅ STARTED)
+Phase 1: Infrastructure (✅ DONE)
+- Copy all 35 btop themes to c3s/themes/
+- Create theme_loader.zig for parsing .theme files
+- Support theme selection in config.yaml (ui.theme field)
+- Parse btop theme format: theme[key]="value"
+- Convert hex colors to ANSI escape sequences
+- Default to tokyo-night if theme not found
+
+Phase 2: Dynamic Theme Loading (⏳ TODO)
+- Wire theme_loader into App initialization
+- Replace hardcoded theme.zig constants with loaded ThemeColors
+- Pass ThemeColors to all components
+- Support theme hot-reload with :theme command
+- Add theme list command (:themes)
+
+Phase 3: Theme Enhancements (⏳ TODO)
+- Support custom user themes in $XDG_CONFIG_HOME/c3s/themes/
+- Merge bundled + user themes
+- Theme validation and error handling
+- Preview themes before applying
+- Theme inheritance/customization
+
+11. Documentation Updates
 - Update README.md with new features, architecture, performance characteristics
 - Update docs/ARCHITECTURE.md with rendering pipeline, buffering strategy
 - Add docs/PERFORMANCE.md documenting optimization techniques
 - Add docs/CONFIG.md for YAML configuration reference
+- Add docs/THEMES.md documenting available themes and customization
