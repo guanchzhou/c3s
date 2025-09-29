@@ -304,8 +304,10 @@ pub const Body = struct {
             const is_selected = pod_idx == self.selected_row;
             const bg_color = if (is_selected) Theme.selected_bg else Theme.main_bg;
             const fg_color = if (is_selected) Theme.selected_fg else Theme.main_fg;
-            for (0..width - 2) |i_fill| { // Account for border
-                try Theme.writeStringWithTheme(terminal, x + 1 + @as(u16, @intCast(i_fill)), row_y, " ", fg_color, bg_color);
+            
+            // Use efficient fillRow instead of per-character writes
+            if (width > 2) {
+                try terminal.fillRow(x + 1, row_y, width - 2, fg_color, bg_color);
             }
 
             col_x = x + 1; // Offset by 1 for border
@@ -333,21 +335,21 @@ pub const Body = struct {
             try Theme.writeStringWithTheme(terminal, col_x, row_y, pod.status, status_color, bg_color);
             col_x += scaled[4];
 
-            // RESTARTS
-            const restarts_str = try std.fmt.allocPrint(self.allocator, "{}", .{pod.restarts});
-            defer self.allocator.free(restarts_str);
+            // RESTARTS - use stack buffer instead of heap allocation
+            var restarts_buf: [16]u8 = undefined;
+            const restarts_str = std.fmt.bufPrint(&restarts_buf, "{}", .{pod.restarts}) catch unreachable;
             try Theme.writeStringWithTheme(terminal, col_x, row_y, restarts_str, fg_color, bg_color);
             col_x += scaled[5];
 
-            // CPU
-            const cpu_str = try std.fmt.allocPrint(self.allocator, "{}", .{pod.cpu});
-            defer self.allocator.free(cpu_str);
+            // CPU - use stack buffer
+            var cpu_buf: [16]u8 = undefined;
+            const cpu_str = std.fmt.bufPrint(&cpu_buf, "{}", .{pod.cpu}) catch unreachable;
             try Theme.writeStringWithTheme(terminal, col_x, row_y, cpu_str, fg_color, bg_color);
             col_x += scaled[6];
 
-            // %CPU/R
-            const cpu_r_str = try std.fmt.allocPrint(self.allocator, "{}", .{pod.cpu_r});
-            defer self.allocator.free(cpu_r_str);
+            // %CPU/R - use stack buffer
+            var cpu_r_buf: [16]u8 = undefined;
+            const cpu_r_str = std.fmt.bufPrint(&cpu_r_buf, "{}", .{pod.cpu_r}) catch unreachable;
             try Theme.writeStringWithTheme(terminal, col_x, row_y, cpu_r_str, fg_color, bg_color);
             col_x += scaled[7];
 
@@ -355,15 +357,15 @@ pub const Body = struct {
             try Theme.writeStringWithTheme(terminal, col_x, row_y, pod.cpu_l, fg_color, bg_color);
             col_x += scaled[8];
 
-            // MEM
-            const mem_str = try std.fmt.allocPrint(self.allocator, "{}", .{pod.mem});
-            defer self.allocator.free(mem_str);
+            // MEM - use stack buffer
+            var mem_buf: [16]u8 = undefined;
+            const mem_str = std.fmt.bufPrint(&mem_buf, "{}", .{pod.mem}) catch unreachable;
             try Theme.writeStringWithTheme(terminal, col_x, row_y, mem_str, fg_color, bg_color);
             col_x += scaled[9];
 
-            // %MEM/R
-            const mem_r_str = try std.fmt.allocPrint(self.allocator, "{}", .{pod.mem_r});
-            defer self.allocator.free(mem_r_str);
+            // %MEM/R - use stack buffer
+            var mem_r_buf: [16]u8 = undefined;
+            const mem_r_str = std.fmt.bufPrint(&mem_r_buf, "{}", .{pod.mem_r}) catch unreachable;
             try Theme.writeStringWithTheme(terminal, col_x, row_y, mem_r_str, fg_color, bg_color);
             col_x += scaled[10];
 

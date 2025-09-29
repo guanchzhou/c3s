@@ -186,6 +186,30 @@ pub const Terminal = struct {
         _ = self.hideCursor() catch {};
         // No-op for unbuffered writes on stdout in Zig 0.15.1
     }
+    
+    pub fn fillRow(self: *Terminal, x: u16, y: u16, width: u16, fg_color: []const u8, bg_color: []const u8) !void {
+        if (width == 0) return;
+        
+        try self.setCursor(x, y);
+        
+        // Write color codes once
+        try self.stdout.writeAll(fg_color);
+        try self.stdout.writeAll(bg_color);
+        
+        // Fill with spaces in chunks for efficiency
+        var spaces_buf: [256]u8 = undefined;
+        @memset(&spaces_buf, ' ');
+        
+        var remaining: usize = width;
+        while (remaining > 0) {
+            const chunk = @min(remaining, spaces_buf.len);
+            try self.stdout.writeAll(spaces_buf[0..chunk]);
+            remaining -= chunk;
+        }
+        
+        // Reset colors
+        try self.stdout.writeAll("\x1b[0m");
+    }
 
     pub fn readKey(self: *Terminal) !?Key {
         var buf: [16]u8 = undefined;
