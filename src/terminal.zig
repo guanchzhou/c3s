@@ -200,6 +200,16 @@ pub const Terminal = struct {
         try self.bufferWrite("\x1b[0m");
     }
 
+    pub fn beginSyncOutput(self: *Terminal) !void {
+        // DEC Synchronized Output Mode - terminal buffers until endSyncOutput
+        try self.stdout.writeAll("\x1b[?2026h");
+    }
+    
+    pub fn endSyncOutput(self: *Terminal) !void {
+        // End synchronized output - terminal displays buffered content atomically
+        try self.stdout.writeAll("\x1b[?2026l");
+    }
+    
     pub fn flush(self: *Terminal) !void {
         // Ensure cursor stays hidden
         try self.hideCursor();

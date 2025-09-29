@@ -69,7 +69,65 @@ run zig build test (expect failure).
 implement feature.
 rerun tests (expect pass).
 commit once all pass (when requested).
-7. Kubernetes C Client Integration Strategy
+7. Advanced TUI Rendering Optimizations (Inspired by Ghostty/btop)
+NOTE: Metal/GPU rendering is for GUI apps that draw pixels. C3s is a TUI outputting ANSI codes.
+We need TUI-specific optimizations instead:
+
+Phase 1: Differential Rendering (btop approach)
+- Track previous screen state as 2D character grid
+- Compute diff between current and previous frame
+- Only emit ANSI codes for changed cells
+- Use direct cursor positioning (ESC[row;colH) for sparse updates
+- Avoid full redraws - update only changed regions
+Implementation:
+  - Add ScreenBuffer struct storing 2D array of cells (char + fg + bg)
+  - In render(): compute diff, emit minimal ANSI sequence
+  - Store last_screen_buffer in Body/Header
+  - Use ESC[H without clear for cursor repositioning
+
+Phase 2: Rate Limiting & Frame Timing
+- Cap render frequency to 60 FPS (16.67ms per frame)
+- Track last_render_time, skip renders if too soon
+- Decouple input handling from rendering (already done with poll)
+- Add render throttle config option
+Implementation:
+  - Track last_render_ns in App
+  - In renderIfNeeded: check elapsed time, return early if < 16ms
+  - Allow override via config (c3s.ui.max_fps)
+
+Phase 3: Partial Update Regions (inspired by ghostty's dirty tracking)
+- Mark only changed components as dirty (header/body/footer independently)
+- Track dirty_regions bitmap
+- Render only dirty components, not full screen
+- Use saved cursor position (ESC[s / ESC[u) to avoid jumps
+Implementation:
+  - Add dirty_header, dirty_body, dirty_footer flags
+  - Each component tracks its last render state
+  - renderIfNeeded selectively calls component renders
+  - Use ESC[s (save cursor) before each component, ESC[u after
+
+Phase 4: Double Buffering at ANSI Level
+- Maintain two complete screen buffers (front/back)
+- Render to back buffer, swap pointers
+- Compare buffers cell-by-cell, emit only diffs
+- Similar to ghostty's swap_chain but for text
+Implementation:
+  - DoubleBuffer struct with front/back ScreenBuffer
+  - swap() method exchanges pointers
+  - diff() returns minimal ANSI command list
+  - Terminal executes diff commands
+
+Phase 5: Performance Profiling & Benchmarking
+- Add frame timing metrics (like ghostty logs)
+- Track render duration, buffer size, diff count
+- Expose via debug mode (--debug-render)
+- Continuous monitoring of render performance
+Implementation:
+  - std.time.Instant before/after renders
+  - Log to c3s.log when > 16ms frame time
+  - Expose metrics in footer (optional)
+
+8. Kubernetes C Client Integration Strategy
 Phase 1: Research & Interface Definition
 evaluate upstream official C client (libkubernetes? actually client-c generated from OpenAPI).
 define minimal API surfaces needed (list pods, watch, etc.) as Zig interfaces.
@@ -86,4 +144,9 @@ unit tests mocking HTTP responses (use std.http server).
 Phase 5: Connect to C3S
 replace kubectl child process in Body.init with FFI client calls (list pods).
 ensure config contexts from kubeconfig (future step).
-Let me know if you want adjustments before coding.
+
+9. Documentation Updates
+- Update README.md with new features, architecture, performance characteristics
+- Update docs/ARCHITECTURE.md with rendering pipeline, buffering strategy
+- Add docs/PERFORMANCE.md documenting optimization techniques
+- Add docs/CONFIG.md for YAML configuration reference

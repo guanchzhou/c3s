@@ -27,6 +27,8 @@ pub const App = struct {
     prev_height: u16 = 0,
     header_height: u16 = 8,
     dirty: bool = true,
+    last_render_time: i128 = 0,
+    min_frame_time_ns: i128 = 16_666_667, // ~60 FPS (16.67ms)
 
     pub fn init(allocator: std.mem.Allocator, config: Cli.Config) !App {
         // Initialize terminal
@@ -114,6 +116,19 @@ pub const App = struct {
         const size = try self.terminal.getSize();
         const size_changed = self.prev_width != size.width or self.prev_height != size.height;
         if (!size_changed and !self.dirty) return;
+
+        // Rate limit rendering to prevent excessive updates (60 FPS max)
+        const now = std.time.nanoTimestamp();
+        const elapsed = now - self.last_render_time;
+        if (!size_changed and elapsed < self.min_frame_time_ns) {
+            // Too soon since last render, skip to maintain smooth 60 FPS
+            return;
+        }
+        self.last_render_time = now;
+
+        // Start DEC synchronized output mode - terminal buffers everything until endSyncOutput
+        try self.terminal.beginSyncOutput();
+        defer self.terminal.endSyncOutput() catch {};
 
         self.header_height = self.header.height();
         const footer_height: u16 = 1;
