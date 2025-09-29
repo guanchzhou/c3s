@@ -1,0 +1,237 @@
+const std = @import("std");
+// C ioctl approach removed for portability; we rely on env/stty/tput fallbacks
+
+pub const Terminal = struct {
+    allocator: std.mem.Allocator,
+    stdin: std.fs.File,
+    stdout: std.fs.File,
+    stderr: std.fs.File,
+    width: u16 = 80,
+    height: u16 = 24,
+    raw_enabled: bool = false,
+
+    pub fn init(allocator: std.mem.Allocator) !Terminal {
+        const stdin = std.fs.File.stdin();
+        const stdout = std.fs.File.stdout();
+        const stderr = std.fs.File.stderr();
+
+        // Keep default blocking mode for portability on macOS.
+
+        return Terminal{
+            .allocator = allocator,
+            .stdin = stdin,
+            .stdout = stdout,
+            .stderr = stderr,
+        };
+    }
+
+    pub fn deinit(self: *Terminal) void {
+        _ = self;
+    }
+
+    pub fn getSize(self: *Terminal) !struct { width: u16, height: u16 } {
+        _ = self;
+        // 0) ioctl path omitted to avoid platform differences
+        // 1) Try environment variables (often accurate in interactive shells)
+        if (std.process.getEnvVarOwned(std.heap.page_allocator, "COLUMNS")) |cols_str| {
+            defer std.heap.page_allocator.free(cols_str);
+            if (std.process.getEnvVarOwned(std.heap.page_allocator, "LINES")) |lines_str| {
+                defer std.heap.page_allocator.free(lines_str);
+                const cols = std.fmt.parseInt(u16, std.mem.trim(u8, cols_str, " \n\r\t"), 10) catch 0;
+                const lines = std.fmt.parseInt(u16, std.mem.trim(u8, lines_str, " \n\r\t"), 10) catch 0;
+                if (cols > 0 and lines > 0) return .{ .width = cols, .height = lines };
+            } else |_| {}
+        } else |_| {}
+
+        // 2) Try `stty size` (rows cols)
+        var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+        defer arena.deinit();
+        const alloc = arena.allocator();
+        var stty = std.process.Child.init(&[_][]const u8{"stty", "size"}, alloc);
+        stty.stdout_behavior = .Pipe;
+        stty.stderr_behavior = .Close;
+        if (stty.spawn() catch null) |_| {
+            const out = stty.stdout.?.readToEndAlloc(alloc, 64) catch null;
+            _ = stty.wait() catch {};
+            if (out) |buf| {
+                const trimmed = std.mem.trim(u8, buf, " \n\r\t");
+                if (std.mem.indexOfScalar(u8, trimmed, ' ') ) |sp| {
+                    const rows_str = trimmed[0..sp];
+                    const cols_str = trimmed[sp+1..];
+                    const rows = std.fmt.parseInt(u16, rows_str, 10) catch 0;
+                    const cols = std.fmt.parseInt(u16, cols_str, 10) catch 0;
+                    if (rows > 0 and cols > 0) return .{ .width = cols, .height = rows };
+                }
+            }
+        }
+
+        // 3) Fallback to tput
+        var cols_proc = std.process.Child.init(&[_][]const u8{"tput", "cols"}, alloc);
+        cols_proc.stdout_behavior = .Pipe;
+        cols_proc.stderr_behavior = .Close;
+        if (cols_proc.spawn() catch null) |_| {
+            const cols_out = cols_proc.stdout.?.readToEndAlloc(alloc, 64) catch null;
+            _ = cols_proc.wait() catch {};
+            var lines_proc = std.process.Child.init(&[_][]const u8{"tput", "lines"}, alloc);
+            lines_proc.stdout_behavior = .Pipe;
+            lines_proc.stderr_behavior = .Close;
+            if (lines_proc.spawn() catch null) |_| {
+                const lines_out = lines_proc.stdout.?.readToEndAlloc(alloc, 64) catch null;
+                _ = lines_proc.wait() catch {};
+                const cols = if (cols_out) |c| std.fmt.parseInt(u16, std.mem.trim(u8, c, " \n\r\t"), 10) catch 0 else 0;
+                const lines = if (lines_out) |l| std.fmt.parseInt(u16, std.mem.trim(u8, l, " \n\r\t"), 10) catch 0 else 0;
+                if (cols > 0 and lines > 0) return .{ .width = cols, .height = lines };
+            }
+        }
+
+        // 4) Hard fallback
+        return .{ .width = 120, .height = 40 };
+    }
+
+    pub fn clear(self: *Terminal) !void {
+        // Clear screen using ANSI escape codes
+        try self.stdout.writeAll("\x1b[2J");
+        try self.stdout.writeAll("\x1b[H");
+    }
+
+    pub fn hideCursor(self: *Terminal) !void {
+        try self.stdout.writeAll("\x1b[?25l");
+    }
+
+    pub fn showCursor(self: *Terminal) !void {
+        try self.stdout.writeAll("\x1b[?25h");
+    }
+
+    pub fn enterAlternateScreen(self: *Terminal) !void {
+        try self.stdout.writeAll("\x1b[?1049h");
+    }
+
+    pub fn exitAlternateScreen(self: *Terminal) !void {
+        try self.stdout.writeAll("\x1b[?1049l");
+    }
+
+    pub fn enableRawMode(self: *Terminal) void {
+        var child = std.process.Child.init(&[_][]const u8{"stty", "-echo", "-icanon", "min", "0", "time", "1"}, self.allocator);
+        child.stdin_behavior = .Ignore;
+        child.stdout_behavior = .Close;
+        child.stderr_behavior = .Close;
+        if (child.spawn() catch null) |_| {
+            _ = child.wait() catch {};
+            self.raw_enabled = true;
+        }
+    }
+
+    pub fn disableRawMode(self: *Terminal) void {
+        var child = std.process.Child.init(&[_][]const u8{"stty", "sane"}, self.allocator);
+        child.stdin_behavior = .Ignore;
+        child.stdout_behavior = .Close;
+        child.stderr_behavior = .Close;
+        if (child.spawn() catch null) |_| {
+            _ = child.wait() catch {};
+            self.raw_enabled = false;
+        }
+    }
+
+    pub fn setCursor(self: *Terminal, x: u16, y: u16) !void {
+        var buf: [32]u8 = undefined;
+        const s = try std.fmt.bufPrint(&buf, "\x1b[{};{}H", .{ y + 1, x + 1 });
+        try self.stdout.writeAll(s);
+    }
+
+    pub fn writeString(self: *Terminal, x: u16, y: u16, text: []const u8) !void {
+        try self.setCursor(x, y);
+        try self.stdout.writeAll(text);
+    }
+
+    pub fn writeStringWithColor(self: *Terminal, x: u16, y: u16, text: []const u8, fg: Color, bg: Color) !void {
+        try self.setCursor(x, y);
+        try self.setColor(fg, bg);
+        try self.stdout.writeAll(text);
+        try self.resetColor();
+    }
+
+    pub fn setColor(self: *Terminal, fg: Color, bg: Color) !void {
+        var buf: [32]u8 = undefined;
+        const fg_code: u8 = @intFromEnum(fg);
+        const raw_bg: u8 = @intFromEnum(bg);
+        const bg_code: u8 = if (raw_bg == 39) 49 else (raw_bg - 30 + 40);
+        const s = try std.fmt.bufPrint(&buf, "\x1b[{};{}m", .{ fg_code, bg_code });
+        try self.stdout.writeAll(s);
+    }
+
+    pub fn resetColor(self: *Terminal) !void {
+        try self.stdout.writeAll("\x1b[0m");
+    }
+
+    pub fn flush(self: *Terminal) !void {
+        // Ensure cursor stays hidden
+        _ = self.hideCursor() catch {};
+        // No-op for unbuffered writes on stdout in Zig 0.15.1
+    }
+
+    pub fn readKey(self: *Terminal) !?Key {
+        // Read up to 3 bytes to decode ANSI escape sequences for arrows: ESC [ A/B/C/D
+        var buf: [16]u8 = undefined;
+        var first: [1]u8 = undefined;
+        const n = self.stdin.read(&first) catch return null;
+        if (n == 0) return null;
+
+        buf[0] = first[0];
+        const b0 = first[0];
+        switch (b0) {
+            'q' => return Key{ .char = 'q' },
+            'h' => return Key{ .char = 'h' },
+            'j' => return Key{ .char = 'j' },
+            'k' => return Key{ .char = 'k' },
+            'l' => return Key{ .char = 'l' },
+            3 => return Key{ .ctrl_c = {} }, // Ctrl+C
+            27 => {
+                // Read a short tail of the escape sequence (non-blocking due to raw mode VMIN=0 VTIME=1)
+                var idx: usize = 1;
+                while (idx < buf.len) {
+                    var b: [1]u8 = undefined;
+                    const rn = self.stdin.read(&b) catch 0;
+                    if (rn == 0) break;
+                    buf[idx] = b[0];
+                    idx += 1;
+                }
+
+                // Handle both SS3 (ESC O X) and CSI (ESC [ ... X), and tolerate modifiers (e.g., ESC [ 1 ; 5 A)
+                if (idx >= 2) {
+                    const last = buf[idx - 1];
+                    switch (last) {
+                        'A' => return Key{ .up = {} },
+                        'B' => return Key{ .down = {} },
+                        'C' => return Key{ .right = {} },
+                        'D' => return Key{ .left = {} },
+                        else => {},
+                    }
+                }
+                return null;
+            },
+            else => return Key{ .char = b0 },
+        }
+    }
+};
+
+pub const Key = union(enum) {
+    char: u8,
+    up,
+    down,
+    left,
+    right,
+    escape,
+    ctrl_c,
+};
+
+pub const Color = enum(u8) {
+    default = 39,
+    black = 30,
+    red = 31,
+    green = 32,
+    yellow = 33,
+    blue = 34,
+    magenta = 35,
+    cyan = 36,
+    white = 37,
+};
