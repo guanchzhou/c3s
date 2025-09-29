@@ -30,10 +30,20 @@ pub const Logger = struct {
             else => return path_err,
         };
 
-        const log_file = std.fs.cwd().openFile(log_file_path, .{ .mode = .write_only }) catch |file_err| switch (file_err) {
-            error.FileNotFound => try std.fs.cwd().createFile(log_file_path, .{}),
+        // Open in read-write mode with append semantics
+        const log_file = std.fs.cwd().openFile(log_file_path, .{ 
+            .mode = .read_write 
+        }) catch |file_err| switch (file_err) {
+            error.FileNotFound => blk: {
+                // Create file if it doesn't exist
+                const new_file = try std.fs.cwd().createFile(log_file_path, .{ .read = true });
+                break :blk new_file;
+            },
             else => return file_err,
         };
+        
+        // Seek to end for append mode
+        try log_file.seekFromEnd(0);
 
         return Logger{
             .allocator = global_allocator,

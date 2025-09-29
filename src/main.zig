@@ -2,6 +2,7 @@ const std = @import("std");
 const App = @import("app.zig").App;
 const Cli = @import("cli.zig");
 const Logger = @import("logger.zig");
+const panic_hook = @import("panic_hook.zig");
 const posix = std.posix;
 
 pub fn main() !void {
@@ -27,6 +28,11 @@ pub fn main() !void {
     
     try Logger.initGlobalLogger(log_level);
     defer Logger.deinitGlobalLogger();
+
+    // Setup panic hook to log panics to file
+    if (Logger.getLogFilePath()) |log_path| {
+        panic_hook.setup(log_path);
+    }
 
     Logger.info("C3S starting up...", .{});
 
