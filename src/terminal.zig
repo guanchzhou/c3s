@@ -1,7 +1,6 @@
 const std = @import("std");
 const posix = std.posix;
 const c = @cImport({
-    @cInclude("fcntl.h");
     @cInclude("termios.h");
 });
 
@@ -14,7 +13,6 @@ pub const Terminal = struct {
     height: u16 = 24,
     raw_enabled: bool = false,
     original_termios: ?c.termios = null,
-    original_flags: i32 = 0,
 
     pub fn init(allocator: std.mem.Allocator) !Terminal {
         const stdin = std.fs.File.stdin();
@@ -45,18 +43,9 @@ pub const Terminal = struct {
         }
         self.original_termios = termios;
         
-        // Make stdin non-blocking
-        const flags = c.fcntl(self.stdin.handle, c.F_GETFL, @as(c_int, 0));
-        if (flags < 0) return error.FcntlGetFailed;
-        self.original_flags = flags;
-        
-        if (c.fcntl(self.stdin.handle, c.F_SETFL, flags | c.O_NONBLOCK) < 0) {
-            return error.FcntlSetFailed;
-        }
-        
         // Configure raw mode
         c.cfmakeraw(&termios);
-        termios.c_cc[c.VMIN] = 0;  // Non-blocking read
+        termios.c_cc[c.VMIN] = 0;  // Return immediately even if no data
         termios.c_cc[c.VTIME] = 0; // No timeout
         
         if (c.tcsetattr(self.stdin.handle, c.TCSANOW, &termios) != 0) {
@@ -73,9 +62,6 @@ pub const Terminal = struct {
         if (self.original_termios) |termios| {
             _ = c.tcsetattr(self.stdin.handle, c.TCSANOW, &termios);
         }
-        
-        // Restore original flags
-        _ = c.fcntl(self.stdin.handle, c.F_SETFL, self.original_flags);
         
         self.raw_enabled = false;
     }
@@ -231,11 +217,8 @@ pub const Terminal = struct {
     pub fn readKey(self: *Terminal) !?Key {
         var buf: [16]u8 = undefined;
         
-        // Read first byte
-        const n = posix.read(self.stdin.handle, buf[0..1]) catch |err| switch (err) {
-            error.WouldBlock => return null,
-            else => return err,
-        };
+        // Read first byte (VMIN=0 means this returns immediately)
+        const n = posix.read(self.stdin.handle, buf[0..1]) catch return null;
         if (n == 0) return null;
 
         const first = buf[0];
@@ -254,10 +237,7 @@ pub const Terminal = struct {
                 // Try to read up to 10 more bytes for escape sequence
                 var attempts: u8 = 0;
                 while (bytes_read < buf.len and attempts < 10) : (attempts += 1) {
-                    const n_read = posix.read(self.stdin.handle, buf[bytes_read..bytes_read+1]) catch |err| switch (err) {
-                        error.WouldBlock => break,
-                        else => break,
-                    };
+                    const n_read = posix.read(self.stdin.handle, buf[bytes_read..bytes_read+1]) catch break;
                     if (n_read == 0) break;
                     bytes_read += n_read;
                     
