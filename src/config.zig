@@ -4,15 +4,18 @@ const xdg = @import("xdg.zig");
 pub const UiConfig = struct {
     compact: bool = false,
     theme: []const u8 = "tokyo-night",
+    theme_allocated: ?[]u8 = null,
 };
 
 pub const Config = struct {
     allocator: std.mem.Allocator,
     ui: UiConfig,
+    theme_owned: ?[]u8 = null,
     
     pub fn deinit(self: *const Config) void {
-        _ = self;
-        // No dynamic allocations to free in current implementation
+        if (self.theme_owned) |theme| {
+            self.allocator.free(theme);
+        }
     }
 };
 
@@ -41,15 +44,16 @@ pub fn load(allocator: std.mem.Allocator) !Config {
     defer allocator.free(config_content);
     
     // Parse the YAML (simple parser for our use case)
-    const ui_config = parseUiConfig(config_content);
+    const ui_config = try parseUiConfig(allocator, config_content);
     
     return Config{
         .allocator = allocator,
         .ui = ui_config,
+        .theme_owned = ui_config.theme_allocated,
     };
 }
 
-fn parseUiConfig(content: []const u8) UiConfig {
+fn parseUiConfig(allocator: std.mem.Allocator, content: []const u8) !UiConfig {
     var ui_config = UiConfig{};
     
     // Simple line-by-line parser
@@ -74,10 +78,13 @@ fn parseUiConfig(content: []const u8) UiConfig {
             if (after_colon.len > 0) {
                 // Remove quotes if present
                 var theme_name = after_colon;
-                if (theme_name[0] == '"' and theme_name[theme_name.len - 1] == '"') {
+                if (theme_name.len > 0 and theme_name[0] == '"' and theme_name[theme_name.len - 1] == '"') {
                     theme_name = theme_name[1..theme_name.len - 1];
                 }
-                ui_config.theme = theme_name;
+                // Allocate the theme name since it points into content buffer
+                const owned = try allocator.dupe(u8, theme_name);
+                ui_config.theme = owned;
+                ui_config.theme_allocated = owned;
             }
         }
     }
