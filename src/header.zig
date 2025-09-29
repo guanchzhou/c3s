@@ -212,6 +212,10 @@ pub const Header = struct {
         const quick_commands = [_]struct { key: []const u8, cmd: []const u8 }{
             .{ .key = "0", .cmd = "all" },
             .{ .key = "1", .cmd = "default" },
+            .{ .key = "2", .cmd = "pods" },
+            .{ .key = "3", .cmd = "deployments" },
+            .{ .key = "4", .cmd = "services" },
+            .{ .key = "5", .cmd = "nodes" },
         };
         
         // Determine quick commands columns: 1 column if ≤6 items, 2 columns if >6
@@ -237,7 +241,7 @@ pub const Header = struct {
             .{ .render_fn = 1, .text = "", .key = "d", .before = "", .after = "escribe" },
             .{ .render_fn = 1, .text = "", .key = "e", .before = "", .after = "dit" },
             .{ .render_fn = 1, .text = "", .key = "o", .before = "sh", .after = "w node" },
-            .{ .render_fn = 2, .text = "?", .key = "help", .before = "", .after = "" }, // Special: ? help with space
+            .{ .render_fn = 1, .text = "", .key = "?", .before = "", .after = " help" }, // ? help - key is "?", after is " help" with leading space
             .{ .render_fn = 1, .text = "", .key = "l", .before = "", .after = "ogs" },
             .{ .render_fn = 0, .text = "<shift-f> port-forward", .key = "", .before = "", .after = "" },
             .{ .render_fn = 0, .text = "<ctrl-f> kill finalizers", .key = "", .before = "", .after = "" },
@@ -245,7 +249,7 @@ pub const Header = struct {
             .{ .render_fn = 1, .text = "", .key = "t", .before = "", .after = "ransfer" },
             .{ .render_fn = 1, .text = "", .key = "z", .before = "saniti", .after = "e" },
             .{ .render_fn = 1, .text = "", .key = "i", .before = "set ", .after = "mage" },
-            .{ .render_fn = 2, .text = "y", .key = "yaml", .before = "", .after = "" },
+            .{ .render_fn = 1, .text = "", .key = "y", .before = "", .after = " yaml" }, // y yaml - same pattern
         };
         
         // Determine hints columns: 1 if ≤6, 2 if ≤12, 3 if >12
@@ -264,17 +268,6 @@ pub const Header = struct {
             switch (item.render_fn) {
                 0 => try Theme.writeStringWithTheme(terminal, hx, hy, item.text, Theme.main_fg, Theme.main_bg),
                 1 => try Theme.writeShortcutWithHighlight(terminal, hx, hy, item.before, item.key, item.after, Theme.main_bg),
-                2 => {
-                    // Special case: "? help" with space between
-                    try terminal.setCursor(hx, hy);
-                    try terminal.writeAll(Theme.key_highlight);
-                    try terminal.writeAll(item.text);
-                    try terminal.writeAll(Theme.reset);
-                    try terminal.writeAll(" ");
-                    try terminal.writeAll(Theme.bold);
-                    try terminal.writeAll(item.key);
-                    try terminal.writeAll(Theme.reset);
-                },
                 else => {},
             }
         }
