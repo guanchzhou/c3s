@@ -1,0 +1,102 @@
+# -----------------------------------------------------------------------------
+# Tokyo Night Skin (converted from btop theme)
+# Based on Tokyo Night color palette
+# -----------------------------------------------------------------------------
+
+# Styles...
+foreground: &foreground "#cfc9c2"
+background: &background "#1a1b26"
+current_line: &current_line "#414868"
+selection: &selection "#414868"
+comment: &comment "#565f89"
+cyan: &cyan "#7dcfff"
+green: &green "#9ece6a"
+orange: &orange "#e0af68"
+magenta: &magenta "#bb9af7"
+blue: &blue "#7aa2f7"
+red: &red "#f7768e"
+
+# Skin...
+k9s:
+  body:
+    fgColor: *foreground
+    bgColor: *background
+    logoColor: *cyan
+  prompt:
+    fgColor: *foreground
+    bgColor: *background
+    suggestColor: *orange
+  info:
+    fgColor: *cyan
+    sectionColor: *foreground
+  dialog:
+    fgColor: *foreground
+    bgColor: *background
+    buttonFgColor: *foreground
+    buttonBgColor: *cyan
+    buttonFocusFgColor: *background
+    buttonFocusBgColor: *green
+    labelFgColor: *orange
+    fieldFgColor: *foreground
+  frame:
+    border:
+      fgColor: *comment
+      focusColor: *current_line
+    menu:
+      fgColor: *foreground
+      keyColor: *cyan
+      numKeyColor: *orange
+    crumbs:
+      fgColor: *foreground
+      bgColor: *current_line
+      activeColor: *cyan
+    status:
+      newColor: *cyan
+      modifyColor: *blue
+      addColor: *green
+      errorColor: *red
+      highlightColor: *orange
+      killColor: *comment
+      completedColor: *comment
+    title:
+      fgColor: *foreground
+      bgColor: *current_line
+      highlightColor: *orange
+      counterColor: *cyan
+      filterColor: *magenta
+  views:
+    charts:
+      bgColor: default
+      defaultDialColors:
+        - *green
+        - *red
+      defaultChartColors:
+        - *green
+        - *red
+    table:
+      fgColor: *foreground
+      bgColor: *background
+      cursorFgColor: *foreground
+      cursorBgColor: *current_line
+      header:
+        fgColor: *foreground
+        bgColor: *background
+        sorterColor: *cyan
+    xray:
+      fgColor: *foreground
+      bgColor: *background
+      cursorColor: *current_line
+      graphicColor: *cyan
+      showIcons: false
+    yaml:
+      keyColor: *cyan
+      colonColor: *magenta
+      valueColor: *foreground
+    logs:
+      fgColor: *foreground
+      bgColor: *background
+      indicator:
+        fgColor: *foreground
+        bgColor: *selection
+        toggleOnColor: *green
+        toggleOffColor: *comment

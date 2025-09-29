@@ -293,7 +293,7 @@ pub const App = struct {
                         // Process command
                         if (std.mem.eql(u8, cmd_text, "q") or std.mem.eql(u8, cmd_text, "quit")) {
                             self.running = false;
-                        } else if (std.mem.eql(u8, cmd_text, "themes")) {
+                        } else if (std.mem.eql(u8, cmd_text, "themes") or std.mem.eql(u8, cmd_text, "skins")) {
                             self.theme_selector.show();
                         }
                         // TODO: Add more commands here

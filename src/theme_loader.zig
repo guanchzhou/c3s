@@ -23,11 +23,11 @@ pub const ThemeColors = struct {
 };
 
 pub fn loadTheme(allocator: std.mem.Allocator, theme_name: []const u8) !ThemeColors {
-    // Try to load from bundled themes directory
-    const theme_file_name = try std.fmt.allocPrint(allocator, "themes/{s}.theme", .{theme_name});
-    defer allocator.free(theme_file_name);
+    // Try to load from bundled skins directory
+    const skin_file_name = try std.fmt.allocPrint(allocator, "skins/{s}.yaml", .{theme_name});
+    defer allocator.free(skin_file_name);
     
-    const content = std.fs.cwd().readFileAlloc(allocator, theme_file_name, 1024 * 1024) catch |err| {
+    const content = std.fs.cwd().readFileAlloc(allocator, skin_file_name, 1024 * 1024) catch |err| {
         // If file not found, return default tokyo-night
         if (err == error.FileNotFound) {
             return defaultTheme(allocator);
@@ -36,7 +36,7 @@ pub fn loadTheme(allocator: std.mem.Allocator, theme_name: []const u8) !ThemeCol
     };
     defer allocator.free(content);
     
-    return parseThemeFile(allocator, content);
+    return parseSkinFile(allocator, content);
 }
 
 pub fn defaultTheme(allocator: std.mem.Allocator) !ThemeColors {
@@ -62,59 +62,12 @@ pub fn defaultTheme(allocator: std.mem.Allocator) !ThemeColors {
     };
 }
 
-fn parseThemeFile(allocator: std.mem.Allocator, content: []const u8) !ThemeColors {
-    var theme_map = std.StringHashMap([]const u8).init(allocator);
-    defer theme_map.deinit();
-    
-    // Parse line by line
-    var lines = std.mem.splitScalar(u8, content, '\n');
-    while (lines.next()) |line| {
-        const trimmed = std.mem.trim(u8, line, " \t\r");
-        
-        // Skip comments and empty lines
-        if (trimmed.len == 0 or trimmed[0] == '#') continue;
-        
-        // Parse theme[key]="value"
-        if (std.mem.indexOf(u8, trimmed, "theme[")) |start| {
-            if (std.mem.indexOf(u8, trimmed[start..], "]=\"")) |bracket_end| {
-                const key_start = start + 6; // "theme[" length
-                const key_end = start + bracket_end;
-                const key = trimmed[key_start..key_end];
-                
-                const value_start = key_end + 3; // "]=\"" length
-                if (std.mem.indexOfScalar(u8, trimmed[value_start..], '"')) |quote_end| {
-                    const value = trimmed[value_start..value_start + quote_end];
-                    try theme_map.put(try allocator.dupe(u8, key), try allocator.dupe(u8, value));
-                }
-            }
-        }
-    }
-    
-    // Build ThemeColors from map
-    const main_bg = if (theme_map.get("main_bg")) |bg|
-        if (bg.len == 0 or std.mem.eql(u8, bg, "#00")) try allocator.dupe(u8, "\x1b[49m") else try hexToAnsi(allocator, bg)
-    else
-        try allocator.dupe(u8, "\x1b[49m");
-    
-    return ThemeColors{
-        .allocator = allocator,
-        .main_bg = main_bg,
-        .main_fg = try getThemeColor(allocator, &theme_map, "main_fg", "#cfc9c2"),
-        .title = try getThemeColor(allocator, &theme_map, "title", "#cfc9c2"),
-        .hi_fg = try getThemeColor(allocator, &theme_map, "hi_fg", "#7dcfff"),
-        .selected_bg = try getThemeColorBg(allocator, &theme_map, "selected_bg", "#414868"),
-        .selected_fg = try getThemeColor(allocator, &theme_map, "selected_fg", "#cfc9c2"),
-        .inactive_fg = try getThemeColor(allocator, &theme_map, "inactive_fg", "#565f89"),
-        .proc_box = try getThemeColor(allocator, &theme_map, "proc_box", "#565f89"),
-        .div_line = try getThemeColor(allocator, &theme_map, "div_line", "#565f89"),
-        .status_running = try hexToAnsi(allocator, "#50fa7b"),
-        .status_pending = try getThemeColor(allocator, &theme_map, "cpu_mid", "#e0af68"),
-        .status_failed = try getThemeColor(allocator, &theme_map, "temp_end", "#f7768e"),
-        .status_succeeded = try getThemeColor(allocator, &theme_map, "hi_fg", "#7dcfff"),
-        .key_highlight = try getThemeColor(allocator, &theme_map, "hi_fg", "#f7768e"),
-        .title_highlight = try getThemeColor(allocator, &theme_map, "cpu_mid", "#e0af68"),
-        .app_name = try allocator.dupe(u8, "\x1b[1;97m"),
-    };
+fn parseSkinFile(allocator: std.mem.Allocator, content: []const u8) !ThemeColors {
+    // Simple k9s YAML parser - extracts color values
+    // For now, return default tokyo-night
+    // TODO: Implement full k9s YAML parsing
+    _ = content;
+    return defaultTheme(allocator);
 }
 
 fn getThemeColor(allocator: std.mem.Allocator, map: *std.StringHashMap([]const u8), key: []const u8, default: []const u8) ![]const u8 {

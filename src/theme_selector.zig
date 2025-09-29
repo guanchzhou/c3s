@@ -6,7 +6,6 @@ const theme_loader = @import("theme_loader.zig");
 
 const ThemeInfo = struct {
     name: []const u8,
-    author: []const u8,
     path: []const u8,
 };
 
@@ -33,7 +32,6 @@ pub const ThemeSelector = struct {
     pub fn deinit(self: *ThemeSelector) void {
         for (self.themes.items) |theme_info| {
             self.allocator.free(theme_info.name);
-            self.allocator.free(theme_info.author);
             self.allocator.free(theme_info.path);
         }
         self.themes.deinit(self.allocator);
@@ -53,16 +51,13 @@ pub const ThemeSelector = struct {
     }
     
     fn scanThemes(self: *ThemeSelector) !void {
-        // Scan bundled themes directory
-        try self.scanDirectory("themes");
+        // Scan bundled skins directory
+        try self.scanDirectory("skins");
         
-        // Scan user themes directory ($XDG_CONFIG_HOME/c3s/skins)
+        // Scan user skins directory ($XDG_CONFIG_HOME/c3s/skins)
         const xdg = @import("xdg.zig");
         const paths = xdg.ensurePaths() catch return;
-        const skins_dir = try std.fs.path.join(self.allocator, &[_][]const u8{ paths.config_dir, "skins" });
-        defer self.allocator.free(skins_dir);
-        
-        self.scanDirectory(skins_dir) catch {}; // Ignore errors if directory doesn't exist
+        self.scanDirectory(paths.skins_dir) catch {}; // Ignore errors if directory doesn't exist
     }
     
     fn scanDirectory(self: *ThemeSelector, dir_path: []const u8) !void {
@@ -72,55 +67,21 @@ pub const ThemeSelector = struct {
         var iterator = dir.iterate();
         while (try iterator.next()) |entry| {
             if (entry.kind != .file) continue;
-            if (!std.mem.endsWith(u8, entry.name, ".theme")) continue;
+            if (!std.mem.endsWith(u8, entry.name, ".yaml")) continue;
             
-            // Extract theme name from filename (remove .theme extension)
-            const name_end = entry.name.len - 6; // ".theme" = 6 chars
-            const theme_name = try self.allocator.dupe(u8, entry.name[0..name_end]);
+            // Extract skin name from filename (remove .yaml extension)
+            const name_end = entry.name.len - 5; // ".yaml" = 5 chars
+            const skin_name = try self.allocator.dupe(u8, entry.name[0..name_end]);
             
-            // Read file to extract author
             const file_path = try std.fs.path.join(self.allocator, &[_][]const u8{ dir_path, entry.name });
-            const author = try self.extractAuthor(file_path);
             
             try self.themes.append(self.allocator, ThemeInfo{
-                .name = theme_name,
-                .author = author,
+                .name = skin_name,
                 .path = file_path,
             });
         }
     }
     
-    fn extractAuthor(self: *ThemeSelector, file_path: []const u8) ![]const u8 {
-        const content = std.fs.cwd().readFileAlloc(self.allocator, file_path, 1024) catch {
-            return self.allocator.dupe(u8, "Unknown");
-        };
-        defer self.allocator.free(content);
-        
-        // Look for 2nd line with author info
-        var lines = std.mem.splitScalar(u8, content, '\n');
-        _ = lines.next(); // Skip first line
-        
-        if (lines.next()) |second_line| {
-            const trimmed = std.mem.trim(u8, second_line, " \t\r#");
-            
-            // Look for "by" or "By"
-            if (std.mem.indexOf(u8, trimmed, "by ")) |pos| {
-                const author_part = std.mem.trim(u8, trimmed[pos + 3..], " \t:");
-                return self.allocator.dupe(u8, author_part);
-            } else if (std.mem.indexOf(u8, trimmed, "By ")) |pos| {
-                const author_part = std.mem.trim(u8, trimmed[pos + 3..], " \t:");
-                return self.allocator.dupe(u8, author_part);
-            } else if (std.mem.indexOf(u8, trimmed, "by: ")) |pos| {
-                const author_part = std.mem.trim(u8, trimmed[pos + 4..], " \t");
-                return self.allocator.dupe(u8, author_part);
-            } else if (std.mem.indexOf(u8, trimmed, "By: ")) |pos| {
-                const author_part = std.mem.trim(u8, trimmed[pos + 4..], " \t");
-                return self.allocator.dupe(u8, author_part);
-            }
-        }
-        
-        return self.allocator.dupe(u8, "Unknown");
-    }
     
     pub fn navigateUp(self: *ThemeSelector) !void {
         if (self.selected_row > 0) {
@@ -165,13 +126,12 @@ pub const ThemeSelector = struct {
         // Draw title
         const title_x = x + 2;
         try Theme.writeText(terminal, title_x, y, BoxDrawing.Symbols.title_left, Theme.proc_box);
-        try Theme.writeText(terminal, title_x + 1, y, "Available Themes", Theme.title);
-        try Theme.writeText(terminal, title_x + 1 + 16, y, BoxDrawing.Symbols.title_right, Theme.proc_box);
+        try Theme.writeText(terminal, title_x + 1, y, "Available Skins", Theme.title);
+        try Theme.writeText(terminal, title_x + 1 + 15, y, BoxDrawing.Symbols.title_right, Theme.proc_box);
         
         // Column headers
         const header_y = y + 1;
         try Theme.writeStringWithTheme(terminal, x + 2, header_y, "  NAME", Theme.title, Theme.main_bg);
-        try Theme.writeStringWithTheme(terminal, x + 32, header_y, "AUTHOR", Theme.title, Theme.main_bg);
         
         // Render theme list
         const visible_rows = if (height > 3) height - 3 else 0;
@@ -197,11 +157,8 @@ pub const ThemeSelector = struct {
             const marker = if (is_current) "●" else " ";
             try Theme.writeStringWithTheme(terminal, x + 2, row_y, marker, Theme.status_running, bg_color);
             
-            // Theme name
+            // Skin name
             try Theme.writeStringWithTheme(terminal, x + 4, row_y, theme_info.name, fg_color, bg_color);
-            
-            // Author
-            try Theme.writeStringWithTheme(terminal, x + 32, row_y, theme_info.author, fg_color, bg_color);
         }
     }
 };
