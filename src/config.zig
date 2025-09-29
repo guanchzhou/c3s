@@ -3,6 +3,7 @@ const xdg = @import("xdg.zig");
 
 pub const UiConfig = struct {
     compact: bool = false,
+    theme: []const u8 = "tokyo-night",
 };
 
 pub const Config = struct {
@@ -51,7 +52,7 @@ pub fn load(allocator: std.mem.Allocator) !Config {
 fn parseUiConfig(content: []const u8) UiConfig {
     var ui_config = UiConfig{};
     
-    // Simple line-by-line parser looking for "compact: true" or "compact: false"
+    // Simple line-by-line parser
     var lines = std.mem.splitScalar(u8, content, '\n');
     
     while (lines.next()) |line| {
@@ -64,6 +65,19 @@ fn parseUiConfig(content: []const u8) UiConfig {
                 ui_config.compact = true;
             } else if (std.mem.indexOf(u8, trimmed, "false")) |_| {
                 ui_config.compact = false;
+            }
+        }
+        
+        // Look for "theme:" line
+        if (std.mem.indexOf(u8, trimmed, "theme:")) |pos| {
+            const after_colon = std.mem.trim(u8, trimmed[pos + 6..], " \t");
+            if (after_colon.len > 0) {
+                // Remove quotes if present
+                var theme_name = after_colon;
+                if (theme_name[0] == '"' and theme_name[theme_name.len - 1] == '"') {
+                    theme_name = theme_name[1..theme_name.len - 1];
+                }
+                ui_config.theme = theme_name;
             }
         }
     }
