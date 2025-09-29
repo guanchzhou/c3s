@@ -160,8 +160,8 @@ pub const ThemeSelector = struct {
                 try terminal.fillRow(x + 1, row_y, width - 2, fg_color, bg_color);
             }
             
-            // Enabled marker
-            const marker = if (is_current) "●" else " ";
+            // Enabled marker (small bullet, same as pods page)
+            const marker = if (is_current) "•" else " ";
             try Theme.writeStringWithTheme(terminal, x + 2, row_y, marker, Theme.status_running, bg_color);
             
             // Skin name
