@@ -362,6 +362,10 @@ pub const App = struct {
                     self.body.setHelpMode(false);
                     self.footer.setHelpMode(false);
                     self.dirty = true;
+                } else if (self.body.filter_text.len > 0) {
+                    // Esc clears filter if one is active
+                    try self.body.applyFilter("");
+                    self.dirty = true;
                 }
                 // Esc never exits the app
             },
