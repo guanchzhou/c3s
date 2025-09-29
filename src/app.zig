@@ -249,7 +249,17 @@ pub const App = struct {
                 .char => |c| switch (c) {
                     'j' => { try self.theme_selector.navigateDown(); self.dirty = true; },
                     'k' => { try self.theme_selector.navigateUp(); self.dirty = true; },
+                    '/' => {
+                        self.theme_selector.hide();
+                        self.command_input.showWithPrompt("/");
+                        self.dirty = true;
+                    },
                     else => {},
+                },
+                .colon => {
+                    self.theme_selector.hide();
+                    self.command_input.showWithPrompt(":");
+                    self.dirty = true;
                 },
                 .up => { try self.theme_selector.navigateUp(); self.dirty = true; },
                 .down => { try self.theme_selector.navigateDown(); self.dirty = true; },
