@@ -307,12 +307,6 @@ pub const App = struct {
             .ctrl_c => {
                 // Ctrl+C doesn't exit, use :q command instead
             },
-            .cmd_q => {
-                // Cmd+Q (macOS standard quit)
-                // Note: Most terminals intercept this and close the window
-                // before it reaches the app, so this might never trigger
-                self.running = false;
-            },
             .ctrl_d => {},
             .shift_g => { try self.body.gotoBottom(); self.dirty = true; },
             .ctrl_f => { try self.body.pageDown(); self.dirty = true; },

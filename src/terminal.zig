@@ -340,10 +340,6 @@ pub const Terminal = struct {
                 };
             }
             
-            // Note: Cmd+Q on macOS is usually intercepted by the terminal emulator
-            // and won't reach the application. Most terminals close on Cmd+Q.
-            // We keep the enum value for potential future use.
-            
             return Key.unsupported;
         }
         
@@ -380,7 +376,6 @@ pub const Key = union(enum) {
     shift_g,
     ctrl_f,
     ctrl_b,
-    cmd_q,
     question_mark,
     colon,
     backspace,
