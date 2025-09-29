@@ -9,6 +9,7 @@ pub const Terminal = struct {
     width: u16 = 80,
     height: u16 = 24,
     raw_enabled: bool = false,
+    original_termios: ?std.posix.termios = null,
 
     pub fn init(allocator: std.mem.Allocator) !Terminal {
         const stdin = std.fs.File.stdin();
@@ -187,7 +188,7 @@ pub const Terminal = struct {
     }
 
     pub fn readKey(self: *Terminal) !?Key {
-        var buf: [8]u8 = undefined;
+        var buf: [16]u8 = undefined;
         const n = posix.read(self.stdin.handle, buf[0..1]) catch return null;
         if (n == 0) return null;
 
@@ -208,43 +209,79 @@ pub const Terminal = struct {
                     if (n_read == 0) break; // No more bytes to read, it's just ESC
                 }
                 
-                // Analyze the sequence. The relevant part is usually after '[' or 'O'.
-                if (bytes_read >= 1 and buf[1] == '[') {
-                    if (bytes_read >= 2) {
-                        const code = buf[2];
-                        return switch (code) {
-                            'A' => Key.up,
-                            'B' => Key.down,
-                            'C' => Key.right,
-                            'D' => Key.left,
-                            'H' => Key.home,
-                            'F' => Key.end,
-                            // Handle sequences like ESC[1~ (Home), ESC[4~ (End)
-                            '~' => if (bytes_read >= 3) switch (buf[3]) {
-                                '1' => Key.home,
-                                '4' => Key.end,
-                                else => Key.unsupported,
-                            } else Key.unsupported,
-                            else => Key.unsupported,
-                        };
-                    }
-                } else if (bytes_read >= 1 and buf[1] == 'O') {
-                    if (bytes_read >= 2) {
-                        const code = buf[2];
-                        return switch (code) {
-                            'H' => Key.home,
-                            'F' => Key.end,
-                            else => Key.unsupported,
-                        };
-                    }
-                }
-                return Key.escape; // If no specific sequence matched, it's just ESC
+                return try decodeCsi(buf[0..bytes_read + 1]);
             },
             ':' => return Key.colon,
             '?' => return Key.question_mark,
             'G' => return Key.shift_g,
             else => return Key{ .char = first },
         }
+    }
+    
+    fn decodeCsi(seq: []const u8) !Key {
+        if (seq.len < 2) return Key.escape;
+        
+        // ESC [ sequences
+        if (seq[1] == '[') {
+            if (seq.len == 2) return Key.escape;
+            
+            const code = seq[2];
+            
+            // Simple single-character codes
+            switch (code) {
+                'A' => return Key.up,
+                'B' => return Key.down,
+                'C' => return Key.right,
+                'D' => return Key.left,
+                'H' => return Key.home,
+                'F' => return Key.end,
+                else => {},
+            }
+            
+            // Tilde sequences: ESC[X~
+            if (seq.len >= 4 and seq[seq.len - 1] == '~') {
+                const num_code = seq[2];
+                return switch (num_code) {
+                    '1', '7' => Key.home,  // ESC[1~ or ESC[7~ = Home
+                    '4', '8' => Key.end,   // ESC[4~ or ESC[8~ = End
+                    '5' => Key.page_up,    // ESC[5~ = Page Up
+                    '6' => Key.page_down,  // ESC[6~ = Page Down
+                    else => Key.unsupported,
+                };
+            }
+            
+            // Modified keys: ESC[1;XY where X is modifier, Y is key
+            // Examples: ESC[1;5A = Ctrl+Up, ESC[1;2A = Shift+Up
+            if (seq.len >= 6 and seq[2] == '1' and seq[3] == ';') {
+                // Normalize modified arrow keys to plain arrow keys
+                const key_code = seq[5];
+                return switch (key_code) {
+                    'A' => Key.up,
+                    'B' => Key.down,
+                    'C' => Key.right,
+                    'D' => Key.left,
+                    'H' => Key.home,
+                    'F' => Key.end,
+                    else => Key.unsupported,
+                };
+            }
+            
+            return Key.unsupported;
+        }
+        
+        // ESC O sequences (alternate encoding)
+        if (seq[1] == 'O') {
+            if (seq.len < 3) return Key.escape;
+            const code = seq[2];
+            return switch (code) {
+                'H' => Key.home,
+                'F' => Key.end,
+                else => Key.unsupported,
+            };
+        }
+        
+        // Just ESC with no valid sequence
+        return Key.escape;
     }
 };
 
@@ -256,6 +293,8 @@ pub const Key = union(enum) {
     right,
     home,
     end,
+    page_up,
+    page_down,
     escape,
     ctrl_c,
     ctrl_d,

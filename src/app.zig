@@ -192,8 +192,10 @@ pub const App = struct {
             .down => { try self.body.navigateDown(); self.dirty = true; },
             .left => { try self.body.navigateLeft(); self.dirty = true; },
             .right => { try self.body.navigateRight(); self.dirty = true; },
-            .home => {},
-            .end => {},
+            .home => { try self.body.gotoTop(); self.dirty = true; },
+            .end => { try self.body.gotoBottom(); self.dirty = true; },
+            .page_up => { try self.body.pageUp(); self.dirty = true; },
+            .page_down => { try self.body.pageDown(); self.dirty = true; },
             .escape => {
                 if (self.help.visible) {
                     self.help.hide();

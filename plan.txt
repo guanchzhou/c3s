@@ -1,0 +1,89 @@
+Expanded Plan (Step-by-step Pseudocode)
+1. Terminal Input Responsiveness & Stability (continued TDD)
+tests/terminal_input.zig
+test "arrow keys decoded instantly": simulate ESC sequences, assert Key.up etc.
+test "escape single tap": feed single \x1b, expect Key.escape.
+test "control modifiers": feed \x1b[1;5A, expect Key.up (Ctrl variant normalized).
+test "shift modifiers": feed \x1b[1;2A, expect Key.up.
+terminal.zig
+store original termios via tcgetattr.
+clone, apply std.c.cfmakeraw, set VMIN=1, VTIME=0.
+ensure non-blocking via fcntl O_NONBLOCK while reading, restore flags on disable.
+readKey: loop posix.read into ring buffer; parse CSI sequences with state machine:
+add helper decodeCsi(seq: []const u8) Key.
+2. Application Navigation Hooks & Rendering Performance (TDD)
+tests/app_navigation.zig
+test "home jumps to top": simulate Key.home, assert body.selected_row == 0.
+test "page down respects viewport": set visible_rows, emit Key.page_down, assert offset.
+app.zig
+extend handleKey:
+terminal.zig: introduce Key.page_up, Key.page_down.
+Body.render optimization
+new helper terminal.fillRow(x, y, width, fg, bg) writing chunked spaces.
+call helper before writing columns; continue using Theme.write... for text.
+replace allocPrint for numeric columns with stack buffer:
+TDD: tests/body_render.zig: verify visible_rows computed; ensure row background fill invoked (mock terminal capturing writes).
+3. Logging & Panic Safety (TDD)
+tests/logger.zig
+use std.testing.tmpDir to simulate state path; set XDG_STATE_HOME; call Logger.initGlobalLogger.
+test "log writes to file": invoke Logger.info, check file contents.
+test "panic writes to log": set panic handler, trigger dummy panic, confirm appended entry.
+xdg.zig
+ensure directories use absolute join and sanitized.
+logger.zig
+open file with .mode = .read_write, .allow_create = true, .truncate = false; seekFromEnd.
+implement setupPanicHook(paths.log_file) in new panic_hook.zig.
+main.zig
+install panic hook after logger init; hook logs message then calls std.builtin.default_panic_fn.
+4. Version Consistency Tests (TDD)
+tests/version.zig
+stub c3s_build with known base_version = "v0.2025.09.29.17.38" and build_number = "0".
+assert version.string() equals base version.
+with build_number "42", expect "v0.2025...+42".
+ensure repeated calls reuse cached slice.
+cli.zig, header.zig
+already using version.string() / ownedString; confirm no other version references.
+5. XDG Config-driven Compact Header (TDD)
+tests/config_load.zig
+create temp config file at $TMP/c3s/config.yaml.
+write:
+set XDG_CONFIG_HOME to temp; run Config.load(), assert config.ui.compact == true.
+New Module config.zig
+struct UiConfig { compact: bool = false }.
+Config { ui: UiConfig }.
+pub fn load(allocator) !Config:
+resolve via xdg.ensurePaths().
+if file missing, return defaults.
+parse minimal YAML (hand-rolled):
+read file, trim whitespace.
+simple state machine: detect lines compact: true.
+(for now plain parser; plan extension later).
+app.zig
+during init: const cfg = try Config.load(allocator);
+set self.header.setCompact(cfg.ui.compact);
+ensure header exposes setCompact(bool).
+6. TDD Workflows
+For each component change:
+write failing test (under tests/).
+run zig build test (expect failure).
+implement feature.
+rerun tests (expect pass).
+commit once all pass (when requested).
+7. Kubernetes C Client Integration Strategy
+Phase 1: Research & Interface Definition
+evaluate upstream official C client (libkubernetes? actually client-c generated from OpenAPI).
+define minimal API surfaces needed (list pods, watch, etc.) as Zig interfaces.
+Phase 2: Wrapper Design
+plan pkg/k8s/ Zig wrapper that links against compiled C library.
+FFI definitions generated via zig translate-c.
+manage memory ownership, reference counting.
+Phase 3: Implementation
+build scripts compile C sources into static library.
+expose async operations via Zig event loop.
+Phase 4: TDD
+integration tests hitting mock APIServer (kind cluster or recorded fixtures).
+unit tests mocking HTTP responses (use std.http server).
+Phase 5: Connect to C3S
+replace kubectl child process in Body.init with FFI client calls (list pods).
+ensure config contexts from kubeconfig (future step).
+Let me know if you want adjustments before coding.
