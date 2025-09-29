@@ -255,15 +255,15 @@ pub const App = struct {
                         self.theme_selector.hide();
                         self.command_input.showWithPrompt("/");
                         self.dirty = true;
-                        // Do not return, let it fall through to command_input handler
+                        return;
                     },
-                    else => {}, // Fall through for other chars
+                    else => { return; }, // Don't process other chars in theme selector
                 },
                 .colon => {
                     self.theme_selector.hide();
                     self.command_input.showWithPrompt(":");
                     self.dirty = true;
-                    // Do not return, let it fall through to command_input handler
+                    return;
                 },
                 .up => { try self.theme_selector.navigateUp(); self.dirty = true; return; },
                 .down => { try self.theme_selector.navigateDown(); self.dirty = true; return; },
@@ -281,7 +281,7 @@ pub const App = struct {
                     self.dirty = true;
                     return;
                 },
-                else => {}, // Fall through for other keys
+                else => { return; }, // Don't process other keys in theme selector
             }
         }
         
