@@ -104,8 +104,12 @@ pub const CommandInput = struct {
         // Display prompt with highlight color
         try Theme.writeStringWithTheme(terminal, x + 1, y, self.prompt, Theme.hi_fg, Theme.selected_bg);
         
+        // Add space after prompt
+        const space_x = x + 1 + @as(u16, @intCast(self.prompt.len));
+        try Theme.writeStringWithTheme(terminal, space_x, y, " ", Theme.main_fg, Theme.selected_bg);
+        
         // Display input text
-        const input_x = x + 1 + @as(u16, @intCast(self.prompt.len));
+        const input_x = space_x + 1;
         if (self.input_text.items.len > 0) {
             const display_text = self.input_text.items;
             const max_display_width = if (width > input_x + 2) width - input_x - 2 else 10;
