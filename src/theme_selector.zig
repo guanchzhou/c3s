@@ -15,17 +15,26 @@ pub const ThemeSelector = struct {
     selected_row: u32 = 0,
     scroll_offset: u32 = 0,
     visible: bool = false,
-    current_theme_name: []const u8,
+    current_theme_name: []u8,
     preview_theme: ?*theme_loader.ThemeColors = null,
     
     pub fn init(allocator: std.mem.Allocator, current_theme: []const u8) !ThemeSelector {
         var selector = ThemeSelector{
             .allocator = allocator,
             .themes = std.ArrayListUnmanaged(ThemeInfo){},
-            .current_theme_name = current_theme,
+            .current_theme_name = try allocator.dupe(u8, current_theme),
         };
         
         try selector.scanThemes();
+        
+        // Find and select current theme by default
+        for (selector.themes.items, 0..) |theme_info, idx| {
+            if (std.mem.eql(u8, theme_info.name, selector.current_theme_name)) {
+                selector.selected_row = @intCast(idx);
+                break;
+            }
+        }
+        
         return selector;
     }
     
@@ -35,6 +44,7 @@ pub const ThemeSelector = struct {
             self.allocator.free(theme_info.path);
         }
         self.themes.deinit(self.allocator);
+        self.allocator.free(self.current_theme_name);
         
         if (self.preview_theme) |preview| {
             theme_loader.deinitTheme(preview);
