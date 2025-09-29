@@ -208,14 +208,10 @@ pub const Header = struct {
         const shortcuts_start_x = @as(u16, @intCast(width / 3)) + 1;
         const shortcuts_width: u16 = if (width > shortcuts_start_x) width - shortcuts_start_x else 0;
         
-        // Quick commands (left section) - render up to 2 shortcuts per column
+        // Quick commands (left section) - namespace shortcuts only
         const quick_commands = [_]struct { key: []const u8, cmd: []const u8 }{
             .{ .key = "0", .cmd = "all" },
             .{ .key = "1", .cmd = "default" },
-            .{ .key = "2", .cmd = "pods" },
-            .{ .key = "3", .cmd = "deployments" },
-            .{ .key = "4", .cmd = "services" },
-            .{ .key = "5", .cmd = "nodes" },
         };
         
         // Determine quick commands columns: 1 column if ≤6 items, 2 columns if >6
