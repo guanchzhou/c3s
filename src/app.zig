@@ -134,6 +134,7 @@ pub const App = struct {
         const header_height_changed = self.header_height != new_header_height;
         self.header_height = new_header_height;
         const footer_height: u16 = 1;
+        const command_height: u16 = if (self.command_input.visible) 1 else 0;
 
         // Clear on resize OR header size change (compact toggle)
         if (size_changed or header_height_changed) {
@@ -144,7 +145,10 @@ pub const App = struct {
                 try self.header.render(&self.terminal, 0, 0, size.width, self.header_height);
             }
 
-            const body_start = if (size.height >= self.header_height) self.header_height else size.height;
+            const body_start = if (size.height >= self.header_height + command_height) 
+                self.header_height + command_height 
+            else 
+                size.height;
             var body_height: u16 = 0;
             if (size.height > body_start) {
                 const remaining = size.height - body_start;
@@ -178,7 +182,10 @@ pub const App = struct {
                 try self.header.render(&self.terminal, 0, 0, size.width, self.header_height);
             }
             
-            const body_start = if (size.height >= self.header_height) self.header_height else size.height;
+            const body_start = if (size.height >= self.header_height + command_height) 
+                self.header_height + command_height 
+            else 
+                size.height;
             var body_height: u16 = 0;
             if (size.height > body_start) {
                 const remaining = size.height - body_start;
@@ -206,9 +213,9 @@ pub const App = struct {
             }
         }
 
-        if (self.command_input.visible and size.height > 0) {
-            // Render command input at top of screen, overlaying header
-            try self.command_input.render(&self.terminal, 0, 0, size.width, 1);
+        if (self.command_input.visible and size.height > self.header_height) {
+            // Render command input between header and body
+            try self.command_input.render(&self.terminal, 0, self.header_height, size.width, 1);
         } else {
             // Hide cursor when not in command mode
             try self.terminal.hideCursor();
