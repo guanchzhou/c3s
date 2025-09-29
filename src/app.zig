@@ -12,6 +12,7 @@ const ThemeSelector = @import("theme_selector.zig").ThemeSelector;
 const Theme = @import("theme.zig");
 const Cli = @import("cli.zig");
 const Config = @import("config.zig");
+const Logger = @import("logger.zig");
 const version = @import("version.zig");
 
 pub const App = struct {
@@ -388,8 +389,12 @@ pub const App = struct {
     }
     
     fn saveThemeToConfig(self: *App, theme_name: []const u8) !void {
+        Logger.info("Changing theme to: {s}", .{theme_name});
+        
         const xdg = @import("xdg.zig");
         const paths = try xdg.ensurePaths();
+        
+        Logger.info("Config file path: {s}", .{paths.config_file});
         
         // Read existing config or create new one
         const existing_content = std.fs.cwd().readFileAlloc(
@@ -463,8 +468,12 @@ pub const App = struct {
             .data = new_config.items,
         });
         
+        Logger.info("Theme saved to config successfully: {s}", .{theme_name});
+        
         // Update current theme name
         self.allocator.free(self.current_theme_name);
         self.current_theme_name = try self.allocator.dupe(u8, theme_name);
+        
+        Logger.info("Current theme updated in memory: {s}", .{self.current_theme_name});
     }
 };

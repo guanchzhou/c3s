@@ -54,6 +54,8 @@ pub const ThemeSelector = struct {
     
     pub fn show(self: *ThemeSelector) void {
         self.visible = true;
+        const Logger = @import("logger.zig");
+        Logger.info("Theme selector opened, current theme: {s}, total skins: {d}", .{ self.current_theme_name, self.themes.items.len });
     }
     
     pub fn hide(self: *ThemeSelector) void {
@@ -103,6 +105,8 @@ pub const ThemeSelector = struct {
     pub fn navigateUp(self: *ThemeSelector) !void {
         if (self.selected_row > 0) {
             self.selected_row -= 1;
+            const Logger = @import("logger.zig");
+            Logger.info("Theme selector: navigated to {s}", .{self.themes.items[self.selected_row].name});
             try self.updatePreview();
         }
     }
@@ -110,6 +114,8 @@ pub const ThemeSelector = struct {
     pub fn navigateDown(self: *ThemeSelector) !void {
         if (self.selected_row < self.themes.items.len - 1) {
             self.selected_row += 1;
+            const Logger = @import("logger.zig");
+            Logger.info("Theme selector: navigated to {s}", .{self.themes.items[self.selected_row].name});
             try self.updatePreview();
         }
     }
