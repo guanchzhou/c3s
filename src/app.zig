@@ -293,11 +293,13 @@ pub const App = struct {
             .page_down => { try self.body.pageDown(); self.dirty = true; },
             .escape => {
                 if (self.help.visible) {
+                    // First Esc closes help
                     self.help.hide();
                     self.body.setHelpMode(false);
                     self.footer.setHelpMode(false);
                     self.dirty = true;
                 } else {
+                    // Second Esc (nothing open) exits app
                     self.running = false;
                 }
             },
