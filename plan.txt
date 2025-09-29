@@ -145,7 +145,64 @@ Phase 5: Connect to C3S
 replace kubectl child process in Body.init with FFI client calls (list pods).
 ensure config contexts from kubeconfig (future step).
 
-9. Documentation Updates
+9. K9s 100% Key Binding Compatibility
+Phase 1: Core Key Infrastructure
+- Create hotkeys.zig module to parse k9s hotkeys.yaml format
+- Create key_actions.zig for action registration and dispatching
+- Support both global and context-specific hotkey files
+- Implement override and keepHistory attributes
+
+Phase 2: Implement Missing Navigation Keys
+- Ctrl+u: Clear filter
+- Delete key: Erase filter
+- Space: Mark/unmark item
+- Ctrl+Space: Clear all marks
+- m: Mark item
+
+Phase 3: Implement Pod Actions
+- a: Attach to container
+- s: Shell into container  
+- d: Describe resource
+- e: Edit resource
+- l: View logs
+- Shift+l: View previous logs
+- y: View YAML
+- t: Transfer files
+- z: Sanitize (restart)
+- i: Set image
+- o: Show node
+- Shift+f: Port forward
+- f: Show port forwards
+
+Phase 4: Implement Destructive Actions
+- Resolve Ctrl+f conflict (currently page down, should be kill finalizers)
+- Ctrl+k: Kill pod
+- Ctrl+d: Delete resource (currently no-op)
+- Add confirmation dialogs for dangerous actions
+
+Phase 5: Implement Sorting Keys
+- Shift+r: Sort by ready
+- Shift+s: Sort by status
+- Shift+t: Sort by restarts
+- Shift+i: Sort by IP
+- Shift+o: Sort by node
+- Shift+n: Sort by name
+- Left/Right: Cycle sort columns
+
+Phase 6: Clipboard Operations
+- c: Copy resource name
+- n: Copy namespace
+- Integrate with system clipboard (pbcopy on macOS)
+
+Phase 7: Load k9s Hotkeys Config
+- Read $XDG_CONFIG_HOME/k9s/hotkeys.yaml (k9s compat)
+- Read $XDG_CONFIG_HOME/c3s/hotkeys.yaml (c3s native)
+- Merge with defaults, respect override flag
+- Support context-specific hotkeys from clusters directory
+
+Reference: docs/K9S_KEY_COMPATIBILITY.md tracks implementation status
+
+10. Documentation Updates
 - Update README.md with new features, architecture, performance characteristics
 - Update docs/ARCHITECTURE.md with rendering pipeline, buffering strategy
 - Add docs/PERFORMANCE.md documenting optimization techniques

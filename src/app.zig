@@ -305,9 +305,11 @@ pub const App = struct {
                 // Esc never exits the app
             },
             .ctrl_c => {
-                // Ctrl+C doesn't exit, use :q command instead
+                // Ctrl+C doesn't exit in k9s, use :q command instead
             },
-            .ctrl_d => {},
+            .ctrl_d => {
+                // Ctrl+D reserved for delete action (k9s compat)
+            },
             .shift_g => { try self.body.gotoBottom(); self.dirty = true; },
             .ctrl_f => { try self.body.pageDown(); self.dirty = true; },
             .ctrl_b => { try self.body.pageUp(); self.dirty = true; },
