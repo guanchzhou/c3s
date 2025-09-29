@@ -225,9 +225,108 @@ Phase 3: Theme Enhancements (⏳ TODO)
 - Preview themes before applying
 - Theme inheritance/customization
 
-11. Documentation Updates
+11. MVVM Architecture Refactor (CRITICAL)
+Current Problem:
+- Multiple boolean visibility flags (theme_selector.visible, help.visible, command_input.visible)
+- Complex navigation logic with manual show/hide calls
+- Pressing Esc in command palette from themes returns to pods instead of themes
+- No clear view state management
+- Views are components, not proper views
+
+MVVM Design (https://en.wikipedia.org/wiki/View_model):
+
+Model Layer:
+- Pod data structure
+- Theme/Skin data structure
+- Filter state
+- Config state
+- Kubernetes API data (future)
+
+View Layer:
+- PodsView (current body.zig content)
+- ThemesView (theme_selector.zig → proper view)
+- HelpView (help.zig → proper view)
+- LogsView (future)
+- DescribeView (future)
+
+ViewModel Layer:
+- PodsViewModel: manages pod list, filtering, selection, sorting
+- ThemesViewModel: manages skin list, current theme, preview
+- AppViewModel: manages global state, active view, navigation stack
+
+Command Pattern:
+- NavigateCommand(direction)
+- FilterCommand(text)
+- ChangeThemeCommand(name)
+- QuitCommand()
+- OpenViewCommand(view_type)
+- Commands are undoable/redoable for history navigation
+
+View Manager:
+- Maintains view stack (like browser history)
+- Push/pop views
+- Esc pops current view, returns to previous
+- Command palette overlays current view
+- Current view context preserved
+
+Implementation Plan:
+
+Phase 1: View Abstraction
+- Create View trait/protocol
+- Define render(), handleKey(), onShow(), onHide()
+- Convert body.zig to PodsView implementing View
+- Convert theme_selector.zig to ThemesView implementing View
+- Convert help.zig to HelpView implementing View
+
+Phase 2: ViewModel Layer
+- Create PodsViewModel with filter state, selection
+- Create ThemesViewModel with theme list, current theme
+- Create AppViewModel with view stack
+- Move business logic from views to viewmodels
+
+Phase 3: View Manager
+- Create ViewManager with view stack
+- pushView(view) / popView() methods
+- getCurrentView() returns active view
+- Esc always pops view from stack
+- Command palette is overlay, not a view
+
+Phase 4: Command Pattern
+- Define Command trait: execute(), undo()
+- Implement all action commands
+- CommandInvoker manages command history
+- Support undo/redo with Ctrl+Z/Ctrl+Y
+
+Phase 5: State Management
+- Single source of truth in viewmodels
+- Reactive updates (viewmodel changes → view rerenders)
+- No more manual dirty flags
+- Observable pattern for state changes
+
+Phase 6: Integration
+- Wire all components together
+- Migrate existing functionality
+- Ensure backward compatibility
+- Test all flows
+
+Benefits:
+- Clear separation of concerns
+- Proper view state management
+- Command palette always returns to correct view
+- History navigation (back/forward)
+- Easier to add new views (deployments, services, logs, etc.)
+- Testable business logic (viewmodels)
+- Maintainable codebase
+
+Reference:
+- MVVM: https://en.wikipedia.org/wiki/Model%E2%80%93view%E2%80%93viewmodel
+- Command Pattern: https://en.wikipedia.org/wiki/Command_pattern
+- View Model: https://en.wikipedia.org/wiki/View_model
+
+12. Documentation Updates
 - Update README.md with new features, architecture, performance characteristics
 - Update docs/ARCHITECTURE.md with rendering pipeline, buffering strategy
 - Add docs/PERFORMANCE.md documenting optimization techniques
 - Add docs/CONFIG.md for YAML configuration reference
 - Add docs/THEMES.md documenting available themes and customization
+- Add docs/MVVM_ARCHITECTURE.md explaining view management
