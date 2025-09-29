@@ -106,7 +106,7 @@ pub const ThemeSelector = struct {
         if (self.selected_row > 0) {
             self.selected_row -= 1;
             const Logger = @import("logger.zig");
-            Logger.info("Theme selector: navigated to {s}", .{self.themes.items[self.selected_row].name});
+            Logger.debug("Theme selector: navigated to {s}", .{self.themes.items[self.selected_row].name});
             try self.updatePreview();
         }
     }
@@ -115,7 +115,7 @@ pub const ThemeSelector = struct {
         if (self.selected_row < self.themes.items.len - 1) {
             self.selected_row += 1;
             const Logger = @import("logger.zig");
-            Logger.info("Theme selector: navigated to {s}", .{self.themes.items[self.selected_row].name});
+            Logger.debug("Theme selector: navigated to {s}", .{self.themes.items[self.selected_row].name});
             try self.updatePreview();
         }
     }

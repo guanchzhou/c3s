@@ -124,6 +124,3 @@ pub fn writeShortcutWithHighlight(
     try terminal.writeAll(after);
     try terminal.writeAll(reset);
 }
-
-// NO background filling - btop uses terminal default background
-// Remove this function entirely since btop doesn't fill background

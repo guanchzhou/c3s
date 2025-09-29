@@ -42,6 +42,7 @@ pub const App = struct {
         const ui_config = Config.load(allocator) catch Config.Config{
             .allocator = allocator,
             .ui = Config.UiConfig{},
+            .theme_owned = null,
         };
         defer ui_config.deinit();
 
@@ -248,22 +249,24 @@ pub const App = struct {
         if (self.theme_selector.visible) {
             switch (key) {
                 .char => |c| switch (c) {
-                    'j' => { try self.theme_selector.navigateDown(); self.dirty = true; },
-                    'k' => { try self.theme_selector.navigateUp(); self.dirty = true; },
+                    'j' => { try self.theme_selector.navigateDown(); self.dirty = true; return; },
+                    'k' => { try self.theme_selector.navigateUp(); self.dirty = true; return; },
                     '/' => {
                         self.theme_selector.hide();
                         self.command_input.showWithPrompt("/");
                         self.dirty = true;
+                        // Do not return, let it fall through to command_input handler
                     },
-                    else => {},
+                    else => {}, // Fall through for other chars
                 },
                 .colon => {
                     self.theme_selector.hide();
                     self.command_input.showWithPrompt(":");
                     self.dirty = true;
+                    // Do not return, let it fall through to command_input handler
                 },
-                .up => { try self.theme_selector.navigateUp(); self.dirty = true; },
-                .down => { try self.theme_selector.navigateDown(); self.dirty = true; },
+                .up => { try self.theme_selector.navigateUp(); self.dirty = true; return; },
+                .down => { try self.theme_selector.navigateDown(); self.dirty = true; return; },
                 .enter => {
                     // Save selected theme to config and update current marker
                     const selected_theme = self.theme_selector.getSelectedThemeName();
@@ -271,16 +274,19 @@ pub const App = struct {
                     try self.theme_selector.setCurrentTheme(selected_theme);
                     // Don't hide - stay in themes view to try more themes
                     self.dirty = true;
+                    return;
                 },
                 .escape => {
                     self.theme_selector.hide();
                     self.dirty = true;
+                    return;
                 },
-                else => {},
+                else => {}, // Fall through for other keys
             }
-            return;
         }
         
+        // The rest of the handleKey function will now be executed,
+        // including the command_input.visible block if relevant.
         if (self.command_input.visible) {
             switch (key) {
                 .char => |c| {
