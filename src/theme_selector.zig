@@ -58,6 +58,13 @@ pub const ThemeSelector = struct {
         const xdg = @import("xdg.zig");
         const paths = xdg.ensurePaths() catch return;
         self.scanDirectory(paths.skins_dir) catch {}; // Ignore errors if directory doesn't exist
+        
+        // Sort alphabetically by name
+        std.mem.sort(ThemeInfo, self.themes.items, {}, compareThemeInfo);
+    }
+    
+    fn compareThemeInfo(_: void, a: ThemeInfo, b: ThemeInfo) bool {
+        return std.mem.lessThan(u8, a.name, b.name);
     }
     
     fn scanDirectory(self: *ThemeSelector, dir_path: []const u8) !void {
