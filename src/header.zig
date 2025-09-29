@@ -204,45 +204,50 @@ pub const Header = struct {
         try Theme.writeStringWithTheme(terminal, x + 1, line, "MEM:", Theme.main_fg, Theme.main_bg);
         try Theme.writeStringWithTheme(terminal, x + 1 + label_width, line, self.mem_str, Theme.hi_fg, Theme.main_bg);
 
-        // Keyboard shortcuts distributed across available width - offset by 1 for border
-        const shortcuts_start_x = @as(u16, @intCast(width / 3)) + 1; // Start at 1/3 width
-        const shortcuts_width: u16 = if (width > shortcuts_start_x) width - shortcuts_start_x else 0;
-        const col_step: u16 = if (shortcuts_width <= 4) 1 else @as(u16, @intCast(shortcuts_width / 4));
-        const col_quick_x = shortcuts_start_x;
-        const col1_x = if (shortcuts_width <= 4) col_quick_x + 1 else col_quick_x + col_step;
-        const col2_x = if (shortcuts_width <= 4) col1_x + 1 else col1_x + col_step;
-        const col3_x = if (shortcuts_width <= 4) col2_x + 1 else col2_x + col_step;
+        // Keyboard shortcuts - define as a list and flow into columns
+        const ShortcutItem = struct {
+            text: []const u8,
+        };
         
+        const shortcuts = [_]ShortcutItem{
+            .{ .text = "<0> all" },
+            .{ .text = "<a>ttach" },
+            .{ .text = "<ctrl-k> kill" },
+            .{ .text = "<1> default" },
+            .{ .text = "<ctrl-d> delete" },
+            .{ .text = "<s>hell" },
+            .{ .text = "<d>escribe" },
+            .{ .text = "<e>dit" },
+            .{ .text = "sh<o>w node" },
+            .{ .text = "<?> help" },
+            .{ .text = "<l>ogs" },
+            .{ .text = "<shift-f> port-forward" },
+            .{ .text = "<ctrl-f> kill finalizers" },
+            .{ .text = "logs <p>revious" },
+            .{ .text = "<t>ransfer" },
+            .{ .text = "saniti<z>e" },
+            .{ .text = "set <i>mage" },
+            .{ .text = "<y> yaml" },
+        };
+        
+        // Calculate columns and spacing
+        const shortcuts_start_x = @as(u16, @intCast(width / 3)) + 1;
+        const shortcuts_width: u16 = if (width > shortcuts_start_x) width - shortcuts_start_x else 0;
+        const num_cols: u16 = 4; // Quick, Col1, Col2, Col3
+        const col_width: u16 = if (shortcuts_width > 0) @as(u16, @intCast(shortcuts_width / num_cols)) else 20;
+        
+        // Render shortcuts in a grid layout
         line = y + 1;
-        // Quick commands column
-        try Theme.writeShortcut(terminal, col_quick_x, line, "0", "all", Theme.main_bg);
-        try Theme.writeShortcutWithHighlight(terminal, col1_x, line, "", "a", "ttach", Theme.main_bg);
-        try Theme.writeStringWithTheme(terminal, col2_x, line, "<ctrl-k> kill", Theme.main_fg, Theme.main_bg);
-        line += 1;
-
-        try Theme.writeShortcut(terminal, col_quick_x, line, "1", "default", Theme.main_bg);
-        try Theme.writeStringWithTheme(terminal, col1_x, line, "<ctrl-d> delete", Theme.main_fg, Theme.main_bg);
-        try Theme.writeShortcutWithHighlight(terminal, col2_x, line, "", "s", "hell", Theme.main_bg);
-        line += 1;
-
-        try Theme.writeShortcutWithHighlight(terminal, col1_x, line, "", "d", "escribe", Theme.main_bg);
-        try Theme.writeShortcutWithHighlight(terminal, col2_x, line, "", "e", "dit", Theme.main_bg);
-        try Theme.writeShortcutWithHighlight(terminal, col3_x, line, "sh", "o", "w node", Theme.main_bg);
-        line += 1;
-
-        try Theme.writeShortcut(terminal, col1_x, line, "?", "help", Theme.main_bg);
-        try Theme.writeShortcutWithHighlight(terminal, col2_x, line, "", "l", "ogs", Theme.main_bg);
-        try Theme.writeStringWithTheme(terminal, col3_x, line, "<shift-f> port-forward", Theme.main_fg, Theme.main_bg);
-        line += 1;
-
-        try Theme.writeStringWithTheme(terminal, col1_x, line, "<ctrl-f> kill finalizers", Theme.main_fg, Theme.main_bg);
-        try Theme.writeShortcutWithHighlight(terminal, col2_x, line, "logs ", "p", "revious", Theme.main_bg);
-        try Theme.writeShortcutWithHighlight(terminal, col3_x, line, "", "t", "ransfer", Theme.main_bg);
-        line += 1;
-
-        try Theme.writeShortcutWithHighlight(terminal, col1_x, line, "saniti", "z", "e", Theme.main_bg);
-        try Theme.writeShortcutWithHighlight(terminal, col2_x, line, "set ", "i", "mage", Theme.main_bg);
-        try Theme.writeShortcut(terminal, col3_x, line, "y", "yaml", Theme.main_bg);
+        var shortcut_idx: usize = 0;
+        while (line < y + 7 and shortcut_idx < shortcuts.len) : (line += 1) {
+            var col: u16 = 0;
+            while (col < num_cols and shortcut_idx < shortcuts.len) : (col += 1) {
+                const col_x = shortcuts_start_x + (col * col_width);
+                try Theme.writeStringWithTheme(terminal, col_x, line, shortcuts[shortcut_idx].text, Theme.main_fg, Theme.main_bg);
+                shortcut_idx += 1;
+            }
+        }
+        
         self.last_height = box_height;
     }
 };
