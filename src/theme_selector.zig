@@ -134,17 +134,28 @@ pub const ThemeSelector = struct {
         return self.themes.items[self.selected_row].name;
     }
     
+    pub fn setCurrentTheme(self: *ThemeSelector, theme_name: []const u8) !void {
+        // Free old current_theme_name
+        self.allocator.free(self.current_theme_name);
+        // Allocate new one
+        self.current_theme_name = try self.allocator.dupe(u8, theme_name);
+    }
+    
     pub fn render(self: *ThemeSelector, terminal: *Terminal, x: u16, y: u16, width: u16, height: u16) !void {
         if (!self.visible) return;
         
         // Draw box
         try BoxDrawing.Box.createBox(terminal, x, y, width, height, Theme.proc_box, Theme.main_bg, null, .rounded);
         
-        // Draw title
+        // Draw title with count
         const title_x = x + 2;
         try Theme.writeText(terminal, title_x, y, BoxDrawing.Symbols.title_left, Theme.proc_box);
-        try Theme.writeText(terminal, title_x + 1, y, "Available Skins", Theme.title);
-        try Theme.writeText(terminal, title_x + 1 + 15, y, BoxDrawing.Symbols.title_right, Theme.proc_box);
+        
+        // Render title with count: "Available Skins[35]"
+        var title_buf: [64]u8 = undefined;
+        const title_text = try std.fmt.bufPrint(&title_buf, "Available Skins[{d}]", .{self.themes.items.len});
+        try Theme.writeText(terminal, title_x + 1, y, title_text, Theme.title);
+        try Theme.writeText(terminal, title_x + 1 + @as(u16, @intCast(title_text.len)), y, BoxDrawing.Symbols.title_right, Theme.proc_box);
         
         // Column headers
         const header_y = y + 1;

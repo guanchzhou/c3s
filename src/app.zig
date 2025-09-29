@@ -254,10 +254,11 @@ pub const App = struct {
                 .up => { try self.theme_selector.navigateUp(); self.dirty = true; },
                 .down => { try self.theme_selector.navigateDown(); self.dirty = true; },
                 .enter => {
-                    // Save selected theme to config
+                    // Save selected theme to config and update current marker
                     const selected_theme = self.theme_selector.getSelectedThemeName();
                     try self.saveThemeToConfig(selected_theme);
-                    self.theme_selector.hide();
+                    try self.theme_selector.setCurrentTheme(selected_theme);
+                    // Don't hide - stay in themes view to try more themes
                     self.dirty = true;
                 },
                 .escape => {
