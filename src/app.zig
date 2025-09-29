@@ -207,7 +207,11 @@ pub const App = struct {
         }
 
         if (self.command_input.visible and size.height > 0) {
-            try self.command_input.render(&self.terminal, 0, size.height - 1, size.width, 1);
+            // Render command input at top of screen, overlaying header
+            try self.command_input.render(&self.terminal, 0, 0, size.width, 1);
+        } else {
+            // Hide cursor when not in command mode
+            try self.terminal.hideCursor();
         }
 
         try self.terminal.flush();
@@ -250,6 +254,10 @@ pub const App = struct {
                 'k' => { try self.body.navigateUp(); self.dirty = true; },
                 'l' => { try self.body.navigateRight(); self.dirty = true; },
                 'g' => { try self.body.gotoTop(); self.dirty = true; },
+                '/' => {
+                    self.command_input.showWithPrompt("/");
+                    self.dirty = true;
+                },
                 else => {},
             },
             .up => { try self.body.navigateUp(); self.dirty = true; },
@@ -282,7 +290,7 @@ pub const App = struct {
                 self.dirty = true;
             },
             .colon => {
-                self.command_input.show();
+                self.command_input.showWithPrompt(":");
                 self.dirty = true;
             },
             .backspace => {},

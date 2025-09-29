@@ -25,6 +25,13 @@ pub const CommandInput = struct {
         self.input_text.clearRetainingCapacity();
         self.cursor_pos = 0;
     }
+    
+    pub fn showWithPrompt(self: *CommandInput, prompt: []const u8) void {
+        self.visible = true;
+        self.input_text.clearRetainingCapacity();
+        self.cursor_pos = 0;
+        self.prompt = prompt;
+    }
 
     pub fn hide(self: *CommandInput) void {
         self.visible = false;
@@ -91,22 +98,20 @@ pub const CommandInput = struct {
         if (!self.visible) return;
         _ = height; // Single line input
 
-        // Clear the command line area with theme background
-        for (0..width) |i| {
-            try Theme.writeStringWithTheme(terminal, @intCast(x + i), y, " ", Theme.main_fg, Theme.main_bg);
-        }
+        // Clear the command line area with darker background for visibility
+        try terminal.fillRow(x, y, width, Theme.main_fg, Theme.selected_bg);
 
-        // Display prompt
-        try Theme.writeStringWithTheme(terminal, x, y, self.prompt, Theme.hi_fg, Theme.main_bg);
+        // Display prompt with highlight color
+        try Theme.writeStringWithTheme(terminal, x + 1, y, self.prompt, Theme.hi_fg, Theme.selected_bg);
         
         // Display input text
-        const input_x = x + @as(u16, @intCast(self.prompt.len));
+        const input_x = x + 1 + @as(u16, @intCast(self.prompt.len));
         if (self.input_text.items.len > 0) {
             const display_text = self.input_text.items;
-            const max_display_width = width - @as(u16, @intCast(self.prompt.len)) - 2; // Leave space for cursor
+            const max_display_width = if (width > input_x + 2) width - input_x - 2 else 10;
             
             if (display_text.len <= max_display_width) {
-                try Theme.writeStringWithTheme(terminal, input_x, y, display_text, Theme.main_fg, Theme.main_bg);
+                try Theme.writeStringWithTheme(terminal, input_x, y, display_text, Theme.main_fg, Theme.selected_bg);
             } else {
                 // Scroll text if too long
                 const start_pos = if (self.cursor_pos >= max_display_width) 
@@ -114,12 +119,12 @@ pub const CommandInput = struct {
                 else 
                     0;
                 const end_pos = @min(start_pos + max_display_width, display_text.len);
-                try Theme.writeStringWithTheme(terminal, input_x, y, display_text[start_pos..end_pos], Theme.main_fg, Theme.main_bg);
+                try Theme.writeStringWithTheme(terminal, input_x, y, display_text[start_pos..end_pos], Theme.main_fg, Theme.selected_bg);
             }
         }
 
         // Show cursor at current position
-        const cursor_x = input_x + self.cursor_pos;
+        const cursor_x = input_x + @as(u16, @intCast(self.cursor_pos));
         if (cursor_x < x + width - 1) {
             try terminal.setCursor(cursor_x, y);
             try terminal.showCursor();

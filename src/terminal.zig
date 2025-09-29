@@ -211,9 +211,6 @@ pub const Terminal = struct {
     }
     
     pub fn flush(self: *Terminal) !void {
-        // Ensure cursor stays hidden
-        try self.hideCursor();
-        
         // Write entire buffer to stdout at once for flicker-free rendering
         if (self.write_buffer.items.len > 0) {
             try self.stdout.writeAll(self.write_buffer.items);
