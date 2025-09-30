@@ -1,5 +1,6 @@
 const std = @import("std");
 const retry_mod = @import("retry.zig");
+const tls_mod = @import("tls.zig");
 
 /// Kubernetes API client - standalone library
 /// Provides access to Kubernetes cluster resources via REST API
@@ -13,12 +14,14 @@ pub const K8sClient = struct {
     namespace: []const u8,
     http_client: std.http.Client,
     retry_config: retry_mod.RetryConfig,
+    tls_config: ?tls_mod.TlsConfig,
     
     pub const Config = struct {
         server: []const u8,
         token: ?[]const u8 = null,
         namespace: ?[]const u8 = null,
         retry_config: ?retry_mod.RetryConfig = null,
+        tls_config: ?tls_mod.TlsConfig = null,
     };
     
     pub fn init(allocator: std.mem.Allocator, config: Config) !K8sClient {
@@ -31,6 +34,7 @@ pub const K8sClient = struct {
             .namespace = try allocator.dupe(u8, config.namespace orelse "default"),
             .http_client = http_client,
             .retry_config = config.retry_config orelse retry_mod.defaultConfig,
+            .tls_config = config.tls_config,
         };
     }
     

@@ -20,4 +20,7 @@ pub const k8s_resources = @import("k8s/resources.zig");
 pub const k8s_retry = @import("k8s/retry.zig");
 pub const k8s_watch = @import("k8s/watch.zig");
 pub const k8s_exec_credential = @import("k8s/exec_credential.zig");
+pub const k8s_tls = @import("k8s/tls.zig");
+pub const k8s_connection_pool = @import("k8s/connection_pool.zig");
+pub const k8s_crd = @import("k8s/crd.zig");
 pub const KubeconfigParser = @import("k8s/kubeconfig_json.zig").KubeconfigParser;

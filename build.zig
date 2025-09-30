@@ -249,6 +249,20 @@ pub fn build(b: *std.Build) void {
     const run_new_resources_tests = b.addRunArtifact(new_resources_tests);
     const new_resources_test_step = b.step("test-new-resources", "Run new resources structure tests");
     new_resources_test_step.dependOn(&run_new_resources_tests.step);
+    
+    // Create advanced features tests
+    const advanced_features_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/advanced_features_test.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    advanced_features_tests.root_module.addAnonymousImport("src", .{ .root_source_file = b.path("src/index.zig") });
+    
+    const run_advanced_features_tests = b.addRunArtifact(advanced_features_tests);
+    const advanced_features_test_step = b.step("test-advanced", "Run advanced features tests (TLS, Pool, CRD)");
+    advanced_features_test_step.dependOn(&run_advanced_features_tests.step);
 
     // Create a step to run all tests
     const all_tests_step = b.step("test-all", "Run all tests");
@@ -263,6 +277,7 @@ pub fn build(b: *std.Build) void {
     all_tests_step.dependOn(&run_k8s_resources_tests.step);
     all_tests_step.dependOn(&run_retry_tests.step);
     all_tests_step.dependOn(&run_new_resources_tests.step);
+    all_tests_step.dependOn(&run_advanced_features_tests.step);
 
     // Create benchmark executable
     const benchmark = b.addExecutable(.{
