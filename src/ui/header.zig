@@ -327,8 +327,43 @@ pub const Header = struct {
         try terminal.setCursor(current_x, y);
         
         for (parts.items, 0..) |part, i| {
-            // Determine color for this part
-            const color = if (i == 0 and level <= 5) self.theme.app_name else self.theme.hi_fg;
+            // Determine color for this part - match non-compact header colors
+            const color = blk: {
+                if (i == 0 and level <= 5) {
+                    break :blk self.theme.app_name; // "c3s" in app_name color
+                }
+                
+                // For parts with ":" (labels), split and color accordingly
+                if (std.mem.indexOf(u8, part, ":")) |colon_pos| {
+                    // Label part (before colon) - use main_fg
+                    try terminal.writeAll(self.theme.main_fg);
+                    try terminal.writeAll(part[0..colon_pos + 1]); // Include the colon
+                    try terminal.writeAll("\x1b[0m");
+                    
+                    // Value part (after colon and space) - use hi_fg (or title for k8s)
+                    if (colon_pos + 2 < part.len) {
+                        const is_k8s = std.mem.startsWith(u8, part, "k8s:") or std.mem.startsWith(u8, part, "K8s:");
+                        const value_color = if (is_k8s) self.theme.title else self.theme.hi_fg;
+                        try terminal.writeAll(value_color);
+                        try terminal.writeAll(part[colon_pos + 2..]); // Skip ": "
+                        try terminal.writeAll("\x1b[0m");
+                    }
+                    current_x += @as(u16, @intCast(part.len));
+                    
+                    if (i < parts.items.len - 1) {
+                        try Theme.writeStringWithTheme(terminal, current_x, y, sep, self.theme.main_fg, self.theme.main_bg);
+                        current_x += @as(u16, @intCast(sep.len));
+                    }
+                    
+                    self.allocator.free(part);
+                    continue;
+                }
+                
+                // No colon - just value, use hi_fg
+                break :blk self.theme.hi_fg;
+            };
+            
+            // Simple color (no colon in part)
             try terminal.writeAll(color);
             try terminal.writeAll(part);
             try terminal.writeAll("\x1b[0m");
