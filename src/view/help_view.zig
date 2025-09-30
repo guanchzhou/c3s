@@ -6,6 +6,7 @@ const Logger = @import("../core/logger.zig");
 const BoxDrawing = @import("../ui/box_drawing.zig");
 const theme_loader = @import("../model/theme_loader.zig");
 const hints_model = @import("../model/hints.zig");
+const keybindings = @import("../model/keybindings.zig");
 
 /// HelpView - displays help information
 pub const HelpView = struct {
@@ -35,41 +36,8 @@ pub const HelpView = struct {
     }
     
     fn loadHelpContent(self: *HelpView) !void {
-        // K9s-compatible help content - exactly matching k9s pod view
-        const help_content = [_][]const u8{
-            "C3S - Kubernetes TUI Client (k9s-compatible)",
-            "",
-            "RESOURCE                   GENERAL                    NAVIGATION",
-            "  0       All                ?         Help             g         Goto Top",
-            "  1       Default            Ctrl-a    Aliases          Shift-g   Goto Bottom",
-            "  a       Attach             :cmd      Command mode     Ctrl-b    Page Up",
-            "  c       Copy               /term     Filter mode      Ctrl-f    Page Down",
-            "  d       Describe           esc       Back/Clear       h         Left",
-            "  e       Edit               tab       Field Next       l         Right",
-            "  l       Logs               backtab   Field Previous   k         Up",
-            "  n       Copy Namespace     Ctrl-r    Reload           j         Down",
-            "  o       Show Node          Ctrl-u    Command Clear    [         History Back",
-            "  s       Shell              Ctrl-e    Toggle Header    ]         History Forward",
-            "  t       Transfer           Ctrl-g    Toggle Crumbs    -         Last Command",
-            "  v       View               :q        Quit",
-            "  y       YAML               space     Mark",
-            "  z       Sanitize           Ctrl-space Mark Range",
-            "  Ctrl-d  Delete             Ctrl-\\    Mark Clear",
-            "  Ctrl-k  Kill               Ctrl-s    Save",
-            "  Shift-f Port-Forward",
-            "  Shift-l Logs Previous      SORTING",
-            "  Shift-r Sort Ready         Shift-a   Age",
-            "  Shift-s Sort Status        Shift-c   CPU",
-            "  Shift-t Sort Restart       Shift-m   MEM",
-            "  Shift-i Sort IP            Shift-n   Name",
-            "  Shift-o Sort Node          Shift-p   Namespace",
-            "",
-            "Press ? or Esc to close help",
-        };
-        
-        for (help_content) |line| {
-            try self.help_lines.append(self.allocator, try self.allocator.dupe(u8, line));
-        }
+        // Generate help content dynamically from key bindings model
+        self.help_lines = try keybindings.generateHelpContent(self.allocator);
     }
     
     fn navigateUp(self: *HelpView) !void {
