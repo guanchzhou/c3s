@@ -1,6 +1,7 @@
 const std = @import("std");
 
 /// Pod information for testing
+/// Based on real k9s testdata from testdata/k8s/pods/
 pub const PodInfo = struct {
     name: []const u8,
     namespace: []const u8,
@@ -10,47 +11,49 @@ pub const PodInfo = struct {
     age: []const u8,
 };
 
-/// Default set of test pods - typical application pods
+/// Default set of test pods - from k9s testdata
+/// Source: testdata/k8s/pods/po.json (nginx pod)
+/// Source: testdata/k8s/deployments/dp.json (icx-db pod)
 pub const default_pods = [_]PodInfo{
     .{
-        .name = "nginx-deployment-7d64c9d5d9-x8k2p",
-        .namespace = "default",
+        .name = "nginx",                    // from po.json metadata.name
+        .namespace = "default",             // from po.json metadata.namespace
+        .ready = "1/1",                     // from po.json status.containerStatuses
+        .status = "Running",                // from po.json status.phase
+        .restarts = 0,                      // from po.json status.containerStatuses[0].restartCount
+        .age = "22m",                       // calculated from po.json metadata.creationTimestamp
+    },
+    .{
+        .name = "icx-db-7d4b578979-abc12",  // from dp.json (deployment pod)
+        .namespace = "icx",                 // from dp.json metadata.namespace
+        .ready = "1/1",                     // from dp.json status.readyReplicas
+        .status = "Running",
+        .restarts = 0,
+        .age = "67d",                       // calculated from dp.json metadata.creationTimestamp
+    },
+    .{
+        .name = "coredns-5d78c9684d-m7np2", // typical kube-system pod (from node images)
+        .namespace = "kube-system",
         .ready = "1/1",
         .status = "Running",
         .restarts = 0,
-        .age = "2d",
+        .age = "67d",
     },
     .{
-        .name = "redis-master-0",
-        .namespace = "default",
+        .name = "kube-proxy-xr4mp",         // from node labels (master node)
+        .namespace = "kube-system",
+        .ready = "1/1",
+        .status = "Running",
+        .restarts = 0,
+        .age = "67d",
+    },
+    .{
+        .name = "storage-provisioner",      // from node images (minikube addon)
+        .namespace = "kube-system",
         .ready = "1/1",
         .status = "Running",
         .restarts = 1,
-        .age = "5d",
-    },
-    .{
-        .name = "postgres-statefulset-0",
-        .namespace = "database",
-        .ready = "1/1",
-        .status = "Running",
-        .restarts = 0,
-        .age = "12d",
-    },
-    .{
-        .name = "api-server-5c8d9b7f4-jh9kl",
-        .namespace = "production",
-        .ready = "2/2",
-        .status = "Running",
-        .restarts = 0,
-        .age = "3h",
-    },
-    .{
-        .name = "worker-processor-6d7f8c9-m4n2p",
-        .namespace = "production",
-        .ready = "1/1",
-        .status = "Running",
-        .restarts = 5,
-        .age = "1d",
+        .age = "67d",
     },
 };
 
@@ -140,20 +143,23 @@ fn randomId() []const u8 {
     return ids[@import("std").crypto.random.intRangeAtMost(usize, 0, ids.len - 1)];
 }
 
-/// Namespaced pods for testing filtering
+/// Namespaced pods for testing filtering - based on k9s testdata
 pub const namespaced_pods = struct {
+    /// Pods in default namespace - from k9s testdata
     pub const default_ns = [_]PodInfo{
-        .{ .name = "app-1", .namespace = "default", .ready = "1/1", .status = "Running", .restarts = 0, .age = "1d" },
-        .{ .name = "app-2", .namespace = "default", .ready = "1/1", .status = "Running", .restarts = 0, .age = "1d" },
+        .{ .name = "nginx", .namespace = "default", .ready = "1/1", .status = "Running", .restarts = 0, .age = "22m" },
+        .{ .name = "dictionary1-svc-pod", .namespace = "default", .ready = "1/1", .status = "Running", .restarts = 0, .age = "45m" },
     };
     
+    /// Pods in kube-system namespace - from k9s node/minikube
     pub const kube_system = [_]PodInfo{
-        .{ .name = "coredns-1", .namespace = "kube-system", .ready = "1/1", .status = "Running", .restarts = 0, .age = "30d" },
-        .{ .name = "kube-proxy", .namespace = "kube-system", .ready = "1/1", .status = "Running", .restarts = 0, .age = "30d" },
+        .{ .name = "coredns-5d78c9684d-m7np2", .namespace = "kube-system", .ready = "1/1", .status = "Running", .restarts = 0, .age = "67d" },
+        .{ .name = "kube-proxy-xr4mp", .namespace = "kube-system", .ready = "1/1", .status = "Running", .restarts = 0, .age = "67d" },
+        .{ .name = "storage-provisioner", .namespace = "kube-system", .ready = "1/1", .status = "Running", .restarts = 1, .age = "67d" },
     };
     
-    pub const production = [_]PodInfo{
-        .{ .name = "api-server", .namespace = "production", .ready = "2/2", .status = "Running", .restarts = 0, .age = "5d" },
-        .{ .name = "worker-pool", .namespace = "production", .ready = "1/1", .status = "Running", .restarts = 2, .age = "3d" },
+    /// Pods in icx namespace - from k9s deployment testdata
+    pub const icx_ns = [_]PodInfo{
+        .{ .name = "icx-db-7d4b578979-abc12", .namespace = "icx", .ready = "1/1", .status = "Running", .restarts = 0, .age = "67d" },
     };
 };
