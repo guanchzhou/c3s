@@ -85,7 +85,7 @@ pub const K8sClient = struct {
         };
     }
     
-    /// Make HTTP request to Kubernetes API (Zig 0.15 compatible)
+    /// Make HTTP request to Kubernetes API
     fn request(self: *K8sClient, method_str: []const u8, path: []const u8, _: ?[]const u8) ![]u8 {
         const url = try std.fmt.allocPrint(
             self.allocator,
@@ -107,25 +107,53 @@ pub const K8sClient = struct {
         else
             .GET;
         
-        // TODO: Add authorization header when Zig supports custom headers in fetch()
-        // For now, this works for unauthenticated local clusters (kubectl proxy)
+        // Build headers with authorization if we have a token
+        var header_buffer: [1024]u8 = undefined;
+        var headers = std.http.Client.Request.Headers{};
         
-        const result = try self.http_client.fetch(.{
-            .location = .{ .uri = uri },
-            .method = method,
+        if (self.token) |token| {
+            const auth_value = try std.fmt.bufPrint(&header_buffer, "Bearer {s}", .{token});
+            headers.authorization = .{ .override = auth_value };
+        }
+        
+        // Make request to Kubernetes API
+        var req = try self.http_client.request(method, uri, .{
+            .redirect_behavior = @enumFromInt(3),
+            .headers = headers,
         });
+        defer req.deinit();
         
-        if (result.status != .ok) {
-            Logger.err("K8s API error: {}", .{result.status});
+        // Send request (no body for GET)
+        try req.sendBodiless();
+        
+        // Receive response headers
+        var redirect_buffer: [2048]u8 = undefined;
+        var response = try req.receiveHead(&redirect_buffer);
+        
+        // Check response status
+        if (response.head.status != .ok) {
+            Logger.err("K8s API error: {} for {s}", .{ response.head.status, path });
             return error.K8sApiError;
         }
         
-        // TODO: Read response body from result
-        // Zig 0.15's fetch() API doesn't expose response body directly yet
-        // For now, return empty JSON (will use fixtures as fallback)
-        Logger.warn("Response body reading not yet fully implemented in Zig 0.15", .{});
+        // Read response body
+        var body_buffer = try std.ArrayList(u8).initCapacity(self.allocator, 0);
+        errdefer body_buffer.deinit(self.allocator);
         
-        return try self.allocator.dupe(u8, "{}");
+        var transfer_buffer: [4096]u8 = undefined;
+        const reader = response.reader(&transfer_buffer);
+        
+        // Read remaining data
+        const max_size: std.io.Limit = @enumFromInt(10 * 1024 * 1024); // 10 MB
+        reader.appendRemaining(self.allocator, &body_buffer, max_size) catch |err| switch (err) {
+            error.ReadFailed => return response.bodyErr().?,
+            else => |e| return e,
+        };
+        
+        const body = try body_buffer.toOwnedSlice(self.allocator);
+        Logger.debug("K8s API Response: {d} bytes", .{body.len});
+        
+        return body;
     }
     
     /// Parse pod list from JSON response
