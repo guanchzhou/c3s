@@ -15,6 +15,7 @@ pub const ThemesView = struct {
     filtered_indices: std.ArrayListUnmanaged(usize),
     selected_row: u32 = 0,
     scroll_offset: u32 = 0,
+    visible_rows: u32 = 0,
     current_theme_name: []u8,
     preview_theme: ?*theme_loader.ThemeColors = null,
     filter_text: []const u8 = "",
@@ -125,10 +126,9 @@ pub const ThemesView = struct {
         if (self.filtered_indices.items.len > 0 and self.selected_row < self.filtered_indices.items.len - 1) {
             self.selected_row += 1;
             
-            // Adjust scroll if needed (we need to know visible_rows, use a reasonable default)
-            const visible_rows: u32 = 20; // Will be calculated properly during render
-            if (self.selected_row >= self.scroll_offset + visible_rows) {
-                self.scroll_offset = self.selected_row - visible_rows + 1;
+            // Adjust scroll if needed
+            if (self.visible_rows > 0 and self.selected_row >= self.scroll_offset + self.visible_rows) {
+                self.scroll_offset = self.selected_row - self.visible_rows + 1;
             }
             
             const theme_idx = self.filtered_indices.items[self.selected_row];
@@ -150,9 +150,8 @@ pub const ThemesView = struct {
             self.selected_row = @intCast(self.filtered_indices.items.len - 1);
             
             // Scroll to show the last item
-            const visible_rows: u32 = 20;
-            if (self.selected_row >= visible_rows) {
-                self.scroll_offset = self.selected_row - visible_rows + 1;
+            if (self.visible_rows > 0 and self.selected_row >= self.visible_rows) {
+                self.scroll_offset = self.selected_row - self.visible_rows + 1;
             } else {
                 self.scroll_offset = 0;
             }
@@ -186,9 +185,8 @@ pub const ThemesView = struct {
             }
             
             // Adjust scroll
-            const visible_rows: u32 = 20;
-            if (self.selected_row >= self.scroll_offset + visible_rows) {
-                self.scroll_offset = self.selected_row - visible_rows + 1;
+            if (self.visible_rows > 0 and self.selected_row >= self.scroll_offset + self.visible_rows) {
+                self.scroll_offset = self.selected_row - self.visible_rows + 1;
             }
         }
         try self.updatePreview();
@@ -227,8 +225,9 @@ pub const ThemesView = struct {
         
         self.filter_text = filter;
         
-        // Use universal filter - need to calculate visible_rows (assume 20 for now, will be updated in render)
-        const visible_rows: u32 = 20;
+        // Use universal filter with current visible_rows (will be set during render)
+        // If visible_rows is 0, use a default value for the first call
+        const visible_rows = if (self.visible_rows > 0) self.visible_rows else 20;
         try universal_filter.applyFilter(
             ThemeInfo,
             self.allocator,
@@ -308,6 +307,7 @@ pub const ThemesView = struct {
         
         // Render theme list (using filtered indices)
         const visible_rows = if (height > 3) height - 3 else 0;
+        self.visible_rows = visible_rows; // Store for navigation functions
         const start_row = self.scroll_offset;
         const end_row = @min(start_row + visible_rows, self.filtered_indices.items.len);
         
