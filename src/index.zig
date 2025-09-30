@@ -17,4 +17,7 @@ pub const fixtures = @import("fixtures/index.zig");
 pub const K8sClient = @import("k8s/client.zig").K8sClient;
 pub const k8s_types = @import("k8s/types.zig");
 pub const k8s_resources = @import("k8s/resources.zig");
+pub const k8s_retry = @import("k8s/retry.zig");
+pub const k8s_watch = @import("k8s/watch.zig");
+pub const k8s_exec_credential = @import("k8s/exec_credential.zig");
 pub const KubeconfigParser = @import("k8s/kubeconfig_json.zig").KubeconfigParser;

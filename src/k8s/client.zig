@@ -1,4 +1,5 @@
 const std = @import("std");
+const retry_mod = @import("retry.zig");
 
 /// Kubernetes API client - standalone library
 /// Provides access to Kubernetes cluster resources via REST API
@@ -11,11 +12,13 @@ pub const K8sClient = struct {
     token: ?[]const u8,
     namespace: []const u8,
     http_client: std.http.Client,
+    retry_config: retry_mod.RetryConfig,
     
     pub const Config = struct {
         server: []const u8,
         token: ?[]const u8 = null,
         namespace: ?[]const u8 = null,
+        retry_config: ?retry_mod.RetryConfig = null,
     };
     
     pub fn init(allocator: std.mem.Allocator, config: Config) !K8sClient {
@@ -27,6 +30,7 @@ pub const K8sClient = struct {
             .token = if (config.token) |t| try allocator.dupe(u8, t) else null,
             .namespace = try allocator.dupe(u8, config.namespace orelse "default"),
             .http_client = http_client,
+            .retry_config = config.retry_config orelse retry_mod.defaultConfig,
         };
     }
     
@@ -102,9 +106,31 @@ pub const K8sClient = struct {
         PATCH,
     };
     
-    /// Make HTTP request to Kubernetes API
+    /// Make HTTP request to Kubernetes API with automatic retries
     pub fn request(self: *K8sClient, method: Method, path: []const u8, body: ?[]const u8) ![]u8 {
         return self.requestWithContentType(method, path, body, "application/json");
+    }
+    
+    /// Make HTTP request with retries (use this for production code)
+    pub fn requestWithRetry(self: *K8sClient, method: Method, path: []const u8, body: ?[]const u8) ![]u8 {
+        var retry_ctx = retry_mod.RetryContext.init(self.retry_config);
+        
+        while (true) {
+            const result = self.request(method, path, body) catch |err| {
+                // Check if we should retry
+                if (!retry_ctx.shouldRetry(null)) {
+                    return err; // No more retries
+                }
+                
+                // Backoff before retry
+                retry_ctx.nextAttempt();
+                try retry_ctx.backoff();
+                continue;
+            };
+            
+            // Success!
+            return result;
+        }
     }
     
     /// Make HTTP request with custom Content-Type

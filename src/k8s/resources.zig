@@ -328,3 +328,152 @@ pub const Nodes = struct {
         return parsed.value;
     }
 };
+
+pub const ReplicaSets = struct {
+    client: ResourceClient(types.ReplicaSet),
+    
+    pub fn init(k8s_client: *K8sClient) ReplicaSets {
+        return .{
+            .client = ResourceClient(types.ReplicaSet){
+                .client = k8s_client,
+                .api_path = "/apis/apps/v1",
+                .resource = "replicasets",
+            },
+        };
+    }
+    
+    /// Scale a replicaset
+    pub fn scale(self: ReplicaSets, name: []const u8, replicas: i32, namespace: ?[]const u8) !void {
+        const patch_json = try std.fmt.allocPrint(
+            self.client.client.allocator,
+            "{{\"spec\":{{\"replicas\":{d}}}}}",
+            .{replicas},
+        );
+        defer self.client.client.allocator.free(patch_json);
+        
+        _ = try self.client.patch(name, patch_json, namespace);
+    }
+};
+
+pub const StatefulSets = struct {
+    client: ResourceClient(types.StatefulSet),
+    
+    pub fn init(k8s_client: *K8sClient) StatefulSets {
+        return .{
+            .client = ResourceClient(types.StatefulSet){
+                .client = k8s_client,
+                .api_path = "/apis/apps/v1",
+                .resource = "statefulsets",
+            },
+        };
+    }
+    
+    /// Scale a statefulset
+    pub fn scale(self: StatefulSets, name: []const u8, replicas: i32, namespace: ?[]const u8) !void {
+        const patch_json = try std.fmt.allocPrint(
+            self.client.client.allocator,
+            "{{\"spec\":{{\"replicas\":{d}}}}}",
+            .{replicas},
+        );
+        defer self.client.client.allocator.free(patch_json);
+        
+        _ = try self.client.patch(name, patch_json, namespace);
+    }
+};
+
+pub const DaemonSets = struct {
+    client: ResourceClient(types.DaemonSet),
+    
+    pub fn init(k8s_client: *K8sClient) DaemonSets {
+        return .{
+            .client = ResourceClient(types.DaemonSet){
+                .client = k8s_client,
+                .api_path = "/apis/apps/v1",
+                .resource = "daemonsets",
+            },
+        };
+    }
+};
+
+pub const Jobs = struct {
+    client: ResourceClient(types.Job),
+    
+    pub fn init(k8s_client: *K8sClient) Jobs {
+        return .{
+            .client = ResourceClient(types.Job){
+                .client = k8s_client,
+                .api_path = "/apis/batch/v1",
+                .resource = "jobs",
+            },
+        };
+    }
+};
+
+pub const CronJobs = struct {
+    client: ResourceClient(types.CronJob),
+    
+    pub fn init(k8s_client: *K8sClient) CronJobs {
+        return .{
+            .client = ResourceClient(types.CronJob){
+                .client = k8s_client,
+                .api_path = "/apis/batch/v1",
+                .resource = "cronjobs",
+            },
+        };
+    }
+    
+    /// Suspend/resume a cronjob
+    pub fn setSuspend(self: CronJobs, name: []const u8, should_suspend: bool, namespace: ?[]const u8) !void {
+        const patch_json = try std.fmt.allocPrint(
+            self.client.client.allocator,
+            "{{\"spec\":{{\"suspend\":{s}}}}}",
+            .{if (should_suspend) "true" else "false"},
+        );
+        defer self.client.client.allocator.free(patch_json);
+        
+        _ = try self.client.patch(name, patch_json, namespace);
+    }
+};
+
+pub const PersistentVolumes = struct {
+    client: ResourceClient(types.PersistentVolume),
+    
+    pub fn init(k8s_client: *K8sClient) PersistentVolumes {
+        return .{
+            .client = ResourceClient(types.PersistentVolume){
+                .client = k8s_client,
+                .api_path = "/api/v1",
+                .resource = "persistentvolumes",
+            },
+        };
+    }
+    
+    /// List all PVs (cluster-scoped)
+    pub fn list(self: PersistentVolumes) !types.List(types.PersistentVolume) {
+        const path = "/api/v1/persistentvolumes";
+        const body = try self.client.client.request(.GET, path, null);
+        defer self.client.client.allocator.free(body);
+        
+        const parsed = try std.json.parseFromSlice(
+            types.List(types.PersistentVolume),
+            self.client.client.allocator,
+            body,
+            .{ .ignore_unknown_fields = true },
+        );
+        return parsed.value;
+    }
+};
+
+pub const PersistentVolumeClaims = struct {
+    client: ResourceClient(types.PersistentVolumeClaim),
+    
+    pub fn init(k8s_client: *K8sClient) PersistentVolumeClaims {
+        return .{
+            .client = ResourceClient(types.PersistentVolumeClaim){
+                .client = k8s_client,
+                .api_path = "/api/v1",
+                .resource = "persistentvolumeclaims",
+            },
+        };
+    }
+};

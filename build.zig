@@ -221,6 +221,34 @@ pub fn build(b: *std.Build) void {
     const run_k8s_resources_tests = b.addRunArtifact(k8s_resources_tests);
     const k8s_resources_test_step = b.step("test-k8s-resources", "Run K8s resources integration tests");
     k8s_resources_test_step.dependOn(&run_k8s_resources_tests.step);
+    
+    // Create retry tests
+    const retry_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/retry_test.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    retry_tests.root_module.addAnonymousImport("src", .{ .root_source_file = b.path("src/index.zig") });
+    
+    const run_retry_tests = b.addRunArtifact(retry_tests);
+    const retry_test_step = b.step("test-retry", "Run retry logic tests");
+    retry_test_step.dependOn(&run_retry_tests.step);
+    
+    // Create new resources tests
+    const new_resources_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/new_resources_test.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    new_resources_tests.root_module.addAnonymousImport("src", .{ .root_source_file = b.path("src/index.zig") });
+    
+    const run_new_resources_tests = b.addRunArtifact(new_resources_tests);
+    const new_resources_test_step = b.step("test-new-resources", "Run new resources structure tests");
+    new_resources_test_step.dependOn(&run_new_resources_tests.step);
 
     // Create a step to run all tests
     const all_tests_step = b.step("test-all", "Run all tests");
@@ -233,6 +261,8 @@ pub fn build(b: *std.Build) void {
     all_tests_step.dependOn(&run_integration_tests.step);
     all_tests_step.dependOn(&run_k8s_client_tests.step);
     all_tests_step.dependOn(&run_k8s_resources_tests.step);
+    all_tests_step.dependOn(&run_retry_tests.step);
+    all_tests_step.dependOn(&run_new_resources_tests.step);
 
     // Create benchmark executable
     const benchmark = b.addExecutable(.{

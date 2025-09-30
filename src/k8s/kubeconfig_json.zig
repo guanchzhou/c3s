@@ -114,6 +114,7 @@ pub const User = struct {
     token: ?[]const u8,
     cert_path: ?[]const u8,
     key_path: ?[]const u8,
+    exec_config: ?std.json.Value = null, // Exec credential config
 };
 
 pub const KubeconfigParser = struct {

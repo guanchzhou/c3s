@@ -200,14 +200,107 @@ pub const NodeSpec = struct {
     unschedulable: ?bool = null,
 };
 
+/// ReplicaSet specification
+pub const ReplicaSetSpec = struct {
+    replicas: ?i32 = null,
+    selector: LabelSelector,
+    template: PodTemplateSpec,
+};
+
+/// StatefulSet specification
+pub const StatefulSetSpec = struct {
+    replicas: ?i32 = null,
+    selector: LabelSelector,
+    template: PodTemplateSpec,
+    serviceName: []const u8,
+    volumeClaimTemplates: ?[]std.json.Value = null,
+    updateStrategy: ?StatefulSetUpdateStrategy = null,
+};
+
+pub const StatefulSetUpdateStrategy = struct {
+    type_: []const u8, // RollingUpdate or OnDelete
+    rollingUpdate: ?RollingUpdateStatefulSetStrategy = null,
+};
+
+pub const RollingUpdateStatefulSetStrategy = struct {
+    partition: ?i32 = null,
+    maxUnavailable: ?i32 = null,
+};
+
+/// DaemonSet specification
+pub const DaemonSetSpec = struct {
+    selector: LabelSelector,
+    template: PodTemplateSpec,
+    updateStrategy: ?DaemonSetUpdateStrategy = null,
+};
+
+pub const DaemonSetUpdateStrategy = struct {
+    type_: []const u8, // RollingUpdate or OnDelete
+    rollingUpdate: ?RollingUpdateDaemonSet = null,
+};
+
+pub const RollingUpdateDaemonSet = struct {
+    maxUnavailable: ?i32 = null,
+    maxSurge: ?i32 = null,
+};
+
+/// Job specification
+pub const JobSpec = struct {
+    template: PodTemplateSpec,
+    completions: ?i32 = null,
+    parallelism: ?i32 = null,
+    backoffLimit: ?i32 = null,
+    activeDeadlineSeconds: ?i64 = null,
+    ttlSecondsAfterFinished: ?i32 = null,
+};
+
+/// CronJob specification
+pub const CronJobSpec = struct {
+    schedule: []const u8,
+    jobTemplate: JobTemplateSpec,
+    concurrencyPolicy: ?[]const u8 = null,
+    suspended: ?bool = null,
+    successfulJobsHistoryLimit: ?i32 = null,
+    failedJobsHistoryLimit: ?i32 = null,
+};
+
+pub const JobTemplateSpec = struct {
+    metadata: ?ObjectMeta = null,
+    spec: JobSpec,
+};
+
+/// PersistentVolume specification
+pub const PersistentVolumeSpec = struct {
+    capacity: ?std.json.Value = null,
+    accessModes: ?[][]const u8 = null,
+    persistentVolumeReclaimPolicy: ?[]const u8 = null,
+    storageClassName: ?[]const u8 = null,
+    mountOptions: ?[][]const u8 = null,
+};
+
+/// PersistentVolumeClaim specification
+pub const PersistentVolumeClaimSpec = struct {
+    accessModes: ?[][]const u8 = null,
+    resources: ?ResourceRequirements = null,
+    volumeName: ?[]const u8 = null,
+    storageClassName: ?[]const u8 = null,
+};
+
 /// Type aliases for common resources
 pub const Pod = Resource(PodSpec);
 pub const Deployment = Resource(DeploymentSpec);
+pub const ReplicaSet = Resource(ReplicaSetSpec);
+pub const StatefulSet = Resource(StatefulSetSpec);
+pub const DaemonSet = Resource(DaemonSetSpec);
+pub const Job = Resource(JobSpec);
+pub const CronJob = Resource(CronJobSpec);
 pub const Service = Resource(ServiceSpec);
 pub const ConfigMap = Resource(ConfigMapData);
 pub const Secret = Resource(SecretData);
 pub const Namespace = Resource(NamespaceSpec);
 pub const Node = Resource(NodeSpec);
+pub const PersistentVolume = Resource(PersistentVolumeSpec);
+pub const PersistentVolumeClaim = Resource(PersistentVolumeClaimSpec);
 
 /// API error from Kubernetes
 pub const ApiError = struct {
