@@ -109,10 +109,8 @@ pub fn writeShortcutWithHighlight(
     y: u16,
     before: []const u8,
     highlight_char: []const u8,
-    after: []const u8,
-    bg_color: []const u8
+    after: []const u8
 ) !void {
-    _ = bg_color; // Unused parameter
     // Write each part separately to avoid format string complexity
     try terminal.setCursor(x, y);
     try terminal.writeAll(bold);

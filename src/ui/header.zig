@@ -263,7 +263,7 @@ pub const Header = struct {
             
             switch (item.render_fn) {
                 0 => try Theme.writeStringWithTheme(terminal, hx, hy, item.text, Theme.main_fg, Theme.main_bg),
-                1 => try Theme.writeShortcutWithHighlight(terminal, hx, hy, item.before, item.key, item.after, Theme.main_bg),
+                1 => try Theme.writeShortcutWithHighlight(terminal, hx, hy, item.before, item.key, item.after),
                 else => {},
             }
         }

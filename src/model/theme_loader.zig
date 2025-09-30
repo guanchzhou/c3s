@@ -140,13 +140,6 @@ fn getYamlValue(allocator: mem.Allocator, content: []const u8, key_path: []const
     return null;
 }
 
-// Placeholder for original getIndent, no longer strictly needed in this simplified parser
-// fn getIndent(line: []const u8) usize {
-//     var indent: usize = 0;
-//     while (indent < line.len and (line[indent] == ' ' or line[indent] == '\t')) : (indent += 1) {}
-//     return indent;
-// }
-
 fn parseSkinFile(allocator: mem.Allocator, content: []const u8) !ThemeColors {
     var theme = try defaultTheme(allocator);
     theme.allocator = allocator; // Ensure theme owns its allocated colors
