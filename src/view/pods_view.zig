@@ -7,6 +7,7 @@ const theme_loader = @import("../model/theme_loader.zig");
 const universal_filter = @import("../viewmodel/filter.zig");
 const hints_model = @import("../model/hints.zig");
 const table_layout = @import("../ui/table_layout.zig");
+const k8s = @import("../k8s/index.zig");
 
 /// PodsView - displays Kubernetes pods with filtering and navigation
 pub const PodsView = struct {
@@ -44,25 +45,61 @@ pub const PodsView = struct {
             .filtered_indices = std.ArrayListUnmanaged(usize){},
         };
         
-        // Load sample data
+        // Load sample data (will be replaced by real data when available)
         try view.loadSampleData();
         try view.applyFilter("");
         
         return view;
     }
     
+    /// Load pods from K8s manager
+    pub fn loadPodsFromK8s(self: *PodsView, k8s_pods: []const k8s.Pod) !void {
+        // Clear existing pods
+        for (self.pods.items) |pod| {
+            self.allocator.free(pod.namespace);
+            self.allocator.free(pod.name);
+            self.allocator.free(pod.ready);
+            self.allocator.free(pod.status);
+            self.allocator.free(pod.cpu_l);
+            self.allocator.free(pod.mem_l);
+            self.allocator.free(pod.ip);
+            self.allocator.free(pod.node);
+            self.allocator.free(pod.age);
+        }
+        self.pods.clearRetainingCapacity();
+        
+        // Load new pods
+        for (k8s_pods) |k8s_pod| {
+            try self.pods.append(self.allocator, .{
+                .namespace = try self.allocator.dupe(u8, k8s_pod.namespace),
+                .name = try self.allocator.dupe(u8, k8s_pod.name),
+                .ready = try self.allocator.dupe(u8, k8s_pod.ready),
+                .status = try self.allocator.dupe(u8, k8s_pod.status),
+                .cpu_l = try self.allocator.dupe(u8, k8s_pod.cpu_usage),
+                .mem_l = try self.allocator.dupe(u8, k8s_pod.mem_usage),
+                .ip = try self.allocator.dupe(u8, k8s_pod.ip),
+                .node = try self.allocator.dupe(u8, k8s_pod.node),
+                .age = try self.allocator.dupe(u8, k8s_pod.age),
+            });
+        }
+        
+        // Reapply filter
+        try self.applyFilter(self.filter_text);
+    }
+    
     pub fn cleanup(self: *PodsView) void {
         // Deallocate individual strings in pods
+        // All strings are allocated via dupe in loadSampleData() and loadPodsFromK8s()
         for (self.pods.items) |pod| {
-            if (pod.namespace.len > 0) self.allocator.free(pod.namespace);
-            if (pod.name.len > 0) self.allocator.free(pod.name);
-            if (pod.ready.len > 0) self.allocator.free(pod.ready);
-            if (pod.status.len > 0) self.allocator.free(pod.status);
-            if (pod.cpu_l.len > 0 and pod.cpu_l.ptr != "n/a".ptr) self.allocator.free(pod.cpu_l);
-            if (pod.mem_l.len > 0 and pod.mem_l.ptr != "n/a".ptr) self.allocator.free(pod.mem_l);
-            if (pod.ip.len > 0 and pod.ip.ptr != "-".ptr) self.allocator.free(pod.ip);
-            if (pod.node.len > 0 and pod.node.ptr != "-".ptr) self.allocator.free(pod.node);
-            if (pod.age.len > 0 and pod.age.ptr != "-".ptr) self.allocator.free(pod.age);
+            self.allocator.free(pod.namespace);
+            self.allocator.free(pod.name);
+            self.allocator.free(pod.ready);
+            self.allocator.free(pod.status);
+            self.allocator.free(pod.cpu_l);
+            self.allocator.free(pod.mem_l);
+            self.allocator.free(pod.ip);
+            self.allocator.free(pod.node);
+            self.allocator.free(pod.age);
         }
         self.pods.deinit(self.allocator);
         self.filtered_indices.deinit(self.allocator);
@@ -367,7 +404,6 @@ pub const PodsView = struct {
                 'j' => { try self.navigateDown(); return .handled; },
                 'k' => { try self.navigateUp(); return .handled; },
                 'g' => { try self.gotoTop(); return .handled; },
-                'G' => { try self.gotoBottom(); return .handled; },
                 'h' => { self.horizontal_scroll.scrollLeft(5); return .handled; },
                 'l' => { self.horizontal_scroll.scrollRight(5); return .handled; },
                 '0' => { self.horizontal_scroll.scrollToStart(); return .handled; },
@@ -381,6 +417,7 @@ pub const PodsView = struct {
             .down => { try self.navigateDown(); return .handled; },
             .home => { try self.gotoTop(); return .handled; },
             .end => { try self.gotoBottom(); return .handled; },
+            .shift_g => { try self.gotoBottom(); return .handled; },
             .page_up => { try self.pageUp(); return .handled; },
             .page_down => { try self.pageDown(); return .handled; },
             .escape => {

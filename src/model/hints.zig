@@ -55,12 +55,12 @@ pub const HintConfig = struct {
 
 /// Pods view hints (default)
 pub fn podsHints() HintConfig {
-    const quick_cmds = [_]QuickCommand{
+    const quick_cmds = comptime [_]QuickCommand{
         .{ .key = "0", .cmd = "all" },
         .{ .key = "1", .cmd = "default" },
     };
 
-    const hint_items = [_]Hint{
+    const hint_items = comptime [_]Hint{
         Hint.highlighted("a", "", "ttach", 1),                    // Priority 1: Most important
         Hint.plain("<ctrl-k> kill", 7),                           // Priority 7: Dangerous
         Hint.plain("<ctrl-d> delete", 8),                         // Priority 8: Dangerous
@@ -87,7 +87,7 @@ pub fn podsHints() HintConfig {
 
 /// Themes view hints
 pub fn themesHints() HintConfig {
-    const hint_items = [_]Hint{
+    const hint_items = comptime [_]Hint{
         Hint.highlighted("/", "", " filter", 1),                  // Priority 1: Most important
         Hint.highlighted("Enter", "", " select", 2),              // Priority 2: Very important
         Hint.highlighted("Esc", "", " back", 3),                  // Priority 3: Important
@@ -104,7 +104,7 @@ pub fn themesHints() HintConfig {
 
 /// Help view hints (minimal - just navigation)
 pub fn helpHints() HintConfig {
-    const hint_items = [_]Hint{
+    const hint_items = comptime [_]Hint{
         Hint.highlighted("Esc", "", " back", 1),                  // Priority 1: Most important
         Hint.highlighted("g", "", " top", 2),                     // Priority 2: Navigation
         Hint.highlighted("G", "shift-", " bottom", 3),            // Priority 3: Navigation

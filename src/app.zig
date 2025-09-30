@@ -12,6 +12,7 @@ const Config = @import("model/config.zig");
 const Logger = @import("core/logger.zig");
 const version = @import("model/version.zig");
 const theme_loader = @import("model/theme_loader.zig");
+const k8s = @import("k8s/index.zig");
 
 // MVVM imports
 const View = @import("viewmodel/view.zig").View;
@@ -49,6 +50,9 @@ pub const App = struct {
     command_registry: CommandRegistry,
     theme: *theme_loader.ThemeColors,
     
+    // Kubernetes
+    k8s_manager: k8s.K8sManager,
+    
     // Views
     pods_view: *PodsView,
     themes_view: *ThemesView,
@@ -73,6 +77,15 @@ pub const App = struct {
         const theme = try allocator.create(theme_loader.ThemeColors);
         theme.* = try theme_loader.loadTheme(allocator, ui_config.ui.theme);
 
+        // Initialize Kubernetes manager
+        var k8s_manager = k8s.K8sManager.init(allocator);
+        
+        // Try to connect to K8s cluster (non-fatal if it fails)
+        // Use context from CLI flag if provided, otherwise use current-context
+        k8s_manager.connect(config.context) catch |err| {
+            Logger.warn("Failed to connect to Kubernetes: {}. Using fixtures.", .{err});
+        };
+        
         // Initialize MVVM components
         const view_manager = try ViewManager.init(allocator);
         const command_registry = try CommandRegistry.init(allocator);
@@ -87,8 +100,11 @@ pub const App = struct {
         const help_view = try allocator.create(HelpView);
         help_view.* = try HelpView.init(allocator, theme);
 
-        // Initialize components
-        var header = try Header.init(allocator, theme, config.debug);
+        // Initialize components with real K8s data if available
+        var cluster_data = try k8s_manager.getClusterInfo();
+        defer cluster_data.deinit(allocator);
+        
+        var header = try Header.initWithData(allocator, theme, cluster_data);
         const footer = try Footer.init(allocator, theme);
         const command_input = try CommandInput.init(allocator, theme);
         
@@ -108,6 +124,7 @@ pub const App = struct {
             .view_manager = view_manager,
             .command_registry = command_registry,
             .theme = theme,
+            .k8s_manager = k8s_manager,
             .pods_view = pods_view,
             .themes_view = themes_view,
             .help_view = help_view,
@@ -115,6 +132,27 @@ pub const App = struct {
         
         // Register commands
         try app.registerCommands();
+        
+        // Load pods from K8s if connected
+        if (k8s_manager.isConnected()) {
+            const k8s_pods = try k8s_manager.getPods();
+            defer {
+                for (k8s_pods) |pod| {
+                    allocator.free(pod.name);
+                    allocator.free(pod.namespace);
+                    allocator.free(pod.ready);
+                    allocator.free(pod.status);
+                    allocator.free(pod.age);
+                    allocator.free(pod.node);
+                    allocator.free(pod.ip);
+                    allocator.free(pod.cpu_usage);
+                    allocator.free(pod.mem_usage);
+                }
+                allocator.free(k8s_pods);
+            }
+            try app.pods_view.loadPodsFromK8s(k8s_pods);
+            Logger.info("Loaded {d} pods from Kubernetes cluster", .{k8s_pods.len});
+        }
         
         // Push initial view (pods)
         try app.view_manager.pushView(app.pods_view.createView());
@@ -136,6 +174,9 @@ pub const App = struct {
         // Clean up MVVM components
         self.view_manager.deinit();
         self.command_registry.deinit();
+        
+        // Clean up Kubernetes
+        self.k8s_manager.deinit();
         
         // Clean up theme
         theme_loader.deinitTheme(self.theme);

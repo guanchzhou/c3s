@@ -49,11 +49,28 @@ pub fn writeStringWithTheme(
     fg_color: []const u8,
     bg_color: []const u8
 ) !void {
+    // Safety check: don't write empty text
+    if (text.len == 0) return;
+    
     // Build the full escape sequence: fg + bg + text + reset
-    var buffer: [512]u8 = undefined;
-    const formatted = try std.fmt.bufPrint(&buffer, "{s}{s}{s}{s}", .{ fg_color, bg_color, text, reset });
-    try terminal.setCursor(x, y);
-    try terminal.writeAll(formatted);
+    var buffer: [1024]u8 = undefined; // Increased buffer size for safety
+    
+    // Calculate total size needed
+    const total_len = fg_color.len + bg_color.len + text.len + reset.len;
+    if (total_len > buffer.len) {
+        // Truncate text to fit in buffer
+        const available = buffer.len - fg_color.len - bg_color.len - reset.len;
+        if (available < 1) return; // Not enough space, skip
+        
+        const safe_text = text[0..@min(text.len, available)];
+        const formatted = try std.fmt.bufPrint(&buffer, "{s}{s}{s}{s}", .{ fg_color, bg_color, safe_text, reset });
+        try terminal.setCursor(x, y);
+        try terminal.writeAll(formatted);
+    } else {
+        const formatted = try std.fmt.bufPrint(&buffer, "{s}{s}{s}{s}", .{ fg_color, bg_color, text, reset });
+        try terminal.setCursor(x, y);
+        try terminal.writeAll(formatted);
+    }
 }
 
 // Simplified color-only function for basic usage

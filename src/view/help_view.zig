@@ -7,6 +7,8 @@ const BoxDrawing = @import("../ui/box_drawing.zig");
 const theme_loader = @import("../model/theme_loader.zig");
 const hints_model = @import("../model/hints.zig");
 const keybindings = @import("../model/keybindings.zig");
+const KeyBindingsViewModel = @import("../viewmodel/keybindings_vm.zig").KeyBindingsViewModel;
+const ViewType = @import("../viewmodel/keybindings_vm.zig").ViewType;
 
 /// HelpView - displays help information
 pub const HelpView = struct {
@@ -16,12 +18,18 @@ pub const HelpView = struct {
     selected_row: u32 = 0,
     scroll_offset: u32 = 0,
     visible_rows: u32 = 0,
+    bindings_vm: KeyBindingsViewModel,
     
     pub fn init(allocator: std.mem.Allocator, theme: *const theme_loader.ThemeColors) !HelpView {
+        // For now, HelpView shows pods bindings. 
+        // TODO: Make this context-aware to show bindings for current view
+        const bindings_vm = try KeyBindingsViewModel.init(allocator, .pods);
+        
         var view = HelpView{
             .allocator = allocator,
             .theme = theme,
             .help_lines = std.ArrayListUnmanaged([]const u8){},
+            .bindings_vm = bindings_vm,
         };
         
         try view.loadHelpContent();
@@ -33,11 +41,13 @@ pub const HelpView = struct {
             self.allocator.free(line);
         }
         self.help_lines.deinit(self.allocator);
+        self.bindings_vm.deinit();
     }
     
     fn loadHelpContent(self: *HelpView) !void {
         // Generate help content dynamically from key bindings model
-        self.help_lines = try keybindings.generateHelpContent(self.allocator);
+        const bindings = self.bindings_vm.getBindings();
+        self.help_lines = try keybindings.generateHelpContent(self.allocator, bindings);
     }
     
     fn navigateUp(self: *HelpView) !void {
@@ -144,13 +154,13 @@ pub const HelpView = struct {
                 'j' => { try self.navigateDown(); return .handled; },
                 'k' => { try self.navigateUp(); return .handled; },
                 'g' => { try self.gotoTop(); return .handled; },
-                'G' => { try self.gotoBottom(); return .handled; },
                 else => return .not_handled,
             },
             .up => { try self.navigateUp(); return .handled; },
             .down => { try self.navigateDown(); return .handled; },
             .home => { try self.gotoTop(); return .handled; },
             .end => { try self.gotoBottom(); return .handled; },
+            .shift_g => { try self.gotoBottom(); return .handled; },
             .page_up => { try self.pageUp(); return .handled; },
             .page_down => { try self.pageDown(); return .handled; },
             .escape => return .not_handled, // Let parent handle pop

@@ -6,6 +6,7 @@ const build = @import("c3s_build");
 const version = @import("../model/version.zig");
 const theme_loader = @import("../model/theme_loader.zig");
 const fixtures = @import("../fixtures/index.zig");
+const Logger = @import("../core/logger.zig");
 
 pub const Header = struct {
     allocator: std.mem.Allocator,
@@ -55,6 +56,32 @@ pub const Header = struct {
             .cpu_str = cpu_str,
             .mem_str = mem_str,
             .debug = debug,
+        };
+    }
+    
+    /// Initialize header with K8s cluster data (from real K8s client or fixtures)
+    pub fn initWithData(allocator: std.mem.Allocator, theme: *const theme_loader.ThemeColors, cluster_data: anytype) !Header {
+        const k9s_version = try version.ownedString(allocator);
+        const title_with_version = k9s_version;
+        
+        const cpu_str = try std.fmt.allocPrint(allocator, "{d}%", .{cluster_data.cpu_usage});
+        const mem_str = try std.fmt.allocPrint(allocator, "{d}%", .{cluster_data.mem_usage});
+
+        // CRITICAL: Duplicate strings to avoid use-after-free when cluster_data is freed
+        return Header{
+            .allocator = allocator,
+            .theme = theme,
+            .context = try allocator.dupe(u8, cluster_data.context),
+            .cluster = try allocator.dupe(u8, cluster_data.cluster),
+            .user = try allocator.dupe(u8, cluster_data.user),
+            .k9s_version = k9s_version,
+            .k8s_version = try allocator.dupe(u8, cluster_data.k8s_version),
+            .cpu_usage = cluster_data.cpu_usage,
+            .mem_usage = cluster_data.mem_usage,
+            .title_with_version = title_with_version,
+            .cpu_str = cpu_str,
+            .mem_str = mem_str,
+            .debug = false,
         };
     }
 
@@ -392,6 +419,13 @@ pub const Header = struct {
     }
 
     pub fn deinit(self: *Header) void {
+        // Free allocated strings (from initWithData)
+        self.allocator.free(self.context);
+        self.allocator.free(self.cluster);
+        self.allocator.free(self.user);
+        self.allocator.free(self.k8s_version);
+        
+        // Free version and metrics strings
         self.allocator.free(self.title_with_version);
         self.allocator.free(self.cpu_str);
         self.allocator.free(self.mem_str);
@@ -559,9 +593,14 @@ pub const Header = struct {
             const hint_col_width: u16 = if (hints_width > 0 and show_hints_cols > 0) @as(u16, @intCast(hints_width / show_hints_cols)) else 20;
             
             // Calculate right boundary (header border is at x + width - 1)
-            const max_x = x + width - 2; // -2 to account for border and padding
+            // Ensure width is large enough to prevent underflow
+            const max_x = if (width > 2) x + width - 2 else x;
             
             for (hints, 0..) |item, idx| {
+                // Safety check: ensure we're not accessing corrupt memory
+                // Skip if we've somehow gone beyond reasonable hint count
+                if (idx >= 100) break; // Sanity limit
+                
                 const row = @as(u16, @intCast(idx / show_hints_cols));
                 const col = @as(u16, @intCast(idx % show_hints_cols));
                 if (col >= show_hints_cols) continue; // Skip if column is hidden
@@ -576,19 +615,32 @@ pub const Header = struct {
                 const max_text_len = if (max_x > hx) max_x - hx else 0;
                 if (max_text_len < 3) continue; // Skip if not enough space for meaningful text
                 
+                // Validate render_fn enum before switching
+                const render_type = @intFromEnum(item.render_fn);
+                if (render_type != 0 and render_type != 1) {
+                    // Corrupt enum value - skip this item
+                    continue;
+                }
+                
                 switch (item.render_fn) {
                     .plain => {
-                        // Truncate text if needed
-                        const text_len = @min(item.text.len, max_text_len);
-                        try Theme.writeStringWithTheme(terminal, hx, hy, item.text[0..text_len], self.theme.main_fg, self.theme.main_bg);
+                        // Plain hints should have text, highlighted hints have empty text
+                        // Double-check everything before attempting to slice
+                        if (item.text.len > 0 and max_text_len > 0) {
+                            const text_len = @min(item.text.len, max_text_len);
+                            // Final safety check: ensure slice bounds are valid
+                            if (text_len > 0 and text_len <= item.text.len) {
+                                const safe_slice = item.text[0..text_len];
+                                try Theme.writeStringWithTheme(terminal, hx, hy, safe_slice, self.theme.main_fg, self.theme.main_bg);
+                            }
+                        }
                     },
                     .highlighted => {
                         // Calculate total length for highlighted hint
                         const total_len = item.before.len + item.key.len + item.after.len;
-                        if (total_len <= max_text_len) {
+                        if (total_len > 0 and total_len <= max_text_len) {
                             try Theme.writeShortcutWithHighlight(terminal, hx, hy, item.before, item.key, item.after);
                         }
-                        // If doesn't fit, skip this hint
                     },
                 }
             }

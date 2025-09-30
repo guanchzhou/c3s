@@ -5,6 +5,7 @@ pub const KeyBinding = struct {
     key: []const u8,           // Display name (e.g., "a", "Ctrl-d", "Shift-f")
     description: []const u8,   // What it does
     category: Category,        // Which section it belongs to
+    action: []const u8,        // Action identifier for handler lookup
     
     pub const Category = enum {
         resource,
@@ -14,105 +15,17 @@ pub const KeyBinding = struct {
     };
 };
 
-/// All k9s-compatible key bindings for pod view
-pub const pod_bindings = [_]KeyBinding{
-    // RESOURCE COMMANDS (sorted alphabetically like k9s)
-    .{ .key = "0", .description = "all", .category = .resource },
-    .{ .key = "1", .description = "default", .category = .resource },
-    .{ .key = "a", .description = "Attach", .category = .resource },
-    .{ .key = "c", .description = "Copy", .category = .resource },
-    .{ .key = "Ctrl-d", .description = "Delete", .category = .resource },
-    .{ .key = "Ctrl-f", .description = "Kill Finalizers", .category = .resource },
-    .{ .key = "Ctrl-k", .description = "Kill", .category = .resource },
-    .{ .key = "d", .description = "Describe", .category = .resource },
-    .{ .key = "e", .description = "Edit", .category = .resource },
-    .{ .key = "f", .description = "Show PortForward", .category = .resource },
-    .{ .key = "i", .description = "Set Image", .category = .resource },
-    .{ .key = "l", .description = "Logs", .category = .resource },
-    .{ .key = "n", .description = "Copy Namespace", .category = .resource },
-    .{ .key = "o", .description = "Show Node", .category = .resource },
-    .{ .key = "p", .description = "Logs Previous", .category = .resource },
-    .{ .key = "Shift-f", .description = "Port-Forward", .category = .resource },
-    .{ .key = "Shift-j", .description = "Jump Owner", .category = .resource },
-    .{ .key = "Shift-r", .description = "Refresh", .category = .resource },
-    .{ .key = "s", .description = "Shell", .category = .resource },
-    .{ .key = "t", .description = "Transfer", .category = .resource },
-    .{ .key = "v", .description = "View", .category = .resource },
-    .{ .key = "y", .description = "YAML", .category = .resource },
-    .{ .key = "z", .description = "Sanitize", .category = .resource },
+/// KeyBindingsConfig holds all key bindings for a view
+pub const KeyBindingsConfig = struct {
+    bindings: []const KeyBinding,
+    allocator: std.mem.Allocator,
     
-    // GENERAL COMMANDS
-    .{ .key = "?", .description = "Help", .category = .general },
-    .{ .key = "Ctrl-a", .description = "Aliases", .category = .general },
-    .{ .key = ":cmd", .description = "Command mode", .category = .general },
-    .{ .key = "/term", .description = "Filter mode", .category = .general },
-    .{ .key = "esc", .description = "Back/Clear", .category = .general },
-    .{ .key = "tab", .description = "Field Next", .category = .general },
-    .{ .key = "backtab", .description = "Field Previous", .category = .general },
-    .{ .key = "Ctrl-r", .description = "Reload", .category = .general },
-    .{ .key = "Ctrl-u", .description = "Command Clear", .category = .general },
-    .{ .key = "Ctrl-e", .description = "Toggle Header", .category = .general },
-    .{ .key = "Ctrl-g", .description = "Toggle Crumbs", .category = .general },
-    .{ .key = ":q", .description = "Quit", .category = .general },
-    .{ .key = "space", .description = "Mark", .category = .general },
-    .{ .key = "Ctrl-space", .description = "Mark Range", .category = .general },
-    .{ .key = "Ctrl-\\", .description = "Mark Clear", .category = .general },
-    .{ .key = "Ctrl-s", .description = "Save", .category = .general },
-    
-    // NAVIGATION COMMANDS  
-    .{ .key = "-", .description = "Last Command", .category = .navigation },
-    .{ .key = "0", .description = "Down", .category = .navigation },
-    .{ .key = "[", .description = "History Back", .category = .navigation },
-    .{ .key = "]", .description = "History Forward", .category = .navigation },
-    .{ .key = "Ctrl-b", .description = "Page Up", .category = .navigation },
-    .{ .key = "Ctrl-f", .description = "Page Down", .category = .navigation },
-    .{ .key = "g", .description = "Goto Top", .category = .navigation },
-    .{ .key = "Shift-g", .description = "Goto Bottom", .category = .navigation },
-    .{ .key = "h", .description = "Left", .category = .navigation },
-    .{ .key = "j", .description = "Down", .category = .navigation },
-    .{ .key = "k", .description = "Up", .category = .navigation },
-    .{ .key = "l", .description = "Right", .category = .navigation },
-    
-    // SORTING COMMANDS
-    .{ .key = "Shift-a", .description = "Age", .category = .sorting },
-    .{ .key = "Shift-c", .description = "CPU", .category = .sorting },
-    .{ .key = "Shift-m", .description = "MEM", .category = .sorting },
-    .{ .key = "Shift-n", .description = "Name", .category = .sorting },
-    .{ .key = "Shift-p", .description = "Namespace", .category = .sorting },
-    .{ .key = "Shift-i", .description = "IP", .category = .sorting },
-    .{ .key = "Shift-o", .description = "Node", .category = .sorting },
-    .{ .key = "Shift-r", .description = "Ready", .category = .sorting },
-    .{ .key = "Shift-s", .description = "Status", .category = .sorting },
-    .{ .key = "Shift-t", .description = "Restart", .category = .sorting },
+    pub fn deinit(self: *KeyBindingsConfig) void {
+        // Free allocated bindings if needed
+        _ = self;
+    }
 };
 
-/// Get bindings for a specific category
-pub fn getBindingsForCategory(category: KeyBinding.Category) []const KeyBinding {
-    var result: [pod_bindings.len]KeyBinding = undefined;
-    var count: usize = 0;
-    
-    for (pod_bindings) |binding| {
-        if (binding.category == category) {
-            result[count] = binding;
-            count += 1;
-        }
-    }
-    
-    return result[0..count];
-}
-
-/// Format help text for display in columns
-pub fn formatHelpLine(allocator: std.mem.Allocator, key: []const u8, description: []const u8) ![]const u8 {
-    // Format: "  key       description" with proper padding
-    const key_width = 10;
-    const padding = if (key.len < key_width) key_width - key.len else 0;
-    
-    return try std.fmt.allocPrint(allocator, "  {s}{s}{s}", .{
-        key,
-        " " ** padding,
-        description,
-    });
-}
 
 /// Calculate max width for key and description in a category
 fn calculateMaxWidths(bindings: []const KeyBinding) struct { key: usize, desc: usize } {
@@ -126,8 +39,9 @@ fn calculateMaxWidths(bindings: []const KeyBinding) struct { key: usize, desc: u
 }
 
 /// Generate help content dynamically from key bindings
-pub fn generateHelpContent(allocator: std.mem.Allocator) !std.ArrayList([]const u8) {
-    var lines = try std.ArrayList([]const u8).initCapacity(allocator, 50);
+pub fn generateHelpContent(allocator: std.mem.Allocator, bindings: []const KeyBinding) !std.ArrayListUnmanaged([]const u8) {
+    var lines = std.ArrayListUnmanaged([]const u8){};
+    try lines.ensureTotalCapacity(allocator, 50);
     
     try lines.append(allocator, try allocator.dupe(u8, "C3S - Kubernetes TUI Client (k9s-compatible)"));
     try lines.append(allocator, try allocator.dupe(u8, ""));
@@ -142,7 +56,7 @@ pub fn generateHelpContent(allocator: std.mem.Allocator) !std.ArrayList([]const 
     var sorting_list = try std.ArrayList(KeyBinding).initCapacity(allocator, 15);
     defer sorting_list.deinit(allocator);
     
-    for (pod_bindings) |binding| {
+    for (bindings) |binding| {
         switch (binding.category) {
             .resource => try resource_list.append(allocator, binding),
             .general => try general_list.append(allocator, binding),
@@ -192,7 +106,7 @@ pub fn generateHelpContent(allocator: std.mem.Allocator) !std.ArrayList([]const 
             try line_parts.appendSlice(allocator, "  <");
             try line_parts.appendSlice(allocator, binding.key);
             try line_parts.appendSlice(allocator, ">");
-            const key_padding = res_widths.key - binding.key.len - 2;
+            const key_padding = res_widths.key - binding.key.len;
             if (key_padding > 0) {
                 try line_parts.appendNTimes(allocator, ' ', key_padding);
             }
@@ -211,7 +125,7 @@ pub fn generateHelpContent(allocator: std.mem.Allocator) !std.ArrayList([]const 
             try line_parts.appendSlice(allocator, "  <");
             try line_parts.appendSlice(allocator, binding.key);
             try line_parts.appendSlice(allocator, ">");
-            const key_padding = gen_widths.key - binding.key.len - 2;
+            const key_padding = gen_widths.key - binding.key.len;
             if (key_padding > 0) {
                 try line_parts.appendNTimes(allocator, ' ', key_padding);
             }
@@ -230,7 +144,7 @@ pub fn generateHelpContent(allocator: std.mem.Allocator) !std.ArrayList([]const 
             try line_parts.appendSlice(allocator, "  <");
             try line_parts.appendSlice(allocator, binding.key);
             try line_parts.appendSlice(allocator, ">");
-            const key_padding = nav_widths.key - binding.key.len - 2;
+            const key_padding = nav_widths.key - binding.key.len;
             if (key_padding > 0) {
                 try line_parts.appendNTimes(allocator, ' ', key_padding);
             }
@@ -251,7 +165,7 @@ pub fn generateHelpContent(allocator: std.mem.Allocator) !std.ArrayList([]const 
             try sort_line.appendSlice(allocator, "  <");
             try sort_line.appendSlice(allocator, binding.key);
             try sort_line.appendSlice(allocator, ">");
-            const key_padding = sort_widths.key - binding.key.len - 2;
+            const key_padding = sort_widths.key - binding.key.len;
             if (key_padding > 0) {
                 try sort_line.appendNTimes(allocator, ' ', key_padding);
             }
@@ -264,4 +178,12 @@ pub fn generateHelpContent(allocator: std.mem.Allocator) !std.ArrayList([]const 
     try lines.append(allocator, try allocator.dupe(u8, "Press ? or Esc to close help"));
     
     return lines;
+}
+
+/// Free help content lines
+pub fn freeHelpContent(allocator: std.mem.Allocator, lines: *std.ArrayListUnmanaged([]const u8)) void {
+    for (lines.items) |line| {
+        allocator.free(line);
+    }
+    lines.deinit(allocator);
 }
