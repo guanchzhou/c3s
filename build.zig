@@ -68,6 +68,13 @@ pub fn build(b: *std.Build) void {
     });
     exe.root_module.addImport("yaml", yaml.module("yaml"));
 
+    // Add zig-klient dependency (local)
+    const klient = b.dependency("klient", .{
+        .target = target,
+        .optimize = optimize,
+    });
+    exe.root_module.addImport("klient", klient.module("klient"));
+
     // Bump step: increments .build_number using a small Zig tool
     const bump_exe = b.addExecutable(.{
         .name = "bump_build",

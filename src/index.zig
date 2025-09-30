@@ -13,14 +13,15 @@ pub const version = @import("model/version.zig");
 pub const theme_loader = @import("model/theme_loader.zig");
 pub const fixtures = @import("fixtures/index.zig");
 
-// K8s module exports
-pub const K8sClient = @import("k8s/client.zig").K8sClient;
-pub const k8s_types = @import("k8s/types.zig");
-pub const k8s_resources = @import("k8s/resources.zig");
-pub const k8s_retry = @import("k8s/retry.zig");
-pub const k8s_watch = @import("k8s/watch.zig");
-pub const k8s_exec_credential = @import("k8s/exec_credential.zig");
-pub const k8s_tls = @import("k8s/tls.zig");
-pub const k8s_connection_pool = @import("k8s/connection_pool.zig");
-pub const k8s_crd = @import("k8s/crd.zig");
-pub const KubeconfigParser = @import("k8s/kubeconfig_json.zig").KubeconfigParser;
+// K8s module exports (from zig-klient library)
+pub const klient = @import("klient");
+pub const K8sClient = klient.K8sClient;
+pub const k8s_types = klient.types;
+pub const k8s_resources = klient.resources;
+pub const k8s_retry = klient.retry;
+pub const k8s_watch = klient.watch;
+pub const k8s_exec_credential = klient.exec_credential;
+pub const k8s_tls = klient.tls;
+pub const k8s_connection_pool = klient.pool;
+pub const k8s_crd = klient.crd;
+pub const KubeconfigParser = klient.KubeconfigParser;
