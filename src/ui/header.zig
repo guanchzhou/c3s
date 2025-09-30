@@ -51,6 +51,284 @@ pub const Header = struct {
     pub fn setTheme(self: *Header, theme: *const theme_loader.ThemeColors) void {
         self.theme = theme;
     }
+
+    // Calculate compact level based on available width
+    pub fn calculateCompactLevel(self: *const Header, width: u16) u8 {
+        // Calculate required width for each level
+        const sep_len = 3;
+        
+        // Level 0: full (c3s v0.2025.09.30.12.08 | context: rancher-desktop [RW] | cluster: rancher-desktop | user: rancher-desktop | k8s: v1.33.3+k3s1 | CPU: 2% | MEM: 27%)
+        var level0_len: usize = 3 + 1 + self.title_with_version.len;
+        level0_len += sep_len + 8 + 1 + self.context.len; // "context: " + value
+        level0_len += sep_len + 8 + 1 + self.cluster.len; // "cluster: " + value
+        level0_len += sep_len + 5 + 1 + self.user.len; // "user: " + value
+        level0_len += sep_len + 4 + 1 + self.k8s_version.len; // "k8s: " + value
+        level0_len += sep_len + 4 + 1 + self.cpu_str.len; // "CPU: " + value
+        level0_len += sep_len + 4 + 1 + self.mem_str.len; // "MEM: " + value
+        if (width >= level0_len) return 0;
+        
+        // Level 1: drop version prefix (c3s | context: rancher-desktop [RW] | cluster: rancher-desktop | user: rancher-desktop | k8s: v1.33.3+k3s1 | CPU: 2% | MEM: 27%)
+        var level1_len: usize = 3; // just "c3s"
+        level1_len += sep_len + 8 + 1 + self.context.len;
+        level1_len += sep_len + 8 + 1 + self.cluster.len;
+        level1_len += sep_len + 5 + 1 + self.user.len;
+        level1_len += sep_len + 4 + 1 + self.k8s_version.len;
+        level1_len += sep_len + 4 + 1 + self.cpu_str.len;
+        level1_len += sep_len + 4 + 1 + self.mem_str.len;
+        if (width >= level1_len) return 1;
+        
+        // Level 2: drop k8s prefix (c3s | context: rancher-desktop [RW] | cluster: rancher-desktop | user: rancher-desktop | v1.33.3+k3s1 | CPU: 2% | MEM: 27%)
+        var level2_len: usize = 3;
+        level2_len += sep_len + 8 + 1 + self.context.len;
+        level2_len += sep_len + 8 + 1 + self.cluster.len;
+        level2_len += sep_len + 5 + 1 + self.user.len;
+        level2_len += sep_len + self.k8s_version.len;
+        level2_len += sep_len + 4 + 1 + self.cpu_str.len;
+        level2_len += sep_len + 4 + 1 + self.mem_str.len;
+        if (width >= level2_len) return 2;
+        
+        // Level 3: compact CPU/MEM (c3s | context: rancher-desktop [RW] | cluster: rancher-desktop | user: rancher-desktop | v1.33.3+k3s1 | 2%::27%)
+        var level3_len: usize = 3;
+        level3_len += sep_len + 8 + 1 + self.context.len;
+        level3_len += sep_len + 8 + 1 + self.cluster.len;
+        level3_len += sep_len + 5 + 1 + self.user.len;
+        level3_len += sep_len + self.k8s_version.len;
+        level3_len += sep_len + self.cpu_str.len + 2 + self.mem_str.len; // cpu%::mem%
+        if (width >= level3_len) return 3;
+        
+        // Level 4: short labels (c3s | ctx: rancher-desktop [RW] | c: rancher-desktop | u: rancher-desktop | v1.33.3+k3s1 | 2%::27%)
+        var level4_len: usize = 3;
+        level4_len += sep_len + 4 + 1 + self.context.len; // "ctx: "
+        level4_len += sep_len + 2 + 1 + self.cluster.len; // "c: "
+        level4_len += sep_len + 2 + 1 + self.user.len; // "u: "
+        level4_len += sep_len + self.k8s_version.len;
+        level4_len += sep_len + self.cpu_str.len + 2 + self.mem_str.len;
+        if (width >= level4_len) return 4;
+        
+        // Level 5: drop [RW] (c3s | ctx: rancher-desktop | c: rancher-desktop | u: rancher-desktop | v1.33.3+k3s1 | 2%::27%)
+        // Calculate context without [RW]
+        var ctx_without_rw = self.context;
+        if (std.mem.indexOf(u8, self.context, " [")) |idx| {
+            ctx_without_rw = self.context[0..idx];
+        }
+        var level5_len: usize = 3;
+        level5_len += sep_len + 4 + 1 + ctx_without_rw.len;
+        level5_len += sep_len + 2 + 1 + self.cluster.len;
+        level5_len += sep_len + 2 + 1 + self.user.len;
+        level5_len += sep_len + self.k8s_version.len;
+        level5_len += sep_len + self.cpu_str.len + 2 + self.mem_str.len;
+        if (width >= level5_len) return 5;
+        
+        // Level 6: drop c3s (ctx: rancher-desktop | c: rancher-desktop | u: rancher-desktop | v1.33.3+k3s1 | 2%::27%)
+        var level6_len: usize = 4 + 1 + ctx_without_rw.len;
+        level6_len += sep_len + 2 + 1 + self.cluster.len;
+        level6_len += sep_len + 2 + 1 + self.user.len;
+        level6_len += sep_len + self.k8s_version.len;
+        level6_len += sep_len + self.cpu_str.len + 2 + self.mem_str.len;
+        if (width >= level6_len) return 6;
+        
+        // Level 7: values only (rancher-desktop | rancher-desktop | rancher-desktop | v1.33.3+k3s1 | 2%::27%)
+        var level7_len: usize = ctx_without_rw.len;
+        level7_len += sep_len + self.cluster.len;
+        level7_len += sep_len + self.user.len;
+        level7_len += sep_len + self.k8s_version.len;
+        level7_len += sep_len + self.cpu_str.len + 2 + self.mem_str.len;
+        if (width >= level7_len) return 7;
+        
+        // Level 8: drop k8s (rancher-desktop | rancher-desktop | rancher-desktop | 2%::27%)
+        var level8_len: usize = ctx_without_rw.len;
+        level8_len += sep_len + self.cluster.len;
+        level8_len += sep_len + self.user.len;
+        level8_len += sep_len + self.cpu_str.len + 2 + self.mem_str.len;
+        if (width >= level8_len) return 8;
+        
+        // Level 9: truncate user to 3 chars
+        const user_short = if (self.user.len > 3) self.user[0..3] else self.user;
+        var level9_len: usize = ctx_without_rw.len;
+        level9_len += sep_len + self.cluster.len;
+        level9_len += sep_len + user_short.len;
+        if (user_short.len < self.user.len) level9_len += 3; // "..."
+        level9_len += sep_len + self.cpu_str.len + 2 + self.mem_str.len;
+        if (width >= level9_len) return 9;
+        
+        // Level 10: truncate cluster to 3 chars
+        const cluster_short = if (self.cluster.len > 3) self.cluster[0..3] else self.cluster;
+        var level10_len: usize = ctx_without_rw.len;
+        level10_len += sep_len + cluster_short.len;
+        if (cluster_short.len < self.cluster.len) level10_len += 3; // "..."
+        level10_len += sep_len + user_short.len;
+        if (user_short.len < self.user.len) level10_len += 3;
+        level10_len += sep_len + self.cpu_str.len + 2 + self.mem_str.len;
+        if (width >= level10_len) return 10;
+        
+        // Level 11: minimum (context | 2%::27%) - 25 chars minimum
+        return 11;
+    }
+
+    fn renderCompactHeader(self: *const Header, terminal: *Terminal, x: u16, y: u16, width: u16, level: u8) !void {
+        const sep = " | ";
+        
+        // Get context without [RW] suffix for levels 5+
+        var ctx_clean = self.context;
+        if (level >= 5) {
+            if (std.mem.indexOf(u8, self.context, " [")) |idx| {
+                ctx_clean = self.context[0..idx];
+            }
+        }
+        
+        // Build the compact header string based on level
+        var buf: [512]u8 = undefined;
+        var parts = try std.ArrayList([]const u8).initCapacity(self.allocator, 7);
+        defer parts.deinit(self.allocator);
+        
+        switch (level) {
+            0 => {
+                // c3s v0.2025.09.30.12.08 | context: rancher-desktop [RW] | cluster: rancher-desktop | user: rancher-desktop | k8s: v1.33.3+k3s1 | CPU: 2% | MEM: 27%
+                const app_part = try std.fmt.bufPrint(&buf, "c3s {s}", .{self.title_with_version});
+                try parts.append(self.allocator, try self.allocator.dupe(u8, app_part));
+                try parts.append(self.allocator, try std.fmt.allocPrint(self.allocator, "context: {s}", .{self.context}));
+                try parts.append(self.allocator, try std.fmt.allocPrint(self.allocator, "cluster: {s}", .{self.cluster}));
+                try parts.append(self.allocator, try std.fmt.allocPrint(self.allocator, "user: {s}", .{self.user}));
+                try parts.append(self.allocator, try std.fmt.allocPrint(self.allocator, "k8s: {s}", .{self.k8s_version}));
+                try parts.append(self.allocator, try std.fmt.allocPrint(self.allocator, "CPU: {s}", .{self.cpu_str}));
+                try parts.append(self.allocator, try std.fmt.allocPrint(self.allocator, "MEM: {s}", .{self.mem_str}));
+            },
+            1 => {
+                // c3s | context: rancher-desktop [RW] | cluster: rancher-desktop | user: rancher-desktop | k8s: v1.33.3+k3s1 | CPU: 2% | MEM: 27%
+                try parts.append(self.allocator, try self.allocator.dupe(u8, "c3s"));
+                try parts.append(self.allocator, try std.fmt.allocPrint(self.allocator, "context: {s}", .{self.context}));
+                try parts.append(self.allocator, try std.fmt.allocPrint(self.allocator, "cluster: {s}", .{self.cluster}));
+                try parts.append(self.allocator, try std.fmt.allocPrint(self.allocator, "user: {s}", .{self.user}));
+                try parts.append(self.allocator, try std.fmt.allocPrint(self.allocator, "k8s: {s}", .{self.k8s_version}));
+                try parts.append(self.allocator, try std.fmt.allocPrint(self.allocator, "CPU: {s}", .{self.cpu_str}));
+                try parts.append(self.allocator, try std.fmt.allocPrint(self.allocator, "MEM: {s}", .{self.mem_str}));
+            },
+            2 => {
+                // c3s | context: rancher-desktop [RW] | cluster: rancher-desktop | user: rancher-desktop | v1.33.3+k3s1 | CPU: 2% | MEM: 27%
+                try parts.append(self.allocator, try self.allocator.dupe(u8, "c3s"));
+                try parts.append(self.allocator, try std.fmt.allocPrint(self.allocator, "context: {s}", .{self.context}));
+                try parts.append(self.allocator, try std.fmt.allocPrint(self.allocator, "cluster: {s}", .{self.cluster}));
+                try parts.append(self.allocator, try std.fmt.allocPrint(self.allocator, "user: {s}", .{self.user}));
+                try parts.append(self.allocator, try self.allocator.dupe(u8, self.k8s_version));
+                try parts.append(self.allocator, try std.fmt.allocPrint(self.allocator, "CPU: {s}", .{self.cpu_str}));
+                try parts.append(self.allocator, try std.fmt.allocPrint(self.allocator, "MEM: {s}", .{self.mem_str}));
+            },
+            3 => {
+                // c3s | context: rancher-desktop [RW] | cluster: rancher-desktop | user: rancher-desktop | v1.33.3+k3s1 | 2%::27%
+                try parts.append(self.allocator, try self.allocator.dupe(u8, "c3s"));
+                try parts.append(self.allocator, try std.fmt.allocPrint(self.allocator, "context: {s}", .{self.context}));
+                try parts.append(self.allocator, try std.fmt.allocPrint(self.allocator, "cluster: {s}", .{self.cluster}));
+                try parts.append(self.allocator, try std.fmt.allocPrint(self.allocator, "user: {s}", .{self.user}));
+                try parts.append(self.allocator, try self.allocator.dupe(u8, self.k8s_version));
+                try parts.append(self.allocator, try std.fmt.allocPrint(self.allocator, "{s}::{s}", .{self.cpu_str, self.mem_str}));
+            },
+            4 => {
+                // c3s | ctx: rancher-desktop [RW] | c: rancher-desktop | u: rancher-desktop | v1.33.3+k3s1 | 2%::27%
+                try parts.append(self.allocator, try self.allocator.dupe(u8, "c3s"));
+                try parts.append(self.allocator, try std.fmt.allocPrint(self.allocator, "ctx: {s}", .{self.context}));
+                try parts.append(self.allocator, try std.fmt.allocPrint(self.allocator, "c: {s}", .{self.cluster}));
+                try parts.append(self.allocator, try std.fmt.allocPrint(self.allocator, "u: {s}", .{self.user}));
+                try parts.append(self.allocator, try self.allocator.dupe(u8, self.k8s_version));
+                try parts.append(self.allocator, try std.fmt.allocPrint(self.allocator, "{s}::{s}", .{self.cpu_str, self.mem_str}));
+            },
+            5 => {
+                // c3s | ctx: rancher-desktop | c: rancher-desktop | u: rancher-desktop | v1.33.3+k3s1 | 2%::27%
+                try parts.append(self.allocator, try self.allocator.dupe(u8, "c3s"));
+                try parts.append(self.allocator, try std.fmt.allocPrint(self.allocator, "ctx: {s}", .{ctx_clean}));
+                try parts.append(self.allocator, try std.fmt.allocPrint(self.allocator, "c: {s}", .{self.cluster}));
+                try parts.append(self.allocator, try std.fmt.allocPrint(self.allocator, "u: {s}", .{self.user}));
+                try parts.append(self.allocator, try self.allocator.dupe(u8, self.k8s_version));
+                try parts.append(self.allocator, try std.fmt.allocPrint(self.allocator, "{s}::{s}", .{self.cpu_str, self.mem_str}));
+            },
+            6 => {
+                // ctx: rancher-desktop | c: rancher-desktop | u: rancher-desktop | v1.33.3+k3s1 | 2%::27%
+                try parts.append(self.allocator, try std.fmt.allocPrint(self.allocator, "ctx: {s}", .{ctx_clean}));
+                try parts.append(self.allocator, try std.fmt.allocPrint(self.allocator, "c: {s}", .{self.cluster}));
+                try parts.append(self.allocator, try std.fmt.allocPrint(self.allocator, "u: {s}", .{self.user}));
+                try parts.append(self.allocator, try self.allocator.dupe(u8, self.k8s_version));
+                try parts.append(self.allocator, try std.fmt.allocPrint(self.allocator, "{s}::{s}", .{self.cpu_str, self.mem_str}));
+            },
+            7 => {
+                // rancher-desktop | rancher-desktop | rancher-desktop | v1.33.3+k3s1 | 2%::27%
+                try parts.append(self.allocator, try self.allocator.dupe(u8, ctx_clean));
+                try parts.append(self.allocator, try self.allocator.dupe(u8, self.cluster));
+                try parts.append(self.allocator, try self.allocator.dupe(u8, self.user));
+                try parts.append(self.allocator, try self.allocator.dupe(u8, self.k8s_version));
+                try parts.append(self.allocator, try std.fmt.allocPrint(self.allocator, "{s}::{s}", .{self.cpu_str, self.mem_str}));
+            },
+            8 => {
+                // rancher-desktop | rancher-desktop | rancher-desktop | 2%::27%
+                try parts.append(self.allocator, try self.allocator.dupe(u8, ctx_clean));
+                try parts.append(self.allocator, try self.allocator.dupe(u8, self.cluster));
+                try parts.append(self.allocator, try self.allocator.dupe(u8, self.user));
+                try parts.append(self.allocator, try std.fmt.allocPrint(self.allocator, "{s}::{s}", .{self.cpu_str, self.mem_str}));
+            },
+            9 => {
+                // rancher-desktop | rancher-desktop | ran... | 2%::27%
+                const user_short = if (self.user.len > 3) 
+                    try std.fmt.allocPrint(self.allocator, "{s}...", .{self.user[0..3]})
+                else 
+                    try self.allocator.dupe(u8, self.user);
+                try parts.append(self.allocator, try self.allocator.dupe(u8, ctx_clean));
+                try parts.append(self.allocator, try self.allocator.dupe(u8, self.cluster));
+                try parts.append(self.allocator, user_short);
+                try parts.append(self.allocator, try std.fmt.allocPrint(self.allocator, "{s}::{s}", .{self.cpu_str, self.mem_str}));
+            },
+            10 => {
+                // rancher-desktop | ran... | ran... | 2%::27%
+                const cluster_short = if (self.cluster.len > 3) 
+                    try std.fmt.allocPrint(self.allocator, "{s}...", .{self.cluster[0..3]})
+                else 
+                    try self.allocator.dupe(u8, self.cluster);
+                const user_short = if (self.user.len > 3) 
+                    try std.fmt.allocPrint(self.allocator, "{s}...", .{self.user[0..3]})
+                else 
+                    try self.allocator.dupe(u8, self.user);
+                try parts.append(self.allocator, try self.allocator.dupe(u8, ctx_clean));
+                try parts.append(self.allocator, cluster_short);
+                try parts.append(self.allocator, user_short);
+                try parts.append(self.allocator, try std.fmt.allocPrint(self.allocator, "{s}::{s}", .{self.cpu_str, self.mem_str}));
+            },
+            else => {
+                // Level 11: minimum (rancher-desktop | 2%::27%)
+                try parts.append(self.allocator, try self.allocator.dupe(u8, ctx_clean));
+                try parts.append(self.allocator, try std.fmt.allocPrint(self.allocator, "{s}::{s}", .{self.cpu_str, self.mem_str}));
+            },
+        }
+        
+        // Calculate total length and render
+        var total_len: usize = 0;
+        for (parts.items, 0..) |part, i| {
+            total_len += part.len;
+            if (i < parts.items.len - 1) total_len += sep.len;
+        }
+        
+        const width_usize: usize = width;
+        const offset = if (width_usize > total_len)
+            @as(u16, @intCast((width_usize - total_len) / 2))
+        else
+            0;
+        
+        var current_x: u16 = x + offset;
+        try terminal.setCursor(current_x, y);
+        
+        for (parts.items, 0..) |part, i| {
+            // Determine color for this part
+            const color = if (i == 0 and level <= 5) self.theme.app_name else self.theme.hi_fg;
+            try terminal.writeAll(color);
+            try terminal.writeAll(part);
+            try terminal.writeAll("\x1b[0m");
+            current_x += @as(u16, @intCast(part.len));
+            
+            if (i < parts.items.len - 1) {
+                try Theme.writeStringWithTheme(terminal, current_x, y, sep, self.theme.main_fg, self.theme.main_bg);
+                current_x += @as(u16, @intCast(sep.len));
+            }
+            
+            // Free allocated part
+            self.allocator.free(part);
+        }
+    }
     
     pub fn setCompact(self: *Header, compact: bool) void {
         self.compact = compact;
@@ -92,8 +370,10 @@ pub const Header = struct {
         }
 
         if (self.compact) {
+            // Clear the line first
             if (width > 0) {
                 try terminal.setCursor(x, y);
+                try terminal.writeAll(self.theme.main_bg);
                 var spaces_buf: [256]u8 = undefined;
                 @memset(&spaces_buf, ' ');
                 var remaining: usize = width;
@@ -104,59 +384,9 @@ pub const Header = struct {
                 }
             }
 
-            const separator = " | ";
-            const segments = [_]struct {
-                label: []const u8,
-                value: []const u8,
-                value_fg: []const u8,
-            }{
-                .{ .label = "context:", .value = self.context, .value_fg = self.theme.hi_fg },
-                .{ .label = "cluster:", .value = self.cluster, .value_fg = self.theme.hi_fg },
-                .{ .label = "user:", .value = self.user, .value_fg = self.theme.hi_fg },
-                .{ .label = "k8s:", .value = self.k8s_version, .value_fg = self.theme.title },
-                .{ .label = "CPU:", .value = self.cpu_str, .value_fg = self.theme.hi_fg },
-                .{ .label = "MEM:", .value = self.mem_str, .value_fg = self.theme.hi_fg },
-            };
-
-            var total_len: usize = 3 + 1 + self.title_with_version.len; // "c3s " + version
-            for (segments) |segment| {
-                total_len += separator.len + segment.label.len + 1 + segment.value.len;
-            }
-
-            const width_usize: usize = width;
-            const offset = if (width_usize > total_len)
-                @as(u16, @intCast((width_usize - total_len) / 2))
-            else
-                0;
-
-            var current_x: u16 = x + offset;
-            // Render "c3s" in bold white
-            try terminal.setCursor(current_x, y);
-            try terminal.writeAll(self.theme.app_name);
-            try terminal.writeAll("c3s");
-            try terminal.writeAll("\x1b[0m");
-            current_x += 3; // "c3s" is 3 characters
-            
-            // Render version in normal color
-            try terminal.writeAll(" ");
-            try terminal.writeAll(self.theme.title);
-            try terminal.writeAll(self.title_with_version);
-            try terminal.writeAll("\x1b[0m");
-            current_x += @as(u16, @intCast(1 + self.title_with_version.len));
-
-            for (segments) |segment| {
-                try Theme.writeStringWithTheme(terminal, current_x, y, separator, self.theme.main_fg, self.theme.main_bg);
-                current_x += @as(u16, @intCast(separator.len));
-
-                try Theme.writeStringWithTheme(terminal, current_x, y, segment.label, self.theme.main_fg, self.theme.main_bg);
-                current_x += @as(u16, @intCast(segment.label.len));
-
-                try Theme.writeStringWithTheme(terminal, current_x, y, " ", self.theme.main_fg, self.theme.main_bg);
-                current_x += 1;
-
-                try Theme.writeStringWithTheme(terminal, current_x, y, segment.value, segment.value_fg, self.theme.main_bg);
-                current_x += @as(u16, @intCast(segment.value.len));
-            }
+            // Calculate and render compact header with progressive compression
+            const compact_level = self.calculateCompactLevel(width);
+            try self.renderCompactHeader(terminal, x, y, width, compact_level);
 
             self.last_height = box_height;
             return;
