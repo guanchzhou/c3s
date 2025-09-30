@@ -217,14 +217,14 @@ pub const PodsView = struct {
         
         // Define column configuration with priorities
         const columns = [_]table_layout.ColumnInfo{
-            .{ .name = "NAMESPACE", .min_width = 10, .max_width = 20, .priority = table_layout.ColumnPriority.MEDIUM },
-            .{ .name = "NAME", .min_width = 15, .max_width = 40, .priority = table_layout.ColumnPriority.CRITICAL },
+            .{ .name = "NAMESPACE", .min_width = 10, .max_width = null, .priority = table_layout.ColumnPriority.MEDIUM },
+            .{ .name = "NAME", .min_width = 15, .max_width = null, .priority = table_layout.ColumnPriority.CRITICAL },
             .{ .name = "READY", .min_width = 6, .max_width = 8, .priority = table_layout.ColumnPriority.HIGH },
             .{ .name = "STATUS", .min_width = 8, .max_width = 12, .priority = table_layout.ColumnPriority.HIGH },
             .{ .name = "CPU", .min_width = 6, .max_width = 10, .priority = table_layout.ColumnPriority.VERY_LOW },
             .{ .name = "MEM", .min_width = 6, .max_width = 10, .priority = table_layout.ColumnPriority.VERY_LOW },
-            .{ .name = "IP", .min_width = 10, .max_width = 16, .priority = table_layout.ColumnPriority.LOW },
-            .{ .name = "NODE", .min_width = 10, .max_width = 20, .priority = table_layout.ColumnPriority.LOW },
+            .{ .name = "IP", .min_width = 10, .max_width = null, .priority = table_layout.ColumnPriority.LOW },
+            .{ .name = "NODE", .min_width = 10, .max_width = null, .priority = table_layout.ColumnPriority.LOW },
             .{ .name = "AGE", .min_width = 5, .max_width = 8, .priority = table_layout.ColumnPriority.MEDIUM },
         };
         
