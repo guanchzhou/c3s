@@ -50,6 +50,9 @@ pub const App = struct {
     pods_view: *PodsView,
     themes_view: *ThemesView,
     help_view: *HelpView,
+    
+    // Track which primary view is active (for view switching, not pushing)
+    current_primary_view: enum { pods, themes } = .pods,
 
     pub fn init(allocator: std.mem.Allocator, config: Cli.Config) !App {
         // Initialize terminal
@@ -162,6 +165,16 @@ pub const App = struct {
         try self.command_registry.register("skins", Command{
             .name = "skins",
             .execute = themesCommand,
+        });
+        
+        // Pods command (switch back to pods view)
+        try self.command_registry.register("pods", Command{
+            .name = "pods",
+            .execute = podsCommand,
+        });
+        try self.command_registry.register("po", Command{
+            .name = "po",
+            .execute = podsCommand,
         });
         
         // Help command
@@ -520,7 +533,10 @@ pub const App = struct {
                     }
                 }
                 
-                // If no filter was cleared and we're in a sub-view, pop the view
+                // Only pop if:
+                // 1. No filter was cleared AND
+                // 2. We're in a pushed sub-view (depth > 1, like help view)
+                // Primary views (pods, themes) are at depth 1, so they don't get popped
                 if (!filter_cleared and self.view_manager.getDepth() > 1) {
                     _ = self.view_manager.popView();
                     self.dirty = true;
@@ -698,8 +714,28 @@ fn quitCommand(ctx: *Command.CommandContext) !void {
 
 fn themesCommand(ctx: *Command.CommandContext) !void {
     const app: *App = @ptrCast(@alignCast(ctx.data.?));
-    try ctx.view_manager.pushView(app.themes_view.createView());
+    
+    // Don't push - replace the root view with themes view
+    if (ctx.view_manager.getDepth() == 1) {
+        // We're at root level, switch primary view
+        _ = ctx.view_manager.popView();
+        try ctx.view_manager.pushView(app.themes_view.createView());
+        app.current_primary_view = .themes;
+    }
     Logger.info("Themes command executed", .{});
+}
+
+fn podsCommand(ctx: *Command.CommandContext) !void {
+    const app: *App = @ptrCast(@alignCast(ctx.data.?));
+    
+    // Switch back to pods view
+    if (ctx.view_manager.getDepth() == 1) {
+        // We're at root level, switch primary view
+        _ = ctx.view_manager.popView();
+        try ctx.view_manager.pushView(app.pods_view.createView());
+        app.current_primary_view = .pods;
+    }
+    Logger.info("Pods command executed", .{});
 }
 
 fn helpCommand(ctx: *Command.CommandContext) !void {
