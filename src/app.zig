@@ -150,47 +150,150 @@ pub const App = struct {
     }
 
     fn registerCommands(self: *App) !void {
-        // Quit command
-        try self.command_registry.register("q", Command{
-            .name = "q",
-            .execute = quitCommand,
-        });
-        try self.command_registry.register("quit", Command{
-            .name = "quit", 
-            .execute = quitCommand,
-        });
+        // === QUIT COMMANDS ===
+        try self.command_registry.register("q", Command{ .name = "q", .execute = quitCommand });
+        try self.command_registry.register("q!", Command{ .name = "q!", .execute = quitCommand });
+        try self.command_registry.register("qa", Command{ .name = "qa", .execute = quitCommand });
+        try self.command_registry.register("Q", Command{ .name = "Q", .execute = quitCommand });
+        try self.command_registry.register("quit", Command{ .name = "quit", .execute = quitCommand });
+        try self.command_registry.register("exit", Command{ .name = "exit", .execute = quitCommand });
         
-        // Themes command
-        try self.command_registry.register("themes", Command{
-            .name = "themes",
-            .execute = themesCommand,
-        });
-        try self.command_registry.register("skins", Command{
-            .name = "skins",
-            .execute = themesCommand,
-        });
+        // === HELP COMMANDS ===
+        try self.command_registry.register("?", Command{ .name = "?", .execute = helpCommand });
+        try self.command_registry.register("h", Command{ .name = "h", .execute = helpCommand });
+        try self.command_registry.register("help", Command{ .name = "help", .execute = helpCommand });
         
-        // Pods command (switch back to pods view)
-        try self.command_registry.register("pods", Command{
-            .name = "pods",
-            .execute = podsCommand,
-        });
-        try self.command_registry.register("po", Command{
-            .name = "po",
-            .execute = podsCommand,
-        });
+        // === CONTEXT COMMANDS ===
+        try self.command_registry.register("ctx", Command{ .name = "ctx", .execute = notImplementedCommand });
+        try self.command_registry.register("context", Command{ .name = "context", .execute = notImplementedCommand });
+        try self.command_registry.register("contexts", Command{ .name = "contexts", .execute = notImplementedCommand });
         
-        // Help command
-        try self.command_registry.register("help", Command{
-            .name = "help",
-            .execute = helpCommand,
-        });
+        // === NAMESPACE COMMANDS ===
+        try self.command_registry.register("ns", Command{ .name = "ns", .execute = notImplementedCommand });
+        try self.command_registry.register("namespace", Command{ .name = "namespace", .execute = notImplementedCommand });
+        try self.command_registry.register("namespaces", Command{ .name = "namespaces", .execute = notImplementedCommand });
         
-        // Theme selection command (when Enter is pressed in themes view)
-        try self.command_registry.register("select_theme", Command{
-            .name = "select_theme",
-            .execute = selectThemeCommand,
-        });
+        // === PODS COMMANDS ===
+        try self.command_registry.register("pods", Command{ .name = "pods", .execute = podsCommand });
+        try self.command_registry.register("po", Command{ .name = "po", .execute = podsCommand });
+        
+        // === DEPLOYMENTS ===
+        try self.command_registry.register("deployments", Command{ .name = "deployments", .execute = notImplementedCommand });
+        try self.command_registry.register("deploy", Command{ .name = "deploy", .execute = notImplementedCommand });
+        try self.command_registry.register("dp", Command{ .name = "dp", .execute = notImplementedCommand });
+        
+        // === SERVICES ===
+        try self.command_registry.register("services", Command{ .name = "services", .execute = notImplementedCommand });
+        try self.command_registry.register("svc", Command{ .name = "svc", .execute = notImplementedCommand });
+        
+        // === STATEFULSETS ===
+        try self.command_registry.register("statefulsets", Command{ .name = "statefulsets", .execute = notImplementedCommand });
+        try self.command_registry.register("sts", Command{ .name = "sts", .execute = notImplementedCommand });
+        
+        // === DAEMONSETS ===
+        try self.command_registry.register("daemonsets", Command{ .name = "daemonsets", .execute = notImplementedCommand });
+        try self.command_registry.register("ds", Command{ .name = "ds", .execute = notImplementedCommand });
+        
+        // === REPLICASETS ===
+        try self.command_registry.register("replicasets", Command{ .name = "replicasets", .execute = notImplementedCommand });
+        try self.command_registry.register("rs", Command{ .name = "rs", .execute = notImplementedCommand });
+        
+        // === CONFIGMAPS ===
+        try self.command_registry.register("configmaps", Command{ .name = "configmaps", .execute = notImplementedCommand });
+        try self.command_registry.register("cm", Command{ .name = "cm", .execute = notImplementedCommand });
+        
+        // === SECRETS ===
+        try self.command_registry.register("secrets", Command{ .name = "secrets", .execute = notImplementedCommand });
+        try self.command_registry.register("sec", Command{ .name = "sec", .execute = notImplementedCommand });
+        
+        // === INGRESS ===
+        try self.command_registry.register("ingresses", Command{ .name = "ingresses", .execute = notImplementedCommand });
+        try self.command_registry.register("ing", Command{ .name = "ing", .execute = notImplementedCommand });
+        
+        // === JOBS ===
+        try self.command_registry.register("jobs", Command{ .name = "jobs", .execute = notImplementedCommand });
+        try self.command_registry.register("jo", Command{ .name = "jo", .execute = notImplementedCommand });
+        
+        // === CRONJOBS ===
+        try self.command_registry.register("cronjobs", Command{ .name = "cronjobs", .execute = notImplementedCommand });
+        try self.command_registry.register("cj", Command{ .name = "cj", .execute = notImplementedCommand });
+        
+        // === NODES ===
+        try self.command_registry.register("nodes", Command{ .name = "nodes", .execute = notImplementedCommand });
+        try self.command_registry.register("no", Command{ .name = "no", .execute = notImplementedCommand });
+        
+        // === PVC ===
+        try self.command_registry.register("persistentvolumeclaims", Command{ .name = "persistentvolumeclaims", .execute = notImplementedCommand });
+        try self.command_registry.register("pvc", Command{ .name = "pvc", .execute = notImplementedCommand });
+        
+        // === PV ===
+        try self.command_registry.register("persistentvolumes", Command{ .name = "persistentvolumes", .execute = notImplementedCommand });
+        try self.command_registry.register("pv", Command{ .name = "pv", .execute = notImplementedCommand });
+        
+        // === STORAGE CLASSES ===
+        try self.command_registry.register("storageclasses", Command{ .name = "storageclasses", .execute = notImplementedCommand });
+        try self.command_registry.register("sc", Command{ .name = "sc", .execute = notImplementedCommand });
+        
+        // === SERVICE ACCOUNTS ===
+        try self.command_registry.register("serviceaccounts", Command{ .name = "serviceaccounts", .execute = notImplementedCommand });
+        try self.command_registry.register("sa", Command{ .name = "sa", .execute = notImplementedCommand });
+        
+        // === RBAC ===
+        try self.command_registry.register("clusterroles", Command{ .name = "clusterroles", .execute = notImplementedCommand });
+        try self.command_registry.register("cr", Command{ .name = "cr", .execute = notImplementedCommand });
+        try self.command_registry.register("clusterrolebindings", Command{ .name = "clusterrolebindings", .execute = notImplementedCommand });
+        try self.command_registry.register("crb", Command{ .name = "crb", .execute = notImplementedCommand });
+        try self.command_registry.register("roles", Command{ .name = "roles", .execute = notImplementedCommand });
+        try self.command_registry.register("ro", Command{ .name = "ro", .execute = notImplementedCommand });
+        try self.command_registry.register("rolebindings", Command{ .name = "rolebindings", .execute = notImplementedCommand });
+        try self.command_registry.register("rb", Command{ .name = "rb", .execute = notImplementedCommand });
+        
+        // === NETWORK ===
+        try self.command_registry.register("networkpolicies", Command{ .name = "networkpolicies", .execute = notImplementedCommand });
+        try self.command_registry.register("np", Command{ .name = "np", .execute = notImplementedCommand });
+        try self.command_registry.register("endpoints", Command{ .name = "endpoints", .execute = notImplementedCommand });
+        try self.command_registry.register("ep", Command{ .name = "ep", .execute = notImplementedCommand });
+        
+        // === AUTOSCALING ===
+        try self.command_registry.register("horizontalpodautoscalers", Command{ .name = "horizontalpodautoscalers", .execute = notImplementedCommand });
+        try self.command_registry.register("hpa", Command{ .name = "hpa", .execute = notImplementedCommand });
+        
+        // === POLICY ===
+        try self.command_registry.register("poddisruptionbudgets", Command{ .name = "poddisruptionbudgets", .execute = notImplementedCommand });
+        try self.command_registry.register("pdb", Command{ .name = "pdb", .execute = notImplementedCommand });
+        
+        // === EVENTS ===
+        try self.command_registry.register("events", Command{ .name = "events", .execute = notImplementedCommand });
+        try self.command_registry.register("ev", Command{ .name = "ev", .execute = notImplementedCommand });
+        
+        // === CRD ===
+        try self.command_registry.register("customresourcedefinitions", Command{ .name = "customresourcedefinitions", .execute = notImplementedCommand });
+        try self.command_registry.register("crd", Command{ .name = "crd", .execute = notImplementedCommand });
+        
+        // === K9S SPECIFIC COMMANDS ===
+        try self.command_registry.register("aliases", Command{ .name = "aliases", .execute = notImplementedCommand });
+        try self.command_registry.register("a", Command{ .name = "a", .execute = notImplementedCommand });
+        try self.command_registry.register("xray", Command{ .name = "xray", .execute = notImplementedCommand });
+        try self.command_registry.register("xr", Command{ .name = "xr", .execute = notImplementedCommand });
+        try self.command_registry.register("x", Command{ .name = "x", .execute = notImplementedCommand });
+        try self.command_registry.register("portforwards", Command{ .name = "portforwards", .execute = notImplementedCommand });
+        try self.command_registry.register("pf", Command{ .name = "pf", .execute = notImplementedCommand });
+        try self.command_registry.register("benchmarks", Command{ .name = "benchmarks", .execute = notImplementedCommand });
+        try self.command_registry.register("containers", Command{ .name = "containers", .execute = notImplementedCommand });
+        try self.command_registry.register("co", Command{ .name = "co", .execute = notImplementedCommand });
+        
+        // === DIRECTORY/LS ===
+        try self.command_registry.register("dir", Command{ .name = "dir", .execute = notImplementedCommand });
+        try self.command_registry.register("dirs", Command{ .name = "dirs", .execute = notImplementedCommand });
+        try self.command_registry.register("d", Command{ .name = "d", .execute = notImplementedCommand });
+        try self.command_registry.register("ls", Command{ .name = "ls", .execute = notImplementedCommand });
+        
+        // === THEMES/SKINS ===
+        try self.command_registry.register("themes", Command{ .name = "themes", .execute = themesCommand });
+        try self.command_registry.register("skins", Command{ .name = "skins", .execute = themesCommand });
+        
+        // === INTERNAL COMMANDS ===
+        try self.command_registry.register("select_theme", Command{ .name = "select_theme", .execute = selectThemeCommand });
     }
 
     pub fn run(self: *App) !void {
@@ -773,6 +876,12 @@ fn selectThemeCommand(ctx: *Command.CommandContext) !void {
     try app.saveThemeToConfig(selected_theme);
     try app.themes_view.setCurrentTheme(selected_theme);
     Logger.info("Theme selected: {s}", .{selected_theme});
+}
+
+fn notImplementedCommand(ctx: *Command.CommandContext) !void {
+    _ = ctx;
+    Logger.warn("Command not implemented yet", .{});
+    // TODO: Show "Not implemented" message to user
 }
 
 // SIGWINCH signal handler for terminal resize
