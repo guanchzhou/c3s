@@ -272,13 +272,16 @@ pub const ThemesView = struct {
     fn render(ptr: *anyopaque, terminal: *Terminal, x: u16, y: u16, width: u16, height: u16) !void {
         const self: *ThemesView = @ptrCast(@alignCast(ptr));
         
+        // Use preview theme if available, otherwise use base theme
+        const active_theme = if (self.preview_theme) |preview| preview else self.theme;
+        
         // Draw box using theme colors
-        try BoxDrawing.Box.createBox(terminal, x, y, width, height, self.theme.proc_box, self.theme.main_bg, null, .rounded, self.theme.main_fg, self.theme.title);
+        try BoxDrawing.Box.createBox(terminal, x, y, width, height, active_theme.proc_box, active_theme.main_bg, null, .rounded, active_theme.main_fg, active_theme.title);
         
         // Draw title with count using theme colors
         const title_x = x + 2;
         try terminal.setCursor(title_x, y);
-        try terminal.writeAll(self.theme.proc_box);
+        try terminal.writeAll(active_theme.proc_box);
         try terminal.writeAll(BoxDrawing.Symbols.title_left);
         try terminal.writeAll("\x1b[0m");
         
@@ -289,19 +292,19 @@ pub const ThemesView = struct {
         else
             try std.fmt.bufPrint(&title_buf, "Available Skins[{d}]", .{self.themes.items.len});
         try terminal.setCursor(title_x + 1, y);
-        try terminal.writeAll(self.theme.title);
+        try terminal.writeAll(active_theme.title);
         try terminal.writeAll(title_text);
         try terminal.writeAll("\x1b[0m");
         
         try terminal.setCursor(title_x + 1 + @as(u16, @intCast(title_text.len)), y);
-        try terminal.writeAll(self.theme.proc_box);
+        try terminal.writeAll(active_theme.proc_box);
         try terminal.writeAll(BoxDrawing.Symbols.title_right);
         try terminal.writeAll("\x1b[0m");
         
         // Column headers
         const header_y = y + 1;
         try terminal.setCursor(x + 2, header_y);
-        try terminal.writeAll(self.theme.title);
+        try terminal.writeAll(active_theme.title);
         try terminal.writeAll("  NAME");
         try terminal.writeAll("\x1b[0m");
         
@@ -321,18 +324,18 @@ pub const ThemesView = struct {
             
             // Fill row background
             if (width > 2) {
-                try terminal.fillRow(x + 1, row_y, width - 2, self.theme.main_fg, 
-                    if (is_selected) self.theme.selected_bg else self.theme.main_bg);
+                try terminal.fillRow(x + 1, row_y, width - 2, active_theme.main_fg, 
+                    if (is_selected) active_theme.selected_bg else active_theme.main_bg);
             }
             
             // Enabled marker (small bullet, same as pods page)
             const marker = if (is_current) "•" else " ";
             try terminal.setCursor(x + 2, row_y);
             if (is_selected) {
-                try terminal.writeAll(self.theme.selected_fg);
-                try terminal.writeAll(self.theme.selected_bg);
+                try terminal.writeAll(active_theme.selected_fg);
+                try terminal.writeAll(active_theme.selected_bg);
             } else {
-                try terminal.writeAll(self.theme.status_running);
+                try terminal.writeAll(active_theme.status_running);
             }
             try terminal.writeAll(marker);
             try terminal.writeAll("\x1b[0m");
@@ -340,10 +343,10 @@ pub const ThemesView = struct {
             // Skin name
             try terminal.setCursor(x + 4, row_y);
             if (is_selected) {
-                try terminal.writeAll(self.theme.selected_fg);
-                try terminal.writeAll(self.theme.selected_bg);
+                try terminal.writeAll(active_theme.selected_fg);
+                try terminal.writeAll(active_theme.selected_bg);
             } else {
-                try terminal.writeAll(self.theme.main_fg);
+                try terminal.writeAll(active_theme.main_fg);
             }
             try terminal.writeAll(theme_info.name);
             try terminal.writeAll("\x1b[0m");
