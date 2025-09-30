@@ -125,14 +125,14 @@ pub const ThemesView = struct {
     fn navigateDown(self: *ThemesView) !void {
         if (self.filtered_indices.items.len > 0 and self.selected_row < self.filtered_indices.items.len - 1) {
             self.selected_row += 1;
-            
+
             // Adjust scroll if needed
             if (self.visible_rows > 0 and self.selected_row >= self.scroll_offset + self.visible_rows) {
                 self.scroll_offset = self.selected_row - self.visible_rows + 1;
             }
-            
+
             const theme_idx = self.filtered_indices.items[self.selected_row];
-            Logger.debug("ThemesView: navigated to {s}", .{self.themes.items[theme_idx].name});
+            Logger.info("ThemesView: navigated DOWN to {s}", .{self.themes.items[theme_idx].name});
             try self.updatePreview();
         }
     }
@@ -204,9 +204,11 @@ pub const ThemesView = struct {
         
         const theme_idx = self.filtered_indices.items[self.selected_row];
         const selected_theme = self.themes.items[theme_idx];
+        Logger.debug("ThemesView: Loading preview for theme '{s}'", .{selected_theme.name});
         const preview = try self.allocator.create(theme_loader.ThemeColors);
         preview.* = try theme_loader.loadTheme(self.allocator, selected_theme.name);
         self.preview_theme = preview;
+        Logger.debug("ThemesView: Preview theme loaded successfully", .{});
     }
     
     pub fn getSelectedThemeName(self: *const ThemesView) []const u8 {
@@ -274,6 +276,11 @@ pub const ThemesView = struct {
         
         // Use preview theme if available, otherwise use base theme
         const active_theme = if (self.preview_theme) |preview| preview else self.theme;
+        if (self.preview_theme != null) {
+            Logger.debug("ThemesView: Rendering with PREVIEW theme", .{});
+        } else {
+            Logger.debug("ThemesView: Rendering with BASE theme", .{});
+        }
         
         // Draw box using theme colors
         try BoxDrawing.Box.createBox(terminal, x, y, width, height, active_theme.proc_box, active_theme.main_bg, null, .rounded, active_theme.main_fg, active_theme.title);
@@ -385,6 +392,10 @@ pub const ThemesView = struct {
     fn onShow(ptr: *anyopaque) void {
         const self: *ThemesView = @ptrCast(@alignCast(ptr));
         Logger.info("ThemesView: View activated, current theme: {s}, total skins: {d}", .{ self.current_theme_name, self.themes.items.len });
+        // Load preview for initially selected theme
+        self.updatePreview() catch |err| {
+            Logger.err("ThemesView: Failed to load initial preview: {}", .{err});
+        };
     }
     
     fn onHide(ptr: *anyopaque) void {
