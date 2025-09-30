@@ -1,7 +1,7 @@
 const std = @import("std");
 const testing = std.testing;
-const Footer = @import("../src/footer.zig").Footer;
-const Terminal = @import("../src/terminal.zig").Terminal;
+const Footer = @import("src").Footer;
+const Terminal = @import("src").Terminal;
 
 test "footer initialization and cleanup" {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};

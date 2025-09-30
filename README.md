@@ -1,179 +1,202 @@
 # C3S - Kubernetes Client TUI
 
-A Kubernetes client TUI application written in Zig, inspired by k9s but with our own implementation. Features a three-part layout (header, body, footer) similar to the k9s interface.
+A high-performance Kubernetes client TUI application written in Zig, inspired by k9s and btop. Features a modern MVVM architecture with clean separation of concerns and comprehensive theming support.
 
-## Project Structure
+## 🚀 Features
 
+### ✅ Core Features
+- **MVVM Architecture**: Clean separation with View, ViewManager, and Command pattern
+- **Custom Terminal Implementation**: Built with Zig standard library for maximum performance
+- **Three-part TUI Layout**: Header, Body, Footer similar to k9s
+- **Theme System**: Full k9s skin compatibility with live preview
+- **Command System**: Centralized command processing with `:q`, `:themes`, `:help`
+- **Navigation Stack**: Proper back/forward navigation with `Esc`
+- **Filtering**: Real-time filtering with `/` command
+- **Help System**: Comprehensive help with `?` or `:help`
+
+### 🎨 UI Components
+- **Header Component**: 
+  - System information (context, cluster, user, K8s version)
+  - CPU/Memory usage display
+  - Keyboard shortcuts with color coding
+  - Compact mode toggle (`Ctrl+E`)
+- **Body Component**:
+  - Kubernetes pods table view with proper theming
+  - Navigation (hjkl, arrows, g/G, Home/End, PgUp/PgDn)
+  - Row highlighting and selection
+  - Real-time filtering and search
+- **Footer Component**:
+  - Current resource type indicator
+  - Command input display
+- **Theme Selector**:
+  - 35+ k9s-compatible skins
+  - Live theme preview
+  - Alphabetical sorting
+  - Current theme indicator
+
+### ⌨️ Key Bindings
+- **Navigation**: `hjkl`, arrow keys, `g`/`G`, `Home`/`End`, `PgUp`/`PgDn`
+- **Commands**: `:` for command palette, `/` for filtering, `?` for help
+- **Filtering**: `/` to filter, `x` or `Esc` to clear filter
+- **Themes**: `:themes` or `:skins` to open theme selector
+- **Quit**: `:q` or `:quit` to exit
+- **Compact Header**: `Ctrl+E` to toggle compact mode
+
+## 🏗️ Architecture
+
+### MVVM Pattern
+The application uses a clean MVVM (Model-View-ViewModel) architecture:
+
+- **Views**: Self-contained UI components (`PodsView`, `ThemesView`, `HelpView`)
+- **ViewManager**: Manages view stack and navigation
+- **Commands**: Centralized command processing system
+- **Models**: Data structures for pods, themes, etc.
+
+### Project Structure
 ```
 c3s/
 ├── build.zig              # Build configuration
 ├── build.zig.zon          # Package dependencies
 ├── src/
-│   ├── main.zig           # Main application entry point
-│   ├── app.zig            # Main application logic
+│   ├── main.zig           # Application entry point
+│   ├── app.zig            # Main application coordinator
 │   ├── terminal.zig       # Custom terminal implementation
-│   ├── header.zig         # Header component (system info, shortcuts)
-│   ├── body.zig           # Body component (Kubernetes resources table)
-│   ├── footer.zig         # Footer component (context info)
-│   └── benchmark.zig      # Benchmarking utilities
-├── tests/
-│   └── integration.zig    # Integration tests
+│   ├── header.zig         # Header component
+│   ├── footer.zig         # Footer component
+│   ├── command_input.zig  # Command line input
+│   ├── view.zig           # View trait definition
+│   ├── view_manager.zig   # View navigation manager
+│   ├── command.zig        # Command pattern implementation
+│   ├── theme.zig          # Theme system
+│   ├── theme_loader.zig   # k9s skin parser
+│   ├── config.zig         # Configuration management
+│   ├── logger.zig         # Logging system
+│   ├── version.zig        # Version management
+│   ├── xdg.zig           # XDG Base Directory support
+│   └── views/             # View implementations
+│       ├── pods_view.zig      # Pods display view
+│       ├── themes_view.zig    # Theme selection view
+│       └── help_view.zig      # Help display view
+├── skins/                 # k9s-compatible theme files
+├── tests/                 # Test suite
 ├── docs/                  # Documentation
-├── .gitignore            # Git ignore rules
-├── test_tui.sh           # Test script
 └── README.md             # This file
 ```
 
-## Features
+## 🚀 Getting Started
 
-### ✅ Implemented
-- **Three-part TUI Layout**: Header, Body, Footer similar to k9s
-- **Custom Terminal Implementation**: Built with Zig standard library
-- **Header Component**: 
-  - System information (context, cluster, user, versions)
-  - Keyboard shortcuts display
-  - macOS-style window controls
-- **Body Component**:
-  - Kubernetes pods table view
-  - Navigation (j/k for up/down, h/l for left/right)
-  - Row highlighting and selection
-  - Column-based layout with proper spacing
-- **Footer Component**:
-  - Current resource type indicator
-- **Input Handling**: Basic keyboard navigation and quit functionality
-
-### 🚧 Planned
-- **Kubernetes API Integration**: Real-time data from Kubernetes clusters
-- **Resource Management**: CRUD operations on Kubernetes resources
-- **Advanced Navigation**: Tab switching, filtering, searching
-- **Logs and Shell Access**: Pod logs and shell access
-- **Configuration**: Customizable key bindings and themes
-
-## Prerequisites
-
+### Prerequisites
 - [Zig](https://ziglang.org/download/) 0.15.1 or later
 
-## Getting Started
-
 ### Build the project
-
 ```bash
 zig build
 ```
 
-### Run the TUI application
-
+### Run the application
 ```bash
-zig build run
+./zig-out/bin/c3s
 ```
 
 ### Run tests
-
 ```bash
-# Run all unit tests
+# Run all tests
 zig build test
 
-# Run specific component tests
+# Run specific tests
 zig build test-terminal
-zig build test-header
-zig build test-body
-zig build test-footer
-zig build test-app
-
-# Run integration tests
-zig build test-integration
-
-# Run all tests (unit + integration)
-zig build test-all
+zig build test-theme-loader
 ```
 
-### Test the application
+## 🎨 Theming
 
-```bash
-# Make the test script executable
-chmod +x test_tui.sh
+C3S supports k9s-compatible skin files with live preview:
 
-# Run the test script
-./test_tui.sh
-```
+### Available Themes
+- 35+ themes included (tokyo-night, stock, transparent, etc.)
+- Full k9s skin compatibility
+- Live preview when navigating themes
+- Automatic theme persistence
 
-### Controls
+### Theme Locations
+- **Bundled**: `skins/` directory
+- **User**: `$XDG_CONFIG_HOME/c3s/skins/` directory
 
-- `q` - Quit the application
-- `j` - Navigate down (next pod)
-- `k` - Navigate up (previous pod)
-- `h` - Navigate left (previous column)
-- `l` - Navigate right (next column)
-- `Esc` - Quit the application
-- `Ctrl+C` - Quit the application
+### Using Themes
+1. Press `:themes` or `:skins` to open theme selector
+2. Navigate with `j`/`k` or arrow keys
+3. Press `Enter` to select a theme
+4. Theme is automatically saved and applied
 
-## Architecture
+## 📖 Documentation
 
-### Components
+- [Architecture Guide](docs/ARCHITECTURE.md) - System architecture and design patterns
+- [MVVM Guide](docs/MVVM_ARCHITECTURE.md) - MVVM implementation details
+- [Theming Guide](docs/THEMES.md) - Theme system and skin development
+- [Configuration Guide](docs/CONFIG.md) - Configuration options
+- [Performance Guide](docs/PERFORMANCE.md) - Performance optimizations
 
-1. **App** (`app.zig`): Main application coordinator
-2. **Terminal** (`terminal.zig`): Custom terminal abstraction layer
-3. **Header** (`header.zig`): Top section with system info and shortcuts
-4. **Body** (`body.zig`): Main content area with Kubernetes resources table
-5. **Footer** (`footer.zig`): Bottom section with context information
+## 🧪 Testing
 
-### Design Principles
-
-- **Modular Design**: Each component is self-contained
-- **Clean Architecture**: Separation of concerns between UI and logic
-- **Memory Safety**: Proper allocation and deallocation patterns
-- **Error Handling**: Comprehensive error handling throughout
-
-## Development
-
-### Build Options
-
-- **Debug**: `zig build` (default)
-- **ReleaseFast**: `zig build -Doptimize=ReleaseFast`
-- **ReleaseSafe**: `zig build -Doptimize=ReleaseSafe`
-- **ReleaseSmall**: `zig build -Doptimize=ReleaseSmall`
-
-### Adding New Features
-
-1. **New Resources**: Add new resource types to `body.zig`
-2. **New Commands**: Extend input handling in `app.zig`
-3. **UI Components**: Create new components following the existing pattern
-4. **Kubernetes Integration**: Add API client functionality
-
-## Testing
-
-The project includes comprehensive testing with unit tests, integration tests, and performance benchmarks:
+The project includes comprehensive testing:
 
 ### Test Coverage
-- **Unit Tests**: Individual component testing (terminal, header, body, footer, app)
-- **Integration Tests**: Component interaction and full application testing
-- **Memory Testing**: Leak detection and allocation pattern verification
-- **Performance Testing**: Rendering and input response benchmarks
+- **Unit Tests**: Individual component testing
+- **Integration Tests**: Component interaction testing
+- **Memory Testing**: Leak detection and allocation verification
+- **Theme Testing**: Skin parsing and color conversion
+- **Command Testing**: Command system functionality
 
-### Test Documentation
-- [Testing Guide](docs/TESTING.md) - Comprehensive testing documentation
-- [Architecture Guide](docs/ARCHITECTURE.md) - System architecture and design
+### Running Tests
+```bash
+# All tests
+zig build test
 
-## Future Enhancements
+# Specific test suites
+zig build test-terminal
+zig build test-theme-loader
+zig build test-views
+```
 
+## 🚧 Roadmap
+
+### Phase 1: Core Features ✅
+- [x] MVVM architecture implementation
+- [x] Custom terminal implementation
+- [x] Theme system with k9s compatibility
+- [x] Command system
+- [x] Navigation stack
+- [x] Filtering and search
+
+### Phase 2: Kubernetes Integration 🚧
 - [ ] Real Kubernetes API integration
-- [ ] Multiple resource types (services, deployments, etc.)
-- [ ] Resource filtering and searching
+- [ ] Live pod data fetching
+- [ ] Resource management (CRUD operations)
 - [ ] Pod logs viewer
 - [ ] Shell access to pods
-- [ ] Configuration management
-- [ ] Theme support
-- [ ] Plugin system
 
-## Contributing
+### Phase 3: Advanced Features 📋
+- [ ] Multiple resource types (services, deployments, etc.)
+- [ ] Advanced filtering and sorting
+- [ ] Configuration management
+- [ ] Plugin system
+- [ ] Performance optimizations
+
+## 🤝 Contributing
 
 1. Fork the repository
 2. Create a feature branch
 3. Make your changes
 4. Add tests for new functionality
-5. Run the test suite
+5. Run the test suite: `zig build test`
 6. Submit a pull request
 
-## License
+## 📄 License
 
 [Add your license here]
+
+## 🙏 Acknowledgments
+
+- Inspired by [k9s](https://k9scli.io/) - Kubernetes CLI
+- Inspired by [btop](https://github.com/aristocratos/btop) - System monitor
+- Built with [Zig](https://ziglang.org/) - General-purpose programming language

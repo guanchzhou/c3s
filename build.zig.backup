@@ -102,16 +102,11 @@ pub fn build(b: *std.Build) void {
 
     // Create unit tests for terminal
     const terminal_tests = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("tests/terminal_test.zig"),
-            .target = target,
-            .optimize = optimize,
-        }),
+        .root_source_file = b.path("tests/terminal_test.zig"),
+        .target = target,
+        .optimize = optimize,
     });
-    const src_module = b.createModule(.{
-        .root_source_file = b.path("src/index.zig"),
-    });
-    terminal_tests.root_module.addImport("src", src_module);
+    terminal_tests.root_module.addImport("src", exe.root_module);
 
     const run_terminal_tests = b.addRunArtifact(terminal_tests);
     const terminal_test_step = b.step("test-terminal", "Run terminal tests");

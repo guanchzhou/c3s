@@ -1,7 +1,7 @@
 const std = @import("std");
 const testing = std.testing;
-const Header = @import("../src/header.zig").Header;
-const Terminal = @import("../src/terminal.zig").Terminal;
+const Header = @import("src").Header;
+const Terminal = @import("src").Terminal;
 
 test "header initialization and cleanup" {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};

@@ -1,7 +1,7 @@
 const std = @import("std");
 const App = @import("app.zig").App;
 const Cli = @import("cli.zig");
-const Logger = @import("logger.zig");
+const Logger = @import("core/logger.zig");
 const panic_hook = @import("panic_hook.zig");
 const posix = std.posix;
 

@@ -20,6 +20,8 @@ pub const ThemeColors = struct {
     key_highlight: []const u8,
     title_highlight: []const u8,
     app_name: []const u8,
+    prompt_fg: []const u8,
+    prompt_bg: []const u8,
     
     allocator: std.mem.Allocator,
 };
@@ -58,6 +60,8 @@ pub fn defaultTheme(allocator: std.mem.Allocator) !ThemeColors {
         .key_highlight = try hexToAnsi(allocator, "#f7768e"),
         .title_highlight = try hexToAnsi(allocator, "#e0af68"),
         .app_name = try allocator.dupe(u8, "\x1b[1;97m"),
+        .prompt_fg = try hexToAnsi(allocator, "#cfc9c2"),
+        .prompt_bg = try hexToBgAnsi(allocator, "#1a1b26"),
     };
 }
 
@@ -185,6 +189,10 @@ fn parseSkinFile(allocator: mem.Allocator, content: []const u8) !ThemeColors {
 
     // Title highlight for (all) etc.
     if (try getYamlValue(allocator, content, "k9s.frame.title.highlightColor")) |val| try replaceColor(allocator, &theme.title_highlight, try hexToAnsi(allocator, val));
+
+    // Prompt/command input colors
+    if (try getYamlValue(allocator, content, "k9s.prompt.fgColor")) |val| try replaceColor(allocator, &theme.prompt_fg, try hexToAnsi(allocator, val));
+    if (try getYamlValue(allocator, content, "k9s.prompt.bgColor")) |val| try replaceColor(allocator, &theme.prompt_bg, try hexToBgAnsi(allocator, val));
 
     return theme;
 }
@@ -347,4 +355,6 @@ pub fn deinitTheme(theme: *ThemeColors) void {
     theme.allocator.free(theme.key_highlight);
     theme.allocator.free(theme.title_highlight);
     theme.allocator.free(theme.app_name);
+    theme.allocator.free(theme.prompt_fg);
+    theme.allocator.free(theme.prompt_bg);
 }

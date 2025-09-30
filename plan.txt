@@ -25,7 +25,33 @@ Completed:
 ✅ Header compact toggle (Ctrl+E)
 ✅ Namespace quick selectors (0, 1)
 
-Remaining:
+Remaining (Priority Commands to Implement):
+⏳ Resource Management:
+   - Attach (a), Delete (d/ctrl-d/delete), Describe (d), Edit (e)
+   - Logs (l), Logs Previous (shift-l), Port-Forward (shift-f/ctrl-p)
+   - Shell (s/z), View/YAML (v/enter//)
+   
+⏳ Sorting Commands:
+   - Sort Age (shift-a), Sort CPU (shift-c/ctrl-x/shift-s)
+   - Sort MEM (shift-m/ctrl-q/shift-z), Sort Name (shift-n)
+   - Sort Namespace (shift-p), Sort Node (shift-o)
+   - Sort Ready (shift-r), Sort Restart (shift-t), Sort Status (shift-a)
+   - Sort CPU/L, CPU/R, MEM/L, MEM/R, IP (ctrl-y)
+   
+⏳ Pod Actions:
+   - Kill (ctrl-k), Kill Finalizers (ctrl-l)
+   - Copy/Copy Namespace (shift-a/ctrl-c/tab)
+   - Set Image (s), Transfer (t)
+   - Jump Owner (shift-j), Show Node (y)
+   - Show PortForward (?), Sanitize (?)
+   
+⏳ Marking/Selection:
+   - Mark (/), Mark Clear (ctrl-l), Mark Range (ctrl-space)
+   
+⏳ UI Toggles:
+   - Toggle Faults (ctrl-z), Toggle Wide (ctrl-w)
+   - Toggle Command (:), Toggle Crumbs (ctrl-e), Toggle Header (ctrl-p)
+   
 ⏳ Phase 1: Hotkeys infrastructure (parse hotkeys.yaml)
 ⏳ Phase 2-7: Pod actions, sorting, clipboard, config loading
 

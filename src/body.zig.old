@@ -1,7 +1,7 @@
 const std = @import("std");
-const Terminal = @import("terminal.zig").Terminal;
-const Color = @import("terminal.zig").Color;
-const BoxDrawing = @import("box_drawing.zig");
+const Terminal = @import("core/terminal.zig").Terminal;
+const Color = @import("core/terminal.zig").Color;
+const BoxDrawing = @import("ui/box_drawing.zig");
 const Theme = @import("theme.zig");
 const json = std.json;
 

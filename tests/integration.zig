@@ -1,10 +1,10 @@
 const std = @import("std");
 const testing = std.testing;
-const App = @import("../src/app.zig").App;
-const Terminal = @import("../src/terminal.zig").Terminal;
-const Header = @import("../src/header.zig").Header;
-const Body = @import("../src/body.zig").Body;
-const Footer = @import("../src/footer.zig").Footer;
+const App = @import("src").App;
+const Terminal = @import("src").Terminal;
+const Header = @import("src").Header;
+const PodsView = @import("src").PodsView;
+const Footer = @import("src").Footer;
 
 test "full application integration test" {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};

@@ -1,8 +1,9 @@
 const std = @import("std");
-const xdg = @import("xdg.zig");
+const xdg = @import("../core/xdg.zig");
 
 pub const UiConfig = struct {
     compact: bool = false,
+    footer: bool = true,
     theme: []const u8 = "tokyo-night",
     theme_allocated: ?[]u8 = null,
 };
@@ -69,6 +70,16 @@ fn parseUiConfig(allocator: std.mem.Allocator, content: []const u8) !UiConfig {
                 ui_config.compact = true;
             } else if (std.mem.indexOf(u8, trimmed, "false")) |_| {
                 ui_config.compact = false;
+            }
+        }
+        
+        // Look for "footer:" line
+        if (std.mem.indexOf(u8, trimmed, "footer:")) |_| {
+            // Check if it's set to true or false
+            if (std.mem.indexOf(u8, trimmed, "true")) |_| {
+                ui_config.footer = true;
+            } else if (std.mem.indexOf(u8, trimmed, "false")) |_| {
+                ui_config.footer = false;
             }
         }
         

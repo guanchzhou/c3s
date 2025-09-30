@@ -1,38 +1,55 @@
 const std = @import("std");
 const posix = std.posix;
-const terminal = @import("terminal.zig");
+const terminal = @import("core/terminal.zig");
 const Terminal = terminal.Terminal;
 const Key = terminal.Key;
-const Header = @import("header.zig").Header;
-const Body = @import("body.zig").Body;
-const Footer = @import("footer.zig").Footer;
-const Help = @import("help.zig").Help;
-const CommandInput = @import("command_input.zig").CommandInput;
-const ThemeSelector = @import("theme_selector.zig").ThemeSelector;
+const Header = @import("ui/header.zig").Header;
+const Footer = @import("ui/footer.zig").Footer;
+const CommandInput = @import("ui/command_input.zig").CommandInput;
 const Theme = @import("theme.zig");
 const Cli = @import("cli.zig");
-const Config = @import("config.zig");
-const Logger = @import("logger.zig");
-const version = @import("version.zig");
+const Config = @import("model/config.zig");
+const Logger = @import("core/logger.zig");
+const version = @import("model/version.zig");
+const theme_loader = @import("model/theme_loader.zig");
+
+// MVVM imports
+const View = @import("viewmodel/view.zig").View;
+const ViewManager = @import("viewmodel/view_manager.zig").ViewManager;
+const Command = @import("viewmodel/command.zig").Command;
+const CommandRegistry = @import("viewmodel/command.zig").CommandRegistry;
+
+// View imports
+const PodsView = @import("view/pods_view.zig").PodsView;
+const ThemesView = @import("view/themes_view.zig").ThemesView;
+const HelpView = @import("view/help_view.zig").HelpView;
 
 pub const App = struct {
     allocator: std.mem.Allocator,
     terminal: Terminal,
     header: Header,
-    body: Body,
     footer: Footer,
-    help: Help,
     command_input: CommandInput,
-    theme_selector: ThemeSelector,
     config: Cli.Config,
     running: bool = true,
     prev_width: u16 = 0,
     prev_height: u16 = 0,
     header_height: u16 = 8,
+    footer_visible: bool = true,
     dirty: bool = true,
     last_render_time: i128 = 0,
     min_frame_time_ns: i128 = 16_666_667, // ~60 FPS (16.67ms)
     current_theme_name: []const u8,
+    
+    // MVVM components
+    view_manager: ViewManager,
+    command_registry: CommandRegistry,
+    theme: *theme_loader.ThemeColors,
+    
+    // Views
+    pods_view: *PodsView,
+    themes_view: *ThemesView,
+    help_view: *HelpView,
 
     pub fn init(allocator: std.mem.Allocator, config: Cli.Config) !App {
         // Initialize terminal
@@ -46,40 +63,118 @@ pub const App = struct {
         };
         defer ui_config.deinit();
 
+        // Load theme
+        const theme = try allocator.create(theme_loader.ThemeColors);
+        theme.* = try theme_loader.loadTheme(allocator, ui_config.ui.theme);
+
+        // Initialize MVVM components
+        const view_manager = try ViewManager.init(allocator);
+        const command_registry = try CommandRegistry.init(allocator);
+        
+        // Initialize views
+        const pods_view = try allocator.create(PodsView);
+        pods_view.* = try PodsView.init(allocator, theme);
+        
+        const themes_view = try allocator.create(ThemesView);
+        themes_view.* = try ThemesView.init(allocator, ui_config.ui.theme, theme);
+        
+        const help_view = try allocator.create(HelpView);
+        help_view.* = try HelpView.init(allocator, theme);
+
         // Initialize components
         var header = try Header.init(allocator);
-        const body = try Body.init(allocator);
         const footer = try Footer.init(allocator);
-        const help = try Help.init(allocator);
-        const command_input = CommandInput.init(allocator);
-        const theme_selector = try ThemeSelector.init(allocator, ui_config.ui.theme);
+        const command_input = try CommandInput.init(allocator, theme);
         
         // Apply UI config
         header.setCompact(ui_config.ui.compact);
 
-        return App{
+        // Create app
+        var app = App{
             .allocator = allocator,
             .terminal = term,
             .header = header,
-            .body = body,
             .footer = footer,
-            .help = help,
             .command_input = command_input,
-            .theme_selector = theme_selector,
             .config = config,
+            .footer_visible = ui_config.ui.footer,
             .current_theme_name = try allocator.dupe(u8, ui_config.ui.theme),
+            .view_manager = view_manager,
+            .command_registry = command_registry,
+            .theme = theme,
+            .pods_view = pods_view,
+            .themes_view = themes_view,
+            .help_view = help_view,
         };
+        
+        // Register commands
+        try app.registerCommands();
+        
+        // Push initial view (pods)
+        try app.view_manager.pushView(app.pods_view.createView());
+        
+        return app;
     }
 
     pub fn deinit(self: *App) void {
+        // Clean up views
+        self.pods_view.cleanup();
+        self.allocator.destroy(self.pods_view);
+        
+        self.themes_view.cleanup();
+        self.allocator.destroy(self.themes_view);
+        
+        self.help_view.cleanup();
+        self.allocator.destroy(self.help_view);
+        
+        // Clean up MVVM components
+        self.view_manager.deinit();
+        self.command_registry.deinit();
+        
+        // Clean up theme
+        theme_loader.deinitTheme(self.theme);
+        self.allocator.destroy(self.theme);
+        
+        // Clean up other components
         self.header.deinit();
-        self.body.deinit();
         self.footer.deinit();
-        self.help.deinit();
         self.command_input.deinit();
-        self.theme_selector.deinit();
         self.allocator.free(self.current_theme_name);
         self.terminal.deinit();
+    }
+
+    fn registerCommands(self: *App) !void {
+        // Quit command
+        try self.command_registry.register("q", Command{
+            .name = "q",
+            .execute = quitCommand,
+        });
+        try self.command_registry.register("quit", Command{
+            .name = "quit", 
+            .execute = quitCommand,
+        });
+        
+        // Themes command
+        try self.command_registry.register("themes", Command{
+            .name = "themes",
+            .execute = themesCommand,
+        });
+        try self.command_registry.register("skins", Command{
+            .name = "skins",
+            .execute = themesCommand,
+        });
+        
+        // Help command
+        try self.command_registry.register("help", Command{
+            .name = "help",
+            .execute = helpCommand,
+        });
+        
+        // Theme selection command (when Enter is pressed in themes view)
+        try self.command_registry.register("select_theme", Command{
+            .name = "select_theme",
+            .execute = selectThemeCommand,
+        });
     }
 
     pub fn run(self: *App) !void {
@@ -123,255 +218,299 @@ pub const App = struct {
     }
 
     fn renderIfNeeded(self: *App) !void {
-        const size = try self.terminal.getSize();
-        const size_changed = self.prev_width != size.width or self.prev_height != size.height;
+            const size = try self.terminal.getSize();
+            const size_changed = self.prev_width != size.width or self.prev_height != size.height;
         if (!size_changed and !self.dirty) return;
 
         // Rate limit rendering to prevent excessive updates (60 FPS max)
         const now = std.time.nanoTimestamp();
         const elapsed = now - self.last_render_time;
         if (!size_changed and elapsed < self.min_frame_time_ns) {
-            // Too soon since last render, skip to maintain smooth 60 FPS
             return;
         }
         self.last_render_time = now;
 
-        // Start DEC synchronized output mode - terminal buffers everything until endSyncOutput
+        // Start DEC synchronized output mode
         try self.terminal.beginSyncOutput();
         defer self.terminal.endSyncOutput() catch {};
 
         const new_header_height = self.header.height();
         const header_height_changed = self.header_height != new_header_height;
         self.header_height = new_header_height;
-        const footer_height: u16 = 1;
+        const footer_height: u16 = if (self.footer_visible) 1 else 0;
         const command_height: u16 = if (self.command_input.visible) 1 else 0;
 
         // Clear on resize OR header size change (compact toggle)
         if (size_changed or header_height_changed) {
-            try self.terminal.clear();
-            
-            // On resize, render everything
-            if (size.height >= self.header_height) {
-                try self.header.render(&self.terminal, 0, 0, size.width, self.header_height);
-            }
+                    try self.terminal.clear();
+        }
 
-            const body_start = if (size.height >= self.header_height + command_height) 
-                self.header_height + command_height 
-            else 
-                size.height;
-            var body_height: u16 = 0;
-            if (size.height > body_start) {
-                const remaining = size.height - body_start;
-                body_height = if (remaining > footer_height) remaining - footer_height else remaining;
-            }
+        // Render header
+        if (size.height >= self.header_height) {
+            try self.header.render(&self.terminal, 0, 0, size.width, self.header_height);
+        }
 
-            if (body_height > 0) {
-                try self.body.render(&self.terminal, 0, body_start, size.width, body_height);
-            }
+        // Calculate body area
+        const body_start = if (size.height >= self.header_height + command_height) 
+            self.header_height + command_height 
+        else 
+            size.height;
+        var body_height: u16 = 0;
+        if (size.height > body_start) {
+            const remaining = size.height - body_start;
+            body_height = if (remaining > footer_height) remaining - footer_height else remaining;
+        }
 
-            if (self.help.visible and body_height > 0) {
-                try self.help.render(&self.terminal, 0, body_start, size.width, body_height);
-            }
-            
-            if (self.theme_selector.visible and body_height > 0) {
-                try self.theme_selector.render(&self.terminal, 0, body_start, size.width, body_height);
-            }
-
-            if (size.height >= footer_height and size.height > 0) {
-                const footer_y = if (body_height > 0)
-                    body_start + body_height
-                else if (size.height > 0)
-                    size.height - 1
-                else
-                    0;
-                if (footer_y < size.height) {
-                    try self.footer.render(&self.terminal, 0, footer_y, size.width, footer_height);
-                }
-            }
-        } else {
-            // Normal update - redraw all components
-            // (header might have toggled compact mode, body has selection changes)
-            
-            if (size.height >= self.header_height) {
-                try self.header.render(&self.terminal, 0, 0, size.width, self.header_height);
-            }
-            
-            const body_start = if (size.height >= self.header_height + command_height) 
-                self.header_height + command_height 
-            else 
-                size.height;
-            var body_height: u16 = 0;
-            if (size.height > body_start) {
-                const remaining = size.height - body_start;
-                body_height = if (remaining > footer_height) remaining - footer_height else remaining;
-            }
-
-            if (body_height > 0) {
-                try self.body.render(&self.terminal, 0, body_start, size.width, body_height);
-            }
-
-            if (self.help.visible and body_height > 0) {
-                try self.help.render(&self.terminal, 0, body_start, size.width, body_height);
-            }
-            
-            if (self.theme_selector.visible and body_height > 0) {
-                try self.theme_selector.render(&self.terminal, 0, body_start, size.width, body_height);
-            }
-            
-            if (size.height >= footer_height and size.height > 0) {
-                const footer_y = if (body_height > 0)
-                    body_start + body_height
-                else if (size.height > 0)
-                    size.height - 1
-                else
-                    0;
-                if (footer_y < size.height) {
-                    try self.footer.render(&self.terminal, 0, footer_y, size.width, footer_height);
-                }
+        // Render current view
+        if (body_height > 0) {
+            if (self.view_manager.getCurrentView()) |current_view| {
+                try current_view.render(&self.terminal, 0, body_start, size.width, body_height);
             }
         }
 
+        // Render footer (only if visible)
+        if (self.footer_visible and size.height >= footer_height and size.height > 0) {
+            const footer_y = if (body_height > 0)
+                body_start + body_height
+            else if (size.height > 0)
+                size.height - 1
+            else
+                0;
+            if (footer_y < size.height) {
+                try self.footer.render(&self.terminal, 0, footer_y, size.width, footer_height);
+            }
+        }
+
+        // Render command input
         if (self.command_input.visible and size.height > self.header_height) {
-            // Render command input between header and body
-            try self.command_input.render(&self.terminal, 0, self.header_height, size.width, 1);
+            try self.command_input.render(&self.terminal, 0, self.header_height, size.width);
         } else {
-            // Hide cursor when not in command mode
             try self.terminal.hideCursor();
-        }
+                }
 
-        try self.terminal.flush();
-        self.prev_width = size.width;
-        self.prev_height = size.height;
-        self.dirty = false;
-    }
+                try self.terminal.flush();
+                self.prev_width = size.width;
+                self.prev_height = size.height;
+                self.dirty = false;
+            }
 
     fn handleKey(self: *App, key: Key) !void {
-        if (self.theme_selector.visible) {
-            switch (key) {
-                .char => |c| switch (c) {
-                    'j' => { try self.theme_selector.navigateDown(); self.dirty = true; return; },
-                    'k' => { try self.theme_selector.navigateUp(); self.dirty = true; return; },
-                    '/' => {
-                        // Don't hide theme selector, just show command input on top
-                        self.command_input.showWithPrompt("/");
-                        self.dirty = true;
-                        return;
-                    },
-                    else => { return; }, // Don't process other chars in theme selector
-                },
-                .colon => {
-                    // Don't hide theme selector, just show command input on top
-                    self.command_input.showWithPrompt(":");
-                    self.dirty = true;
-                    return;
-                },
-                .up => { try self.theme_selector.navigateUp(); self.dirty = true; return; },
-                .down => { try self.theme_selector.navigateDown(); self.dirty = true; return; },
-                .home => { try self.theme_selector.gotoTop(); self.dirty = true; return; },
-                .end => { try self.theme_selector.gotoBottom(); self.dirty = true; return; },
-                .page_up => { try self.theme_selector.pageUp(); self.dirty = true; return; },
-                .page_down => { try self.theme_selector.pageDown(); self.dirty = true; return; },
-                .enter => {
-                    // Save selected theme to config and update current marker
-                    const selected_theme = self.theme_selector.getSelectedThemeName();
-                    try self.saveThemeToConfig(selected_theme);
-                    try self.theme_selector.setCurrentTheme(selected_theme);
-                    // Don't hide - stay in themes view to try more themes
-                    self.dirty = true;
-                    return;
-                },
-                .escape => {
-                    self.theme_selector.hide();
-                    self.dirty = true;
-                    return;
-                },
-                else => { return; }, // Don't process other keys in theme selector
-            }
-        }
-        
-        // The rest of the handleKey function will now be executed,
-        // including the command_input.visible block if relevant.
+        // Handle command input first
         if (self.command_input.visible) {
             switch (key) {
                 .char => |c| {
                     if (c >= 32 and c <= 126) {
                         try self.command_input.addChar(c);
-                        self.dirty = true;
-                    }
+                self.dirty = true;
+            }
                 },
                 .backspace => {
                     self.command_input.backspace();
-                    self.dirty = true;
+                self.dirty = true;
                 },
                 .enter => {
-                    // Process command based on prompt
+                    // Process command
                     const cmd_text = self.command_input.getCommand();
                     const prompt = self.command_input.prompt;
                     
                     if (std.mem.eql(u8, prompt, "/")) {
-                        // Apply filter
-                        try self.body.applyFilter(cmd_text);
-                    } else if (std.mem.eql(u8, prompt, ":")) {
-                        // Process command
-                        if (std.mem.eql(u8, cmd_text, "q") or std.mem.eql(u8, cmd_text, "quit")) {
-                            self.running = false;
-                        } else if (std.mem.eql(u8, cmd_text, "themes") or std.mem.eql(u8, cmd_text, "skins")) {
-                            self.theme_selector.show();
+                        // Apply filter to current view
+                        if (self.view_manager.getCurrentView()) |current_view| {
+                            if (std.mem.eql(u8, current_view.getName(), "pods")) {
+                                try self.pods_view.applyFilter(cmd_text);
+                            }
                         }
-                        // TODO: Add more commands here
+                    } else if (std.mem.eql(u8, prompt, ":")) {
+                    // Execute command
+                    var ctx = Command.CommandContext{
+                        .allocator = self.allocator,
+                        .view_manager = &self.view_manager,
+                        .data = self,
+                    };
+                    _ = try self.command_registry.execute(cmd_text, &ctx);
                     }
                     
                     self.command_input.hide();
-                    self.dirty = true;
+                self.dirty = true;
                 },
                 .escape => {
                     self.command_input.hide();
-                    self.dirty = true;
+                self.dirty = true;
                 },
                 else => {},
             }
             return;
         }
 
+        // Handle global keys
         switch (key) {
             .char => |c| switch (c) {
-                'h' => { try self.body.navigateLeft(); self.dirty = true; },
-                'j' => { try self.body.navigateDown(); self.dirty = true; },
-                'k' => { try self.body.navigateUp(); self.dirty = true; },
-                'l' => { try self.body.navigateRight(); self.dirty = true; },
-                'g' => { try self.body.gotoTop(); self.dirty = true; },
+                'h' => {
+                    // Pass to current view
+                    if (self.view_manager.getCurrentView()) |current_view| {
+                        const result = try current_view.handleKey(key);
+                        if (result == .handled) self.dirty = true;
+                    }
+                },
+                'j' => {
+                    // Pass to current view
+                    if (self.view_manager.getCurrentView()) |current_view| {
+                        const result = try current_view.handleKey(key);
+                        if (result == .handled) self.dirty = true;
+                    }
+                },
+                'k' => {
+                    // Pass to current view
+                    if (self.view_manager.getCurrentView()) |current_view| {
+                        const result = try current_view.handleKey(key);
+                        if (result == .handled) self.dirty = true;
+                    }
+                },
+                'l' => {
+                    // Pass to current view
+                    if (self.view_manager.getCurrentView()) |current_view| {
+                        const result = try current_view.handleKey(key);
+                        if (result == .handled) self.dirty = true;
+                    }
+                },
+                'g' => {
+                    // Pass to current view
+                    if (self.view_manager.getCurrentView()) |current_view| {
+                        const result = try current_view.handleKey(key);
+                        if (result == .handled) self.dirty = true;
+                    }
+                },
+                'G' => {
+                    // Pass to current view
+                    if (self.view_manager.getCurrentView()) |current_view| {
+                        const result = try current_view.handleKey(key);
+                        if (result == .handled) self.dirty = true;
+                    }
+                },
+                'x' => {
+                    // Clear filter with 'x' key (like delete)
+                    if (self.view_manager.getCurrentView()) |current_view| {
+                        if (std.mem.eql(u8, current_view.getName(), "pods")) {
+                            try self.pods_view.applyFilter("");
+            self.dirty = true;
+        }
+                    }
+                },
                 '/' => {
                     self.command_input.showWithPrompt("/");
                     self.dirty = true;
                 },
-                'x' => {
-                    // Clear filter with 'x' key (like delete)
-                    try self.body.applyFilter("");
+                ':' => {
+                    self.command_input.showWithPrompt(":");
                     self.dirty = true;
                 },
-                else => {},
+                '?' => {
+                    // Show help view
+                    try self.view_manager.pushView(self.help_view.createView());
+                self.dirty = true;
+                },
+                else => {
+                    // Pass to current view
+                    if (self.view_manager.getCurrentView()) |current_view| {
+                        const result = try current_view.handleKey(key);
+                        switch (result) {
+                            .handled => self.dirty = true,
+                            .not_handled => {},
+                            .request_command_palette => {
+                                // Check if we're in themes view and Enter was pressed
+                                if (std.mem.eql(u8, current_view.getName(), "themes") and key == .enter) {
+                                    // Execute theme selection directly
+                                    const selected_theme = self.themes_view.getSelectedThemeName();
+                                    try self.saveThemeToConfig(selected_theme);
+                                    try self.themes_view.setCurrentTheme(selected_theme);
+                self.dirty = true;
+            } else {
+                                    self.command_input.showWithPrompt(":");
+                                    self.dirty = true;
+                                }
+                            },
+                            .request_filter => {
+                                self.command_input.showWithPrompt("/");
+                                self.dirty = true;
+                            },
+                            .request_quit => {
+                self.running = false;
+                            },
+                        }
+                    }
+                },
             },
-            .up => { try self.body.navigateUp(); self.dirty = true; },
-            .down => { try self.body.navigateDown(); self.dirty = true; },
-            .left => { try self.body.navigateLeft(); self.dirty = true; },
-            .right => { try self.body.navigateRight(); self.dirty = true; },
-            .home => { try self.body.gotoTop(); self.dirty = true; },
-            .end => { try self.body.gotoBottom(); self.dirty = true; },
-            .page_up => { try self.body.pageUp(); self.dirty = true; },
-            .page_down => { try self.body.pageDown(); self.dirty = true; },
-            .escape => {
-                if (self.help.visible) {
-                    // Esc closes help
-                    self.help.hide();
-                    self.body.setHelpMode(false);
-                    self.footer.setHelpMode(false);
-                    self.dirty = true;
-                } else if (self.body.filter_text.len > 0) {
-                    // Esc clears filter if one is active
-                    try self.body.applyFilter("");
-                    self.dirty = true;
+            .up => {
+                // Pass to current view
+                if (self.view_manager.getCurrentView()) |current_view| {
+                    const result = try current_view.handleKey(key);
+                    if (result == .handled) self.dirty = true;
                 }
-                // Esc never exits the app
+            },
+            .down => {
+                // Pass to current view
+                if (self.view_manager.getCurrentView()) |current_view| {
+                    const result = try current_view.handleKey(key);
+                    if (result == .handled) self.dirty = true;
+                }
+            },
+            .left => {
+                // Pass to current view
+                if (self.view_manager.getCurrentView()) |current_view| {
+                    const result = try current_view.handleKey(key);
+                    if (result == .handled) self.dirty = true;
+                }
+            },
+            .right => {
+                // Pass to current view
+                if (self.view_manager.getCurrentView()) |current_view| {
+                    const result = try current_view.handleKey(key);
+                    if (result == .handled) self.dirty = true;
+                }
+            },
+            .home => {
+                // Pass to current view
+                if (self.view_manager.getCurrentView()) |current_view| {
+                    const result = try current_view.handleKey(key);
+                    if (result == .handled) self.dirty = true;
+                }
+            },
+            .end => {
+                // Pass to current view
+                if (self.view_manager.getCurrentView()) |current_view| {
+                    const result = try current_view.handleKey(key);
+                    if (result == .handled) self.dirty = true;
+                }
+            },
+            .page_up => {
+                // Pass to current view
+                if (self.view_manager.getCurrentView()) |current_view| {
+                    const result = try current_view.handleKey(key);
+                    if (result == .handled) self.dirty = true;
+                }
+            },
+            .page_down => {
+                // Pass to current view
+                if (self.view_manager.getCurrentView()) |current_view| {
+                    const result = try current_view.handleKey(key);
+                    if (result == .handled) self.dirty = true;
+                }
+            },
+            .escape => {
+                // Check if we're in a sub-view first
+                if (self.view_manager.getDepth() > 1) {
+                    // Pop current view (go back)
+                    _ = self.view_manager.popView();
+                    self.dirty = true;
+                } else {
+                    // Clear filter if one is active
+                    if (self.view_manager.getCurrentView()) |current_view| {
+                        if (std.mem.eql(u8, current_view.getName(), "pods")) {
+                            try self.pods_view.applyFilter("");
+                self.dirty = true;
+            }
+                    }
+                }
             },
             .ctrl_c => {
                 // Ctrl+C doesn't exit in k9s, use :q command instead
@@ -379,13 +518,30 @@ pub const App = struct {
             .ctrl_d => {
                 // Ctrl+D reserved for delete action (k9s compat)
             },
-            .shift_g => { try self.body.gotoBottom(); self.dirty = true; },
-            .ctrl_f => { try self.body.pageDown(); self.dirty = true; },
-            .ctrl_b => { try self.body.pageUp(); self.dirty = true; },
+            .shift_g => {
+                // Pass to current view
+                if (self.view_manager.getCurrentView()) |current_view| {
+                    const result = try current_view.handleKey(key);
+                    if (result == .handled) self.dirty = true;
+                }
+            },
+            .ctrl_f => {
+                // Pass to current view
+                if (self.view_manager.getCurrentView()) |current_view| {
+                    const result = try current_view.handleKey(key);
+                    if (result == .handled) self.dirty = true;
+                }
+            },
+            .ctrl_b => {
+                // Pass to current view
+                if (self.view_manager.getCurrentView()) |current_view| {
+                    const result = try current_view.handleKey(key);
+                    if (result == .handled) self.dirty = true;
+                }
+            },
             .question_mark => {
-                self.help.toggle();
-                self.body.setHelpMode(self.help.visible);
-                self.footer.setHelpMode(self.help.visible);
+                // Show help view
+                try self.view_manager.pushView(self.help_view.createView());
                 self.dirty = true;
             },
             .colon => {
@@ -393,7 +549,36 @@ pub const App = struct {
                 self.dirty = true;
             },
             .backspace => {},
-            .enter => {},
+            .enter => {
+                // Pass to current view
+                if (self.view_manager.getCurrentView()) |current_view| {
+                    const result = try current_view.handleKey(key);
+                    switch (result) {
+                        .handled => self.dirty = true,
+                        .not_handled => {},
+                        .request_command_palette => {
+                            // Check if we're in themes view and Enter was pressed
+                            if (std.mem.eql(u8, current_view.getName(), "themes")) {
+                                // Execute theme selection directly
+                                const selected_theme = self.themes_view.getSelectedThemeName();
+                                try self.saveThemeToConfig(selected_theme);
+                                try self.themes_view.setCurrentTheme(selected_theme);
+                self.dirty = true;
+                            } else {
+                                self.command_input.showWithPrompt(":");
+                self.dirty = true;
+                            }
+                        },
+                        .request_filter => {
+                            self.command_input.showWithPrompt("/");
+                self.dirty = true;
+                        },
+                        .request_quit => {
+                            self.running = false;
+                        },
+                    }
+                }
+            },
             .unsupported => {},
             .ctrl_e => {
                 self.header.toggleCompact();
@@ -405,10 +590,8 @@ pub const App = struct {
     fn saveThemeToConfig(self: *App, theme_name: []const u8) !void {
         Logger.info("Changing theme to: {s}", .{theme_name});
         
-        const xdg = @import("xdg.zig");
+        const xdg = @import("core/xdg.zig");
         const paths = try xdg.ensurePaths();
-        
-        Logger.info("Config file path: {s}", .{paths.config_file});
         
         // Read existing config or create new one
         const existing_content = std.fs.cwd().readFileAlloc(
@@ -491,3 +674,30 @@ pub const App = struct {
         Logger.info("Current theme updated in memory: {s}", .{self.current_theme_name});
     }
 };
+
+// Command implementations
+fn quitCommand(ctx: *Command.CommandContext) !void {
+    const app: *App = @ptrCast(@alignCast(ctx.data.?));
+    app.running = false;
+        Logger.info("Quit command executed", .{});
+}
+
+fn themesCommand(ctx: *Command.CommandContext) !void {
+    const app: *App = @ptrCast(@alignCast(ctx.data.?));
+    try ctx.view_manager.pushView(app.themes_view.createView());
+    Logger.info("Themes command executed", .{});
+}
+
+fn helpCommand(ctx: *Command.CommandContext) !void {
+    const app: *App = @ptrCast(@alignCast(ctx.data.?));
+    try ctx.view_manager.pushView(app.help_view.createView());
+    Logger.info("Help command executed", .{});
+}
+
+fn selectThemeCommand(ctx: *Command.CommandContext) !void {
+    const app: *App = @ptrCast(@alignCast(ctx.data.?));
+    const selected_theme = app.themes_view.getSelectedThemeName();
+    try app.saveThemeToConfig(selected_theme);
+    try app.themes_view.setCurrentTheme(selected_theme);
+    Logger.info("Theme selected: {s}", .{selected_theme});
+}

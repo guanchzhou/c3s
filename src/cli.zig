@@ -1,7 +1,7 @@
 const std = @import("std");
-const xdg = @import("xdg.zig");
+const xdg = @import("core/xdg.zig");
 const build = @import("c3s_build");
-const version = @import("version.zig");
+const version = @import("model/version.zig");
 
 var version_storage: [128]u8 = undefined;
 var version_len: usize = 0;

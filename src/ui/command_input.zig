@@ -1,18 +1,21 @@
 const std = @import("std");
-const Terminal = @import("terminal.zig").Terminal;
-const Logger = @import("logger.zig");
+const Terminal = @import("../core/terminal.zig").Terminal;
+const Logger = @import("../core/logger.zig");
+const theme_loader = @import("../model/theme_loader.zig");
 
 /// CommandInput - handles command line input with different prompts
 pub const CommandInput = struct {
     allocator: std.mem.Allocator,
+    theme: *const theme_loader.ThemeColors,
     visible: bool = false,
     prompt: []const u8 = "",
     buffer: std.ArrayList(u8),
     cursor_pos: usize = 0,
     
-    pub fn init(allocator: std.mem.Allocator) !CommandInput {
+    pub fn init(allocator: std.mem.Allocator, theme: *const theme_loader.ThemeColors) !CommandInput {
         return CommandInput{
             .allocator = allocator,
+            .theme = theme,
             .buffer = try std.ArrayList(u8).initCapacity(allocator, 256),
         };
     }
@@ -57,8 +60,9 @@ pub const CommandInput = struct {
     pub fn render(self: *CommandInput, terminal: *Terminal, x: u16, y: u16, width: u16) !void {
         if (!self.visible) return;
         
-        // Clear the line
+        // Clear the line with prompt background color
         try terminal.setCursor(x, y);
+        try terminal.writeAll(self.theme.prompt_bg);
         var spaces_buf: [256]u8 = undefined;
         @memset(&spaces_buf, ' ');
         var remaining: usize = width;
@@ -68,14 +72,17 @@ pub const CommandInput = struct {
             remaining -= chunk;
         }
         
-        // Draw prompt and buffer
+        // Draw prompt and buffer with prompt colors
         try terminal.setCursor(x, y);
+        try terminal.writeAll(self.theme.prompt_fg);
+        try terminal.writeAll(self.theme.prompt_bg);
         var line_buf: [512]u8 = undefined;
-        const line_text = try std.fmt.bufPrint(&line_buf, "{s} {s}", .{ self.prompt, self.buffer.items });
+        const line_text = try std.fmt.bufPrint(&line_buf, " {s} {s}", .{ self.prompt, self.buffer.items });
         try terminal.writeAll(line_text);
+        try terminal.writeAll("\x1b[0m");
         
-        // Position cursor after the text
-        try terminal.setCursor(x + @as(u16, @intCast(self.prompt.len + 1 + self.cursor_pos)), y);
+        // Position cursor after the text (accounting for leading space)
+        try terminal.setCursor(x + @as(u16, @intCast(1 + self.prompt.len + 1 + self.cursor_pos)), y);
     }
 };
 

@@ -1,7 +1,7 @@
 const std = @import("std");
 const testing = std.testing;
-const Body = @import("../src/body.zig").Body;
-const Terminal = @import("../src/terminal.zig").Terminal;
+const PodsView = @import("src").PodsView;
+const Terminal = @import("src").Terminal;
 
 test "body initialization and cleanup" {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};

@@ -1,5 +1,5 @@
 const std = @import("std");
-const Terminal = @import("terminal.zig").Terminal;
+const Terminal = @import("core/terminal.zig").Terminal;
 
 // btop-inspired Theme - Using Tokyo Night palette
 // Based on btop's tokyo-night.theme for a modern, comfortable look

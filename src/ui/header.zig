@@ -1,9 +1,9 @@
 const std = @import("std");
-const Terminal = @import("terminal.zig").Terminal;
+const Terminal = @import("../core/terminal.zig").Terminal;
 const BoxDrawing = @import("box_drawing.zig");
-const Theme = @import("theme.zig");
+const Theme = @import("../theme.zig");
 const build = @import("c3s_build");
-const version = @import("version.zig");
+const version = @import("../model/version.zig");
 
 pub const Header = struct {
     allocator: std.mem.Allocator,

@@ -1,6 +1,6 @@
 const std = @import("std");
-const Terminal = @import("terminal.zig").Terminal;
-const Theme = @import("theme.zig");
+const Terminal = @import("../core/terminal.zig").Terminal;
+const Theme = @import("../theme.zig");
 
 // Box drawing characters (exact from btop)
 pub const Symbols = struct {
