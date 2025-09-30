@@ -24,6 +24,9 @@ const PodsView = @import("view/pods_view.zig").PodsView;
 const ThemesView = @import("view/themes_view.zig").ThemesView;
 const HelpView = @import("view/help_view.zig").HelpView;
 
+// Global flag for terminal resize signal
+var terminal_resized: std.atomic.Value(bool) = std.atomic.Value(bool).init(false);
+
 pub const App = struct {
     allocator: std.mem.Allocator,
     terminal: Terminal,
@@ -200,6 +203,11 @@ pub const App = struct {
         try self.terminal.enableRawMode();
         defer self.terminal.disableRawMode();
 
+        // Setup SIGWINCH handler for terminal resize
+        setupResizeHandler() catch |err| {
+            Logger.warn("Failed to setup SIGWINCH handler: {}", .{err});
+        };
+
         self.dirty = true;
         self.prev_width = 0;
         self.prev_height = 0;
@@ -207,15 +215,25 @@ pub const App = struct {
         while (self.running) {
             try self.renderIfNeeded();
 
+            // Check if terminal was resized
+            if (terminal_resized.load(.acquire)) {
+                terminal_resized.store(false, .release);
+                self.dirty = true;
+            }
+
             var pollfds = [_]posix.pollfd{
                 posix.pollfd{ .fd = self.terminal.stdin.handle, .events = posix.POLL.IN, .revents = 0 },
             };
 
-            const poll_result = posix.poll(&pollfds, -1) catch |err| {
+            // Poll with timeout to catch resize events via signal
+            const poll_result = posix.poll(&pollfds, 100) catch |err| { // 100ms timeout
                 return err;
             };
 
-            if (poll_result == 0) continue;
+            if (poll_result == 0) {
+                // Timeout - check if terminal size changed (fallback)
+                continue;
+            }
 
             const events = pollfds[0].revents;
             if ((events & posix.POLL.IN) != 0) {
@@ -755,4 +773,19 @@ fn selectThemeCommand(ctx: *Command.CommandContext) !void {
     try app.saveThemeToConfig(selected_theme);
     try app.themes_view.setCurrentTheme(selected_theme);
     Logger.info("Theme selected: {s}", .{selected_theme});
+}
+
+// SIGWINCH signal handler for terminal resize
+fn handleResize(_: c_int) callconv(.c) void {
+    terminal_resized.store(true, .release);
+}
+
+fn setupResizeHandler() !void {
+    const empty_set = std.mem.zeroes(posix.sigset_t);
+    var sa = posix.Sigaction{
+        .handler = .{ .handler = handleResize },
+        .mask = empty_set,
+        .flags = posix.SA.RESTART,
+    };
+    posix.sigaction(posix.SIG.WINCH, &sa, null);
 }
