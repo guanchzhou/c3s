@@ -140,13 +140,78 @@ fn getYamlValue(allocator: mem.Allocator, content: []const u8, key_path: []const
     return null;
 }
 
+/// Validates that a value is safe (only contains color values, no shell commands)
+fn isSafeColorValue(value: []const u8) bool {
+    // Empty values are not safe
+    if (value.len == 0) return false;
+    
+    // Check for shell command injection patterns
+    const unsafe_chars = "|&;$`<>(){}[]!~";
+    for (value) |c| {
+        for (unsafe_chars) |unsafe| {
+            if (c == unsafe) return false;
+        }
+    }
+    
+    // Check for common command injection strings
+    const unsafe_patterns = [_][]const u8{
+        "exec", "eval", "system", "bash", "sh", "zsh",
+        "../", "~/", "/bin", "/usr", "/etc",
+        "curl", "wget", "nc", "netcat", "rm", "chmod",
+    };
+    const lower_value = std.ascii.allocLowerString(std.heap.page_allocator, value) catch return false;
+    defer std.heap.page_allocator.free(lower_value);
+    
+    for (unsafe_patterns) |pattern| {
+        if (mem.indexOf(u8, lower_value, pattern) != null) return false;
+    }
+    
+    // Valid values should be:
+    // - Hex colors: #RGB or #RRGGBB
+    // - Named colors: lowercase alphabetic
+    // - Aliases: *name
+    // - "default"
+    
+    if (mem.eql(u8, value, "default")) return true;
+    if (value[0] == '#' and (value.len == 4 or value.len == 7)) {
+        // Validate hex characters
+        for (value[1..]) |c| {
+            if (!ascii.isHex(c)) return false;
+        }
+        return true;
+    }
+    if (value[0] == '*' and value.len > 1) {
+        // Alias reference - validate name part
+        for (value[1..]) |c| {
+            if (!ascii.isAlphanumeric(c) and c != '-' and c != '_') return false;
+        }
+        return true;
+    }
+    // Named color - only lowercase letters and hyphens
+    for (value) |c| {
+        if (!ascii.isLower(c) and c != '-') return false;
+    }
+    
+    return true;
+}
+
 fn parseSkinFile(allocator: mem.Allocator, content: []const u8) !ThemeColors {
+    // Security check: Validate file size
+    if (content.len > 100 * 1024) { // Max 100KB
+        std.log.warn("Theme file too large ({d} bytes), using default theme", .{content.len});
+        return defaultTheme(allocator);
+    }
+    
     var theme = try defaultTheme(allocator);
     theme.allocator = allocator; // Ensure theme owns its allocated colors
 
-    // Helper to replace allocated string
+    // Helper to replace allocated string with validation
     const replaceColor = struct {
         fn replace(alloc: mem.Allocator, old: *[]const u8, new: []const u8) !void {
+            if (!isSafeColorValue(new)) {
+                std.log.warn("Unsafe color value detected: '{s}', ignoring", .{new});
+                return; // Keep old value
+            }
             alloc.free(old.*);
             old.* = new;
         }
