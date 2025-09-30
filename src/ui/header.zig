@@ -578,6 +578,9 @@ pub const Header = struct {
             const hints_width: u16 = if (shortcuts_width > (quick_width * show_quick_cols)) shortcuts_width - (quick_width * show_quick_cols) else 0;
             const hint_col_width: u16 = if (hints_width > 0 and show_hints_cols > 0) @as(u16, @intCast(hints_width / show_hints_cols)) else 20;
             
+            // Calculate right boundary (header border is at x + width - 1)
+            const max_x = x + width - 2; // -2 to account for border and padding
+            
             for (hints, 0..) |item, idx| {
                 const row = @as(u16, @intCast(idx / show_hints_cols));
                 const col = @as(u16, @intCast(idx % show_hints_cols));
@@ -586,9 +589,27 @@ pub const Header = struct {
                 const hx = hints_start_x + (col * hint_col_width);
                 const hy = y + 1 + row;
                 
+                // Skip if hint would overflow beyond header boundary
+                if (hx >= max_x) continue;
+                
+                // Calculate maximum text length that fits
+                const max_text_len = if (max_x > hx) max_x - hx else 0;
+                if (max_text_len < 3) continue; // Skip if not enough space for meaningful text
+                
                 switch (item.render_fn) {
-                    0 => try Theme.writeStringWithTheme(terminal, hx, hy, item.text, self.theme.main_fg, self.theme.main_bg),
-                    1 => try Theme.writeShortcutWithHighlight(terminal, hx, hy, item.before, item.key, item.after),
+                    0 => {
+                        // Truncate text if needed
+                        const text_len = @min(item.text.len, max_text_len);
+                        try Theme.writeStringWithTheme(terminal, hx, hy, item.text[0..text_len], self.theme.main_fg, self.theme.main_bg);
+                    },
+                    1 => {
+                        // Calculate total length for highlighted hint
+                        const total_len = item.before.len + item.key.len + item.after.len;
+                        if (total_len <= max_text_len) {
+                            try Theme.writeShortcutWithHighlight(terminal, hx, hy, item.before, item.key, item.after);
+                        }
+                        // If doesn't fit, skip this hint
+                    },
                     else => {},
                 }
             }
