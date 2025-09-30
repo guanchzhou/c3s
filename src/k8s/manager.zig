@@ -36,11 +36,22 @@ pub const K8sManager = struct {
         // Try to parse kubeconfig
         var parser = KubeconfigParser.init(self.allocator);
         self.kubeconfig = parser.load() catch |err| {
-            Logger.warn("Failed to load kubeconfig: {}. Using fixtures.", .{err});
+            Logger.err("Failed to load kubeconfig: {}. Using fixtures.", .{err});
             return;
         };
         
+        Logger.info("Kubeconfig loaded successfully", .{});
+        
         const kc = &self.kubeconfig.?;
+        
+        // Debug: log what we found
+        Logger.info("Found {d} clusters, {d} contexts, {d} users", .{kc.clusters.len, kc.contexts.len, kc.users.len});
+        for (kc.clusters) |cluster| {
+            Logger.info("  Cluster: {s} -> {s}", .{cluster.name, cluster.server});
+        }
+        for (kc.contexts) |ctx| {
+            Logger.info("  Context: {s} (cluster={s}, user={s})", .{ctx.name, ctx.cluster, ctx.user});
+        }
         
         // Use context override if provided, otherwise use current-context
         const context_name = context_override orelse kc.current_context;

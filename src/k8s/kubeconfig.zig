@@ -91,13 +91,12 @@ pub const KubeconfigParser = struct {
             
             // Parse clusters
             if (in_clusters) {
-                if (std.mem.startsWith(u8, trimmed, "- name:")) {
+                if (std.mem.startsWith(u8, trimmed, "- cluster:")) {
                     if (current_cluster) |cluster| {
                         try clusters.append(self.allocator, cluster);
                     }
-                    const name = std.mem.trim(u8, trimmed[7..], " ");
                     current_cluster = Cluster{
-                        .name = try self.allocator.dupe(u8, name),
+                        .name = "",
                         .server = "",
                     };
                 } else if (std.mem.startsWith(u8, trimmed, "server:")) {
@@ -105,22 +104,31 @@ pub const KubeconfigParser = struct {
                     if (current_cluster) |*cluster| {
                         cluster.server = try self.allocator.dupe(u8, server);
                     }
+                } else if (std.mem.startsWith(u8, trimmed, "name:")) {
+                    const name = std.mem.trim(u8, trimmed[5..], " ");
+                    if (current_cluster) |*cluster| {
+                        cluster.name = try self.allocator.dupe(u8, name);
+                    }
                 }
             }
             
             // Parse contexts
             if (in_contexts) {
-                if (std.mem.startsWith(u8, trimmed, "- name:")) {
+                if (std.mem.startsWith(u8, trimmed, "- context:")) {
                     if (current_ctxt) |ctxt| {
                         try contexts.append(self.allocator, ctxt);
                     }
-                    const name = std.mem.trim(u8, trimmed[7..], " ");
                     current_ctxt = Context{
-                        .name = try self.allocator.dupe(u8, name),
+                        .name = "",
                         .cluster = "",
                         .user = "",
                         .namespace = null,
                     };
+                } else if (std.mem.startsWith(u8, trimmed, "name:")) {
+                    const name = std.mem.trim(u8, trimmed[5..], " ");
+                    if (current_ctxt) |*ctxt| {
+                        ctxt.name = try self.allocator.dupe(u8, name);
+                    }
                 } else if (std.mem.startsWith(u8, trimmed, "cluster:")) {
                     const cluster = std.mem.trim(u8, trimmed[8..], " ");
                     if (current_ctxt) |*ctxt| {
