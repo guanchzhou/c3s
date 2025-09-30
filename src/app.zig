@@ -706,8 +706,18 @@ pub const App = struct {
                 }
             },
             .question_mark => {
-                // Show help view
-                try self.view_manager.pushView(self.help_view.createView());
+                // Toggle help view (Shift+?)
+                Logger.debug("question_mark key received", .{});
+                const help_is_active = self.view_manager.isViewActive("help");
+                Logger.debug("help_is_active={}", .{help_is_active});
+                
+                if (help_is_active) {
+                    Logger.debug("Closing help view", .{});
+                    _ = self.view_manager.popView();
+                } else {
+                    Logger.debug("Opening help view", .{});
+                    try self.view_manager.pushView(self.help_view.createView());
+                }
                 self.dirty = true;
             },
             .colon => {
