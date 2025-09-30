@@ -1,8 +1,10 @@
 const std = @import("std");
-const Logger = @import("../core/logger.zig");
 
-/// Kubernetes API client for c3s
+/// Kubernetes API client - standalone library
 /// Provides access to Kubernetes cluster resources via REST API
+/// 
+/// Note: This library is logging-agnostic. Wrap API calls with your own
+/// logging if needed.
 pub const K8sClient = struct {
     allocator: std.mem.Allocator,
     api_server: []const u8,
@@ -10,7 +12,13 @@ pub const K8sClient = struct {
     namespace: []const u8,
     http_client: std.http.Client,
     
-    pub fn init(allocator: std.mem.Allocator, config: KubeConfig) !K8sClient {
+    pub const Config = struct {
+        server: []const u8,
+        token: ?[]const u8 = null,
+        namespace: ?[]const u8 = null,
+    };
+    
+    pub fn init(allocator: std.mem.Allocator, config: Config) !K8sClient {
         const http_client = std.http.Client{ .allocator = allocator };
         
         return K8sClient{
@@ -94,7 +102,7 @@ pub const K8sClient = struct {
         );
         defer self.allocator.free(url);
         
-        Logger.debug("K8s API Request: {s} {s}", .{ method_str, url });
+        // self.log("K8s API Request: {s} {s}", .{ method_str, url });
         
         const uri = try std.Uri.parse(url);
         
@@ -132,7 +140,7 @@ pub const K8sClient = struct {
         
         // Check response status
         if (response.head.status != .ok) {
-            Logger.err("K8s API error: {} for {s}", .{ response.head.status, path });
+            // self.log("K8s API error: {} for {s}", .{ response.head.status, path });
             return error.K8sApiError;
         }
         
@@ -151,7 +159,7 @@ pub const K8sClient = struct {
         };
         
         const body = try body_buffer.toOwnedSlice(self.allocator);
-        Logger.debug("K8s API Response: {d} bytes", .{body.len});
+        // self.log("K8s API Response: {d} bytes", .{body.len});
         
         return body;
     }

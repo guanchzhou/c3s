@@ -7,7 +7,8 @@ const K8sClient = client_mod.K8sClient;
 const KubeconfigParser = kubeconfig_mod.KubeconfigParser;
 const Kubeconfig = kubeconfig_mod.Kubeconfig;
 
-/// Kubernetes Manager - high-level interface for K8s operations
+/// Kubernetes Manager - high-level interface for K8s operations  
+/// Adapts standalone k8s library for app usage with logging
 pub const K8sManager = struct {
     allocator: std.mem.Allocator,
     client: ?K8sClient,
@@ -34,6 +35,7 @@ pub const K8sManager = struct {
         Logger.info("Connecting to Kubernetes cluster...", .{});
         
         // Try to parse kubeconfig
+        Logger.debug("Loading kubeconfig via kubectl", .{});
         var parser = KubeconfigParser.init(self.allocator);
         self.kubeconfig = parser.load() catch |err| {
             Logger.err("Failed to load kubeconfig: {}. Using fixtures.", .{err});
@@ -82,12 +84,11 @@ pub const K8sManager = struct {
         });
         
         // Create K8s client
-        const client_config = client_mod.KubeConfig{
+        Logger.debug("K8s API Server: {s}", .{cluster.server});
+        const client_config = K8sClient.Config{
             .server = cluster.server,
             .token = user.token,
             .namespace = current_context.namespace,
-            .cert_path = user.cert_path,
-            .key_path = user.key_path,
         };
         
         self.client = K8sClient.init(self.allocator, client_config) catch |err| {

@@ -1,5 +1,4 @@
 const std = @import("std");
-const Logger = @import("../core/logger.zig");
 
 /// JSON structures matching kubectl config view -o json output
 const KubeconfigJson = struct {
@@ -125,7 +124,7 @@ pub const KubeconfigParser = struct {
     }
     
     pub fn load(self: *KubeconfigParser) !Kubeconfig {
-        Logger.debug("Loading kubeconfig via kubectl", .{});
+        // Logging: User can wrap this call if needed
         
         // Run kubectl to get JSON output
         var child = std.process.Child.init(&[_][]const u8{
