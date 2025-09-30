@@ -20,6 +20,9 @@ pub const PodsView = struct {
     visible_rows: u32 = 0,
     allocated_title: ?[]u8 = null,
     horizontal_scroll: table_layout.TableScroll = .{ .scroll_offset = 0, .visible_width = 0, .total_width = 0 },
+    // Cache for column widths to avoid recalculation on every render
+    cached_col_widths: ?table_layout.ColumnWidths = null,
+    cached_terminal_width: u16 = 0,
     
     const Pod = struct {
         namespace: []const u8,
@@ -65,6 +68,10 @@ pub const PodsView = struct {
         self.filtered_indices.deinit(self.allocator);
         if (self.allocated_title) |allocated| {
             self.allocator.free(allocated);
+        }
+        // Clean up cached column widths
+        if (self.cached_col_widths) |*widths| {
+            widths.deinit();
         }
     }
     
@@ -228,27 +235,44 @@ pub const PodsView = struct {
             .{ .name = "AGE", .min_width = 5, .max_width = 8, .priority = table_layout.ColumnPriority.MEDIUM },
         };
         
-        // Prepare data for width calculation
         const col_names = [_][]const u8{ "NAMESPACE", "NAME", "READY", "STATUS", "CPU", "MEM", "IP", "NODE", "AGE" };
-        var rows_data = try std.ArrayList([]const []const u8).initCapacity(self.allocator, self.filtered_indices.items.len);
-        defer rows_data.deinit(self.allocator);
-        
-        for (self.filtered_indices.items) |pod_idx| {
-            const pod = self.pods.items[pod_idx];
-            const row = [_][]const u8{ pod.namespace, pod.name, pod.ready, pod.status, pod.cpu_l, pod.mem_l, pod.ip, pod.node, pod.age };
-            try rows_data.append(self.allocator, &row);
-        }
-        
-        // Calculate column widths
         const available_width = if (width > 2) width - 2 else 0;
-        var col_widths = try table_layout.calculateColumnWidths(
-            self.allocator,
-            &col_names,
-            rows_data.items,
-            &columns,
-            available_width,
-        );
-        defer col_widths.deinit();
+        
+        // Use cached column widths if terminal width hasn't changed
+        const use_cache = self.cached_col_widths != null and self.cached_terminal_width == available_width;
+        
+        const col_widths = if (use_cache) blk: {
+            // Use cached widths - no allocation needed
+            break :blk &self.cached_col_widths.?;
+        } else blk: {
+            // Recalculate widths - terminal size changed or first render
+            // Prepare data for width calculation
+            var rows_data = try std.ArrayList([]const []const u8).initCapacity(self.allocator, self.filtered_indices.items.len);
+            defer rows_data.deinit(self.allocator);
+            
+            for (self.filtered_indices.items) |pod_idx| {
+                const pod = self.pods.items[pod_idx];
+                const row = [_][]const u8{ pod.namespace, pod.name, pod.ready, pod.status, pod.cpu_l, pod.mem_l, pod.ip, pod.node, pod.age };
+                try rows_data.append(self.allocator, &row);
+            }
+            
+            // Free old cache if exists
+            if (self.cached_col_widths) |*old_widths| {
+                old_widths.deinit();
+            }
+            
+            // Calculate and cache new widths
+            self.cached_col_widths = try table_layout.calculateColumnWidths(
+                self.allocator,
+                &col_names,
+                rows_data.items,
+                &columns,
+                available_width,
+            );
+            self.cached_terminal_width = available_width;
+            
+            break :blk &self.cached_col_widths.?;
+        };
         
         // Update horizontal scroll
         self.horizontal_scroll.visible_width = available_width;
