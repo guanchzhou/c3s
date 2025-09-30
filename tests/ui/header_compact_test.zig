@@ -14,11 +14,11 @@ test "Header progressive compact levels" {
         allocator.destroy(theme);
     }
     
-    // Create header with test data
-    var header = try Header.init(allocator, theme);
+    // Create header with test data (debug = true to get test values)
+    var header = try Header.init(allocator, theme, true);
     defer header.deinit();
     
-    // Set test values (matching the example from requirements)
+    // Override with specific test values (matching the example from requirements)
     header.context = "rancher-desktop [RW]";
     header.cluster = "rancher-desktop";
     header.user = "rancher-desktop";
@@ -134,7 +134,7 @@ test "Header compact with short values" {
         allocator.destroy(theme);
     }
     
-    var header = try Header.init(allocator, theme);
+    var header = try Header.init(allocator, theme, true);
     defer header.deinit();
     
     // Test with very short values
@@ -172,7 +172,7 @@ test "Header compact minimum width" {
         allocator.destroy(theme);
     }
     
-    var header = try Header.init(allocator, theme);
+    var header = try Header.init(allocator, theme, true);
     defer header.deinit();
     
     header.context = "rancher-desktop";

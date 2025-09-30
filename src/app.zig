@@ -85,7 +85,7 @@ pub const App = struct {
         help_view.* = try HelpView.init(allocator, theme);
 
         // Initialize components
-        var header = try Header.init(allocator, theme);
+        var header = try Header.init(allocator, theme, config.debug);
         const footer = try Footer.init(allocator, theme);
         const command_input = try CommandInput.init(allocator, theme);
         

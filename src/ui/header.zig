@@ -21,26 +21,42 @@ pub const Header = struct {
     cpu_str: []const u8,
     mem_str: []const u8,
     last_height: u16 = 0,
+    debug: bool = false,
 
-    pub fn init(allocator: std.mem.Allocator, theme: *const theme_loader.ThemeColors) !Header {
+    pub fn init(allocator: std.mem.Allocator, theme: *const theme_loader.ThemeColors, debug: bool) !Header {
         const k9s_version = try version.ownedString(allocator);
         const title_with_version = k9s_version; // Just store version, we'll render "c3s" separately
-        const cpu_str = try std.fmt.allocPrint(allocator, "{}%", .{@as(u8, 2)}); // Initial dummy value
-        const mem_str = try std.fmt.allocPrint(allocator, "{}%", .{@as(u8, 27)}); // Initial dummy value
+        
+        // Use dummy data only in debug mode, otherwise use "n/a"
+        const context = if (debug) "rancher-desktop [RW]" else "n/a";
+        const cluster = if (debug) "rancher-desktop" else "n/a";
+        const user = if (debug) "rancher-desktop" else "n/a";
+        const k8s_version = if (debug) "v1.33.3+k3s1" else "n/a";
+        const cpu_usage: u8 = if (debug) 2 else 0;
+        const mem_usage: u8 = if (debug) 27 else 0;
+        const cpu_str = if (debug) 
+            try std.fmt.allocPrint(allocator, "{}%", .{cpu_usage})
+        else 
+            try allocator.dupe(u8, "n/a");
+        const mem_str = if (debug)
+            try std.fmt.allocPrint(allocator, "{}%", .{mem_usage})
+        else
+            try allocator.dupe(u8, "n/a");
 
         return Header{
             .allocator = allocator,
             .theme = theme,
-            .context = "rancher-desktop [RW]",
-            .cluster = "rancher-desktop",
-            .user = "rancher-desktop",
+            .context = context,
+            .cluster = cluster,
+            .user = user,
             .k9s_version = k9s_version,
-            .k8s_version = "v1.33.3+k3s1",
-            .cpu_usage = 2,
-            .mem_usage = 27,
+            .k8s_version = k8s_version,
+            .cpu_usage = cpu_usage,
+            .mem_usage = mem_usage,
             .title_with_version = title_with_version,
             .cpu_str = cpu_str,
             .mem_str = mem_str,
+            .debug = debug,
         };
     }
 

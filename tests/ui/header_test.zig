@@ -1,24 +1,57 @@
 const std = @import("std");
 const testing = std.testing;
-const Header = @import("src").Header;
-const Terminal = @import("src").Terminal;
+const Header = @import("c3s").Header;
+const Terminal = @import("c3s").Terminal;
+const theme_loader = @import("c3s").theme_loader;
 
-test "header initialization and cleanup" {
+test "header initialization and cleanup with debug mode" {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    var header = try Header.init(allocator);
+    const theme = try allocator.create(theme_loader.ThemeColors);
+    theme.* = try theme_loader.defaultTheme(allocator);
+    defer {
+        theme_loader.deinitTheme(theme);
+        allocator.destroy(theme);
+    }
+
+    var header = try Header.init(allocator, theme, true); // debug = true
     defer header.deinit();
 
-    // Test that header was initialized with default values
+    // Test that header was initialized with debug values
     try testing.expect(std.mem.eql(u8, header.context, "rancher-desktop [RW]"));
     try testing.expect(std.mem.eql(u8, header.cluster, "rancher-desktop"));
     try testing.expect(std.mem.eql(u8, header.user, "rancher-desktop"));
-    try testing.expect(std.mem.eql(u8, header.k9s_version, "v0.50.13"));
     try testing.expect(std.mem.eql(u8, header.k8s_version, "v1.33.3+k3s1"));
     try testing.expect(header.cpu_usage == 2);
     try testing.expect(header.mem_usage == 27);
+}
+
+test "header initialization without debug mode" {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
+    const theme = try allocator.create(theme_loader.ThemeColors);
+    theme.* = try theme_loader.defaultTheme(allocator);
+    defer {
+        theme_loader.deinitTheme(theme);
+        allocator.destroy(theme);
+    }
+
+    var header = try Header.init(allocator, theme, false); // debug = false
+    defer header.deinit();
+
+    // Test that header was initialized with n/a values
+    try testing.expect(std.mem.eql(u8, header.context, "n/a"));
+    try testing.expect(std.mem.eql(u8, header.cluster, "n/a"));
+    try testing.expect(std.mem.eql(u8, header.user, "n/a"));
+    try testing.expect(std.mem.eql(u8, header.k8s_version, "n/a"));
+    try testing.expect(std.mem.eql(u8, header.cpu_str, "n/a"));
+    try testing.expect(std.mem.eql(u8, header.mem_str, "n/a"));
+    try testing.expect(header.cpu_usage == 0);
+    try testing.expect(header.mem_usage == 0);
 }
 
 test "header rendering" {
@@ -26,7 +59,14 @@ test "header rendering" {
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    var header = try Header.init(allocator);
+    const theme = try allocator.create(theme_loader.ThemeColors);
+    theme.* = try theme_loader.defaultTheme(allocator);
+    defer {
+        theme_loader.deinitTheme(theme);
+        allocator.destroy(theme);
+    }
+
+    var header = try Header.init(allocator, theme, true);
     defer header.deinit();
 
     var terminal = try Terminal.init(allocator);
@@ -47,7 +87,14 @@ test "header data validation" {
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    var header = try Header.init(allocator);
+    const theme = try allocator.create(theme_loader.ThemeColors);
+    theme.* = try theme_loader.defaultTheme(allocator);
+    defer {
+        theme_loader.deinitTheme(theme);
+        allocator.destroy(theme);
+    }
+
+    var header = try Header.init(allocator, theme, true);
     defer header.deinit();
 
     // Test that all string fields are non-empty
@@ -67,9 +114,16 @@ test "header memory management" {
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
+    const theme = try allocator.create(theme_loader.ThemeColors);
+    theme.* = try theme_loader.defaultTheme(allocator);
+    defer {
+        theme_loader.deinitTheme(theme);
+        allocator.destroy(theme);
+    }
+
     // Test multiple initialization and cleanup cycles
     for (0..10) |_| {
-        var header = try Header.init(allocator);
+        var header = try Header.init(allocator, theme, true);
         header.deinit();
     }
     
