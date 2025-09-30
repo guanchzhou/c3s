@@ -455,7 +455,7 @@ pub const Header = struct {
         try Theme.writeStringWithTheme(terminal, x + 1, line, "MEM:", self.theme.main_fg, self.theme.main_bg);
         try Theme.writeStringWithTheme(terminal, x + 1 + label_width, line, self.mem_str, self.theme.hi_fg, self.theme.main_bg);
 
-        // Keyboard shortcuts section (right side of header)
+        // Keyboard shortcuts section (right side of header) with progressive hiding
         const shortcuts_start_x = @as(u16, @intCast(width / 3)) + 1;
         const shortcuts_width: u16 = if (width > shortcuts_start_x) width - shortcuts_start_x else 0;
         
@@ -465,21 +465,7 @@ pub const Header = struct {
             .{ .key = "1", .cmd = "default" },
         };
         
-        // Determine quick commands columns: 1 column if ≤6 items, 2 columns if >6
-        const quick_cols: u16 = if (quick_commands.len > 6) 2 else 1;
-        const quick_width: u16 = if (shortcuts_width > 0) @as(u16, @intCast(shortcuts_width / 5)) else 15;
-        
-        // Render quick commands (top-to-bottom, left-to-right)
-        line = y + 1;
-        for (quick_commands, 0..) |item, idx| {
-            const row = @as(u16, @intCast(idx / quick_cols));
-            const col = @as(u16, @intCast(idx % quick_cols));
-            const qx = shortcuts_start_x + (col * quick_width);
-            const qy = y + 1 + row;
-            try Theme.writeShortcut(terminal, qx, qy, item.key, item.cmd, self.theme.main_bg);
-        }
-        
-        // Text hints (right section) - render up to 3 columns
+        // Text hints (right section)
         const hints = [_]struct { render_fn: u8, text: []const u8, key: []const u8, before: []const u8, after: []const u8 }{
             .{ .render_fn = 1, .text = "", .key = "a", .before = "", .after = "ttach" },
             .{ .render_fn = 0, .text = "<ctrl-k> kill", .key = "", .before = "", .after = "" },
@@ -488,7 +474,7 @@ pub const Header = struct {
             .{ .render_fn = 1, .text = "", .key = "d", .before = "", .after = "escribe" },
             .{ .render_fn = 1, .text = "", .key = "e", .before = "", .after = "dit" },
             .{ .render_fn = 1, .text = "", .key = "o", .before = "sh", .after = "w node" },
-            .{ .render_fn = 1, .text = "", .key = "?", .before = "", .after = " help" }, // ? help - key is "?", after is " help" with leading space
+            .{ .render_fn = 1, .text = "", .key = "?", .before = "", .after = " help" },
             .{ .render_fn = 1, .text = "", .key = "l", .before = "", .after = "ogs" },
             .{ .render_fn = 0, .text = "<shift-f> port-forward", .key = "", .before = "", .after = "" },
             .{ .render_fn = 0, .text = "<ctrl-f> kill finalizers", .key = "", .before = "", .after = "" },
@@ -496,26 +482,84 @@ pub const Header = struct {
             .{ .render_fn = 1, .text = "", .key = "t", .before = "", .after = "ransfer" },
             .{ .render_fn = 1, .text = "", .key = "z", .before = "saniti", .after = "e" },
             .{ .render_fn = 1, .text = "", .key = "i", .before = "set ", .after = "mage" },
-            .{ .render_fn = 1, .text = "", .key = "y", .before = "", .after = " yaml" }, // y yaml - same pattern
+            .{ .render_fn = 1, .text = "", .key = "y", .before = "", .after = " yaml" },
         };
         
-        // Determine hints columns: 1 if ≤6, 2 if ≤12, 3 if >12
-        const hints_cols: u16 = if (hints.len > 12) 3 else if (hints.len > 6) 2 else 1;
-        const hints_start_x = shortcuts_start_x + (quick_width * quick_cols);
-        const hints_width: u16 = if (shortcuts_width > (quick_width * quick_cols)) shortcuts_width - (quick_width * quick_cols) else 0;
-        const hint_col_width: u16 = if (hints_width > 0 and hints_cols > 0) @as(u16, @intCast(hints_width / hints_cols)) else 20;
+        // Progressive hiding strategy based on width
+        // Calculate minimum widths for each level:
+        // - Level 0 (full): 2 quick commands cols + 3 hints cols (~140 chars needed)
+        // - Level 1: 2 quick commands cols + 2 hints cols (~110 chars needed)
+        // - Level 2: 2 quick commands cols + 1 hints col (~80 chars needed)
+        // - Level 3: 2 quick commands cols + 0 hints (~50 chars needed)
+        // - Level 4: 1 quick commands col + 0 hints (~40 chars needed)
+        // - Level 5: 0 quick commands cols + 0 hints (shortcuts hidden)
         
-        // Render hints (top-to-bottom, left-to-right)
-        for (hints, 0..) |item, idx| {
-            const row = @as(u16, @intCast(idx / hints_cols));
-            const col = @as(u16, @intCast(idx % hints_cols));
-            const hx = hints_start_x + (col * hint_col_width);
-            const hy = y + 1 + row;
+        const min_width_for_3_hint_cols: u16 = 140;
+        const min_width_for_2_hint_cols: u16 = 110;
+        const min_width_for_1_hint_col: u16 = 80;
+        const min_width_for_shortcuts: u16 = 50;
+        const min_width_for_1_quick_col: u16 = 40;
+        
+        // Determine what to show based on width
+        var show_hints_cols: u16 = 0;
+        var show_quick_cols: u16 = 0;
+        
+        if (width >= min_width_for_3_hint_cols) {
+            show_hints_cols = 3;
+            show_quick_cols = 2;
+        } else if (width >= min_width_for_2_hint_cols) {
+            show_hints_cols = 2;
+            show_quick_cols = 2;
+        } else if (width >= min_width_for_1_hint_col) {
+            show_hints_cols = 1;
+            show_quick_cols = 2;
+        } else if (width >= min_width_for_shortcuts) {
+            show_hints_cols = 0;
+            show_quick_cols = 2;
+        } else if (width >= min_width_for_1_quick_col) {
+            show_hints_cols = 0;
+            show_quick_cols = 1;
+        } else {
+            show_hints_cols = 0;
+            show_quick_cols = 0;
+        }
+        
+        // Render quick commands if visible
+        if (show_quick_cols > 0) {
+            const quick_width: u16 = if (shortcuts_width > 0) @as(u16, @intCast(shortcuts_width / 5)) else 15;
             
-            switch (item.render_fn) {
-                0 => try Theme.writeStringWithTheme(terminal, hx, hy, item.text, self.theme.main_fg, self.theme.main_bg),
-                1 => try Theme.writeShortcutWithHighlight(terminal, hx, hy, item.before, item.key, item.after),
-                else => {},
+            line = y + 1;
+            for (quick_commands, 0..) |item, idx| {
+                const row = @as(u16, @intCast(idx / show_quick_cols));
+                const col = @as(u16, @intCast(idx % show_quick_cols));
+                if (col >= show_quick_cols) continue; // Skip if column is hidden
+                
+                const qx = shortcuts_start_x + (col * quick_width);
+                const qy = y + 1 + row;
+                try Theme.writeShortcut(terminal, qx, qy, item.key, item.cmd, self.theme.main_bg);
+            }
+        }
+        
+        // Render hints if visible
+        if (show_hints_cols > 0) {
+            const quick_width: u16 = if (shortcuts_width > 0) @as(u16, @intCast(shortcuts_width / 5)) else 15;
+            const hints_start_x = shortcuts_start_x + (quick_width * show_quick_cols);
+            const hints_width: u16 = if (shortcuts_width > (quick_width * show_quick_cols)) shortcuts_width - (quick_width * show_quick_cols) else 0;
+            const hint_col_width: u16 = if (hints_width > 0 and show_hints_cols > 0) @as(u16, @intCast(hints_width / show_hints_cols)) else 20;
+            
+            for (hints, 0..) |item, idx| {
+                const row = @as(u16, @intCast(idx / show_hints_cols));
+                const col = @as(u16, @intCast(idx % show_hints_cols));
+                if (col >= show_hints_cols) continue; // Skip if column is hidden
+                
+                const hx = hints_start_x + (col * hint_col_width);
+                const hy = y + 1 + row;
+                
+                switch (item.render_fn) {
+                    0 => try Theme.writeStringWithTheme(terminal, hx, hy, item.text, self.theme.main_fg, self.theme.main_bg),
+                    1 => try Theme.writeShortcutWithHighlight(terminal, hx, hy, item.before, item.key, item.after),
+                    else => {},
+                }
             }
         }
         
