@@ -551,9 +551,13 @@ pub const App = struct {
                     self.dirty = true;
                 },
                 '?' => {
-                    // Show help view
-                    try self.view_manager.pushView(self.help_view.createView());
-                self.dirty = true;
+                    // Toggle help view - if already open, close it; otherwise open it
+                    if (self.view_manager.isViewActive("help")) {
+                        _ = self.view_manager.popView();
+                    } else {
+                        try self.view_manager.pushView(self.help_view.createView());
+                    }
+                    self.dirty = true;
                 },
                 else => {
                     // Pass to current view
