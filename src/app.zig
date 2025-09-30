@@ -552,9 +552,13 @@ pub const App = struct {
                 },
                 '?' => {
                     // Toggle help view - if already open, close it; otherwise open it
-                    if (self.view_manager.isViewActive("help")) {
+                    const help_is_active = self.view_manager.isViewActive("help");
+                    Logger.info("Shift+? pressed, help_is_active={}", .{help_is_active});
+                    if (help_is_active) {
+                        Logger.info("Closing help view", .{});
                         _ = self.view_manager.popView();
                     } else {
+                        Logger.info("Opening help view", .{});
                         try self.view_manager.pushView(self.help_view.createView());
                     }
                     self.dirty = true;
@@ -872,8 +876,15 @@ fn podsCommand(ctx: *Command.CommandContext) !void {
 
 fn helpCommand(ctx: *Command.CommandContext) !void {
     const app: *App = @ptrCast(@alignCast(ctx.data.?));
-    try ctx.view_manager.pushView(app.help_view.createView());
-    Logger.info("Help command executed", .{});
+    
+    // Toggle help view - don't stack it!
+    if (ctx.view_manager.isViewActive("help")) {
+        Logger.info("Help command: closing help view", .{});
+        _ = ctx.view_manager.popView();
+    } else {
+        Logger.info("Help command: opening help view", .{});
+        try ctx.view_manager.pushView(app.help_view.createView());
+    }
 }
 
 fn selectThemeCommand(ctx: *Command.CommandContext) !void {

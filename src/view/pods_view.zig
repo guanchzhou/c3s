@@ -108,6 +108,12 @@ pub const PodsView = struct {
         
         self.filter_text = filter;
         
+        // Invalidate cache when filter changes (data set changes)
+        if (self.cached_col_widths) |*widths| {
+            widths.deinit();
+            self.cached_col_widths = null;
+        }
+        
         // Use universal filter
         try universal_filter.applyFilter(
             Pod,
