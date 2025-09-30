@@ -85,8 +85,8 @@ pub const App = struct {
         help_view.* = try HelpView.init(allocator, theme);
 
         // Initialize components
-        var header = try Header.init(allocator);
-        const footer = try Footer.init(allocator);
+        var header = try Header.init(allocator, theme);
+        const footer = try Footer.init(allocator, theme);
         const command_input = try CommandInput.init(allocator, theme);
         
         // Apply UI config
@@ -257,6 +257,11 @@ pub const App = struct {
         if (size_changed or header_height_changed) {
                     try self.terminal.clear();
         }
+
+        // Update header and footer themes if we're previewing a theme
+        const effective_theme = if (self.themes_view.preview_theme) |preview| preview else self.theme;
+        self.header.setTheme(effective_theme);
+        self.footer.setTheme(effective_theme);
 
         // Render header
         if (size.height >= self.header_height) {

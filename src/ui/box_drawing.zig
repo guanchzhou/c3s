@@ -35,7 +35,9 @@ pub const Box = struct {
         line_color: []const u8,
         fill_color: ?[]const u8,
         title: ?[]const u8,
-        style: BoxStyle
+        style: BoxStyle,
+        main_fg: []const u8,
+        title_color: []const u8,
     ) !void {
         if (width < 2 or height < 2) return;
 
@@ -83,7 +85,7 @@ pub const Box = struct {
             if (fill_color) |fill| {
                 // Fill the row with spaces using fill color as background
                 for (1..width - 1) |col| {
-                    try Theme.writeStringWithTheme(terminal, @intCast(x + col), row_y, " ", Theme.main_fg, fill);
+                    try Theme.writeStringWithTheme(terminal, @intCast(x + col), row_y, " ", main_fg, fill);
                 }
             }
             
@@ -101,7 +103,7 @@ pub const Box = struct {
             const title_x = x + 2;
             const title_y = y;
             try Theme.writeText(terminal, title_x, title_y, Symbols.title_left, line_color);
-            try Theme.writeText(terminal, title_x + 1, title_y, title_text, Theme.title);
+            try Theme.writeText(terminal, title_x + 1, title_y, title_text, title_color);
             try Theme.writeText(terminal, title_x + 1 + @as(u16, @intCast(title_text.len)), title_y, Symbols.title_right, line_color);
         }
     }

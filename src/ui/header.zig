@@ -4,9 +4,11 @@ const BoxDrawing = @import("box_drawing.zig");
 const Theme = @import("../theme.zig");
 const build = @import("c3s_build");
 const version = @import("../model/version.zig");
+const theme_loader = @import("../model/theme_loader.zig");
 
 pub const Header = struct {
     allocator: std.mem.Allocator,
+    theme: *const theme_loader.ThemeColors,
     context: []const u8,
     cluster: []const u8,
     user: []const u8,
@@ -20,7 +22,7 @@ pub const Header = struct {
     mem_str: []const u8,
     last_height: u16 = 0,
 
-    pub fn init(allocator: std.mem.Allocator) !Header {
+    pub fn init(allocator: std.mem.Allocator, theme: *const theme_loader.ThemeColors) !Header {
         const k9s_version = try version.ownedString(allocator);
         const title_with_version = k9s_version; // Just store version, we'll render "c3s" separately
         const cpu_str = try std.fmt.allocPrint(allocator, "{}%", .{@as(u8, 2)}); // Initial dummy value
@@ -28,6 +30,7 @@ pub const Header = struct {
 
         return Header{
             .allocator = allocator,
+            .theme = theme,
             .context = "rancher-desktop [RW]",
             .cluster = "rancher-desktop",
             .user = "rancher-desktop",
@@ -43,6 +46,10 @@ pub const Header = struct {
 
     pub fn toggleCompact(self: *Header) void {
         self.compact = !self.compact;
+    }
+
+    pub fn setTheme(self: *Header, theme: *const theme_loader.ThemeColors) void {
+        self.theme = theme;
     }
     
     pub fn setCompact(self: *Header, compact: bool) void {
@@ -103,12 +110,12 @@ pub const Header = struct {
                 value: []const u8,
                 value_fg: []const u8,
             }{
-                .{ .label = "context:", .value = self.context, .value_fg = Theme.hi_fg },
-                .{ .label = "cluster:", .value = self.cluster, .value_fg = Theme.hi_fg },
-                .{ .label = "user:", .value = self.user, .value_fg = Theme.hi_fg },
-                .{ .label = "k8s:", .value = self.k8s_version, .value_fg = Theme.title },
-                .{ .label = "CPU:", .value = self.cpu_str, .value_fg = Theme.hi_fg },
-                .{ .label = "MEM:", .value = self.mem_str, .value_fg = Theme.hi_fg },
+                .{ .label = "context:", .value = self.context, .value_fg = self.theme.hi_fg },
+                .{ .label = "cluster:", .value = self.cluster, .value_fg = self.theme.hi_fg },
+                .{ .label = "user:", .value = self.user, .value_fg = self.theme.hi_fg },
+                .{ .label = "k8s:", .value = self.k8s_version, .value_fg = self.theme.title },
+                .{ .label = "CPU:", .value = self.cpu_str, .value_fg = self.theme.hi_fg },
+                .{ .label = "MEM:", .value = self.mem_str, .value_fg = self.theme.hi_fg },
             };
 
             var total_len: usize = 3 + 1 + self.title_with_version.len; // "c3s " + version
@@ -125,29 +132,29 @@ pub const Header = struct {
             var current_x: u16 = x + offset;
             // Render "c3s" in bold white
             try terminal.setCursor(current_x, y);
-            try terminal.writeAll(Theme.app_name);
+            try terminal.writeAll(self.theme.app_name);
             try terminal.writeAll("c3s");
-            try terminal.writeAll(Theme.reset);
+            try terminal.writeAll("\x1b[0m");
             current_x += 3; // "c3s" is 3 characters
             
             // Render version in normal color
             try terminal.writeAll(" ");
-            try terminal.writeAll(Theme.title);
+            try terminal.writeAll(self.theme.title);
             try terminal.writeAll(self.title_with_version);
-            try terminal.writeAll(Theme.reset);
+            try terminal.writeAll("\x1b[0m");
             current_x += @as(u16, @intCast(1 + self.title_with_version.len));
 
             for (segments) |segment| {
-                try Theme.writeStringWithTheme(terminal, current_x, y, separator, Theme.main_fg, Theme.main_bg);
+                try Theme.writeStringWithTheme(terminal, current_x, y, separator, self.theme.main_fg, self.theme.main_bg);
                 current_x += @as(u16, @intCast(separator.len));
 
-                try Theme.writeStringWithTheme(terminal, current_x, y, segment.label, Theme.main_fg, Theme.main_bg);
+                try Theme.writeStringWithTheme(terminal, current_x, y, segment.label, self.theme.main_fg, self.theme.main_bg);
                 current_x += @as(u16, @intCast(segment.label.len));
 
-                try Theme.writeStringWithTheme(terminal, current_x, y, " ", Theme.main_fg, Theme.main_bg);
+                try Theme.writeStringWithTheme(terminal, current_x, y, " ", self.theme.main_fg, self.theme.main_bg);
                 current_x += 1;
 
-                try Theme.writeStringWithTheme(terminal, current_x, y, segment.value, segment.value_fg, Theme.main_bg);
+                try Theme.writeStringWithTheme(terminal, current_x, y, segment.value, segment.value_fg, self.theme.main_bg);
                 current_x += @as(u16, @intCast(segment.value.len));
             }
 
@@ -155,54 +162,54 @@ pub const Header = struct {
             return;
         }
 
-        try BoxDrawing.Box.createBox(terminal, x, y, width, box_height, Theme.div_line, Theme.main_bg, null, .rounded);
+        try BoxDrawing.Box.createBox(terminal, x, y, width, box_height, self.theme.proc_box, self.theme.main_bg, null, .rounded, self.theme.main_fg, self.theme.title);
         
         // Render custom title with "c3s" in bold white and version in normal color
         const title_x = x + 2;
         const title_y = y;
-        try Theme.writeText(terminal, title_x, title_y, BoxDrawing.Symbols.title_left, Theme.div_line);
+        try Theme.writeText(terminal, title_x, title_y, BoxDrawing.Symbols.title_left, self.theme.proc_box);
         
         // "c3s" in bold white
         try terminal.setCursor(title_x + 1, title_y);
-        try terminal.writeAll(Theme.app_name);
+        try terminal.writeAll(self.theme.app_name);
         try terminal.writeAll("c3s");
-        try terminal.writeAll(Theme.reset);
+        try terminal.writeAll("\x1b[0m");
         
         // Version in normal color
         try terminal.writeAll(" ");
-        try terminal.writeAll(Theme.title);
+        try terminal.writeAll(self.theme.title);
         try terminal.writeAll(self.title_with_version);
-        try terminal.writeAll(Theme.reset);
+        try terminal.writeAll("\x1b[0m");
         
         const title_end_x = title_x + 1 + 3 + 1 + @as(u16, @intCast(self.title_with_version.len));
-        try Theme.writeText(terminal, title_end_x, title_y, BoxDrawing.Symbols.title_right, Theme.div_line);
+        try Theme.writeText(terminal, title_end_x, title_y, BoxDrawing.Symbols.title_right, self.theme.proc_box);
 
         // System information (left side) - offset by 1 for border, properly aligned
         const label_width = 9; // Fixed width for all labels for alignment
         var line: u16 = y + 1;
         
-        try Theme.writeStringWithTheme(terminal, x + 1, line, "Context:", Theme.main_fg, Theme.main_bg);
-        try Theme.writeStringWithTheme(terminal, x + 1 + label_width, line, self.context, Theme.hi_fg, Theme.main_bg);
+        try Theme.writeStringWithTheme(terminal, x + 1, line, "Context:", self.theme.main_fg, self.theme.main_bg);
+        try Theme.writeStringWithTheme(terminal, x + 1 + label_width, line, self.context, self.theme.hi_fg, self.theme.main_bg);
         line += 1;
 
-        try Theme.writeStringWithTheme(terminal, x + 1, line, "Cluster:", Theme.main_fg, Theme.main_bg);
-        try Theme.writeStringWithTheme(terminal, x + 1 + label_width, line, self.cluster, Theme.hi_fg, Theme.main_bg);
+        try Theme.writeStringWithTheme(terminal, x + 1, line, "Cluster:", self.theme.main_fg, self.theme.main_bg);
+        try Theme.writeStringWithTheme(terminal, x + 1 + label_width, line, self.cluster, self.theme.hi_fg, self.theme.main_bg);
         line += 1;
 
-        try Theme.writeStringWithTheme(terminal, x + 1, line, "User:", Theme.main_fg, Theme.main_bg);
-        try Theme.writeStringWithTheme(terminal, x + 1 + label_width, line, self.user, Theme.hi_fg, Theme.main_bg);
+        try Theme.writeStringWithTheme(terminal, x + 1, line, "User:", self.theme.main_fg, self.theme.main_bg);
+        try Theme.writeStringWithTheme(terminal, x + 1 + label_width, line, self.user, self.theme.hi_fg, self.theme.main_bg);
         line += 1;
 
-        try Theme.writeStringWithTheme(terminal, x + 1, line, "K8s Rev:", Theme.main_fg, Theme.main_bg);
-        try Theme.writeStringWithTheme(terminal, x + 1 + label_width, line, self.k8s_version, Theme.title, Theme.main_bg);
+        try Theme.writeStringWithTheme(terminal, x + 1, line, "K8s Rev:", self.theme.main_fg, self.theme.main_bg);
+        try Theme.writeStringWithTheme(terminal, x + 1 + label_width, line, self.k8s_version, self.theme.title, self.theme.main_bg);
         line += 1;
 
-        try Theme.writeStringWithTheme(terminal, x + 1, line, "CPU:", Theme.main_fg, Theme.main_bg);
-        try Theme.writeStringWithTheme(terminal, x + 1 + label_width, line, self.cpu_str, Theme.hi_fg, Theme.main_bg);
+        try Theme.writeStringWithTheme(terminal, x + 1, line, "CPU:", self.theme.main_fg, self.theme.main_bg);
+        try Theme.writeStringWithTheme(terminal, x + 1 + label_width, line, self.cpu_str, self.theme.hi_fg, self.theme.main_bg);
         line += 1;
 
-        try Theme.writeStringWithTheme(terminal, x + 1, line, "MEM:", Theme.main_fg, Theme.main_bg);
-        try Theme.writeStringWithTheme(terminal, x + 1 + label_width, line, self.mem_str, Theme.hi_fg, Theme.main_bg);
+        try Theme.writeStringWithTheme(terminal, x + 1, line, "MEM:", self.theme.main_fg, self.theme.main_bg);
+        try Theme.writeStringWithTheme(terminal, x + 1 + label_width, line, self.mem_str, self.theme.hi_fg, self.theme.main_bg);
 
         // Keyboard shortcuts section (right side of header)
         const shortcuts_start_x = @as(u16, @intCast(width / 3)) + 1;
@@ -225,7 +232,7 @@ pub const Header = struct {
             const col = @as(u16, @intCast(idx % quick_cols));
             const qx = shortcuts_start_x + (col * quick_width);
             const qy = y + 1 + row;
-            try Theme.writeShortcut(terminal, qx, qy, item.key, item.cmd, Theme.main_bg);
+            try Theme.writeShortcut(terminal, qx, qy, item.key, item.cmd, self.theme.main_bg);
         }
         
         // Text hints (right section) - render up to 3 columns
@@ -262,7 +269,7 @@ pub const Header = struct {
             const hy = y + 1 + row;
             
             switch (item.render_fn) {
-                0 => try Theme.writeStringWithTheme(terminal, hx, hy, item.text, Theme.main_fg, Theme.main_bg),
+                0 => try Theme.writeStringWithTheme(terminal, hx, hy, item.text, self.theme.main_fg, self.theme.main_bg),
                 1 => try Theme.writeShortcutWithHighlight(terminal, hx, hy, item.before, item.key, item.after),
                 else => {},
             }

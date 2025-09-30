@@ -195,7 +195,7 @@ pub const HelpView = struct {
         self.visible_rows = if (height > 3) height - 3 else 0;
         
         // Draw box with theme colors
-        try BoxDrawing.Box.createBox(terminal, x, y, width, height, self.theme.proc_box, self.theme.main_bg, "Help", .rounded);
+        try BoxDrawing.Box.createBox(terminal, x, y, width, height, self.theme.proc_box, self.theme.main_bg, "Help", .rounded, self.theme.main_fg, self.theme.title);
         
         // Draw help content
         const start_row = self.scroll_offset;

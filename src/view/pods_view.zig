@@ -196,7 +196,7 @@ pub const PodsView = struct {
         
         // Draw box border using theme colors
         const BoxDrawing = @import("../ui/box_drawing.zig");
-        try BoxDrawing.Box.createBox(terminal, x, y, width, height, self.theme.proc_box, self.theme.main_bg, null, .rounded);
+        try BoxDrawing.Box.createBox(terminal, x, y, width, height, self.theme.proc_box, self.theme.main_bg, null, .rounded, self.theme.main_fg, self.theme.title);
         
         // Draw title with filter info
         var title_buf: [256]u8 = undefined;

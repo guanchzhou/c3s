@@ -273,7 +273,7 @@ pub const ThemesView = struct {
         const self: *ThemesView = @ptrCast(@alignCast(ptr));
         
         // Draw box using theme colors
-        try BoxDrawing.Box.createBox(terminal, x, y, width, height, self.theme.proc_box, self.theme.main_bg, null, .rounded);
+        try BoxDrawing.Box.createBox(terminal, x, y, width, height, self.theme.proc_box, self.theme.main_bg, null, .rounded, self.theme.main_fg, self.theme.title);
         
         // Draw title with count using theme colors
         const title_x = x + 2;
