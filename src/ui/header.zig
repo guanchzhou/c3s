@@ -413,7 +413,9 @@ pub const Header = struct {
         }
     }
 
-    pub fn render(self: *Header, terminal: *Terminal, x: u16, y: u16, width: u16, box_height: u16) !void {
+    const hints_model = @import("../model/hints.zig");
+    
+    pub fn render(self: *Header, terminal: *Terminal, x: u16, y: u16, width: u16, box_height: u16, hint_config: hints_model.HintConfig) !void {
         if (self.last_height > box_height) {
             try clearRows(terminal, x, y, width, self.last_height);
         }
@@ -494,31 +496,9 @@ pub const Header = struct {
         const shortcuts_start_x = @as(u16, @intCast(width / 3)) + 1;
         const shortcuts_width: u16 = if (width > shortcuts_start_x) width - shortcuts_start_x else 0;
         
-        // Quick commands (left section) - namespace shortcuts only
-        const quick_commands = [_]struct { key: []const u8, cmd: []const u8 }{
-            .{ .key = "0", .cmd = "all" },
-            .{ .key = "1", .cmd = "default" },
-        };
-        
-        // Text hints (right section)
-        const hints = [_]struct { render_fn: u8, text: []const u8, key: []const u8, before: []const u8, after: []const u8 }{
-            .{ .render_fn = 1, .text = "", .key = "a", .before = "", .after = "ttach" },
-            .{ .render_fn = 0, .text = "<ctrl-k> kill", .key = "", .before = "", .after = "" },
-            .{ .render_fn = 0, .text = "<ctrl-d> delete", .key = "", .before = "", .after = "" },
-            .{ .render_fn = 1, .text = "", .key = "s", .before = "", .after = "hell" },
-            .{ .render_fn = 1, .text = "", .key = "d", .before = "", .after = "escribe" },
-            .{ .render_fn = 1, .text = "", .key = "e", .before = "", .after = "dit" },
-            .{ .render_fn = 1, .text = "", .key = "o", .before = "sh", .after = "w node" },
-            .{ .render_fn = 1, .text = "", .key = "?", .before = "", .after = " help" },
-            .{ .render_fn = 1, .text = "", .key = "l", .before = "", .after = "ogs" },
-            .{ .render_fn = 0, .text = "<shift-f> port-forward", .key = "", .before = "", .after = "" },
-            .{ .render_fn = 0, .text = "<ctrl-f> kill finalizers", .key = "", .before = "", .after = "" },
-            .{ .render_fn = 1, .text = "", .key = "p", .before = "logs ", .after = "revious" },
-            .{ .render_fn = 1, .text = "", .key = "t", .before = "", .after = "ransfer" },
-            .{ .render_fn = 1, .text = "", .key = "z", .before = "saniti", .after = "e" },
-            .{ .render_fn = 1, .text = "", .key = "i", .before = "set ", .after = "mage" },
-            .{ .render_fn = 1, .text = "", .key = "y", .before = "", .after = " yaml" },
-        };
+        // Get hints from parameter
+        const quick_commands = hint_config.quick_commands;
+        const hints = hint_config.hints;
         
         // Progressive hiding strategy based on width
         // Calculate minimum widths for each level:
@@ -597,12 +577,12 @@ pub const Header = struct {
                 if (max_text_len < 3) continue; // Skip if not enough space for meaningful text
                 
                 switch (item.render_fn) {
-                    0 => {
+                    .plain => {
                         // Truncate text if needed
                         const text_len = @min(item.text.len, max_text_len);
                         try Theme.writeStringWithTheme(terminal, hx, hy, item.text[0..text_len], self.theme.main_fg, self.theme.main_bg);
                     },
-                    1 => {
+                    .highlighted => {
                         // Calculate total length for highlighted hint
                         const total_len = item.before.len + item.key.len + item.after.len;
                         if (total_len <= max_text_len) {
@@ -610,7 +590,6 @@ pub const Header = struct {
                         }
                         // If doesn't fit, skip this hint
                     },
-                    else => {},
                 }
             }
         }

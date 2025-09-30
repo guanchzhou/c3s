@@ -5,6 +5,7 @@ const Key = @import("../core/terminal.zig").Key;
 const Logger = @import("../core/logger.zig");
 const theme_loader = @import("../model/theme_loader.zig");
 const universal_filter = @import("../viewmodel/filter.zig");
+const hints_model = @import("../model/hints.zig");
 
 /// PodsView - displays Kubernetes pods with filtering and navigation
 pub const PodsView = struct {
@@ -186,6 +187,7 @@ pub const PodsView = struct {
         .onShow = onShow,
         .onHide = onHide,
         .getName = getName,
+        .getHints = getHints,
         .deinit = deinit,
     };
     
@@ -313,6 +315,11 @@ pub const PodsView = struct {
     fn getName(ptr: *anyopaque) []const u8 {
         _ = ptr;
         return "pods";
+    }
+    
+    fn getHints(ptr: *anyopaque) hints_model.HintConfig {
+        _ = ptr;
+        return hints_model.podsHints();
     }
     
     fn deinit(ptr: *anyopaque) void {

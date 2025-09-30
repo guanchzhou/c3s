@@ -5,6 +5,7 @@ const Key = @import("../core/terminal.zig").Key;
 const Logger = @import("../core/logger.zig");
 const BoxDrawing = @import("../ui/box_drawing.zig");
 const theme_loader = @import("../model/theme_loader.zig");
+const hints_model = @import("../model/hints.zig");
 
 /// HelpView - displays help information
 pub const HelpView = struct {
@@ -186,6 +187,7 @@ pub const HelpView = struct {
         .onShow = onShow,
         .onHide = onHide,
         .getName = getName,
+        .getHints = getHints,
         .deinit = deinit,
     };
     
@@ -247,6 +249,11 @@ pub const HelpView = struct {
     fn getName(ptr: *anyopaque) []const u8 {
         _ = ptr;
         return "help";
+    }
+    
+    fn getHints(ptr: *anyopaque) hints_model.HintConfig {
+        _ = ptr;
+        return hints_model.helpHints();
     }
     
     fn deinit(ptr: *anyopaque) void {

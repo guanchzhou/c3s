@@ -1,6 +1,7 @@
 const std = @import("std");
 const Terminal = @import("../core/terminal.zig").Terminal;
 const Key = @import("../core/terminal.zig").Key;
+const hints_model = @import("../model/hints.zig");
 
 /// View trait - all views must implement this interface
 pub const View = struct {
@@ -22,6 +23,9 @@ pub const View = struct {
         
         /// Get view name for debugging
         getName: *const fn (ptr: *anyopaque) []const u8,
+        
+        /// Get hints configuration for this view
+        getHints: *const fn (ptr: *anyopaque) hints_model.HintConfig,
         
         /// Cleanup view resources
         deinit: *const fn (ptr: *anyopaque) void,
@@ -53,6 +57,10 @@ pub const View = struct {
 
     pub fn getName(self: View) []const u8 {
         return self.vtable.getName(self.ptr);
+    }
+
+    pub fn getHints(self: View) hints_model.HintConfig {
+        return self.vtable.getHints(self.ptr);
     }
 
     pub fn deinit(self: View) void {

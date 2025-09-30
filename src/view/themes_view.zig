@@ -6,6 +6,7 @@ const Logger = @import("../core/logger.zig");
 const theme_loader = @import("../model/theme_loader.zig");
 const BoxDrawing = @import("../ui/box_drawing.zig");
 const universal_filter = @import("../viewmodel/filter.zig");
+const hints_model = @import("../model/hints.zig");
 
 /// ThemesView - displays and manages theme selection
 pub const ThemesView = struct {
@@ -268,6 +269,7 @@ pub const ThemesView = struct {
         .onShow = onShow,
         .onHide = onHide,
         .getName = getName,
+        .getHints = getHints,
         .deinit = deinit,
     };
     
@@ -406,6 +408,11 @@ pub const ThemesView = struct {
     fn getName(ptr: *anyopaque) []const u8 {
         _ = ptr;
         return "themes";
+    }
+    
+    fn getHints(ptr: *anyopaque) hints_model.HintConfig {
+        _ = ptr;
+        return hints_model.themesHints();
     }
     
     fn deinit(ptr: *anyopaque) void {

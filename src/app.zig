@@ -384,9 +384,11 @@ pub const App = struct {
         self.header.setTheme(effective_theme);
         self.footer.setTheme(effective_theme);
 
-        // Render header
+        // Render header with hints from current view
         if (size.height >= self.header_height) {
-            try self.header.render(&self.terminal, 0, 0, size.width, self.header_height);
+            const current_view = self.view_manager.getCurrentView() orelse unreachable;
+            const hints = current_view.getHints();
+            try self.header.render(&self.terminal, 0, 0, size.width, self.header_height, hints);
         }
 
         // Calculate body area
