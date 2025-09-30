@@ -60,8 +60,8 @@ pub fn defaultTheme(allocator: std.mem.Allocator) !ThemeColors {
         .key_highlight = try hexToAnsi(allocator, "#f7768e"),
         .title_highlight = try hexToAnsi(allocator, "#e0af68"),
         .app_name = try allocator.dupe(u8, "\x1b[1;97m"),
-        .prompt_fg = try hexToAnsi(allocator, "#cfc9c2"),
-        .prompt_bg = try hexToBgAnsi(allocator, "#1a1b26"),
+        .prompt_fg = try hexToAnsi(allocator, "#cfc9c2"),  // Same as selected_fg
+        .prompt_bg = try hexToBgAnsi(allocator, "#414868"), // Same as selected_bg
     };
 }
 
