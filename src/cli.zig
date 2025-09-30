@@ -176,6 +176,29 @@ fn printVersion() void {
     std.debug.print("Version:    {s}\nCommit:     n/a\n", .{ver});
 }
 
+// C3S ASCII logo (small version)
+const logo_small = [_][]const u8{
+    "       _____     ",
+    "  ____|__  /_____",
+    " / ___//_ </ ___/",
+    "/ /_____/ (__  ) ",
+    "\\___/____/____/  ",
+    "                 ",
+};
+
+fn printLogo(color: []const u8) void {
+    for (logo_small) |line| {
+        std.debug.print("{s}{s}\x1b[0m\n", .{ color, line });
+    }
+    std.debug.print("\n", .{});
+}
+
+fn printInfoLine(label: []const u8, value: []const u8, color: []const u8) void {
+    const padded_label = std.fmt.allocPrint(std.heap.page_allocator, "{s}:", .{label}) catch label;
+    defer if (padded_label.ptr != label.ptr) std.heap.page_allocator.free(padded_label);
+    std.debug.print("{s}{s:<27}\x1b[0m {s}\n", .{ color, padded_label, value });
+}
+
 fn printInfo() void {
     const paths = xdg.ensurePaths() catch {
         std.log.err("Failed to resolve XDG paths", .{});
@@ -183,37 +206,23 @@ fn printInfo() void {
     };
 
     const ver = formatVersion();
+    
+    // Cyan color (matching k9s style)
+    const cyan = "\x1b[36m";
 
-    var buffer: [1024]u8 = undefined;
-    const info_text = std.fmt.bufPrint(&buffer,
-            \\Version:           {s}
-            \\Config:            {s}
-            \\Custom Views:      {s}
-            \\Plugins:           {s}
-            \\Hotkeys:           {s}
-            \\Aliases:           {s}
-            \\Skins:             {s}
-            \\Context Configs:   {s}
-            \\Logs:              {s}
-            \\Benchmarks:        {s}
-            \\ScreenDumps:       {s}
-            \\
-            , .{
-                ver,
-                paths.config_file,
-                paths.views_file,
-                paths.plugins_file,
-                paths.hotkeys_file,
-                paths.aliases_file,
-                paths.skins_dir,
-                paths.contexts_dir,
-                paths.log_file,
-                paths.benchmarks_dir,
-                paths.dumps_dir,
-            }) catch {
-                std.log.err("Failed to format info output", .{});
-                return;
-            };
+    // Print logo first
+    printLogo(cyan);
 
-        std.debug.print("{s}", .{info_text});
-    }
+    // Print info lines
+    printInfoLine("Version", ver, cyan);
+    printInfoLine("Config", paths.config_file, cyan);
+    printInfoLine("Custom Views", paths.views_file, cyan);
+    printInfoLine("Plugins", paths.plugins_file, cyan);
+    printInfoLine("Hotkeys", paths.hotkeys_file, cyan);
+    printInfoLine("Aliases", paths.aliases_file, cyan);
+    printInfoLine("Skins", paths.skins_dir, cyan);
+    printInfoLine("Context Configs", paths.contexts_dir, cyan);
+    printInfoLine("Logs", paths.log_file, cyan);
+    printInfoLine("Benchmarks", paths.benchmarks_dir, cyan);
+    printInfoLine("ScreenDumps", paths.dumps_dir, cyan);
+}
