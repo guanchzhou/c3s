@@ -5,6 +5,7 @@ const Theme = @import("../theme.zig");
 const build = @import("c3s_build");
 const version = @import("../model/version.zig");
 const theme_loader = @import("../model/theme_loader.zig");
+const fixtures = @import("../fixtures/index.zig");
 
 pub const Header = struct {
     allocator: std.mem.Allocator,
@@ -27,32 +28,29 @@ pub const Header = struct {
         const k9s_version = try version.ownedString(allocator);
         const title_with_version = k9s_version; // Just store version, we'll render "c3s" separately
         
-        // Use dummy data only in debug mode, otherwise use "n/a"
-        const context = if (debug) "rancher-desktop [RW]" else "n/a";
-        const cluster = if (debug) "rancher-desktop" else "n/a";
-        const user = if (debug) "rancher-desktop" else "n/a";
-        const k8s_version = if (debug) "v1.33.3+k3s1" else "n/a";
-        const cpu_usage: u8 = if (debug) 2 else 0;
-        const mem_usage: u8 = if (debug) 27 else 0;
+        // Get K8s data from fixtures based on debug flag
+        const k8s_data = fixtures.k8s_data.getData(debug);
+        
         const cpu_str = if (debug) 
-            try std.fmt.allocPrint(allocator, "{}%", .{cpu_usage})
+            try fixtures.k8s_data.getCpuString(allocator, k8s_data.cpu_usage)
         else 
             try allocator.dupe(u8, "n/a");
+            
         const mem_str = if (debug)
-            try std.fmt.allocPrint(allocator, "{}%", .{mem_usage})
+            try fixtures.k8s_data.getMemString(allocator, k8s_data.mem_usage)
         else
             try allocator.dupe(u8, "n/a");
 
         return Header{
             .allocator = allocator,
             .theme = theme,
-            .context = context,
-            .cluster = cluster,
-            .user = user,
+            .context = k8s_data.context,
+            .cluster = k8s_data.cluster,
+            .user = k8s_data.user,
             .k9s_version = k9s_version,
-            .k8s_version = k8s_version,
-            .cpu_usage = cpu_usage,
-            .mem_usage = mem_usage,
+            .k8s_version = k8s_data.k8s_version,
+            .cpu_usage = k8s_data.cpu_usage,
+            .mem_usage = k8s_data.mem_usage,
             .title_with_version = title_with_version,
             .cpu_str = cpu_str,
             .mem_str = mem_str,

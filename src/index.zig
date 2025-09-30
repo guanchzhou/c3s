@@ -11,3 +11,4 @@ pub const Config = @import("model/config.zig");
 pub const Logger = @import("core/logger.zig");
 pub const version = @import("model/version.zig");
 pub const theme_loader = @import("model/theme_loader.zig");
+pub const fixtures = @import("fixtures/index.zig");
