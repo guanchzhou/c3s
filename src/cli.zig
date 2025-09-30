@@ -178,19 +178,18 @@ fn printVersion() void {
 
 // C3S ASCII logo (small version)
 const logo_small = [_][]const u8{
-    "       _____     ",
-    "  ____|__  /_____",
-    " / ___//_ </ ___/",
-    "/ /_____/ (__  ) ",
-    "\\___/____/____/  ",
-    "                 ",
+    "        _____     ",
+    "   ____|__  /_____",
+    "  / ___//_ </ ___/",
+    " / /_____/ (__  ) ",
+    " \\___/____/____/  ",
+    "                  ",
 };
 
 fn printLogo(color: []const u8) void {
     for (logo_small) |line| {
         std.debug.print("{s}{s}\x1b[0m\n", .{ color, line });
     }
-    std.debug.print("\n", .{});
 }
 
 fn printInfoLine(label: []const u8, value: []const u8, color: []const u8) void {
