@@ -123,7 +123,12 @@ fn determineVisibleColumns(
     // Calculate total width needed
     var total_width: u16 = 0;
     for (max_widths) |w| {
-        total_width = std.math.saturatingAdd(total_width, w);
+        const new_width = @addWithOverflow(total_width, w);
+        if (new_width[1] != 0) {
+            total_width = std.math.maxInt(u16);
+            break;
+        }
+        total_width = new_width[0];
     }
 
     // If all columns fit, we're done
@@ -132,7 +137,7 @@ fn determineVisibleColumns(
     }
 
     // Create sorted indices by priority (lowest priority first)
-    var indices = try allocator.alloc(usize, columns.len);
+    const indices = try allocator.alloc(usize, columns.len);
     defer allocator.free(indices);
     for (indices, 0..) |*idx, i| {
         idx.* = i;
@@ -150,7 +155,11 @@ fn determineVisibleColumns(
         if (total_width <= available_width) break;
 
         visible[idx] = false;
-        total_width = std.math.saturatingSub(total_width, max_widths[idx]);
+        if (total_width >= max_widths[idx]) {
+            total_width -= max_widths[idx];
+        } else {
+            total_width = 0;
+        }
     }
 
     return visible;
@@ -174,7 +183,12 @@ fn distributeWidth(
     for (visible, max_widths) |vis, max| {
         if (vis) {
             visible_count += 1;
-            total_max = std.math.saturatingAdd(total_max, max);
+            const new_max = @addWithOverflow(total_max, max);
+            if (new_max[1] != 0) {
+                total_max = std.math.maxInt(u16);
+            } else {
+                total_max = new_max[0];
+            }
         }
     }
 
@@ -196,15 +210,21 @@ fn distributeWidth(
     for (columns, visible, 0..) |col, vis, i| {
         if (vis) {
             final_widths[i] = col.min_width;
-            allocated = std.math.saturatingAdd(allocated, col.min_width);
+            const new_alloc = @addWithOverflow(allocated, col.min_width);
+            if (new_alloc[1] != 0) {
+                allocated = std.math.maxInt(u16);
+            } else {
+                allocated = new_alloc[0];
+            }
         }
     }
 
     // Second pass: distribute remaining space proportionally
     if (allocated < available_width) {
         const remaining = available_width - allocated;
+        const total_extra = if (total_max > allocated) total_max - allocated else 1;
         const scale = @as(f32, @floatFromInt(remaining)) /
-            @as(f32, @floatFromInt(total_max - allocated));
+            @as(f32, @floatFromInt(total_extra));
 
         for (max_widths, columns, visible, 0..) |max, col, vis, i| {
             if (vis and max > col.min_width) {
@@ -243,7 +263,12 @@ pub fn calculateColumnWidths(
     var total_width: u16 = 0;
     var visible_count: usize = 0;
     for (widths) |w| {
-        total_width = std.math.saturatingAdd(total_width, w);
+        const new_total = @addWithOverflow(total_width, w);
+        if (new_total[1] != 0) {
+            total_width = std.math.maxInt(u16);
+        } else {
+            total_width = new_total[0];
+        }
         if (w > 0) visible_count += 1;
     }
 

@@ -6,6 +6,7 @@ const Logger = @import("../core/logger.zig");
 const theme_loader = @import("../model/theme_loader.zig");
 const universal_filter = @import("../viewmodel/filter.zig");
 const hints_model = @import("../model/hints.zig");
+const table_layout = @import("../ui/table_layout.zig");
 
 /// PodsView - displays Kubernetes pods with filtering and navigation
 pub const PodsView = struct {
@@ -18,6 +19,7 @@ pub const PodsView = struct {
     filter_text: []const u8 = "",
     visible_rows: u32 = 0,
     allocated_title: ?[]u8 = null,
+    horizontal_scroll: table_layout.TableScroll = .{ .scroll_offset = 0, .visible_width = 0, .total_width = 0 },
     
     const Pod = struct {
         namespace: []const u8,
@@ -213,18 +215,64 @@ pub const PodsView = struct {
         try terminal.writeAll(title_text);
         try terminal.writeAll("\x1b[0m"); // Reset colors
         
+        // Define column configuration with priorities
+        const columns = [_]table_layout.ColumnInfo{
+            .{ .name = "NAMESPACE", .min_width = 10, .max_width = 20, .priority = table_layout.ColumnPriority.MEDIUM },
+            .{ .name = "NAME", .min_width = 15, .max_width = 40, .priority = table_layout.ColumnPriority.CRITICAL },
+            .{ .name = "READY", .min_width = 6, .max_width = 8, .priority = table_layout.ColumnPriority.HIGH },
+            .{ .name = "STATUS", .min_width = 8, .max_width = 12, .priority = table_layout.ColumnPriority.HIGH },
+            .{ .name = "CPU", .min_width = 6, .max_width = 10, .priority = table_layout.ColumnPriority.VERY_LOW },
+            .{ .name = "MEM", .min_width = 6, .max_width = 10, .priority = table_layout.ColumnPriority.VERY_LOW },
+            .{ .name = "IP", .min_width = 10, .max_width = 16, .priority = table_layout.ColumnPriority.LOW },
+            .{ .name = "NODE", .min_width = 10, .max_width = 20, .priority = table_layout.ColumnPriority.LOW },
+            .{ .name = "AGE", .min_width = 5, .max_width = 8, .priority = table_layout.ColumnPriority.MEDIUM },
+        };
+        
+        // Prepare data for width calculation
+        const col_names = [_][]const u8{ "NAMESPACE", "NAME", "READY", "STATUS", "CPU", "MEM", "IP", "NODE", "AGE" };
+        var rows_data = try std.ArrayList([]const []const u8).initCapacity(self.allocator, self.filtered_indices.items.len);
+        defer rows_data.deinit(self.allocator);
+        
+        for (self.filtered_indices.items) |pod_idx| {
+            const pod = self.pods.items[pod_idx];
+            const row = [_][]const u8{ pod.namespace, pod.name, pod.ready, pod.status, pod.cpu_l, pod.mem_l, pod.ip, pod.node, pod.age };
+            try rows_data.append(self.allocator, &row);
+        }
+        
+        // Calculate column widths
+        const available_width = if (width > 2) width - 2 else 0;
+        var col_widths = try table_layout.calculateColumnWidths(
+            self.allocator,
+            &col_names,
+            rows_data.items,
+            &columns,
+            available_width,
+        );
+        defer col_widths.deinit();
+        
+        // Update horizontal scroll
+        self.horizontal_scroll.visible_width = available_width;
+        self.horizontal_scroll.total_width = col_widths.total_width;
+        
         // Draw column headers
         const header_y = y + 1;
-        const col_widths = [_]u16{ 12, 25, 8, 10, 8, 8, 15, 12, 8 };
-        const col_names = [_][]const u8{ "NAMESPACE", "NAME", "READY", "STATUS", "CPU", "MEM", "IP", "NODE", "AGE" };
-        
         var col_x = x + 1;
-        for (col_names, 0..) |name, i| {
+        for (col_names, col_widths.widths) |name, w| {
+            if (w == 0) continue; // Skip hidden columns
+            
             try terminal.setCursor(col_x, header_y);
             try terminal.writeAll(self.theme.title);
-            try terminal.writeAll(name);
+            
+            // Truncate header if needed
+            const header_text = if (name.len > w)
+                try table_layout.truncateText(self.allocator, name, w, false)
+            else
+                try self.allocator.dupe(u8, name);
+            defer self.allocator.free(header_text);
+            
+            try terminal.writeAll(header_text);
             try terminal.writeAll("\x1b[0m");
-            col_x += col_widths[i] + 1;
+            col_x += w + 1;
         }
         
         // Draw pod rows
@@ -252,11 +300,13 @@ pub const PodsView = struct {
                 try terminal.writeAll("\x1b[0m");
             }
             
-            // Draw pod data with theme colors
+            // Draw pod data with adaptive widths
             col_x = x + 1;
             const pod_data = [_][]const u8{ pod.namespace, pod.name, pod.ready, pod.status, pod.cpu_l, pod.mem_l, pod.ip, pod.node, pod.age };
             
-            for (pod_data, 0..) |data, i| {
+            for (pod_data, col_widths.widths) |data, w| {
+                if (w == 0) continue; // Skip hidden columns
+                
                 try terminal.setCursor(col_x, row_y);
                 if (is_selected) {
                     try terminal.writeAll(self.theme.selected_fg);
@@ -264,9 +314,17 @@ pub const PodsView = struct {
                 } else {
                     try terminal.writeAll(self.theme.main_fg);
                 }
-                try terminal.writeAll(data);
+                
+                // Truncate cell data if needed
+                const cell_text = if (data.len > w)
+                    try table_layout.truncateText(self.allocator, data, w, true)
+                else
+                    try self.allocator.dupe(u8, data);
+                defer self.allocator.free(cell_text);
+                
+                try terminal.writeAll(cell_text);
                 try terminal.writeAll("\x1b[0m");
-                col_x += col_widths[i] + 1;
+                col_x += w + 1;
             }
         }
     }
@@ -280,6 +338,10 @@ pub const PodsView = struct {
                 'k' => { try self.navigateUp(); return .handled; },
                 'g' => { try self.gotoTop(); return .handled; },
                 'G' => { try self.gotoBottom(); return .handled; },
+                'h' => { self.horizontal_scroll.scrollLeft(5); return .handled; },
+                'l' => { self.horizontal_scroll.scrollRight(5); return .handled; },
+                '0' => { self.horizontal_scroll.scrollToStart(); return .handled; },
+                '$' => { self.horizontal_scroll.scrollToEnd(); return .handled; },
                 '/' => return .request_filter,
                 ':' => return .request_command_palette,
                 '?' => return .request_command_palette, // Help
