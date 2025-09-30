@@ -502,22 +502,28 @@ pub const App = struct {
                 }
             },
             .escape => {
-                // Check if we're in a sub-view first
-                if (self.view_manager.getDepth() > 1) {
-                    // Pop current view (go back)
-                    _ = self.view_manager.popView();
-                    self.dirty = true;
-                } else {
-                    // Clear filter if one is active
-                    if (self.view_manager.getCurrentView()) |current_view| {
-                        if (std.mem.eql(u8, current_view.getName(), "pods")) {
+                // First, check if there's an active filter to clear
+                var filter_cleared = false;
+                if (self.view_manager.getCurrentView()) |current_view| {
+                    if (std.mem.eql(u8, current_view.getName(), "pods")) {
+                        if (self.pods_view.filter_text.len > 0) {
                             try self.pods_view.applyFilter("");
                             self.dirty = true;
-                        } else if (std.mem.eql(u8, current_view.getName(), "themes")) {
+                            filter_cleared = true;
+                        }
+                    } else if (std.mem.eql(u8, current_view.getName(), "themes")) {
+                        if (self.themes_view.filter_text.len > 0) {
                             try self.themes_view.applyFilter("");
                             self.dirty = true;
+                            filter_cleared = true;
                         }
                     }
+                }
+                
+                // If no filter was cleared and we're in a sub-view, pop the view
+                if (!filter_cleared and self.view_manager.getDepth() > 1) {
+                    _ = self.view_manager.popView();
+                    self.dirty = true;
                 }
             },
             .ctrl_c => {
