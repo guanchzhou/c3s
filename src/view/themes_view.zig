@@ -116,7 +116,7 @@ pub const ThemesView = struct {
             
             if (self.selected_row < self.filtered_indices.items.len) {
                 const theme_idx = self.filtered_indices.items[self.selected_row];
-                Logger.debug("ThemesView: navigated to {s}", .{self.themes.items[theme_idx].name});
+                Logger.debug("ThemesView: navigated UP to {s}", .{self.themes.items[theme_idx].name});
             }
             try self.updatePreview();
         }
@@ -132,7 +132,7 @@ pub const ThemesView = struct {
             }
 
             const theme_idx = self.filtered_indices.items[self.selected_row];
-            Logger.info("ThemesView: navigated DOWN to {s}", .{self.themes.items[theme_idx].name});
+            Logger.debug("ThemesView: navigated DOWN to {s}", .{self.themes.items[theme_idx].name});
             try self.updatePreview();
         }
     }
