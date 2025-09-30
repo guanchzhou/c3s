@@ -60,6 +60,7 @@ pub fn build(b: *std.Build) void {
 
     // Import dependencies
     exe.root_module.addOptions("c3s_build", build_opts);
+    
 
     // Bump step: increments .build_number using a small Zig tool
     const bump_exe = b.addExecutable(.{

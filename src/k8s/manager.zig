@@ -1,6 +1,6 @@
 const std = @import("std");
 const client_mod = @import("client.zig");
-const kubeconfig_mod = @import("kubeconfig.zig");
+const kubeconfig_mod = @import("kubeconfig_json.zig");
 const Logger = @import("../core/logger.zig");
 
 const K8sClient = client_mod.K8sClient;
