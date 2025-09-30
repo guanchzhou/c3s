@@ -107,6 +107,12 @@ pub const ThemesView = struct {
     fn navigateUp(self: *ThemesView) !void {
         if (self.selected_row > 0) {
             self.selected_row -= 1;
+            
+            // Adjust scroll if needed
+            if (self.selected_row < self.scroll_offset) {
+                self.scroll_offset = self.selected_row;
+            }
+            
             if (self.selected_row < self.filtered_indices.items.len) {
                 const theme_idx = self.filtered_indices.items[self.selected_row];
                 Logger.debug("ThemesView: navigated to {s}", .{self.themes.items[theme_idx].name});
@@ -118,6 +124,13 @@ pub const ThemesView = struct {
     fn navigateDown(self: *ThemesView) !void {
         if (self.filtered_indices.items.len > 0 and self.selected_row < self.filtered_indices.items.len - 1) {
             self.selected_row += 1;
+            
+            // Adjust scroll if needed (we need to know visible_rows, use a reasonable default)
+            const visible_rows: u32 = 20; // Will be calculated properly during render
+            if (self.selected_row >= self.scroll_offset + visible_rows) {
+                self.scroll_offset = self.selected_row - visible_rows + 1;
+            }
+            
             const theme_idx = self.filtered_indices.items[self.selected_row];
             Logger.debug("ThemesView: navigated to {s}", .{self.themes.items[theme_idx].name});
             try self.updatePreview();
@@ -127,6 +140,7 @@ pub const ThemesView = struct {
     fn gotoTop(self: *ThemesView) !void {
         if (self.filtered_indices.items.len > 0) {
             self.selected_row = 0;
+            self.scroll_offset = 0;
             try self.updatePreview();
         }
     }
@@ -134,6 +148,14 @@ pub const ThemesView = struct {
     fn gotoBottom(self: *ThemesView) !void {
         if (self.filtered_indices.items.len > 0) {
             self.selected_row = @intCast(self.filtered_indices.items.len - 1);
+            
+            // Scroll to show the last item
+            const visible_rows: u32 = 20;
+            if (self.selected_row >= visible_rows) {
+                self.scroll_offset = self.selected_row - visible_rows + 1;
+            } else {
+                self.scroll_offset = 0;
+            }
             try self.updatePreview();
         }
     }
@@ -145,6 +167,12 @@ pub const ThemesView = struct {
         } else {
             self.selected_row = 0;
         }
+        
+        // Adjust scroll
+        if (self.selected_row < self.scroll_offset) {
+            self.scroll_offset = self.selected_row;
+        }
+        
         try self.updatePreview();
     }
     
@@ -155,6 +183,12 @@ pub const ThemesView = struct {
                 self.selected_row += page_size;
             } else {
                 self.selected_row = @intCast(self.filtered_indices.items.len - 1);
+            }
+            
+            // Adjust scroll
+            const visible_rows: u32 = 20;
+            if (self.selected_row >= self.scroll_offset + visible_rows) {
+                self.scroll_offset = self.selected_row - visible_rows + 1;
             }
         }
         try self.updatePreview();
