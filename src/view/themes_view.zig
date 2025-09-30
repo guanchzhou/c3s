@@ -5,16 +5,20 @@ const Key = @import("../core/terminal.zig").Key;
 const Logger = @import("../core/logger.zig");
 const theme_loader = @import("../model/theme_loader.zig");
 const BoxDrawing = @import("../ui/box_drawing.zig");
+const universal_filter = @import("../viewmodel/filter.zig");
 
 /// ThemesView - displays and manages theme selection
 pub const ThemesView = struct {
     allocator: std.mem.Allocator,
     theme: *const theme_loader.ThemeColors,
     themes: std.ArrayListUnmanaged(ThemeInfo),
+    filtered_indices: std.ArrayListUnmanaged(usize),
     selected_row: u32 = 0,
     scroll_offset: u32 = 0,
     current_theme_name: []u8,
     preview_theme: ?*theme_loader.ThemeColors = null,
+    filter_text: []const u8 = "",
+    allocated_title: ?[]u8 = null,
     
     const ThemeInfo = struct {
         name: []const u8,
@@ -26,14 +30,20 @@ pub const ThemesView = struct {
             .allocator = allocator,
             .theme = theme,
             .themes = std.ArrayListUnmanaged(ThemeInfo){},
+            .filtered_indices = std.ArrayListUnmanaged(usize){},
             .current_theme_name = try allocator.dupe(u8, current_theme),
         };
         
         try view.scanThemes();
         
+        // Initialize filtered indices to show all themes
+        for (0..view.themes.items.len) |i| {
+            try view.filtered_indices.append(allocator, i);
+        }
+        
         // Find and select current theme by default
-        for (view.themes.items, 0..) |theme_info, idx| {
-            if (std.mem.eql(u8, theme_info.name, view.current_theme_name)) {
+        for (view.filtered_indices.items, 0..) |theme_idx, idx| {
+            if (std.mem.eql(u8, view.themes.items[theme_idx].name, view.current_theme_name)) {
                 view.selected_row = @intCast(idx);
                 break;
             }
@@ -48,7 +58,12 @@ pub const ThemesView = struct {
             self.allocator.free(theme_info.path);
         }
         self.themes.deinit(self.allocator);
+        self.filtered_indices.deinit(self.allocator);
         self.allocator.free(self.current_theme_name);
+        
+        if (self.allocated_title) |allocated| {
+            self.allocator.free(allocated);
+        }
         
         if (self.preview_theme) |preview| {
             theme_loader.deinitTheme(preview);
@@ -92,29 +107,33 @@ pub const ThemesView = struct {
     fn navigateUp(self: *ThemesView) !void {
         if (self.selected_row > 0) {
             self.selected_row -= 1;
-            Logger.debug("ThemesView: navigated to {s}", .{self.themes.items[self.selected_row].name});
+            if (self.selected_row < self.filtered_indices.items.len) {
+                const theme_idx = self.filtered_indices.items[self.selected_row];
+                Logger.debug("ThemesView: navigated to {s}", .{self.themes.items[theme_idx].name});
+            }
             try self.updatePreview();
         }
     }
     
     fn navigateDown(self: *ThemesView) !void {
-        if (self.selected_row < self.themes.items.len - 1) {
+        if (self.filtered_indices.items.len > 0 and self.selected_row < self.filtered_indices.items.len - 1) {
             self.selected_row += 1;
-            Logger.debug("ThemesView: navigated to {s}", .{self.themes.items[self.selected_row].name});
+            const theme_idx = self.filtered_indices.items[self.selected_row];
+            Logger.debug("ThemesView: navigated to {s}", .{self.themes.items[theme_idx].name});
             try self.updatePreview();
         }
     }
     
     fn gotoTop(self: *ThemesView) !void {
-        if (self.themes.items.len > 0) {
+        if (self.filtered_indices.items.len > 0) {
             self.selected_row = 0;
             try self.updatePreview();
         }
     }
     
     fn gotoBottom(self: *ThemesView) !void {
-        if (self.themes.items.len > 0) {
-            self.selected_row = @intCast(self.themes.items.len - 1);
+        if (self.filtered_indices.items.len > 0) {
+            self.selected_row = @intCast(self.filtered_indices.items.len - 1);
             try self.updatePreview();
         }
     }
@@ -131,10 +150,12 @@ pub const ThemesView = struct {
     
     fn pageDown(self: *ThemesView) !void {
         const page_size: u32 = 10;
-        if (self.selected_row + page_size < self.themes.items.len) {
-            self.selected_row += page_size;
-        } else if (self.themes.items.len > 0) {
-            self.selected_row = @intCast(self.themes.items.len - 1);
+        if (self.filtered_indices.items.len > 0) {
+            if (self.selected_row + page_size < self.filtered_indices.items.len) {
+                self.selected_row += page_size;
+            } else {
+                self.selected_row = @intCast(self.filtered_indices.items.len - 1);
+            }
         }
         try self.updatePreview();
     }
@@ -146,16 +167,52 @@ pub const ThemesView = struct {
             self.allocator.destroy(preview);
         }
         
-        // Load new preview theme
-        const selected_theme = self.themes.items[self.selected_row];
+        // Load new preview theme (if we have filtered items)
+        if (self.filtered_indices.items.len == 0 or self.selected_row >= self.filtered_indices.items.len) return;
+        
+        const theme_idx = self.filtered_indices.items[self.selected_row];
+        const selected_theme = self.themes.items[theme_idx];
         const preview = try self.allocator.create(theme_loader.ThemeColors);
         preview.* = try theme_loader.loadTheme(self.allocator, selected_theme.name);
         self.preview_theme = preview;
     }
     
     pub fn getSelectedThemeName(self: *const ThemesView) []const u8 {
-        if (self.themes.items.len == 0) return "tokyo-night";
-        return self.themes.items[self.selected_row].name;
+        if (self.filtered_indices.items.len == 0) return "tokyo-night";
+        if (self.selected_row >= self.filtered_indices.items.len) return "tokyo-night";
+        const theme_idx = self.filtered_indices.items[self.selected_row];
+        return self.themes.items[theme_idx].name;
+    }
+    
+    pub fn applyFilter(self: *ThemesView, filter: []const u8) !void {
+        // Free old allocated title
+        if (self.allocated_title) |allocated| {
+            self.allocator.free(allocated);
+            self.allocated_title = null;
+        }
+        
+        self.filter_text = filter;
+        
+        // Use universal filter - need to calculate visible_rows (assume 20 for now, will be updated in render)
+        const visible_rows: u32 = 20;
+        try universal_filter.applyFilter(
+            ThemeInfo,
+            self.allocator,
+            self.themes.items,
+            &self.filtered_indices,
+            filter,
+            &self.selected_row,
+            &self.scroll_offset,
+            visible_rows,
+            themeMatchFn,
+        );
+        
+        // Update preview after filtering
+        try self.updatePreview();
+    }
+    
+    fn themeMatchFn(theme_info: *const ThemeInfo, filter: []const u8) bool {
+        return std.mem.indexOf(u8, theme_info.name, filter) != null;
     }
     
     pub fn setCurrentTheme(self: *ThemesView, theme_name: []const u8) !void {
@@ -192,9 +249,12 @@ pub const ThemesView = struct {
         try terminal.writeAll(BoxDrawing.Symbols.title_left);
         try terminal.writeAll("\x1b[0m");
         
-        // Render title with count: "Available Skins[35]"
-        var title_buf: [64]u8 = undefined;
-        const title_text = try std.fmt.bufPrint(&title_buf, "Available Skins[{d}]", .{self.themes.items.len});
+        // Render title with count and filter: "Available Skins[35]" or "Available Skins(filtered)[10/35]"
+        var title_buf: [128]u8 = undefined;
+        const title_text = if (self.filter_text.len > 0)
+            try std.fmt.bufPrint(&title_buf, "Available Skins({s})[{d}/{d}]", .{self.filter_text, self.filtered_indices.items.len, self.themes.items.len})
+        else
+            try std.fmt.bufPrint(&title_buf, "Available Skins[{d}]", .{self.themes.items.len});
         try terminal.setCursor(title_x + 1, y);
         try terminal.writeAll(self.theme.title);
         try terminal.writeAll(title_text);
@@ -212,16 +272,17 @@ pub const ThemesView = struct {
         try terminal.writeAll("  NAME");
         try terminal.writeAll("\x1b[0m");
         
-        // Render theme list
+        // Render theme list (using filtered indices)
         const visible_rows = if (height > 3) height - 3 else 0;
         const start_row = self.scroll_offset;
-        const end_row = @min(start_row + visible_rows, self.themes.items.len);
+        const end_row = @min(start_row + visible_rows, self.filtered_indices.items.len);
         
-        for (start_row..end_row, 0..) |theme_idx, display_idx| {
+        for (start_row..end_row, 0..) |filtered_idx, display_idx| {
+            const theme_idx = self.filtered_indices.items[filtered_idx];
             const theme_info = self.themes.items[theme_idx];
             const row_y = header_y + @as(u16, @intCast(display_idx)) + 1;
             
-            const is_selected = theme_idx == self.selected_row;
+            const is_selected = filtered_idx == self.selected_row;
             const is_current = std.mem.eql(u8, theme_info.name, self.current_theme_name);
             
             // Fill row background

@@ -4,6 +4,7 @@ const Terminal = @import("../core/terminal.zig").Terminal;
 const Key = @import("../core/terminal.zig").Key;
 const Logger = @import("../core/logger.zig");
 const theme_loader = @import("../model/theme_loader.zig");
+const universal_filter = @import("../viewmodel/filter.zig");
 
 /// PodsView - displays Kubernetes pods with filtering and navigation
 pub const PodsView = struct {
@@ -95,52 +96,25 @@ pub const PodsView = struct {
             self.allocated_title = null;
         }
         
-        // Remember the currently selected pod index (if any)
-        const old_selected_pod_idx = if (self.filtered_indices.items.len > 0 and self.selected_row < self.filtered_indices.items.len)
-            self.filtered_indices.items[self.selected_row]
-        else
-            null;
-        
         self.filter_text = filter;
-        self.filtered_indices.clearRetainingCapacity();
         
-        if (filter.len == 0) {
-            // No filter - show all pods
-            for (0..self.pods.items.len) |i| {
-                try self.filtered_indices.append(self.allocator, i);
-            }
-        } else {
-            // Apply filter
-            for (self.pods.items, 0..) |pod, i| {
-                if (std.mem.indexOf(u8, pod.name, filter) != null or
-                    std.mem.indexOf(u8, pod.namespace, filter) != null) {
-                    try self.filtered_indices.append(self.allocator, i);
-                }
-            }
-        }
-        
-        // Try to restore selection to the same pod if it's still in the filtered list
-        if (old_selected_pod_idx) |pod_idx| {
-            for (self.filtered_indices.items, 0..) |filtered_pod_idx, i| {
-                if (filtered_pod_idx == pod_idx) {
-                    self.selected_row = @intCast(i);
-                    // Adjust scroll to keep selection visible
-                    if (self.selected_row < self.scroll_offset) {
-                        self.scroll_offset = self.selected_row;
-                    } else if (self.selected_row >= self.scroll_offset + self.visible_rows) {
-                        self.scroll_offset = if (self.selected_row >= self.visible_rows)
-                            self.selected_row - self.visible_rows + 1
-                        else
-                            0;
-                    }
-                    return;
-                }
-            }
-        }
-        
-        // If we couldn't restore the selection, reset to top
-        self.selected_row = 0;
-        self.scroll_offset = 0;
+        // Use universal filter
+        try universal_filter.applyFilter(
+            Pod,
+            self.allocator,
+            self.pods.items,
+            &self.filtered_indices,
+            filter,
+            &self.selected_row,
+            &self.scroll_offset,
+            self.visible_rows,
+            podMatchFn,
+        );
+    }
+    
+    fn podMatchFn(pod: *const Pod, filter: []const u8) bool {
+        return std.mem.indexOf(u8, pod.name, filter) != null or
+            std.mem.indexOf(u8, pod.namespace, filter) != null;
     }
     
     fn navigateUp(self: *PodsView) !void {

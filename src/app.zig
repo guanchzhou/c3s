@@ -318,6 +318,8 @@ pub const App = struct {
                         if (self.view_manager.getCurrentView()) |current_view| {
                             if (std.mem.eql(u8, current_view.getName(), "pods")) {
                                 try self.pods_view.applyFilter(cmd_text);
+                            } else if (std.mem.eql(u8, current_view.getName(), "themes")) {
+                                try self.themes_view.applyFilter(cmd_text);
                             }
                         }
                     } else if (std.mem.eql(u8, prompt, ":")) {
@@ -392,8 +394,11 @@ pub const App = struct {
                     if (self.view_manager.getCurrentView()) |current_view| {
                         if (std.mem.eql(u8, current_view.getName(), "pods")) {
                             try self.pods_view.applyFilter("");
-            self.dirty = true;
-        }
+                            self.dirty = true;
+                        } else if (std.mem.eql(u8, current_view.getName(), "themes")) {
+                            try self.themes_view.applyFilter("");
+                            self.dirty = true;
+                        }
                     }
                 },
                 '/' => {
@@ -507,8 +512,11 @@ pub const App = struct {
                     if (self.view_manager.getCurrentView()) |current_view| {
                         if (std.mem.eql(u8, current_view.getName(), "pods")) {
                             try self.pods_view.applyFilter("");
-                self.dirty = true;
-            }
+                            self.dirty = true;
+                        } else if (std.mem.eql(u8, current_view.getName(), "themes")) {
+                            try self.themes_view.applyFilter("");
+                            self.dirty = true;
+                        }
                     }
                 }
             },
