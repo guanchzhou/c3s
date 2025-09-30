@@ -522,35 +522,31 @@ pub const Header = struct {
         
         // Progressive hiding strategy based on width
         // Calculate minimum widths for each level:
-        // - Level 0 (full): 2 quick commands cols + 3 hints cols (~140 chars needed)
-        // - Level 1: 2 quick commands cols + 2 hints cols (~110 chars needed)
-        // - Level 2: 2 quick commands cols + 1 hints col (~80 chars needed)
-        // - Level 3: 2 quick commands cols + 0 hints (~50 chars needed)
-        // - Level 4: 1 quick commands col + 0 hints (~40 chars needed)
-        // - Level 5: 0 quick commands cols + 0 hints (shortcuts hidden)
+        // - Level 0 (full): 1 quick commands col + 3 hints cols (~140 chars needed)
+        // - Level 1: 1 quick commands col + 2 hints cols (~110 chars needed)
+        // - Level 2: 1 quick commands col + 1 hints col (~80 chars needed)
+        // - Level 3: 1 quick commands col + 0 hints (~50 chars needed)
+        // - Level 4: 0 quick commands cols + 0 hints (shortcuts hidden)
         
         const min_width_for_3_hint_cols: u16 = 140;
         const min_width_for_2_hint_cols: u16 = 110;
         const min_width_for_1_hint_col: u16 = 80;
-        const min_width_for_shortcuts: u16 = 50;
         const min_width_for_1_quick_col: u16 = 40;
         
         // Determine what to show based on width
         var show_hints_cols: u16 = 0;
         var show_quick_cols: u16 = 0;
         
+        // With only 2 quick commands, always use 1 column (they stack vertically)
         if (width >= min_width_for_3_hint_cols) {
             show_hints_cols = 3;
-            show_quick_cols = 2;
+            show_quick_cols = 1;
         } else if (width >= min_width_for_2_hint_cols) {
             show_hints_cols = 2;
-            show_quick_cols = 2;
+            show_quick_cols = 1;
         } else if (width >= min_width_for_1_hint_col) {
             show_hints_cols = 1;
-            show_quick_cols = 2;
-        } else if (width >= min_width_for_shortcuts) {
-            show_hints_cols = 0;
-            show_quick_cols = 2;
+            show_quick_cols = 1;
         } else if (width >= min_width_for_1_quick_col) {
             show_hints_cols = 0;
             show_quick_cols = 1;
