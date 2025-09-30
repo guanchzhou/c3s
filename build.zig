@@ -60,6 +60,13 @@ pub fn build(b: *std.Build) void {
 
     // Import dependencies
     exe.root_module.addOptions("c3s_build", build_opts);
+    
+    // Add zig-yaml dependency (Zig 0.15.0 compatible branch)
+    const yaml = b.dependency("yaml", .{
+        .target = target,
+        .optimize = optimize,
+    });
+    exe.root_module.addImport("yaml", yaml.module("yaml"));
 
     // Bump step: increments .build_number using a small Zig tool
     const bump_exe = b.addExecutable(.{
