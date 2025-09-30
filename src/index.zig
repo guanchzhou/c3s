@@ -12,3 +12,9 @@ pub const Logger = @import("core/logger.zig");
 pub const version = @import("model/version.zig");
 pub const theme_loader = @import("model/theme_loader.zig");
 pub const fixtures = @import("fixtures/index.zig");
+
+// K8s module exports
+pub const K8sClient = @import("k8s/client.zig").K8sClient;
+pub const k8s_types = @import("k8s/types.zig");
+pub const k8s_resources = @import("k8s/resources.zig");
+pub const KubeconfigParser = @import("k8s/kubeconfig_json.zig").KubeconfigParser;

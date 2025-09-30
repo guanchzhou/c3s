@@ -194,6 +194,34 @@ pub fn build(b: *std.Build) void {
     const integration_test_step = b.step("test-integration", "Run integration tests");
     integration_test_step.dependOn(&run_integration_tests.step);
 
+    // Create K8s client unit tests
+    const k8s_client_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/k8s_client_test.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    k8s_client_tests.root_module.addAnonymousImport("src", .{ .root_source_file = b.path("src/index.zig") });
+    
+    const run_k8s_client_tests = b.addRunArtifact(k8s_client_tests);
+    const k8s_client_test_step = b.step("test-k8s-client", "Run K8s client tests");
+    k8s_client_test_step.dependOn(&run_k8s_client_tests.step);
+    
+    // Create K8s resources integration tests
+    const k8s_resources_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/k8s_resources_test.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    k8s_resources_tests.root_module.addAnonymousImport("src", .{ .root_source_file = b.path("src/index.zig") });
+    
+    const run_k8s_resources_tests = b.addRunArtifact(k8s_resources_tests);
+    const k8s_resources_test_step = b.step("test-k8s-resources", "Run K8s resources integration tests");
+    k8s_resources_test_step.dependOn(&run_k8s_resources_tests.step);
+
     // Create a step to run all tests
     const all_tests_step = b.step("test-all", "Run all tests");
     all_tests_step.dependOn(&run_unit_tests.step);
@@ -203,6 +231,8 @@ pub fn build(b: *std.Build) void {
     all_tests_step.dependOn(&run_footer_tests.step);
     all_tests_step.dependOn(&run_app_tests.step);
     all_tests_step.dependOn(&run_integration_tests.step);
+    all_tests_step.dependOn(&run_k8s_client_tests.step);
+    all_tests_step.dependOn(&run_k8s_resources_tests.step);
 
     // Create benchmark executable
     const benchmark = b.addExecutable(.{

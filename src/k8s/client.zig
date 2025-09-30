@@ -46,7 +46,7 @@ pub const K8sClient = struct {
         );
         defer self.allocator.free(path);
         
-        const response = try self.request("GET", path, null);
+        const response = try self.request(.GET, path, null);
         defer self.allocator.free(response);
         
         return try self.parsePodList(response);
@@ -55,7 +55,7 @@ pub const K8sClient = struct {
     /// List all pods across all namespaces
     pub fn listAllPods(self: *K8sClient) ![]Pod {
         const path = "/api/v1/pods";
-        const response = try self.request("GET", path, null);
+        const response = try self.request(.GET, path, null);
         defer self.allocator.free(response);
         
         return try self.parsePodList(response);
@@ -64,7 +64,7 @@ pub const K8sClient = struct {
     /// Get cluster information
     pub fn getClusterInfo(self: *K8sClient) !ClusterInfo {
         const version_path = "/version";
-        const version_response = try self.request("GET", version_path, null);
+        const version_response = try self.request(.GET, version_path, null);
         defer self.allocator.free(version_response);
         
         // Parse version info
@@ -81,7 +81,7 @@ pub const K8sClient = struct {
         
         // Get node info for CPU/memory
         const nodes_path = "/api/v1/nodes";
-        const nodes_response = try self.request("GET", nodes_path, null);
+        const nodes_response = try self.request(.GET, nodes_path, null);
         defer self.allocator.free(nodes_response);
         
         const node_metrics = try self.parseNodeMetrics(nodes_response);
@@ -93,8 +93,28 @@ pub const K8sClient = struct {
         };
     }
     
+    /// HTTP methods enum for type safety
+    pub const Method = enum {
+        GET,
+        POST,
+        PUT,
+        DELETE,
+        PATCH,
+    };
+    
     /// Make HTTP request to Kubernetes API
-    fn request(self: *K8sClient, method_str: []const u8, path: []const u8, _: ?[]const u8) ![]u8 {
+    pub fn request(self: *K8sClient, method: Method, path: []const u8, body: ?[]const u8) ![]u8 {
+        return self.requestWithContentType(method, path, body, "application/json");
+    }
+    
+    /// Make HTTP request with custom Content-Type
+    pub fn requestWithContentType(
+        self: *K8sClient,
+        method: Method,
+        path: []const u8,
+        body: ?[]const u8,
+        content_type: []const u8,
+    ) ![]u8 {
         const url = try std.fmt.allocPrint(
             self.allocator,
             "{s}{s}",
@@ -102,21 +122,19 @@ pub const K8sClient = struct {
         );
         defer self.allocator.free(url);
         
-        // self.log("K8s API Request: {s} {s}", .{ method_str, url });
-        
         const uri = try std.Uri.parse(url);
         
-        const method: std.http.Method = if (std.mem.eql(u8, method_str, "GET"))
-            .GET
-        else if (std.mem.eql(u8, method_str, "POST"))
-            .POST
-        else if (std.mem.eql(u8, method_str, "DELETE"))
-            .DELETE
-        else
-            .GET;
+        const http_method: std.http.Method = switch (method) {
+            .GET => .GET,
+            .POST => .POST,
+            .PUT => .PUT,
+            .DELETE => .DELETE,
+            .PATCH => .PATCH,
+        };
         
-        // Build headers with authorization if we have a token
+        // Build headers with authorization
         var header_buffer: [1024]u8 = undefined;
+        var content_type_buffer: [256]u8 = undefined;
         var headers = std.http.Client.Request.Headers{};
         
         if (self.token) |token| {
@@ -124,23 +142,46 @@ pub const K8sClient = struct {
             headers.authorization = .{ .override = auth_value };
         }
         
+        if (body != null) {
+            const ct_value = try std.fmt.bufPrint(&content_type_buffer, "{s}", .{content_type});
+            headers.content_type = .{ .override = ct_value };
+        }
+        
         // Make request to Kubernetes API
-        var req = try self.http_client.request(method, uri, .{
+        var req = try self.http_client.request(http_method, uri, .{
             .redirect_behavior = @enumFromInt(3),
             .headers = headers,
         });
         defer req.deinit();
         
-        // Send request (no body for GET)
-        try req.sendBodiless();
+        // Send request with or without body
+        if (body) |request_body| {
+            req.transfer_encoding = .{ .content_length = request_body.len };
+            var send_body = try req.sendBody(&.{});
+            try send_body.writer.writeAll(request_body);
+            try send_body.end();
+        } else {
+            try req.sendBodiless();
+        }
         
         // Receive response headers
         var redirect_buffer: [2048]u8 = undefined;
         var response = try req.receiveHead(&redirect_buffer);
         
         // Check response status
-        if (response.head.status != .ok) {
-            // self.log("K8s API error: {} for {s}", .{ response.head.status, path });
+        const is_success = @intFromEnum(response.head.status) >= 200 and @intFromEnum(response.head.status) < 300;
+        if (!is_success) {
+            // Try to read error body
+            var error_buffer = try std.ArrayList(u8).initCapacity(self.allocator, 0);
+            defer error_buffer.deinit(self.allocator);
+            
+            var transfer_buffer: [4096]u8 = undefined;
+            const reader = response.reader(&transfer_buffer);
+            const max_size: std.io.Limit = @enumFromInt(1 * 1024 * 1024); // 1 MB
+            reader.appendRemaining(self.allocator, &error_buffer, max_size) catch {};
+            
+            // Log error details if possible
+            // In library mode, just return error
             return error.K8sApiError;
         }
         
@@ -151,17 +192,31 @@ pub const K8sClient = struct {
         var transfer_buffer: [4096]u8 = undefined;
         const reader = response.reader(&transfer_buffer);
         
-        // Read remaining data
         const max_size: std.io.Limit = @enumFromInt(10 * 1024 * 1024); // 10 MB
         reader.appendRemaining(self.allocator, &body_buffer, max_size) catch |err| switch (err) {
             error.ReadFailed => return response.bodyErr().?,
             else => |e| return e,
         };
         
-        const body = try body_buffer.toOwnedSlice(self.allocator);
-        // self.log("K8s API Response: {d} bytes", .{body.len});
+        return try body_buffer.toOwnedSlice(self.allocator);
+    }
+    
+    /// Old method signature for backwards compatibility
+    fn requestOld(self: *K8sClient, method_str: []const u8, path: []const u8, body: ?[]const u8) ![]u8 {
+        const method: Method = if (std.mem.eql(u8, method_str, "GET"))
+            .GET
+        else if (std.mem.eql(u8, method_str, "POST"))
+            .POST
+        else if (std.mem.eql(u8, method_str, "PUT"))
+            .PUT
+        else if (std.mem.eql(u8, method_str, "DELETE"))
+            .DELETE
+        else if (std.mem.eql(u8, method_str, "PATCH"))
+            .PATCH
+        else
+            .GET;
         
-        return body;
+        return self.request(method, path, body);
     }
     
     /// Parse pod list from JSON response
