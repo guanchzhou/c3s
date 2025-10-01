@@ -75,18 +75,6 @@ pub fn build(b: *std.Build) void {
     });
     exe.root_module.addImport("klient", klient.module("klient"));
 
-    // Add connection test executable
-    const test_conn = b.addExecutable(.{
-        .name = "test_connection",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("test_connection.zig"),
-            .target = target,
-            .optimize = optimize,
-        }),
-    });
-    test_conn.root_module.addImport("klient", klient.module("klient"));
-    b.installArtifact(test_conn);
-
     // Bump step: increments .build_number using a small Zig tool
     const bump_exe = b.addExecutable(.{
         .name = "bump_build",
