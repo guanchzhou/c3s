@@ -5,6 +5,12 @@ const Logger = @import("core/logger.zig");
 const panic_hook = @import("panic_hook.zig");
 const posix = std.posix;
 
+/// Configure global logging to suppress debug spam from zig-yaml dependency
+/// This affects ALL std.log calls in the entire program (including dependencies)
+pub const std_options: std.Options = .{
+    .log_level = .err,
+};
+
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
@@ -21,11 +27,8 @@ pub fn main() !void {
     };
 
     // Initialize logging
-    const log_level = if (std.mem.eql(u8, config.log_level, "debug")) Logger.LogLevel.debug
-        else if (std.mem.eql(u8, config.log_level, "warn")) Logger.LogLevel.warn
-        else if (std.mem.eql(u8, config.log_level, "error")) Logger.LogLevel.err
-        else Logger.LogLevel.info;
-    
+    const log_level = if (std.mem.eql(u8, config.log_level, "debug")) Logger.LogLevel.debug else if (std.mem.eql(u8, config.log_level, "warn")) Logger.LogLevel.warn else if (std.mem.eql(u8, config.log_level, "error")) Logger.LogLevel.err else Logger.LogLevel.info;
+
     try Logger.initGlobalLogger(log_level);
     defer Logger.deinitGlobalLogger();
 

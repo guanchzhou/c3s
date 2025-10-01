@@ -13,7 +13,7 @@ pub fn build(b: *std.Build) void {
     const optimize = b.standardOptimizeOption(.{});
 
     // Build options for embedding version/build number
-    var date_child = std.process.Child.init(&[_][]const u8{"date", "+v0.%Y.%m.%d.%H.%M"}, b.allocator);
+    var date_child = std.process.Child.init(&[_][]const u8{ "date", "+v0.%Y.%m.%d.%H.%M" }, b.allocator);
     date_child.stdin_behavior = .Ignore;
     date_child.stdout_behavior = .Pipe;
     date_child.stderr_behavior = .Inherit;
@@ -60,7 +60,7 @@ pub fn build(b: *std.Build) void {
 
     // Import dependencies
     exe.root_module.addOptions("c3s_build", build_opts);
-    
+
     // Add zig-yaml dependency (Zig 0.15.0 compatible branch)
     const yaml = b.dependency("yaml", .{
         .target = target,
@@ -74,6 +74,18 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     exe.root_module.addImport("klient", klient.module("klient"));
+
+    // Add connection test executable
+    const test_conn = b.addExecutable(.{
+        .name = "test_connection",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("test_connection.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    test_conn.root_module.addImport("klient", klient.module("klient"));
+    b.installArtifact(test_conn);
 
     // Bump step: increments .build_number using a small Zig tool
     const bump_exe = b.addExecutable(.{
@@ -210,11 +222,11 @@ pub fn build(b: *std.Build) void {
         }),
     });
     k8s_client_tests.root_module.addAnonymousImport("src", .{ .root_source_file = b.path("src/index.zig") });
-    
+
     const run_k8s_client_tests = b.addRunArtifact(k8s_client_tests);
     const k8s_client_test_step = b.step("test-k8s-client", "Run K8s client tests");
     k8s_client_test_step.dependOn(&run_k8s_client_tests.step);
-    
+
     // Create K8s resources integration tests
     const k8s_resources_tests = b.addTest(.{
         .root_module = b.createModule(.{
@@ -224,11 +236,11 @@ pub fn build(b: *std.Build) void {
         }),
     });
     k8s_resources_tests.root_module.addAnonymousImport("src", .{ .root_source_file = b.path("src/index.zig") });
-    
+
     const run_k8s_resources_tests = b.addRunArtifact(k8s_resources_tests);
     const k8s_resources_test_step = b.step("test-k8s-resources", "Run K8s resources integration tests");
     k8s_resources_test_step.dependOn(&run_k8s_resources_tests.step);
-    
+
     // Create retry tests
     const retry_tests = b.addTest(.{
         .root_module = b.createModule(.{
@@ -238,11 +250,11 @@ pub fn build(b: *std.Build) void {
         }),
     });
     retry_tests.root_module.addAnonymousImport("src", .{ .root_source_file = b.path("src/index.zig") });
-    
+
     const run_retry_tests = b.addRunArtifact(retry_tests);
     const retry_test_step = b.step("test-retry", "Run retry logic tests");
     retry_test_step.dependOn(&run_retry_tests.step);
-    
+
     // Create new resources tests
     const new_resources_tests = b.addTest(.{
         .root_module = b.createModule(.{
@@ -252,11 +264,11 @@ pub fn build(b: *std.Build) void {
         }),
     });
     new_resources_tests.root_module.addAnonymousImport("src", .{ .root_source_file = b.path("src/index.zig") });
-    
+
     const run_new_resources_tests = b.addRunArtifact(new_resources_tests);
     const new_resources_test_step = b.step("test-new-resources", "Run new resources structure tests");
     new_resources_test_step.dependOn(&run_new_resources_tests.step);
-    
+
     // Create advanced features tests
     const advanced_features_tests = b.addTest(.{
         .root_module = b.createModule(.{
@@ -266,7 +278,7 @@ pub fn build(b: *std.Build) void {
         }),
     });
     advanced_features_tests.root_module.addAnonymousImport("src", .{ .root_source_file = b.path("src/index.zig") });
-    
+
     const run_advanced_features_tests = b.addRunArtifact(advanced_features_tests);
     const advanced_features_test_step = b.step("test-advanced", "Run advanced features tests (TLS, Pool, CRD)");
     advanced_features_test_step.dependOn(&run_advanced_features_tests.step);

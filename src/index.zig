@@ -4,6 +4,32 @@ pub const Color = @import("core/terminal.zig").Color;
 pub const Header = @import("ui/header.zig").Header;
 pub const Footer = @import("ui/footer.zig").Footer;
 pub const PodsView = @import("view/pods_view.zig").PodsView;
+pub const DeploymentsView = @import("view/deployments_view.zig").DeploymentsView;
+pub const ServicesView = @import("view/services_view.zig").ServicesView;
+pub const NamespacesView = @import("view/namespaces_view.zig").NamespacesView;
+pub const NodesView = @import("view/nodes_view.zig").NodesView;
+pub const StatefulSetsView = @import("view/statefulsets_view.zig").StatefulSetsView;
+pub const DaemonSetsView = @import("view/daemonsets_view.zig").DaemonSetsView;
+pub const ReplicaSetsView = @import("view/replicasets_view.zig").ReplicaSetsView;
+pub const JobsView = @import("view/jobs_view.zig").JobsView;
+pub const CronJobsView = @import("view/cronjobs_view.zig").CronJobsView;
+pub const ConfigMapsView = @import("view/configmaps_view.zig").ConfigMapsView;
+pub const SecretsView = @import("view/secrets_view.zig").SecretsView;
+pub const PersistentVolumesView = @import("view/persistentvolumes_view.zig").PersistentVolumesView;
+pub const PersistentVolumeClaimsView = @import("view/persistentvolumeclaims_view.zig").PersistentVolumeClaimsView;
+pub const IngressesView = @import("view/ingresses_view.zig").IngressesView;
+pub const NetworkPoliciesView = @import("view/networkpolicies_view.zig").NetworkPoliciesView;
+pub const ServiceAccountsView = @import("view/serviceaccounts_view.zig").ServiceAccountsView;
+pub const RolesView = @import("view/roles_view.zig").RolesView;
+pub const RoleBindingsView = @import("view/rolebindings_view.zig").RoleBindingsView;
+pub const ClusterRolesView = @import("view/clusterroles_view.zig").ClusterRolesView;
+pub const ClusterRoleBindingsView = @import("view/clusterrolebindings_view.zig").ClusterRoleBindingsView;
+pub const EventsView = @import("view/events_view.zig").EventsView;
+pub const ResourceQuotasView = @import("view/resourcequotas_view.zig").ResourceQuotasView;
+pub const LimitRangesView = @import("view/limitranges_view.zig").LimitRangesView;
+pub const PodDisruptionBudgetsView = @import("view/poddisruptionbudgets_view.zig").PodDisruptionBudgetsView;
+pub const HPAView = @import("view/hpa_view.zig").HPAView;
+pub const ContextsView = @import("view/contexts_view.zig").ContextsView;
 pub const ThemesView = @import("view/themes_view.zig").ThemesView;
 pub const HelpView = @import("view/help_view.zig").HelpView;
 pub const App = @import("app.zig").App;
@@ -12,6 +38,9 @@ pub const Logger = @import("core/logger.zig");
 pub const version = @import("model/version.zig");
 pub const theme_loader = @import("model/theme_loader.zig");
 pub const fixtures = @import("fixtures/index.zig");
+
+// Services
+pub const K8sService = @import("services/k8s_service.zig").K8sService;
 
 // K8s module exports (from zig-klient library)
 pub const klient = @import("klient");

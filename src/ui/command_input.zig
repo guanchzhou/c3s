@@ -58,7 +58,14 @@ pub const CommandInput = struct {
     }
     
     pub fn render(self: *CommandInput, terminal: *Terminal, x: u16, y: u16, width: u16) !void {
-        if (!self.visible) return;
+        // Always clear the command line first
+        try terminal.setCursor(x, y);
+        try terminal.writeAll("\x1b[K"); // Clear to end of line
+        
+        if (!self.visible) {
+            try terminal.hideCursor();
+            return;
+        }
         
         // Clear the line with prompt background color
         try terminal.setCursor(x, y);
