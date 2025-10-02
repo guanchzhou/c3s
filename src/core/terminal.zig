@@ -1,5 +1,6 @@
 const std = @import("std");
 const posix = std.posix;
+const Logger = @import("logger.zig");
 const c = @cImport({
     @cInclude("termios.h");
 });
@@ -43,7 +44,9 @@ pub const Terminal = struct {
         
         // Save original termios
         var termios: c.termios = undefined;
-        if (c.tcgetattr(self.stdin.handle, &termios) != 0) {
+        const result = c.tcgetattr(self.stdin.handle, &termios);
+        if (result != 0) {
+            Logger.err("tcgetattr failed with result: {}, errno: {}", .{ result, std.posix.errno(-1) });
             return error.TermiosGetFailed;
         }
         self.original_termios = termios;
