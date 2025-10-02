@@ -764,9 +764,16 @@ pub const App = struct {
 
         // Render header with hints from current view
         if (size.height >= self.header_height) {
-            const current_view = self.view_manager.getCurrentView() orelse unreachable;
-            const hints = current_view.getHints();
-            try self.header.render(&self.terminal, 0, 0, size.width, self.header_height, hints);
+            if (self.view_manager.getCurrentView()) |current_view| {
+                const hints = current_view.getHints();
+                try self.header.render(&self.terminal, 0, 0, size.width, self.header_height, hints);
+            } else {
+                // No view on stack - render header with empty hints
+                const hints_model = @import("model/hints.zig");
+                const empty_hints: [0]hints_model.Hint = .{};
+                const default_hints = hints_model.HintConfig{ .hints = &empty_hints };
+                try self.header.render(&self.terminal, 0, 0, size.width, self.header_height, default_hints);
+            }
         }
 
         // Calculate body area
@@ -784,6 +791,11 @@ pub const App = struct {
         if (body_height > 0) {
             if (self.view_manager.getCurrentView()) |current_view| {
                 try current_view.render(&self.terminal, 0, body_start, size.width, body_height);
+            } else {
+                // No view - show error message
+                const error_msg = "No view loaded - press :pods to start";
+                const msg_y = body_start + (body_height / 2);
+                try Theme.writeStringWithTheme(&self.terminal, 2, msg_y, error_msg, self.theme.status_failed, self.theme.main_bg);
             }
         }
 

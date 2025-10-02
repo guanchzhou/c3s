@@ -20,7 +20,7 @@ pub const Terminal = struct {
         const stdin = std.fs.File.stdin();
         const stdout = std.fs.File.stdout();
         const stderr = std.fs.File.stderr();
-        
+
         const write_buffer = try std.ArrayList(u8).initCapacity(allocator, 32768); // Pre-allocate 32KB for smooth rendering
 
         return Terminal{
@@ -41,7 +41,7 @@ pub const Terminal = struct {
 
     pub fn enableRawMode(self: *Terminal) !void {
         if (self.raw_enabled) return;
-        
+
         // Save original termios
         var termios: c.termios = undefined;
         const result = c.tcgetattr(self.stdin.handle, &termios);
@@ -50,27 +50,27 @@ pub const Terminal = struct {
             return error.TermiosGetFailed;
         }
         self.original_termios = termios;
-        
+
         // Configure raw mode
         c.cfmakeraw(&termios);
-        termios.c_cc[c.VMIN] = 0;  // Return immediately even if no data
+        termios.c_cc[c.VMIN] = 0; // Return immediately even if no data
         termios.c_cc[c.VTIME] = 0; // No timeout
-        
+
         if (c.tcsetattr(self.stdin.handle, c.TCSANOW, &termios) != 0) {
             return error.TermiosSetFailed;
         }
-        
+
         self.raw_enabled = true;
     }
 
     pub fn disableRawMode(self: *Terminal) void {
         if (!self.raw_enabled) return;
-        
+
         // Restore original termios
         if (self.original_termios) |termios| {
             _ = c.tcsetattr(self.stdin.handle, c.TCSANOW, &termios);
         }
-        
+
         self.raw_enabled = false;
     }
 
@@ -92,7 +92,7 @@ pub const Terminal = struct {
         var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
         defer arena.deinit();
         const alloc = arena.allocator();
-        var stty = std.process.Child.init(&[_][]const u8{"stty", "size"}, alloc);
+        var stty = std.process.Child.init(&[_][]const u8{ "stty", "size" }, alloc);
         stty.stdout_behavior = .Pipe;
         stty.stderr_behavior = .Close;
         if (stty.spawn() catch null) |_| {
@@ -100,9 +100,9 @@ pub const Terminal = struct {
             _ = stty.wait() catch {};
             if (out) |buf| {
                 const trimmed = std.mem.trim(u8, buf, " \n\r\t");
-                if (std.mem.indexOfScalar(u8, trimmed, ' ') ) |sp| {
+                if (std.mem.indexOfScalar(u8, trimmed, ' ')) |sp| {
                     const rows_str = trimmed[0..sp];
-                    const cols_str = trimmed[sp+1..];
+                    const cols_str = trimmed[sp + 1 ..];
                     const rows = std.fmt.parseInt(u16, rows_str, 10) catch 0;
                     const cols = std.fmt.parseInt(u16, cols_str, 10) catch 0;
                     if (rows > 0 and cols > 0) return .{ .width = cols, .height = rows };
@@ -111,13 +111,13 @@ pub const Terminal = struct {
         }
 
         // 3) Fallback to tput
-        var cols_proc = std.process.Child.init(&[_][]const u8{"tput", "cols"}, alloc);
+        var cols_proc = std.process.Child.init(&[_][]const u8{ "tput", "cols" }, alloc);
         cols_proc.stdout_behavior = .Pipe;
         cols_proc.stderr_behavior = .Close;
         if (cols_proc.spawn() catch null) |_| {
             const cols_out = cols_proc.stdout.?.readToEndAlloc(alloc, 64) catch null;
             _ = cols_proc.wait() catch {};
-            var lines_proc = std.process.Child.init(&[_][]const u8{"tput", "lines"}, alloc);
+            var lines_proc = std.process.Child.init(&[_][]const u8{ "tput", "lines" }, alloc);
             lines_proc.stdout_behavior = .Pipe;
             lines_proc.stderr_behavior = .Close;
             if (lines_proc.spawn() catch null) |_| {
@@ -142,7 +142,7 @@ pub const Terminal = struct {
     fn bufferWrite(self: *Terminal, data: []const u8) !void {
         try self.write_buffer.appendSlice(self.allocator, data);
     }
-    
+
     // Wrapper for components that need to write directly
     pub fn writeAll(self: *Terminal, data: []const u8) !void {
         try self.bufferWrite(data);
@@ -207,12 +207,12 @@ pub const Terminal = struct {
         // DEC Synchronized Output Mode - terminal buffers until endSyncOutput
         try self.stdout.writeAll("\x1b[?2026h");
     }
-    
+
     pub fn endSyncOutput(self: *Terminal) !void {
         // End synchronized output - terminal displays buffered content atomically
         try self.stdout.writeAll("\x1b[?2026l");
     }
-    
+
     pub fn flush(self: *Terminal) !void {
         // Write entire buffer to stdout at once for flicker-free rendering
         if (self.write_buffer.items.len > 0) {
@@ -220,34 +220,34 @@ pub const Terminal = struct {
             self.write_buffer.clearRetainingCapacity();
         }
     }
-    
+
     pub fn fillRow(self: *Terminal, x: u16, y: u16, width: u16, fg_color: []const u8, bg_color: []const u8) !void {
         if (width == 0) return;
-        
+
         try self.setCursor(x, y);
-        
+
         // Write color codes once
         try self.bufferWrite(fg_color);
         try self.bufferWrite(bg_color);
-        
+
         // Fill with spaces in chunks for efficiency
         var spaces_buf: [256]u8 = undefined;
         @memset(&spaces_buf, ' ');
-        
+
         var remaining: usize = width;
         while (remaining > 0) {
             const chunk = @min(remaining, spaces_buf.len);
             try self.bufferWrite(spaces_buf[0..chunk]);
             remaining -= chunk;
         }
-        
+
         // Reset colors
         try self.bufferWrite("\x1b[0m");
     }
 
     pub fn readKey(self: *Terminal) !?Key {
         var buf: [16]u8 = undefined;
-        
+
         // Read first byte (VMIN=0 means this returns immediately)
         const n = posix.read(self.stdin.handle, buf[0..1]) catch return null;
         if (n == 0) return null;
@@ -264,14 +264,14 @@ pub const Terminal = struct {
             0x1b => {
                 // Escape sequence - read remaining bytes
                 var bytes_read: usize = 1;
-                
+
                 // Try to read up to 10 more bytes for escape sequence
                 var attempts: u8 = 0;
                 while (bytes_read < buf.len and attempts < 10) : (attempts += 1) {
-                    const n_read = posix.read(self.stdin.handle, buf[bytes_read..bytes_read+1]) catch break;
+                    const n_read = posix.read(self.stdin.handle, buf[bytes_read .. bytes_read + 1]) catch break;
                     if (n_read == 0) break;
                     bytes_read += n_read;
-                    
+
                     // Check if we have a complete arrow key sequence
                     if (bytes_read >= 3 and buf[1] == '[') {
                         const code = buf[2];
@@ -285,7 +285,7 @@ pub const Terminal = struct {
                         }
                     }
                 }
-                
+
                 return try decodeCsi(buf[0..bytes_read]);
             },
             ':' => return Key.colon,
@@ -294,16 +294,16 @@ pub const Terminal = struct {
             else => return Key{ .char = first },
         }
     }
-    
+
     fn decodeCsi(seq: []const u8) !Key {
         if (seq.len < 2) return Key.escape;
-        
+
         // ESC [ sequences
         if (seq[1] == '[') {
             if (seq.len == 2) return Key.escape;
-            
+
             const code = seq[2];
-            
+
             // Simple single-character codes
             switch (code) {
                 'A' => return Key.up,
@@ -314,19 +314,19 @@ pub const Terminal = struct {
                 'F' => return Key.end,
                 else => {},
             }
-            
+
             // Tilde sequences: ESC[X~
             if (seq.len >= 4 and seq[seq.len - 1] == '~') {
                 const num_code = seq[2];
                 return switch (num_code) {
-                    '1', '7' => Key.home,  // ESC[1~ or ESC[7~ = Home
-                    '4', '8' => Key.end,   // ESC[4~ or ESC[8~ = End
-                    '5' => Key.page_up,    // ESC[5~ = Page Up
-                    '6' => Key.page_down,  // ESC[6~ = Page Down
+                    '1', '7' => Key.home, // ESC[1~ or ESC[7~ = Home
+                    '4', '8' => Key.end, // ESC[4~ or ESC[8~ = End
+                    '5' => Key.page_up, // ESC[5~ = Page Up
+                    '6' => Key.page_down, // ESC[6~ = Page Down
                     else => Key.unsupported,
                 };
             }
-            
+
             // Modified keys: ESC[1;XY where X is modifier, Y is key
             // Examples: ESC[1;5A = Ctrl+Up, ESC[1;2A = Shift+Up
             if (seq.len >= 6 and seq[2] == '1' and seq[3] == ';') {
@@ -342,10 +342,10 @@ pub const Terminal = struct {
                     else => Key.unsupported,
                 };
             }
-            
+
             return Key.unsupported;
         }
-        
+
         // ESC O sequences (alternate encoding)
         if (seq[1] == 'O') {
             if (seq.len < 3) return Key.escape;
@@ -356,7 +356,7 @@ pub const Terminal = struct {
                 else => Key.unsupported,
             };
         }
-        
+
         // Just ESC with no valid sequence
         return Key.escape;
     }
