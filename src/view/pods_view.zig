@@ -344,7 +344,7 @@ pub const PodsView = struct {
         const self: *PodsView = @ptrCast(@alignCast(ptr));
 
         self.visible_rows = if (height > 3) height - 3 else 0;
-        
+
         // Build title first
         var title_buf: [256]u8 = undefined;
         const ns = if (self.show_all_namespaces)
@@ -353,12 +353,12 @@ pub const PodsView = struct {
             self.k8s_service.getCurrentNamespace()
         else
             "disconnected";
-        
+
         const title_text = if (self.filter_text.len > 0)
             try std.fmt.bufPrint(&title_buf, "po({s})[{d}] </{s}>", .{ ns, self.filtered_indices.items.len, self.filter_text })
         else
             try std.fmt.bufPrint(&title_buf, "po({s})[{d}]", .{ ns, self.filtered_indices.items.len });
-        
+
         // Draw box border with title
         const BoxDrawing = @import("../ui/box_drawing.zig");
         try BoxDrawing.Box.createBox(terminal, x, y, width, height, self.theme.proc_box, self.theme.main_bg, title_text, .rounded, self.theme.main_fg, self.theme.title);

@@ -42,6 +42,12 @@ pub const Terminal = struct {
     pub fn enableRawMode(self: *Terminal) !void {
         if (self.raw_enabled) return;
 
+        // Check if stdin is a TTY first
+        if (!std.posix.isatty(self.stdin.handle)) {
+            Logger.warn("stdin is not a TTY, skipping raw mode", .{});
+            return;
+        }
+
         // Save original termios
         var termios: c.termios = undefined;
         const result = c.tcgetattr(self.stdin.handle, &termios);
