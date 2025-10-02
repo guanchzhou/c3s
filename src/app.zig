@@ -216,6 +216,7 @@ pub const App = struct {
         const command_input = try CommandInput.init(allocator, theme);
 
         // Apply UI config
+        Logger.info("UI Config - compact: {}, footer: {}", .{ ui_config.ui.compact, ui_config.ui.footer });
         header.setCompact(ui_config.ui.compact);
 
         // Create app

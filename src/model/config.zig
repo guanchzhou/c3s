@@ -47,6 +47,9 @@ pub fn load(allocator: std.mem.Allocator) !Config {
     // Parse the YAML (simple parser for our use case)
     const ui_config = try parseUiConfig(allocator, config_content);
     
+    const Logger = @import("../core/logger.zig");
+    Logger.info("Config loaded - compact: {}, footer: {}", .{ ui_config.compact, ui_config.footer });
+    
     return Config{
         .allocator = allocator,
         .ui = ui_config,

@@ -408,6 +408,7 @@ pub const Header = struct {
     }
 
     pub fn setCompact(self: *Header, compact: bool) void {
+        Logger.info("Header.setCompact called: {} (was: {})", .{ compact, self.compact });
         self.compact = compact;
     }
 
@@ -451,6 +452,8 @@ pub const Header = struct {
     const hints_model = @import("../model/hints.zig");
 
     pub fn render(self: *Header, terminal: *Terminal, x: u16, y: u16, width: u16, box_height: u16, hint_config: hints_model.HintConfig) !void {
+        Logger.debug("Header.render: compact={}, width={}, height={}", .{ self.compact, width, box_height });
+        
         if (self.last_height > box_height) {
             try clearRows(terminal, x, y, width, self.last_height);
         }
