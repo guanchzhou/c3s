@@ -37,18 +37,18 @@ test "E2E - memory management in typical session" {
     const allocator = gpa.allocator();
     
     // Simulate allocations that might happen during a session
-    var allocations = std.ArrayList([]u8).init(allocator);
+    var allocations = try std.ArrayList([]u8).initCapacity(allocator, 10);
     defer {
         for (allocations.items) |alloc| {
             allocator.free(alloc);
         }
-        allocations.deinit();
+        allocations.deinit(allocator);
     }
     
     // Simulate view switching (multiple allocations/deallocations)
     for (0..10) |i| {
         const data = try allocator.alloc(u8, 100 + i * 10);
-        try allocations.append(data);
+        try allocations.append(allocator, data);
     }
     
     std.debug.print("\n✓ Session simulation completed without memory leaks\n", .{});
