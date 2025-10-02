@@ -187,18 +187,30 @@ pub fn build(b: *std.Build) void {
     const app_test_step = b.step("test-app", "Run app tests");
     app_test_step.dependOn(&run_app_tests.step);
 
-    // Create integration tests
+    // Create integration tests (requires real Kubernetes cluster)
+    const c3s_module = b.createModule(.{
+        .root_source_file = b.path("src/index.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    c3s_module.addImport("klient", klient.module("klient"));
+    c3s_module.addImport("yaml", yaml.module("yaml"));
+    c3s_module.addOptions("c3s_build", build_opts);
+
     const integration_tests = b.addTest(.{
         .root_module = b.createModule(.{
-            .root_source_file = b.path("tests/integration.zig"),
+            .root_source_file = b.path("tests/integration/k8s_service_integration_test.zig"),
             .target = target,
             .optimize = optimize,
         }),
     });
-    integration_tests.root_module.addAnonymousImport("src", .{ .root_source_file = b.path("src/index.zig") });
+    integration_tests.root_module.addImport("c3s", c3s_module);
+    integration_tests.root_module.addImport("klient", klient.module("klient"));
+    integration_tests.root_module.addImport("yaml", yaml.module("yaml"));
+    integration_tests.root_module.addOptions("c3s_build", build_opts);
 
     const run_integration_tests = b.addRunArtifact(integration_tests);
-    const integration_test_step = b.step("test-integration", "Run integration tests");
+    const integration_test_step = b.step("test-integration", "Run integration tests (requires K8s cluster)");
     integration_test_step.dependOn(&run_integration_tests.step);
 
     // Create K8s client unit tests
