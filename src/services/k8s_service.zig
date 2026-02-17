@@ -20,6 +20,9 @@ pub const K8sService = struct {
     tls_cert_data: ?[]const u8 = null,
     tls_key_data: ?[]const u8 = null,
 
+    /// Wrapper around parsed pod lists so callers can keep JSON alive while consuming
+    const PodList = std.json.Parsed(klient.types.List(klient.types.Pod));
+
     /// Initialize the K8s service
     pub fn init(allocator: std.mem.Allocator) !K8sService {
         return K8sService{
@@ -117,13 +120,20 @@ pub const K8sService = struct {
         self.tls_cert_data = null;
         self.tls_key_data = null;
 
+        // Optional override to force using kubectl proxy (helpful for corp TLS issues)
+        var force_proxy: bool = false;
+        if (std.process.getEnvVarOwned(self.allocator, "C3S_FORCE_PROXY")) |val| {
+            defer self.allocator.free(val);
+            force_proxy = std.ascii.eqlIgnoreCase(val, "1") or std.ascii.eqlIgnoreCase(val, "true");
+        } else |_| {}
+
         // Skip TLS config for localhost - Rancher Desktop uses system-trusted certs
         const is_localhost = std.mem.indexOf(u8, cluster.server, "127.0.0.1") != null or
             std.mem.indexOf(u8, cluster.server, "localhost") != null;
 
         Logger.info("DEBUG: cluster.server={s}, is_localhost={}", .{ cluster.server, is_localhost });
 
-        if (!is_localhost) {
+        if (!is_localhost and !force_proxy) {
             // Handle CA certificate (for server verification)
             if (cluster.certificate_authority_data) |base64_ca| {
                 // Decode base64 CA certificate and store for cleanup
@@ -141,7 +151,7 @@ pub const K8sService = struct {
         if (user.token) |token| {
             Logger.info("DEBUG: Entered token auth branch", .{});
             // Use connectWithFallback for localhost to handle TLS issues
-            if (is_localhost) {
+            if (is_localhost or force_proxy) {
                 Logger.info("Using connectWithFallback for localhost", .{});
                 client.* = try klient.connectWithFallback(
                     self.allocator,
@@ -158,19 +168,31 @@ pub const K8sService = struct {
                     };
                 }
 
-                client.* = try klient.K8sClient.init(self.allocator, .{
+                // Attempt direct TLS connection first; if it fails (e.g., TLS init), fall back via kubectl proxy
+                const direct_or_fb = klient.K8sClient.init(self.allocator, .{
                     .server = cluster.server,
                     .token = token,
                     .namespace = self.current_namespace,
                     .retry_config = klient.defaultConfig,
                     .tls_config = tls_config,
-                });
+                }) catch |err| blk: {
+                    Logger.warn("Direct TLS connect failed: {any}. Falling back via kubectl proxy", .{err});
+                    const fb = try klient.connectWithFallback(
+                        self.allocator,
+                        cluster.server,
+                        token,
+                        self.current_namespace,
+                    );
+                    Logger.info("Connected via fallback, api_server: {s}", .{fb.api_server});
+                    break :blk fb;
+                };
+                client.* = direct_or_fb;
             }
         } else if (user.client_certificate_data != null or user.client_certificate != null) {
             Logger.info("DEBUG: Entered mTLS auth branch", .{});
 
             // For localhost, use connectWithFallback (falls back to kubectl proxy)
-            if (is_localhost) {
+            if (is_localhost or force_proxy) {
                 Logger.info("Using connectWithFallback for localhost (mTLS would fail)", .{});
                 client.* = try klient.connectWithFallback(
                     self.allocator,
@@ -203,32 +225,68 @@ pub const K8sService = struct {
                     .ca_cert_data = self.tls_ca_data,
                 };
 
-                client.* = try klient.K8sClient.init(self.allocator, .{
+                // Attempt direct TLS mTLS connection; fall back via kubectl proxy on failure
+                const direct_or_fb = klient.K8sClient.init(self.allocator, .{
                     .server = cluster.server,
                     .token = null,
                     .namespace = self.current_namespace,
                     .retry_config = klient.defaultConfig,
                     .tls_config = tls_config,
-                });
+                }) catch |err| blk: {
+                    Logger.warn("mTLS connect failed: {any}. Falling back via kubectl proxy", .{err});
+                    const fb = try klient.connectWithFallback(
+                        self.allocator,
+                        cluster.server,
+                        null,
+                        self.current_namespace,
+                    );
+                    Logger.info("Connected via fallback, api_server: {s}", .{fb.api_server});
+                    break :blk fb;
+                };
+                client.* = direct_or_fb;
             }
         } else {
             // No auth credentials - just use CA cert if available
             // TODO: Add exec credential plugin support
             Logger.warn("No token or client certificate found, creating client without auth", .{});
 
-            if (self.tls_ca_data) |ca| {
-                tls_config = klient.tls.TlsConfig{
-                    .ca_cert_data = ca,
-                };
+            if (!force_proxy) {
+                if (self.tls_ca_data) |ca| {
+                    tls_config = klient.tls.TlsConfig{
+                        .ca_cert_data = ca,
+                    };
+                }
             }
 
-            client.* = try klient.K8sClient.init(self.allocator, .{
-                .server = cluster.server,
-                .token = null,
-                .namespace = self.current_namespace,
-                .retry_config = klient.defaultConfig,
-                .tls_config = tls_config,
-            });
+            if (force_proxy or is_localhost) {
+                client.* = try klient.connectWithFallback(
+                    self.allocator,
+                    cluster.server,
+                    null,
+                    self.current_namespace,
+                );
+                Logger.info("Connected via fallback, api_server: {s}", .{client.api_server});
+            } else {
+                // Attempt unauthenticated TLS connection; fall back via kubectl proxy on failure
+                const direct_or_fb = klient.K8sClient.init(self.allocator, .{
+                    .server = cluster.server,
+                    .token = null,
+                    .namespace = self.current_namespace,
+                    .retry_config = klient.defaultConfig,
+                    .tls_config = tls_config,
+                }) catch |err| blk: {
+                    Logger.warn("TLS connect (no auth) failed: {any}. Falling back via kubectl proxy", .{err});
+                    const fb = try klient.connectWithFallback(
+                        self.allocator,
+                        cluster.server,
+                        null,
+                        self.current_namespace,
+                    );
+                    Logger.info("Connected via fallback, api_server: {s}", .{fb.api_server});
+                    break :blk fb;
+                };
+                client.* = direct_or_fb;
+            }
         }
 
         self.client = client;
@@ -274,26 +332,20 @@ pub const K8sService = struct {
     // ===== Pod Operations =====
 
     /// List all pods across all namespaces
-    pub fn listAllPods(self: *K8sService) ![]klient.Pod {
+    pub fn listAllPods(self: *K8sService) !PodList {
         if (!self.isConnected()) return error.NotConnected;
 
         const pods_client = klient.resources.Pods.init(self.client.?);
-        const pod_list = try pods_client.client.listAll();
-        defer pod_list.deinit();
-
-        return pod_list.value.items;
+        return try pods_client.client.listAll();
     }
 
     /// List pods in a specific namespace
-    pub fn listPods(self: *K8sService, namespace: ?[]const u8) ![]klient.Pod {
+    pub fn listPods(self: *K8sService, namespace: ?[]const u8) !PodList {
         if (!self.isConnected()) return error.NotConnected;
 
         const pods_client = klient.resources.Pods.init(self.client.?);
         const ns = namespace orelse self.current_namespace;
-        const pod_list = try pods_client.client.list(ns);
-        defer pod_list.deinit();
-
-        return pod_list.value.items;
+        return try pods_client.client.list(ns);
     }
 
     /// Get a specific pod

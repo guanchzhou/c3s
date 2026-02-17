@@ -12,8 +12,6 @@ const Config = @import("model/config.zig");
 const Logger = @import("core/logger.zig");
 const version = @import("model/version.zig");
 const theme_loader = @import("model/theme_loader.zig");
-const k8s = @import("k8s/index.zig");
-
 // MVVM imports
 const View = @import("viewmodel/view.zig").View;
 const ViewManager = @import("viewmodel/view_manager.zig").ViewManager;
@@ -809,6 +807,12 @@ pub const App = struct {
             else
                 0;
             if (footer_y < size.height) {
+                // Update footer status before rendering
+                if (self.k8s_service.isConnected()) {
+                    self.footer.setStatus(null);
+                } else {
+                    self.footer.setStatus("Not connected to Kubernetes cluster");
+                }
                 try self.footer.render(&self.terminal, 0, footer_y, size.width, footer_height);
             }
         }

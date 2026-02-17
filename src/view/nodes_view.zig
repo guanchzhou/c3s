@@ -170,7 +170,7 @@ pub const NodesView = struct {
 
         // Draw title
         var title_buf: [128]u8 = undefined;
-        const title = try std.fmt.bufPrint(&title_buf, "no(all)[{d}]", .{self.nodes.items.len});
+        const title = try std.fmt.bufPrint(&title_buf, "nodes(all)[{d}]", .{self.nodes.items.len});
         try terminal.setCursor(x + 1, y);
         try terminal.writeAll(self.theme.title);
         try terminal.writeAll(title);

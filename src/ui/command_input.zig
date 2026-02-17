@@ -11,7 +11,7 @@ pub const CommandInput = struct {
     prompt: []const u8 = "",
     buffer: std.ArrayList(u8),
     cursor_pos: usize = 0,
-    
+
     pub fn init(allocator: std.mem.Allocator, theme: *const theme_loader.ThemeColors) !CommandInput {
         return CommandInput{
             .allocator = allocator,
@@ -19,11 +19,11 @@ pub const CommandInput = struct {
             .buffer = try std.ArrayList(u8).initCapacity(allocator, 256),
         };
     }
-    
+
     pub fn deinit(self: *CommandInput) void {
         self.buffer.deinit(self.allocator);
     }
-    
+
     pub fn showWithPrompt(self: *CommandInput, prompt: []const u8) void {
         self.visible = true;
         self.prompt = prompt;
@@ -31,42 +31,43 @@ pub const CommandInput = struct {
         self.cursor_pos = 0;
         Logger.debug("CommandInput: Opened with prompt '{s}'", .{prompt});
     }
-    
+
     pub fn hide(self: *CommandInput) void {
         self.visible = false;
         self.buffer.clearRetainingCapacity();
         self.cursor_pos = 0;
         Logger.debug("CommandInput: Closed", .{});
     }
-    
+
     pub fn addChar(self: *CommandInput, c: u8) !void {
         if (c >= 32 and c <= 126) { // Printable ASCII
             try self.buffer.insert(self.allocator, self.cursor_pos, c);
             self.cursor_pos += 1;
         }
     }
-    
+
     pub fn backspace(self: *CommandInput) void {
         if (self.cursor_pos > 0) {
             _ = self.buffer.orderedRemove(self.cursor_pos - 1);
             self.cursor_pos -= 1;
         }
     }
-    
+
     pub fn getCommand(self: *CommandInput) []const u8 {
         return self.buffer.items;
     }
-    
+
     pub fn render(self: *CommandInput, terminal: *Terminal, x: u16, y: u16, width: u16) !void {
-        // Always clear the command line first
-        try terminal.setCursor(x, y);
-        try terminal.writeAll("\x1b[K"); // Clear to end of line
-        
+        // If not visible, do not touch the screen row to avoid erasing view borders
         if (!self.visible) {
             try terminal.hideCursor();
             return;
         }
-        
+
+        // Clear the command line before drawing
+        try terminal.setCursor(x, y);
+        try terminal.writeAll("\x1b[K"); // Clear to end of line
+
         // Clear the line with prompt background color
         try terminal.setCursor(x, y);
         try terminal.writeAll(self.theme.prompt_bg);
@@ -78,7 +79,7 @@ pub const CommandInput = struct {
             try terminal.writeAll(spaces_buf[0..chunk]);
             remaining -= chunk;
         }
-        
+
         // Draw prompt and buffer with prompt colors
         try terminal.setCursor(x, y);
         try terminal.writeAll(self.theme.prompt_fg);
@@ -87,11 +88,8 @@ pub const CommandInput = struct {
         const line_text = try std.fmt.bufPrint(&line_buf, " {s} {s}", .{ self.prompt, self.buffer.items });
         try terminal.writeAll(line_text);
         try terminal.writeAll("\x1b[0m");
-        
+
         // Position cursor after the text (accounting for leading space)
         try terminal.setCursor(x + @as(u16, @intCast(1 + self.prompt.len + 1 + self.cursor_pos)), y);
     }
 };
-
-
-

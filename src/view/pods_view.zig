@@ -7,7 +7,6 @@ const theme_loader = @import("../model/theme_loader.zig");
 const universal_filter = @import("../viewmodel/filter.zig");
 const hints_model = @import("../model/hints.zig");
 const table_layout = @import("../ui/table_layout.zig");
-const k8s = @import("../k8s/index.zig");
 const K8sService = @import("../services/k8s_service.zig").K8sService;
 
 /// PodsView - displays Kubernetes pods with filtering and navigation
@@ -86,7 +85,7 @@ pub const PodsView = struct {
         self.pods.clearRetainingCapacity();
 
         // Fetch pods from k8s
-        const k8s_pods = if (self.show_all_namespaces)
+        var k8s_pod_list = if (self.show_all_namespaces)
             self.k8s_service.listAllPods() catch |err| {
                 Logger.err("Failed to list all pods: {any}", .{err});
                 self.error_message = try std.fmt.allocPrint(self.allocator, "Failed to fetch pods: {any}", .{err});
@@ -98,7 +97,9 @@ pub const PodsView = struct {
                 self.error_message = try std.fmt.allocPrint(self.allocator, "Failed to fetch pods: {any}", .{err});
                 return;
             };
-        defer self.allocator.free(k8s_pods);
+        defer k8s_pod_list.deinit();
+
+        const k8s_pods = k8s_pod_list.value.items;
 
         // Convert to view pods
         for (k8s_pods) |k8s_pod| {
@@ -139,41 +140,6 @@ pub const PodsView = struct {
                 .ip = try self.allocator.dupe(u8, pod_ip),
                 .node = try self.allocator.dupe(u8, if (k8s_pod.spec) |spec| spec.nodeName orelse "-" else "-"),
                 .age = try self.allocator.dupe(u8, "TODO"), // TODO: Calculate from creationTimestamp
-            });
-        }
-
-        // Reapply filter
-        try self.applyFilter(self.filter_text);
-    }
-
-    /// Load pods from K8s manager
-    pub fn loadPodsFromK8s(self: *PodsView, k8s_pods: []const k8s.Pod) !void {
-        // Clear existing pods
-        for (self.pods.items) |pod| {
-            self.allocator.free(pod.namespace);
-            self.allocator.free(pod.name);
-            self.allocator.free(pod.ready);
-            self.allocator.free(pod.status);
-            self.allocator.free(pod.cpu_l);
-            self.allocator.free(pod.mem_l);
-            self.allocator.free(pod.ip);
-            self.allocator.free(pod.node);
-            self.allocator.free(pod.age);
-        }
-        self.pods.clearRetainingCapacity();
-
-        // Load new pods
-        for (k8s_pods) |k8s_pod| {
-            try self.pods.append(self.allocator, .{
-                .namespace = try self.allocator.dupe(u8, k8s_pod.namespace),
-                .name = try self.allocator.dupe(u8, k8s_pod.name),
-                .ready = try self.allocator.dupe(u8, k8s_pod.ready),
-                .status = try self.allocator.dupe(u8, k8s_pod.status),
-                .cpu_l = try self.allocator.dupe(u8, k8s_pod.cpu_usage),
-                .mem_l = try self.allocator.dupe(u8, k8s_pod.mem_usage),
-                .ip = try self.allocator.dupe(u8, k8s_pod.ip),
-                .node = try self.allocator.dupe(u8, k8s_pod.node),
-                .age = try self.allocator.dupe(u8, k8s_pod.age),
             });
         }
 
@@ -349,31 +315,23 @@ pub const PodsView = struct {
         var title_buf: [256]u8 = undefined;
         const ns = if (self.show_all_namespaces)
             "all"
-        else if (self.k8s_service.isConnected())
-            self.k8s_service.getCurrentNamespace()
         else
-            "disconnected";
+            // Always show an effective namespace, even when disconnected
+            self.k8s_service.getCurrentNamespace();
 
         const title_text = if (self.filter_text.len > 0)
-            try std.fmt.bufPrint(&title_buf, "po({s})[{d}] </{s}>", .{ ns, self.filtered_indices.items.len, self.filter_text })
+            try std.fmt.bufPrint(&title_buf, "pods({s})[{d}] </{s}>", .{ ns, self.filtered_indices.items.len, self.filter_text })
         else
-            try std.fmt.bufPrint(&title_buf, "po({s})[{d}]", .{ ns, self.filtered_indices.items.len });
+            try std.fmt.bufPrint(&title_buf, "pods({s})[{d}]", .{ ns, self.filtered_indices.items.len });
 
         // Draw box border with title
         const BoxDrawing = @import("../ui/box_drawing.zig");
         try BoxDrawing.Box.createBox(terminal, x, y, width, height, self.theme.proc_box, self.theme.main_bg, title_text, .rounded, self.theme.main_fg, self.theme.title);
 
         // Show error message if present
-        const Theme = @import("../theme.zig");
         if (self.error_message) |msg| {
+            const Theme = @import("../theme.zig");
             try Theme.writeStringWithTheme(terminal, x + 2, y + height / 2, msg, self.theme.status_failed, self.theme.main_bg);
-            return;
-        }
-
-        // Show empty message if no pods
-        if (self.filtered_indices.items.len == 0) {
-            const empty_msg = "No pods found";
-            try Theme.writeStringWithTheme(terminal, x + 2, y + height / 2, empty_msg, self.theme.inactive_fg, self.theme.main_bg);
             return;
         }
 
@@ -452,6 +410,14 @@ pub const PodsView = struct {
             try terminal.writeAll(header_text);
             try terminal.writeAll("\x1b[0m");
             col_x += w + 1;
+        }
+
+        // Show empty message if no pods
+        if (self.filtered_indices.items.len == 0) {
+            const Theme = @import("../theme.zig");
+            const empty_msg = "No pods found";
+            try Theme.writeStringWithTheme(terminal, x + 2, y + height / 2, empty_msg, self.theme.inactive_fg, self.theme.main_bg);
+            return;
         }
 
         // Draw pod rows

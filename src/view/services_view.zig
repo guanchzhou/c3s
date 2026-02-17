@@ -200,11 +200,9 @@ pub const ServicesView = struct {
         var title_buf: [128]u8 = undefined;
         const ns = if (self.show_all_namespaces)
             "all"
-        else if (self.k8s_service.isConnected())
-            self.k8s_service.getCurrentNamespace()
         else
-            "disconnected";
-        const title_text = try std.fmt.bufPrint(&title_buf, "svc({s})[{d}]", .{ ns, self.services.items.len });
+            self.k8s_service.getCurrentNamespace();
+        const title_text = try std.fmt.bufPrint(&title_buf, "services({s})[{d}]", .{ ns, self.services.items.len });
 
         // Draw box border with title
         try BoxDrawing.Box.createBox(terminal, x, y, width, height, self.theme.proc_box, self.theme.main_bg, title_text, .rounded, self.theme.main_fg, self.theme.title_highlight);

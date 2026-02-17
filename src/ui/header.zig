@@ -355,6 +355,25 @@ pub const Header = struct {
         try terminal.setCursor(current_x, y);
 
         for (parts.items, 0..) |part, i| {
+            if (i == 0 and level == 0 and part.len > 4 and std.mem.startsWith(u8, part, "c3s ")) {
+                try terminal.writeAll(self.theme.app_name);
+                try terminal.writeAll("c3s");
+                try terminal.writeAll("\x1b[0m");
+                try terminal.writeAll(" ");
+                try terminal.writeAll(self.theme.title);
+                try terminal.writeAll(part[4..]);
+                try terminal.writeAll("\x1b[0m");
+                current_x += @as(u16, @intCast(part.len));
+
+                if (i < parts.items.len - 1) {
+                    try Theme.writeStringWithTheme(terminal, current_x, y, sep, self.theme.main_fg, self.theme.main_bg);
+                    current_x += @as(u16, @intCast(sep.len));
+                }
+
+                self.allocator.free(part);
+                continue;
+            }
+
             // Determine color for this part - match non-compact header colors
             const color = blk: {
                 if (i == 0 and level <= 5) {
@@ -368,11 +387,9 @@ pub const Header = struct {
                     try terminal.writeAll(part[0 .. colon_pos + 1]); // Include the colon
                     try terminal.writeAll("\x1b[0m");
 
-                    // Value part (after colon and space) - use hi_fg (or title for k8s)
+                    // Value part (after colon and space) - use hi_fg to match non-compact header
                     if (colon_pos + 2 < part.len) {
-                        const is_k8s = std.mem.startsWith(u8, part, "k8s:") or std.mem.startsWith(u8, part, "K8s:");
-                        const value_color = if (is_k8s) self.theme.title else self.theme.hi_fg;
-                        try terminal.writeAll(value_color);
+                        try terminal.writeAll(self.theme.hi_fg);
                         try terminal.writeAll(part[colon_pos + 2 ..]); // Skip ": "
                         try terminal.writeAll("\x1b[0m");
                     }
@@ -520,7 +537,7 @@ pub const Header = struct {
         line += 1;
 
         try Theme.writeStringWithTheme(terminal, x + 1, line, "K8s Rev:", self.theme.main_fg, self.theme.main_bg);
-        try Theme.writeStringWithTheme(terminal, x + 1 + label_width, line, self.k8s_version, self.theme.title, self.theme.main_bg);
+        try Theme.writeStringWithTheme(terminal, x + 1 + label_width, line, self.k8s_version, self.theme.hi_fg, self.theme.main_bg);
         line += 1;
 
         try Theme.writeStringWithTheme(terminal, x + 1, line, "CPU:", self.theme.main_fg, self.theme.main_bg);
