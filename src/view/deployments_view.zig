@@ -15,6 +15,7 @@ const hints_model = @import("../model/hints.zig");
 const BoxDrawing = @import("../ui/box_drawing.zig");
 const universal_filter = @import("../viewmodel/filter.zig");
 const sort_util = @import("../viewmodel/sort.zig");
+const age_util = @import("../viewmodel/age.zig");
 
 pub const DeploymentsView = struct {
     allocator: std.mem.Allocator,
@@ -177,7 +178,7 @@ pub const DeploymentsView = struct {
                 .replicas = dep.spec.?.replicas orelse 0,
                 .ready_replicas = ready_replicas,
                 .available_replicas = available_replicas,
-                .age = try self.calculateAge(dep.metadata.creationTimestamp),
+                .age = try age_util.calculateAge(self.allocator, dep.metadata.creationTimestamp),
                 .allocator = self.allocator,
             };
             try self.deployments.append(self.allocator, info);
@@ -231,11 +232,6 @@ pub const DeploymentsView = struct {
             std.mem.indexOf(u8, item.namespace, filter) != null;
     }
 
-    fn calculateAge(self: *DeploymentsView, timestamp: ?[]const u8) ![]const u8 {
-        _ = timestamp;
-        // TODO: Calculate actual age from timestamp
-        return try self.allocator.dupe(u8, "5d");
-    }
 
     pub fn createView(self: *DeploymentsView) View {
         return View.create(DeploymentsView, self, &vtable);

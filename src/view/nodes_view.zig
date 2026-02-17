@@ -14,6 +14,7 @@ const klient = @import("klient");
 const hints_model = @import("../model/hints.zig");
 const universal_filter = @import("../viewmodel/filter.zig");
 const sort_util = @import("../viewmodel/sort.zig");
+const age_util = @import("../viewmodel/age.zig");
 
 pub const NodesView = struct {
     allocator: std.mem.Allocator,
@@ -147,7 +148,7 @@ pub const NodesView = struct {
                 .name = try self.allocator.dupe(u8, node.metadata.name),
                 .status = status,
                 .roles = roles,
-                .age = try self.calculateAge(node.metadata.creationTimestamp),
+                .age = try age_util.calculateAge(self.allocator, node.metadata.creationTimestamp),
                 .version = version,
                 .internal_ip = internal_ip,
                 .allocator = self.allocator,
@@ -203,11 +204,6 @@ pub const NodesView = struct {
         return std.mem.indexOf(u8, item.name, filter) != null;
     }
 
-    fn calculateAge(self: *NodesView, timestamp: ?[]const u8) ![]const u8 {
-        _ = timestamp;
-        // TODO: Calculate actual age from timestamp
-        return try self.allocator.dupe(u8, "90d");
-    }
 
     pub fn createView(self: *NodesView) View {
         return View.create(NodesView, self, &vtable);

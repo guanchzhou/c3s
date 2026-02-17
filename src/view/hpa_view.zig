@@ -14,6 +14,7 @@ const ResourceInfo = k8s_service_mod.ResourceInfo;
 const Logger = @import("../core/logger.zig");
 const universal_filter = @import("../viewmodel/filter.zig");
 const sort_util = @import("../viewmodel/sort.zig");
+const age_util = @import("../viewmodel/age.zig");
 
 pub const HPAView = struct {
     allocator: std.mem.Allocator,
@@ -120,7 +121,7 @@ pub const HPAView = struct {
                 .min_replicas = min,
                 .max_replicas = max,
                 .current_replicas = current,
-                .age = try self.allocator.dupe(u8, "1d"),
+                .age = try age_util.calculateAge(self.allocator, hpa.metadata.creationTimestamp),
             });
         }
         self.loading = false;

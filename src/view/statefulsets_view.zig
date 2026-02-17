@@ -14,6 +14,7 @@ const ResourceInfo = k8s_service_mod.ResourceInfo;
 const Logger = @import("../core/logger.zig");
 const universal_filter = @import("../viewmodel/filter.zig");
 const sort_util = @import("../viewmodel/sort.zig");
+const age_util = @import("../viewmodel/age.zig");
 
 pub const StatefulSetsView = struct {
     allocator: std.mem.Allocator,
@@ -141,7 +142,7 @@ pub const StatefulSetsView = struct {
 
             const desired = if (sts.spec) |s| s.replicas orelse 0 else 0;
 
-            const age = try self.calculateAge(sts.metadata.creationTimestamp orelse "");
+            const age = try age_util.calculateAge(self.allocator, sts.metadata.creationTimestamp);
 
             try self.items.append(self.allocator, StatefulSetInfo{
                 .name = name,
@@ -200,11 +201,6 @@ pub const StatefulSetsView = struct {
             std.mem.indexOf(u8, item.namespace, filter) != null;
     }
 
-    fn calculateAge(self: *StatefulSetsView, timestamp: []const u8) ![]const u8 {
-        _ = timestamp;
-        // TODO: Implement proper age calculation from timestamp
-        return try self.allocator.dupe(u8, "1d");
-    }
 
     pub fn createView(self: *StatefulSetsView) View {
         return View.create(StatefulSetsView, self, &vtable);

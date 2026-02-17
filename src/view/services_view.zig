@@ -15,6 +15,7 @@ const hints_model = @import("../model/hints.zig");
 const BoxDrawing = @import("../ui/box_drawing.zig");
 const universal_filter = @import("../viewmodel/filter.zig");
 const sort_util = @import("../viewmodel/sort.zig");
+const age_util = @import("../viewmodel/age.zig");
 
 pub const ServicesView = struct {
     allocator: std.mem.Allocator,
@@ -180,7 +181,7 @@ pub const ServicesView = struct {
                     try self.allocator.dupe(u8, "<none>"),
                 .external_ip = try self.allocator.dupe(u8, "<pending>"),
                 .ports = ports_str,
-                .age = try self.calculateAge(svc.metadata.creationTimestamp),
+                .age = try age_util.calculateAge(self.allocator, svc.metadata.creationTimestamp),
                 .allocator = self.allocator,
             };
             try self.services.append(self.allocator, info);
@@ -234,11 +235,6 @@ pub const ServicesView = struct {
             std.mem.indexOf(u8, item.namespace, filter) != null;
     }
 
-    fn calculateAge(self: *ServicesView, timestamp: ?[]const u8) ![]const u8 {
-        _ = timestamp;
-        // TODO: Calculate actual age from timestamp
-        return try self.allocator.dupe(u8, "5d");
-    }
 
     pub fn createView(self: *ServicesView) View {
         return View.create(ServicesView, self, &vtable);

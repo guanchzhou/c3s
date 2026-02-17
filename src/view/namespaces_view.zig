@@ -14,6 +14,7 @@ const klient = @import("klient");
 const hints_model = @import("../model/hints.zig");
 const universal_filter = @import("../viewmodel/filter.zig");
 const sort_util = @import("../viewmodel/sort.zig");
+const age_util = @import("../viewmodel/age.zig");
 
 pub const NamespacesView = struct {
     allocator: std.mem.Allocator,
@@ -145,7 +146,7 @@ pub const NamespacesView = struct {
             const info = NamespaceInfo{
                 .name = try self.allocator.dupe(u8, ns.metadata.name),
                 .status = status,
-                .age = try self.calculateAge(ns.metadata.creationTimestamp),
+                .age = try age_util.calculateAge(self.allocator, ns.metadata.creationTimestamp),
                 .allocator = self.allocator,
             };
 
@@ -213,11 +214,6 @@ pub const NamespacesView = struct {
         return std.mem.indexOf(u8, item.name, filter) != null;
     }
 
-    fn calculateAge(self: *NamespacesView, timestamp: ?[]const u8) ![]const u8 {
-        _ = timestamp;
-        // TODO: Calculate actual age from timestamp
-        return try self.allocator.dupe(u8, "30d");
-    }
 
     /// Switch to the selected namespace
     fn switchNamespace(self: *NamespacesView) !void {

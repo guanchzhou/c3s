@@ -14,6 +14,7 @@ const ResourceInfo = k8s_service_mod.ResourceInfo;
 const Logger = @import("../core/logger.zig");
 const universal_filter = @import("../viewmodel/filter.zig");
 const sort_util = @import("../viewmodel/sort.zig");
+const age_util = @import("../viewmodel/age.zig");
 
 pub const EventsView = struct {
     allocator: std.mem.Allocator,
@@ -151,7 +152,7 @@ pub const EventsView = struct {
                 .event_type = try self.allocator.dupe(u8, "Normal"),
                 .reason = try self.allocator.dupe(u8, "Created"),
                 .message = try self.allocator.dupe(u8, "Event message"),
-                .age = try self.allocator.dupe(u8, "1m"),
+                .age = try age_util.calculateAge(self.allocator, ev.metadata.creationTimestamp),
             });
         }
         self.loading = false;

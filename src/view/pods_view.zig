@@ -8,6 +8,7 @@ const universal_filter = @import("../viewmodel/filter.zig");
 const hints_model = @import("../model/hints.zig");
 const table_layout = @import("../ui/table_layout.zig");
 const sort_util = @import("../viewmodel/sort.zig");
+const age_util = @import("../viewmodel/age.zig");
 const k8s_service_mod = @import("../services/k8s_service.zig");
 const K8sService = k8s_service_mod.K8sService;
 const ResourceInfo = k8s_service_mod.ResourceInfo;
@@ -155,7 +156,7 @@ pub const PodsView = struct {
                 .mem_l = try self.allocator.dupe(u8, "0Mi"), // TODO: Get from metrics
                 .ip = try self.allocator.dupe(u8, pod_ip),
                 .node = try self.allocator.dupe(u8, if (k8s_pod.spec) |spec| spec.nodeName orelse "-" else "-"),
-                .age = try self.allocator.dupe(u8, "TODO"), // TODO: Calculate from creationTimestamp
+                .age = try age_util.calculateAge(self.allocator, k8s_pod.metadata.creationTimestamp),
             });
         }
 
@@ -565,9 +566,11 @@ pub const PodsView = struct {
                 '0' => {
                     // Toggle all namespaces
                     self.show_all_namespaces = !self.show_all_namespaces;
+                    Logger.info("PodsView: toggled show_all_namespaces={}, refreshing...", .{self.show_all_namespaces});
                     self.refresh() catch |err| {
                         Logger.err("Failed to refresh pods after toggling namespaces: {any}", .{err});
                     };
+                    Logger.info("PodsView: refresh complete, pods={}, filtered={}", .{ self.pods.items.len, self.filtered_indices.items.len });
                     return .handled;
                 },
                 '$' => {

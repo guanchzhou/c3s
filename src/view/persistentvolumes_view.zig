@@ -13,6 +13,7 @@ const K8sService = k8s_service_mod.K8sService;
 const ResourceInfo = k8s_service_mod.ResourceInfo;
 const universal_filter = @import("../viewmodel/filter.zig");
 const sort_util = @import("../viewmodel/sort.zig");
+const age_util = @import("../viewmodel/age.zig");
 const Logger = @import("../core/logger.zig");
 
 pub const PersistentVolumesView = struct {
@@ -113,7 +114,7 @@ pub const PersistentVolumesView = struct {
             const access_modes = try self.allocator.dupe(u8, "RWO");
             const reclaim_policy = try self.allocator.dupe(u8, "Retain");
             const status = try self.allocator.dupe(u8, "Available");
-            const age = try self.allocator.dupe(u8, "1d");
+            const age = try age_util.calculateAge(self.allocator, pv.metadata.creationTimestamp);
 
             try self.items.append(self.allocator, PVInfo{
                 .name = name,

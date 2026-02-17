@@ -14,6 +14,7 @@ const ResourceInfo = k8s_service_mod.ResourceInfo;
 const Logger = @import("../core/logger.zig");
 const universal_filter = @import("../viewmodel/filter.zig");
 const sort_util = @import("../viewmodel/sort.zig");
+const age_util = @import("../viewmodel/age.zig");
 
 pub const NetworkPoliciesView = struct {
     allocator: std.mem.Allocator,
@@ -155,7 +156,7 @@ pub const NetworkPoliciesView = struct {
             const name = try self.allocator.dupe(u8, np.metadata.name);
             const namespace = try self.allocator.dupe(u8, np.metadata.namespace orelse "default");
             const pod_selector = try self.allocator.dupe(u8, "<all>");
-            const age = try self.allocator.dupe(u8, "1d");
+            const age = try age_util.calculateAge(self.allocator, np.metadata.creationTimestamp);
 
             try self.items.append(self.allocator, NetworkPolicyInfo{
                 .name = name,

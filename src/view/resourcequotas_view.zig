@@ -14,6 +14,7 @@ const ResourceInfo = k8s_service_mod.ResourceInfo;
 const Logger = @import("../core/logger.zig");
 const universal_filter = @import("../viewmodel/filter.zig");
 const sort_util = @import("../viewmodel/sort.zig");
+const age_util = @import("../viewmodel/age.zig");
 
 pub const ResourceQuotasView = struct {
     allocator: std.mem.Allocator,
@@ -75,7 +76,7 @@ pub const ResourceQuotasView = struct {
             try self.items.append(self.allocator, RQInfo{
                 .namespace = try self.allocator.dupe(u8, rq.metadata.namespace orelse "default"),
                 .name = try self.allocator.dupe(u8, rq.metadata.name),
-                .age = try self.allocator.dupe(u8, "1d"),
+                .age = try age_util.calculateAge(self.allocator, rq.metadata.creationTimestamp),
             });
         }
         self.loading = false;

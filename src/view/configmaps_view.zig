@@ -13,6 +13,7 @@ const K8sService = k8s_service_mod.K8sService;
 const ResourceInfo = k8s_service_mod.ResourceInfo;
 const universal_filter = @import("../viewmodel/filter.zig");
 const sort_util = @import("../viewmodel/sort.zig");
+const age_util = @import("../viewmodel/age.zig");
 const Logger = @import("../core/logger.zig");
 
 pub const ConfigMapsView = struct {
@@ -119,7 +120,7 @@ pub const ConfigMapsView = struct {
                 break :blk 0;
             } else 0;
 
-            const age = try self.allocator.dupe(u8, "1d");
+            const age = try age_util.calculateAge(self.allocator, cm.metadata.creationTimestamp);
 
             try self.items.append(self.allocator, ConfigMapInfo{
                 .name = name,

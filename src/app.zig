@@ -83,7 +83,7 @@ pub const App = struct {
     theme: *theme_loader.ThemeColors,
 
     // Kubernetes service
-    k8s_service: K8sService,
+    k8s_service: *K8sService,
 
     // Resource views
     pods_view: *PodsView,
@@ -145,9 +145,13 @@ pub const App = struct {
         const theme = try allocator.create(theme_loader.ThemeColors);
         theme.* = try theme_loader.loadTheme(allocator, ui_config.ui.theme);
 
-        // Initialize Kubernetes service
-        var k8s_service = try K8sService.init(allocator);
-        errdefer k8s_service.deinit();
+        // Initialize Kubernetes service (heap-allocated so views get a stable pointer)
+        const k8s_service = try allocator.create(K8sService);
+        k8s_service.* = try K8sService.init(allocator);
+        errdefer {
+            k8s_service.deinit();
+            allocator.destroy(k8s_service);
+        }
 
         // Try to connect to K8s cluster (non-fatal if it fails)
         k8s_service.connect(config.context) catch |err| {
@@ -287,85 +291,85 @@ pub const App = struct {
 
         // NOW initialize resource views with stable pointer to app.k8s_service
         // (This must happen AFTER k8s_service is moved into the App struct)
-        pods_view.* = try PodsView.init(allocator, theme, &app.k8s_service);
+        pods_view.* = try PodsView.init(allocator, theme, app.k8s_service);
         errdefer pods_view.cleanup();
 
-        deployments_view.* = try DeploymentsView.init(allocator, theme, &app.k8s_service);
+        deployments_view.* = try DeploymentsView.init(allocator, theme, app.k8s_service);
         errdefer deployments_view.deinit();
 
-        services_view.* = try ServicesView.init(allocator, theme, &app.k8s_service);
+        services_view.* = try ServicesView.init(allocator, theme, app.k8s_service);
         errdefer services_view.deinit();
 
-        namespaces_view.* = try NamespacesView.init(allocator, theme, &app.k8s_service);
+        namespaces_view.* = try NamespacesView.init(allocator, theme, app.k8s_service);
         errdefer namespaces_view.deinit();
 
-        nodes_view.* = try NodesView.init(allocator, theme, &app.k8s_service);
+        nodes_view.* = try NodesView.init(allocator, theme, app.k8s_service);
         errdefer nodes_view.deinit();
 
-        statefulsets_view.* = try StatefulSetsView.init(allocator, theme, &app.k8s_service);
+        statefulsets_view.* = try StatefulSetsView.init(allocator, theme, app.k8s_service);
         errdefer statefulsets_view.deinit();
 
-        daemonsets_view.* = try DaemonSetsView.init(allocator, theme, &app.k8s_service);
+        daemonsets_view.* = try DaemonSetsView.init(allocator, theme, app.k8s_service);
         errdefer daemonsets_view.deinit();
 
-        replicasets_view.* = try ReplicaSetsView.init(allocator, theme, &app.k8s_service);
+        replicasets_view.* = try ReplicaSetsView.init(allocator, theme, app.k8s_service);
         errdefer replicasets_view.deinit();
 
-        jobs_view.* = try JobsView.init(allocator, theme, &app.k8s_service);
+        jobs_view.* = try JobsView.init(allocator, theme, app.k8s_service);
         errdefer jobs_view.deinit();
 
-        cronjobs_view.* = try CronJobsView.init(allocator, theme, &app.k8s_service);
+        cronjobs_view.* = try CronJobsView.init(allocator, theme, app.k8s_service);
         errdefer cronjobs_view.deinit();
 
-        configmaps_view.* = try ConfigMapsView.init(allocator, theme, &app.k8s_service);
+        configmaps_view.* = try ConfigMapsView.init(allocator, theme, app.k8s_service);
         errdefer configmaps_view.deinit();
 
-        secrets_view.* = try SecretsView.init(allocator, theme, &app.k8s_service);
+        secrets_view.* = try SecretsView.init(allocator, theme, app.k8s_service);
         errdefer secrets_view.deinit();
 
-        persistentvolumes_view.* = try PersistentVolumesView.init(allocator, theme, &app.k8s_service);
+        persistentvolumes_view.* = try PersistentVolumesView.init(allocator, theme, app.k8s_service);
         errdefer persistentvolumes_view.deinit();
 
-        persistentvolumeclaims_view.* = try PersistentVolumeClaimsView.init(allocator, theme, &app.k8s_service);
+        persistentvolumeclaims_view.* = try PersistentVolumeClaimsView.init(allocator, theme, app.k8s_service);
         errdefer persistentvolumeclaims_view.deinit();
 
-        ingresses_view.* = try IngressesView.init(allocator, theme, &app.k8s_service);
+        ingresses_view.* = try IngressesView.init(allocator, theme, app.k8s_service);
         errdefer ingresses_view.deinit();
 
-        networkpolicies_view.* = try NetworkPoliciesView.init(allocator, theme, &app.k8s_service);
+        networkpolicies_view.* = try NetworkPoliciesView.init(allocator, theme, app.k8s_service);
         errdefer networkpolicies_view.deinit();
 
-        serviceaccounts_view.* = try ServiceAccountsView.init(allocator, theme, &app.k8s_service);
+        serviceaccounts_view.* = try ServiceAccountsView.init(allocator, theme, app.k8s_service);
         errdefer serviceaccounts_view.deinit();
 
-        roles_view.* = try RolesView.init(allocator, theme, &app.k8s_service);
+        roles_view.* = try RolesView.init(allocator, theme, app.k8s_service);
         errdefer roles_view.deinit();
 
-        rolebindings_view.* = try RoleBindingsView.init(allocator, theme, &app.k8s_service);
+        rolebindings_view.* = try RoleBindingsView.init(allocator, theme, app.k8s_service);
         errdefer rolebindings_view.deinit();
 
-        clusterroles_view.* = try ClusterRolesView.init(allocator, theme, &app.k8s_service);
+        clusterroles_view.* = try ClusterRolesView.init(allocator, theme, app.k8s_service);
         errdefer clusterroles_view.deinit();
 
-        clusterrolebindings_view.* = try ClusterRoleBindingsView.init(allocator, theme, &app.k8s_service);
+        clusterrolebindings_view.* = try ClusterRoleBindingsView.init(allocator, theme, app.k8s_service);
         errdefer clusterrolebindings_view.deinit();
 
-        events_view.* = try EventsView.init(allocator, theme, &app.k8s_service);
+        events_view.* = try EventsView.init(allocator, theme, app.k8s_service);
         errdefer events_view.deinit();
 
-        resourcequotas_view.* = try ResourceQuotasView.init(allocator, theme, &app.k8s_service);
+        resourcequotas_view.* = try ResourceQuotasView.init(allocator, theme, app.k8s_service);
         errdefer resourcequotas_view.deinit();
 
-        limitranges_view.* = try LimitRangesView.init(allocator, theme, &app.k8s_service);
+        limitranges_view.* = try LimitRangesView.init(allocator, theme, app.k8s_service);
         errdefer limitranges_view.deinit();
 
-        poddisruptionbudgets_view.* = try PodDisruptionBudgetsView.init(allocator, theme, &app.k8s_service);
+        poddisruptionbudgets_view.* = try PodDisruptionBudgetsView.init(allocator, theme, app.k8s_service);
         errdefer poddisruptionbudgets_view.deinit();
 
-        hpa_view.* = try HPAView.init(allocator, theme, &app.k8s_service);
+        hpa_view.* = try HPAView.init(allocator, theme, app.k8s_service);
         errdefer hpa_view.deinit();
 
-        contexts_view.* = try ContextsView.init(allocator, theme, &app.k8s_service);
+        contexts_view.* = try ContextsView.init(allocator, theme, app.k8s_service);
         errdefer contexts_view.deinit();
 
         // Register commands
@@ -480,6 +484,7 @@ pub const App = struct {
 
         // Clean up Kubernetes service
         self.k8s_service.deinit();
+        self.allocator.destroy(self.k8s_service);
 
         // Clean up theme
         theme_loader.deinitTheme(self.theme);
@@ -725,7 +730,9 @@ pub const App = struct {
         self.prev_height = 0;
 
         while (self.running) {
-            try self.renderIfNeeded();
+            self.renderIfNeeded() catch |err| {
+                Logger.err("Render error: {any}", .{err});
+            };
 
             // Check if terminal was resized
             if (terminal_resized.load(.acquire)) {
@@ -749,8 +756,13 @@ pub const App = struct {
 
             const events = pollfds[0].revents;
             if ((events & posix.POLL.IN) != 0) {
-                if (try self.terminal.readKey()) |key| {
-                    try self.handleKey(key);
+                if (self.terminal.readKey() catch |err| {
+                    Logger.err("readKey error: {any}", .{err});
+                    continue;
+                }) |key| {
+                    self.handleKey(key) catch |err| {
+                        Logger.err("handleKey error: {any}", .{err});
+                    };
                 }
             }
 

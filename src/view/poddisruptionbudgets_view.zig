@@ -14,6 +14,7 @@ const ResourceInfo = k8s_service_mod.ResourceInfo;
 const Logger = @import("../core/logger.zig");
 const universal_filter = @import("../viewmodel/filter.zig");
 const sort_util = @import("../viewmodel/sort.zig");
+const age_util = @import("../viewmodel/age.zig");
 
 pub const PodDisruptionBudgetsView = struct {
     allocator: std.mem.Allocator,
@@ -77,7 +78,7 @@ pub const PodDisruptionBudgetsView = struct {
                 .namespace = try self.allocator.dupe(u8, pdb.metadata.namespace orelse "default"),
                 .name = try self.allocator.dupe(u8, pdb.metadata.name),
                 .min_available = try self.allocator.dupe(u8, "1"),
-                .age = try self.allocator.dupe(u8, "1d"),
+                .age = try age_util.calculateAge(self.allocator, pdb.metadata.creationTimestamp),
             });
         }
         self.loading = false;

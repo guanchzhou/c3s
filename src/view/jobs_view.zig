@@ -13,6 +13,7 @@ const K8sService = k8s_service_mod.K8sService;
 const ResourceInfo = k8s_service_mod.ResourceInfo;
 const universal_filter = @import("../viewmodel/filter.zig");
 const sort_util = @import("../viewmodel/sort.zig");
+const age_util = @import("../viewmodel/age.zig");
 const Logger = @import("../core/logger.zig");
 
 pub const JobsView = struct {
@@ -129,7 +130,7 @@ pub const JobsView = struct {
             const completions = try std.fmt.allocPrint(self.allocator, "{d}/{d}", .{ succeeded, desired });
 
             const duration = try self.allocator.dupe(u8, "1m"); // TODO: Calculate from start/completion time
-            const age = try self.allocator.dupe(u8, "1d");
+            const age = try age_util.calculateAge(self.allocator, job.metadata.creationTimestamp);
 
             try self.items.append(self.allocator, JobInfo{
                 .name = name,

@@ -13,7 +13,16 @@ pub const std_options: std.Options = .{
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
+    defer {
+        // Redirect stderr to /dev/null before GPA deinit so leak reports
+        // don't pollute the user's terminal. Leaks are logged in c3s.log.
+        const devnull = std.fs.openFileAbsolute("/dev/null", .{ .mode = .write_only }) catch null;
+        if (devnull) |f| {
+            posix.dup2(f.handle, posix.STDERR_FILENO) catch {};
+            f.close();
+        }
+        _ = gpa.deinit();
+    }
     const allocator = gpa.allocator();
 
     // Set up signal handlers for graceful shutdown

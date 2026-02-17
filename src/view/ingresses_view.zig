@@ -13,6 +13,7 @@ const K8sService = k8s_service_mod.K8sService;
 const ResourceInfo = k8s_service_mod.ResourceInfo;
 const universal_filter = @import("../viewmodel/filter.zig");
 const sort_util = @import("../viewmodel/sort.zig");
+const age_util = @import("../viewmodel/age.zig");
 const Logger = @import("../core/logger.zig");
 
 pub const IngressesView = struct {
@@ -119,7 +120,7 @@ pub const IngressesView = struct {
             const class = try self.allocator.dupe(u8, "nginx");
             const hosts = try self.allocator.dupe(u8, "*");
             const address = try self.allocator.dupe(u8, "10.0.0.1");
-            const age = try self.allocator.dupe(u8, "1d");
+            const age = try age_util.calculateAge(self.allocator, ing.metadata.creationTimestamp);
 
             try self.items.append(self.allocator, IngressInfo{
                 .name = name,
