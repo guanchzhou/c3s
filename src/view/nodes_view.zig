@@ -7,21 +7,33 @@ const View = @import("../viewmodel/view.zig").View;
 const Key = @import("../core/terminal.zig").Key;
 const KeyResult = View.KeyResult;
 const Logger = @import("../core/logger.zig");
-const K8sService = @import("../services/k8s_service.zig").K8sService;
+const k8s_service_mod = @import("../services/k8s_service.zig");
+const K8sService = k8s_service_mod.K8sService;
+const ResourceInfo = k8s_service_mod.ResourceInfo;
 const klient = @import("klient");
 const hints_model = @import("../model/hints.zig");
+const universal_filter = @import("../viewmodel/filter.zig");
+const sort_util = @import("../viewmodel/sort.zig");
 
 pub const NodesView = struct {
     allocator: std.mem.Allocator,
     theme: *const theme_loader.ThemeColors,
     k8s_service: *K8sService,
     nodes: std.ArrayListUnmanaged(NodeInfo),
-    selected_row: usize,
-    scroll_offset: usize,
-    visible_rows: u16,
+    filtered_indices: std.ArrayListUnmanaged(usize),
+    selected_row: u32,
+    scroll_offset: u32,
+    visible_rows: u32,
     filter_text: []const u8,
+    sort_column: ?u8 = null,
+    sort_ascending: bool = true,
     loading: bool,
     error_message: ?[]const u8,
+
+    // Sort column indices
+    const COL_NAME: u8 = 0;
+    const COL_AGE: u8 = 1;
+    const COL_STATUS: u8 = 2;
 
     const NodeInfo = struct {
         name: []const u8,
@@ -40,6 +52,10 @@ pub const NodesView = struct {
             self.allocator.free(self.version);
             self.allocator.free(self.internal_ip);
         }
+
+        fn getName(self: *const NodeInfo) []const u8 { return self.name; }
+        fn getAge(self: *const NodeInfo) []const u8 { return self.age; }
+        fn getStatus(self: *const NodeInfo) []const u8 { return self.status; }
     };
 
     pub fn init(
@@ -52,6 +68,7 @@ pub const NodesView = struct {
             .theme = theme,
             .k8s_service = k8s_service,
             .nodes = std.ArrayListUnmanaged(NodeInfo){},
+            .filtered_indices = std.ArrayListUnmanaged(usize){},
             .selected_row = 0,
             .scroll_offset = 0,
             .visible_rows = 0,
@@ -70,6 +87,7 @@ pub const NodesView = struct {
             node.deinit();
         }
         self.nodes.deinit(self.allocator);
+        self.filtered_indices.deinit(self.allocator);
 
         if (self.error_message) |msg| {
             self.allocator.free(msg);
@@ -138,6 +156,51 @@ pub const NodesView = struct {
         }
 
         Logger.info("Loaded {} nodes", .{self.nodes.items.len});
+
+        // Rebuild filtered indices
+        try self.applyFilter(self.filter_text);
+    }
+
+    pub fn getSelectedResourceInfo(self: *NodesView) ?ResourceInfo {
+        if (self.filtered_indices.items.len == 0) return null;
+        if (self.selected_row >= self.filtered_indices.items.len) return null;
+        const idx = self.filtered_indices.items[self.selected_row];
+        const item = self.nodes.items[idx];
+        return ResourceInfo{
+            .name = item.name,
+            .namespace = "cluster",
+        };
+    }
+
+    pub fn applyFilter(self: *NodesView, filter: []const u8) !void {
+        self.filter_text = filter;
+        try universal_filter.applyFilter(
+            NodeInfo,
+            self.allocator,
+            self.nodes.items,
+            &self.filtered_indices,
+            filter,
+            &self.selected_row,
+            &self.scroll_offset,
+            self.visible_rows,
+            nodeMatchFn,
+        );
+        self.applySorting();
+    }
+
+    fn applySorting(self: *NodesView) void {
+        if (self.sort_column) |col| {
+            switch (col) {
+                COL_NAME => sort_util.sortFilteredIndices(NodeInfo, self.nodes.items, &self.filtered_indices, NodeInfo.getName, self.sort_ascending),
+                COL_AGE => sort_util.sortFilteredIndices(NodeInfo, self.nodes.items, &self.filtered_indices, NodeInfo.getAge, self.sort_ascending),
+                COL_STATUS => sort_util.sortFilteredIndices(NodeInfo, self.nodes.items, &self.filtered_indices, NodeInfo.getStatus, self.sort_ascending),
+                else => {},
+            }
+        }
+    }
+
+    fn nodeMatchFn(item: *const NodeInfo, filter: []const u8) bool {
+        return std.mem.indexOf(u8, item.name, filter) != null;
     }
 
     fn calculateAge(self: *NodesView, timestamp: ?[]const u8) ![]const u8 {
@@ -170,7 +233,7 @@ pub const NodesView = struct {
 
         // Draw title
         var title_buf: [128]u8 = undefined;
-        const title = try std.fmt.bufPrint(&title_buf, "nodes(all)[{d}]", .{self.nodes.items.len});
+        const title = try std.fmt.bufPrint(&title_buf, "nodes(all)[{d}]", .{self.filtered_indices.items.len});
         try terminal.setCursor(x + 1, y);
         try terminal.writeAll(self.theme.title);
         try terminal.writeAll(title);
@@ -186,23 +249,33 @@ pub const NodesView = struct {
             return;
         }
 
-        // Render header row
+        // Render header row with sort indicators
         const header_y = y + 1;
-        try Theme.writeStringWithTheme(terminal, x + 1, header_y, "NAME", self.theme.title, self.theme.main_bg);
-        try Theme.writeStringWithTheme(terminal, x + 28, header_y, "STATUS", self.theme.title, self.theme.main_bg);
+        const name_ind = sort_util.sortIndicator(self.sort_column, self.sort_ascending, COL_NAME);
+        const age_ind = sort_util.sortIndicator(self.sort_column, self.sort_ascending, COL_AGE);
+        const status_ind = sort_util.sortIndicator(self.sort_column, self.sort_ascending, COL_STATUS);
+        var name_hdr_buf: [32]u8 = undefined;
+        var age_hdr_buf: [16]u8 = undefined;
+        var status_hdr_buf: [32]u8 = undefined;
+        const name_hdr = std.fmt.bufPrint(&name_hdr_buf, "NAME{s}", .{name_ind}) catch "NAME";
+        const age_hdr = std.fmt.bufPrint(&age_hdr_buf, "AGE{s}", .{age_ind}) catch "AGE";
+        const status_hdr = std.fmt.bufPrint(&status_hdr_buf, "STATUS{s}", .{status_ind}) catch "STATUS";
+        try Theme.writeStringWithTheme(terminal, x + 1, header_y, name_hdr, self.theme.title, self.theme.main_bg);
+        try Theme.writeStringWithTheme(terminal, x + 28, header_y, status_hdr, self.theme.title, self.theme.main_bg);
         try Theme.writeStringWithTheme(terminal, x + 40, header_y, "ROLES", self.theme.title, self.theme.main_bg);
         try Theme.writeStringWithTheme(terminal, x + 56, header_y, "VERSION", self.theme.title, self.theme.main_bg);
         try Theme.writeStringWithTheme(terminal, x + 72, header_y, "INTERNAL-IP", self.theme.title, self.theme.main_bg);
-        try Theme.writeStringWithTheme(terminal, x + 92, header_y, "AGE", self.theme.title, self.theme.main_bg);
+        try Theme.writeStringWithTheme(terminal, x + 92, header_y, age_hdr, self.theme.title, self.theme.main_bg);
 
         // Render nodes
         var row_y = y + 2;
         const end_idx = @min(
             self.scroll_offset + self.visible_rows,
-            self.nodes.items.len,
+            @as(u32, @intCast(self.filtered_indices.items.len)),
         );
 
-        for (self.nodes.items[self.scroll_offset..end_idx], 0..) |node, i| {
+        for (self.filtered_indices.items[self.scroll_offset..end_idx], 0..) |node_idx, i| {
+            const node = self.nodes.items[node_idx];
             const is_selected = (self.scroll_offset + i) == self.selected_row;
 
             const fg = if (is_selected) self.theme.selected_fg else self.theme.main_fg;
@@ -237,7 +310,7 @@ pub const NodesView = struct {
             .char => |c| {
                 switch (c) {
                     'j' => {
-                        if (self.selected_row + 1 < self.nodes.items.len) {
+                        if (self.selected_row + 1 < self.filtered_indices.items.len) {
                             self.selected_row += 1;
                             if (self.selected_row >= self.scroll_offset + self.visible_rows) {
                                 self.scroll_offset += 1;
@@ -260,8 +333,8 @@ pub const NodesView = struct {
                         return .handled;
                     },
                     'G' => {
-                        if (self.nodes.items.len > 0) {
-                            self.selected_row = self.nodes.items.len - 1;
+                        if (self.filtered_indices.items.len > 0) {
+                            self.selected_row = @intCast(self.filtered_indices.items.len - 1);
                             if (self.selected_row >= self.visible_rows) {
                                 self.scroll_offset = self.selected_row - self.visible_rows + 1;
                             }
@@ -274,13 +347,30 @@ pub const NodesView = struct {
                         };
                         return .handled;
                     },
+                    'N' => {
+                        sort_util.toggleSort(&self.sort_column, &self.sort_ascending, COL_NAME);
+                        self.applySorting();
+                        return .handled;
+                    },
+                    'A' => {
+                        sort_util.toggleSort(&self.sort_column, &self.sort_ascending, COL_AGE);
+                        self.applySorting();
+                        return .handled;
+                    },
+                    'S' => {
+                        sort_util.toggleSort(&self.sort_column, &self.sort_ascending, COL_STATUS);
+                        self.applySorting();
+                        return .handled;
+                    },
+                    'd' => return .request_describe,
+                    'y' => return .request_yaml,
                     ':' => return .request_command_palette,
                     '/' => return .request_filter,
                     else => return .not_handled,
                 }
             },
             .down => {
-                if (self.selected_row + 1 < self.nodes.items.len) {
+                if (self.selected_row + 1 < self.filtered_indices.items.len) {
                     self.selected_row += 1;
                     if (self.selected_row >= self.scroll_offset + self.visible_rows) {
                         self.scroll_offset += 1;
@@ -298,7 +388,8 @@ pub const NodesView = struct {
                 return .handled;
             },
             .page_down => {
-                const jump = @min(self.visible_rows, self.nodes.items.len -| self.selected_row -| 1);
+                const items_len: u32 = @intCast(self.filtered_indices.items.len);
+                const jump = @min(self.visible_rows, items_len -| self.selected_row -| 1);
                 self.selected_row += jump;
                 if (self.selected_row >= self.scroll_offset + self.visible_rows) {
                     self.scroll_offset = self.selected_row - self.visible_rows + 1;
@@ -319,8 +410,8 @@ pub const NodesView = struct {
                 return .handled;
             },
             .end => {
-                if (self.nodes.items.len > 0) {
-                    self.selected_row = self.nodes.items.len - 1;
+                if (self.filtered_indices.items.len > 0) {
+                    self.selected_row = @intCast(self.filtered_indices.items.len - 1);
                     if (self.selected_row >= self.visible_rows) {
                         self.scroll_offset = self.selected_row - self.visible_rows + 1;
                     }
@@ -356,7 +447,7 @@ pub const NodesView = struct {
     }
 
     fn getHints(_: *anyopaque) hints_model.HintConfig {
-        return hints_model.podsHints(); // TODO: Create specific hints
+        return hints_model.resourceHints();
     }
 
     fn deinitView(ptr: *anyopaque) void {

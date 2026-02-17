@@ -7,22 +7,34 @@ const View = @import("../viewmodel/view.zig").View;
 const Key = @import("../core/terminal.zig").Key;
 const KeyResult = View.KeyResult;
 const Logger = @import("../core/logger.zig");
-const K8sService = @import("../services/k8s_service.zig").K8sService;
+const k8s_service_mod = @import("../services/k8s_service.zig");
+const K8sService = k8s_service_mod.K8sService;
+const ResourceInfo = k8s_service_mod.ResourceInfo;
 const klient = @import("klient");
 const hints_model = @import("../model/hints.zig");
+const universal_filter = @import("../viewmodel/filter.zig");
+const sort_util = @import("../viewmodel/sort.zig");
 
 pub const NamespacesView = struct {
     allocator: std.mem.Allocator,
     theme: *const theme_loader.ThemeColors,
     k8s_service: *K8sService,
     namespaces: std.ArrayListUnmanaged(NamespaceInfo),
-    selected_row: usize,
-    scroll_offset: usize,
-    visible_rows: u16,
+    filtered_indices: std.ArrayListUnmanaged(usize),
+    selected_row: u32,
+    scroll_offset: u32,
+    visible_rows: u32,
     filter_text: []const u8,
+    sort_column: ?u8 = null,
+    sort_ascending: bool = true,
     loading: bool,
     error_message: ?[]const u8,
     current_namespace: []const u8,
+
+    // Sort column indices
+    const COL_NAME: u8 = 0;
+    const COL_AGE: u8 = 1;
+    const COL_STATUS: u8 = 2;
 
     const NamespaceInfo = struct {
         name: []const u8,
@@ -35,6 +47,10 @@ pub const NamespacesView = struct {
             self.allocator.free(self.status);
             self.allocator.free(self.age);
         }
+
+        fn getName(self: *const NamespaceInfo) []const u8 { return self.name; }
+        fn getAge(self: *const NamespaceInfo) []const u8 { return self.age; }
+        fn getStatus(self: *const NamespaceInfo) []const u8 { return self.status; }
     };
 
     pub fn init(
@@ -49,6 +65,7 @@ pub const NamespacesView = struct {
             .theme = theme,
             .k8s_service = k8s_service,
             .namespaces = std.ArrayListUnmanaged(NamespaceInfo){},
+            .filtered_indices = std.ArrayListUnmanaged(usize){},
             .selected_row = 0,
             .scroll_offset = 0,
             .visible_rows = 0,
@@ -68,6 +85,7 @@ pub const NamespacesView = struct {
             ns.deinit();
         }
         self.namespaces.deinit(self.allocator);
+        self.filtered_indices.deinit(self.allocator);
         self.allocator.free(self.current_namespace);
 
         if (self.error_message) |msg| {
@@ -141,13 +159,58 @@ pub const NamespacesView = struct {
 
         // Set selected row to current namespace
         if (selected_idx) |idx| {
-            self.selected_row = idx;
+            self.selected_row = @intCast(idx);
             if (self.selected_row >= self.visible_rows) {
                 self.scroll_offset = self.selected_row - self.visible_rows / 2;
             }
         }
 
         Logger.info("Loaded {} namespaces", .{self.namespaces.items.len});
+
+        // Rebuild filtered indices
+        try self.applyFilter(self.filter_text);
+    }
+
+    pub fn getSelectedResourceInfo(self: *NamespacesView) ?ResourceInfo {
+        if (self.filtered_indices.items.len == 0) return null;
+        if (self.selected_row >= self.filtered_indices.items.len) return null;
+        const idx = self.filtered_indices.items[self.selected_row];
+        const item = self.namespaces.items[idx];
+        return ResourceInfo{
+            .name = item.name,
+            .namespace = "cluster",
+        };
+    }
+
+    pub fn applyFilter(self: *NamespacesView, filter: []const u8) !void {
+        self.filter_text = filter;
+        try universal_filter.applyFilter(
+            NamespaceInfo,
+            self.allocator,
+            self.namespaces.items,
+            &self.filtered_indices,
+            filter,
+            &self.selected_row,
+            &self.scroll_offset,
+            self.visible_rows,
+            namespaceMatchFn,
+        );
+        self.applySorting();
+    }
+
+    fn applySorting(self: *NamespacesView) void {
+        if (self.sort_column) |col| {
+            switch (col) {
+                COL_NAME => sort_util.sortFilteredIndices(NamespaceInfo, self.namespaces.items, &self.filtered_indices, NamespaceInfo.getName, self.sort_ascending),
+                COL_AGE => sort_util.sortFilteredIndices(NamespaceInfo, self.namespaces.items, &self.filtered_indices, NamespaceInfo.getAge, self.sort_ascending),
+                COL_STATUS => sort_util.sortFilteredIndices(NamespaceInfo, self.namespaces.items, &self.filtered_indices, NamespaceInfo.getStatus, self.sort_ascending),
+                else => {},
+            }
+        }
+    }
+
+    fn namespaceMatchFn(item: *const NamespaceInfo, filter: []const u8) bool {
+        return std.mem.indexOf(u8, item.name, filter) != null;
     }
 
     fn calculateAge(self: *NamespacesView, timestamp: ?[]const u8) ![]const u8 {
@@ -158,9 +221,10 @@ pub const NamespacesView = struct {
 
     /// Switch to the selected namespace
     fn switchNamespace(self: *NamespacesView) !void {
-        if (self.selected_row >= self.namespaces.items.len) return;
+        if (self.selected_row >= self.filtered_indices.items.len) return;
 
-        const selected_ns = self.namespaces.items[self.selected_row].name;
+        const actual_idx = self.filtered_indices.items[self.selected_row];
+        const selected_ns = self.namespaces.items[actual_idx].name;
 
         // Update K8s service namespace
         try self.k8s_service.setCurrentNamespace(selected_ns);
@@ -196,7 +260,7 @@ pub const NamespacesView = struct {
 
         // Draw title
         var title_buf: [128]u8 = undefined;
-        const title = try std.fmt.bufPrint(&title_buf, "ns(all)[{d}]", .{self.namespaces.items.len});
+        const title = try std.fmt.bufPrint(&title_buf, "ns(all)[{d}]", .{self.filtered_indices.items.len});
         try terminal.setCursor(x + 1, y);
         try terminal.writeAll(self.theme.title);
         try terminal.writeAll(title);
@@ -212,20 +276,30 @@ pub const NamespacesView = struct {
             return;
         }
 
-        // Render header row
+        // Render header row with sort indicators
         const header_y = y + 1;
-        try Theme.writeStringWithTheme(terminal, x + 1, header_y, "NAME", self.theme.title, self.theme.main_bg);
-        try Theme.writeStringWithTheme(terminal, x + 40, header_y, "STATUS", self.theme.title, self.theme.main_bg);
-        try Theme.writeStringWithTheme(terminal, x + 60, header_y, "AGE", self.theme.title, self.theme.main_bg);
+        const name_ind = sort_util.sortIndicator(self.sort_column, self.sort_ascending, COL_NAME);
+        const age_ind = sort_util.sortIndicator(self.sort_column, self.sort_ascending, COL_AGE);
+        const status_ind = sort_util.sortIndicator(self.sort_column, self.sort_ascending, COL_STATUS);
+        var name_hdr_buf: [32]u8 = undefined;
+        var age_hdr_buf: [16]u8 = undefined;
+        var status_hdr_buf: [32]u8 = undefined;
+        const name_hdr = std.fmt.bufPrint(&name_hdr_buf, "NAME{s}", .{name_ind}) catch "NAME";
+        const age_hdr = std.fmt.bufPrint(&age_hdr_buf, "AGE{s}", .{age_ind}) catch "AGE";
+        const status_hdr = std.fmt.bufPrint(&status_hdr_buf, "STATUS{s}", .{status_ind}) catch "STATUS";
+        try Theme.writeStringWithTheme(terminal, x + 1, header_y, name_hdr, self.theme.title, self.theme.main_bg);
+        try Theme.writeStringWithTheme(terminal, x + 40, header_y, status_hdr, self.theme.title, self.theme.main_bg);
+        try Theme.writeStringWithTheme(terminal, x + 60, header_y, age_hdr, self.theme.title, self.theme.main_bg);
 
         // Render namespaces
         var row_y = y + 2;
         const end_idx = @min(
             self.scroll_offset + self.visible_rows,
-            self.namespaces.items.len,
+            @as(u32, @intCast(self.filtered_indices.items.len)),
         );
 
-        for (self.namespaces.items[self.scroll_offset..end_idx], 0..) |ns, i| {
+        for (self.filtered_indices.items[self.scroll_offset..end_idx], 0..) |ns_idx, i| {
+            const ns = self.namespaces.items[ns_idx];
             const is_selected = (self.scroll_offset + i) == self.selected_row;
             const is_current = std.mem.eql(u8, ns.name, self.current_namespace);
 
@@ -256,7 +330,7 @@ pub const NamespacesView = struct {
             .char => |c| {
                 switch (c) {
                     'j' => {
-                        if (self.selected_row + 1 < self.namespaces.items.len) {
+                        if (self.selected_row + 1 < self.filtered_indices.items.len) {
                             self.selected_row += 1;
                             if (self.selected_row >= self.scroll_offset + self.visible_rows) {
                                 self.scroll_offset += 1;
@@ -279,8 +353,8 @@ pub const NamespacesView = struct {
                         return .handled;
                     },
                     'G' => {
-                        if (self.namespaces.items.len > 0) {
-                            self.selected_row = self.namespaces.items.len - 1;
+                        if (self.filtered_indices.items.len > 0) {
+                            self.selected_row = @intCast(self.filtered_indices.items.len - 1);
                             if (self.selected_row >= self.visible_rows) {
                                 self.scroll_offset = self.selected_row - self.visible_rows + 1;
                             }
@@ -300,13 +374,30 @@ pub const NamespacesView = struct {
                         };
                         return .handled;
                     },
+                    'N' => {
+                        sort_util.toggleSort(&self.sort_column, &self.sort_ascending, COL_NAME);
+                        self.applySorting();
+                        return .handled;
+                    },
+                    'A' => {
+                        sort_util.toggleSort(&self.sort_column, &self.sort_ascending, COL_AGE);
+                        self.applySorting();
+                        return .handled;
+                    },
+                    'S' => {
+                        sort_util.toggleSort(&self.sort_column, &self.sort_ascending, COL_STATUS);
+                        self.applySorting();
+                        return .handled;
+                    },
+                    'd' => return .request_describe,
+                    'y' => return .request_yaml,
                     ':' => return .request_command_palette,
                     '/' => return .request_filter,
                     else => return .not_handled,
                 }
             },
             .down => {
-                if (self.selected_row + 1 < self.namespaces.items.len) {
+                if (self.selected_row + 1 < self.filtered_indices.items.len) {
                     self.selected_row += 1;
                     if (self.selected_row >= self.scroll_offset + self.visible_rows) {
                         self.scroll_offset += 1;
@@ -334,7 +425,8 @@ pub const NamespacesView = struct {
                 // Navigation shortcuts
                 switch (key) {
                     .page_down => {
-                        const jump = @min(self.visible_rows, self.namespaces.items.len -| self.selected_row -| 1);
+                        const items_len: u32 = @intCast(self.filtered_indices.items.len);
+                        const jump = @min(self.visible_rows, items_len -| self.selected_row -| 1);
                         self.selected_row += jump;
                         if (self.selected_row >= self.scroll_offset + self.visible_rows) {
                             self.scroll_offset = self.selected_row - self.visible_rows + 1;
@@ -352,8 +444,8 @@ pub const NamespacesView = struct {
                         self.scroll_offset = 0;
                     },
                     .end => {
-                        if (self.namespaces.items.len > 0) {
-                            self.selected_row = self.namespaces.items.len - 1;
+                        if (self.filtered_indices.items.len > 0) {
+                            self.selected_row = @intCast(self.filtered_indices.items.len - 1);
                             if (self.selected_row >= self.visible_rows) {
                                 self.scroll_offset = self.selected_row - self.visible_rows + 1;
                             }
@@ -392,7 +484,7 @@ pub const NamespacesView = struct {
     }
 
     fn getHints(_: *anyopaque) hints_model.HintConfig {
-        return hints_model.podsHints(); // TODO: Create specific hints
+        return hints_model.resourceHints();
     }
 
     fn deinitView(ptr: *anyopaque) void {

@@ -8,7 +8,11 @@ const Terminal = @import("../core/terminal.zig").Terminal;
 const Theme = @import("../theme.zig");
 const theme_loader = @import("../model/theme_loader.zig");
 const hints_model = @import("../model/hints.zig");
-const K8sService = @import("../services/k8s_service.zig").K8sService;
+const k8s_service_mod = @import("../services/k8s_service.zig");
+const K8sService = k8s_service_mod.K8sService;
+const ResourceInfo = k8s_service_mod.ResourceInfo;
+const universal_filter = @import("../viewmodel/filter.zig");
+const sort_util = @import("../viewmodel/sort.zig");
 const Logger = @import("../core/logger.zig");
 
 pub const JobsView = struct {
@@ -16,12 +20,20 @@ pub const JobsView = struct {
     theme: *const theme_loader.ThemeColors,
     k8s_service: *K8sService,
     items: std.ArrayListUnmanaged(JobInfo),
-    selected_row: usize,
-    scroll_offset: usize,
+    filtered_indices: std.ArrayListUnmanaged(usize),
+    selected_row: u32,
+    scroll_offset: u32,
+    visible_rows: u32,
     loading: bool,
     error_message: ?[]const u8,
     filter_text: []const u8,
     show_all_namespaces: bool,
+    sort_column: ?u8 = null,
+    sort_ascending: bool = true,
+
+    // Sort column indices
+    const COL_NAME: u8 = 0;
+    const COL_AGE: u8 = 1;
 
     const JobInfo = struct {
         name: []const u8,
@@ -37,6 +49,9 @@ pub const JobsView = struct {
             allocator.free(self.duration);
             allocator.free(self.age);
         }
+
+        fn getName(self: *const JobInfo) []const u8 { return self.name; }
+        fn getAge(self: *const JobInfo) []const u8 { return self.age; }
     };
 
     pub fn init(allocator: std.mem.Allocator, theme: *const theme_loader.ThemeColors, k8s_service: *K8sService) !JobsView {
@@ -45,8 +60,10 @@ pub const JobsView = struct {
             .theme = theme,
             .k8s_service = k8s_service,
             .items = std.ArrayListUnmanaged(JobInfo){},
+            .filtered_indices = std.ArrayListUnmanaged(usize){},
             .selected_row = 0,
             .scroll_offset = 0,
+            .visible_rows = 0,
             .loading = false,
             .error_message = null,
             .filter_text = try allocator.dupe(u8, ""),
@@ -61,6 +78,7 @@ pub const JobsView = struct {
             item.deinit(self.allocator);
         }
         self.items.deinit(self.allocator);
+        self.filtered_indices.deinit(self.allocator);
         self.allocator.free(self.filter_text);
         if (self.error_message) |msg| {
             self.allocator.free(msg);
@@ -122,11 +140,49 @@ pub const JobsView = struct {
             });
         }
 
-        if (self.items.items.len == 0) {
-            self.selected_row = 0;
-        } else if (self.selected_row >= self.items.items.len) {
-            self.selected_row = self.items.items.len - 1;
+        try self.applyFilter(self.filter_text);
+    }
+
+    pub fn getSelectedResourceInfo(self: *JobsView) ?ResourceInfo {
+        if (self.filtered_indices.items.len == 0) return null;
+        if (self.selected_row >= self.filtered_indices.items.len) return null;
+        const idx = self.filtered_indices.items[self.selected_row];
+        const item = self.items.items[idx];
+        return ResourceInfo{
+            .name = item.name,
+            .namespace = item.namespace,
+        };
+    }
+
+    pub fn applyFilter(self: *JobsView, filter: []const u8) !void {
+        self.filter_text = filter;
+        try universal_filter.applyFilter(
+            JobInfo,
+            self.allocator,
+            self.items.items,
+            &self.filtered_indices,
+            filter,
+            &self.selected_row,
+            &self.scroll_offset,
+            self.visible_rows,
+            jobMatchFn,
+        );
+        self.applySorting();
+    }
+
+    fn applySorting(self: *JobsView) void {
+        if (self.sort_column) |col| {
+            switch (col) {
+                COL_NAME => sort_util.sortFilteredIndices(JobInfo, self.items.items, &self.filtered_indices, JobInfo.getName, self.sort_ascending),
+                COL_AGE => sort_util.sortFilteredIndices(JobInfo, self.items.items, &self.filtered_indices, JobInfo.getAge, self.sort_ascending),
+                else => {},
+            }
         }
+    }
+
+    fn jobMatchFn(item: *const JobInfo, filter: []const u8) bool {
+        return std.mem.indexOf(u8, item.name, filter) != null or
+            std.mem.indexOf(u8, item.namespace, filter) != null;
     }
 
     pub fn createView(self: *JobsView) View {
@@ -136,6 +192,7 @@ pub const JobsView = struct {
     fn render(ptr: *anyopaque, term: *Terminal, x: u16, y: u16, width: u16, height: u16) !void {
         const self: *JobsView = @ptrCast(@alignCast(ptr));
         _ = width;
+        self.visible_rows = if (height > 1) height - 1 else 0;
 
         if (self.loading) {
             try Theme.writeStringWithTheme(term, x, y, "Loading jobs...", self.theme.main_fg, self.theme.main_bg);
@@ -147,27 +204,28 @@ pub const JobsView = struct {
             return;
         }
 
-        if (self.items.items.len == 0) {
+        if (self.filtered_indices.items.len == 0) {
             const msg = if (self.show_all_namespaces) "No jobs found in cluster" else "No jobs in current namespace";
             try Theme.writeStringWithTheme(term, x, y, msg, self.theme.main_fg, self.theme.main_bg);
             return;
         }
 
-        // Header
-        const header = "  NAMESPACE             NAME                          COMPLETIONS   DURATION   AGE";
+        // Header with sort indicators
+        const name_ind = sort_util.sortIndicator(self.sort_column, self.sort_ascending, COL_NAME);
+        const age_ind = sort_util.sortIndicator(self.sort_column, self.sort_ascending, COL_AGE);
+        var hdr_buf: [128]u8 = undefined;
+        const header = std.fmt.bufPrint(&hdr_buf, "  NAMESPACE             NAME{s: <28}COMPLETIONS   DURATION   AGE{s}", .{ name_ind, age_ind }) catch "  NAMESPACE             NAME                          COMPLETIONS   DURATION   AGE";
         try Theme.writeStringWithTheme(term, x, y, header, self.theme.title, self.theme.main_bg);
 
         // Items
-        const visible_rows = if (height > 1) height - 1 else 0;
+        const start_idx = self.scroll_offset;
+        const end_idx = @min(start_idx + self.visible_rows, self.filtered_indices.items.len);
         var row: u16 = 0;
-        var idx = self.scroll_offset;
 
-        while (row < visible_rows and idx < self.items.items.len) : ({
-            row += 1;
-            idx += 1;
-        }) {
-            const item = &self.items.items[idx];
-            const is_selected = (idx == self.selected_row);
+        for (start_idx..end_idx) |fi| {
+            const item_idx = self.filtered_indices.items[fi];
+            const item = &self.items.items[item_idx];
+            const is_selected = (fi == self.selected_row);
 
             const fg_color = if (is_selected) self.theme.selected_fg else self.theme.main_fg;
             const bg_color = if (is_selected) self.theme.selected_bg else self.theme.main_bg;
@@ -185,9 +243,8 @@ pub const JobsView = struct {
             );
             defer self.allocator.free(line);
             try Theme.writeStringWithTheme(term, x, y + 1 + row, line, fg_color, bg_color);
+            row += 1;
         }
-
-        // Clear remaining lines (optional - terminal typically handles this)
     }
 
     fn handleKey(ptr: *anyopaque, key: Key) !KeyResult {
@@ -195,9 +252,11 @@ pub const JobsView = struct {
         switch (key) {
             .char => |c| switch (c) {
                 'j' => {
-                    if (self.items.items.len > 0 and self.selected_row < self.items.items.len - 1) {
+                    if (self.filtered_indices.items.len > 0 and self.selected_row < self.filtered_indices.items.len - 1) {
                         self.selected_row += 1;
-                        if (self.selected_row >= self.scroll_offset + 20) self.scroll_offset = self.selected_row - 19;
+                        if (self.selected_row >= self.scroll_offset + self.visible_rows) {
+                            self.scroll_offset = self.selected_row - self.visible_rows + 1;
+                        }
                     }
                     return .handled;
                 },
@@ -214,12 +273,27 @@ pub const JobsView = struct {
                     return .handled;
                 },
                 'G' => {
-                    if (self.items.items.len > 0) {
-                        self.selected_row = self.items.items.len - 1;
-                        if (self.items.items.len > 20) self.scroll_offset = self.items.items.len - 20;
+                    if (self.filtered_indices.items.len > 0) {
+                        self.selected_row = @intCast(self.filtered_indices.items.len - 1);
+                        if (self.selected_row >= self.visible_rows) {
+                            self.scroll_offset = self.selected_row - self.visible_rows + 1;
+                        }
                     }
                     return .handled;
                 },
+                'N' => {
+                    sort_util.toggleSort(&self.sort_column, &self.sort_ascending, COL_NAME);
+                    self.applySorting();
+                    return .handled;
+                },
+                'A' => {
+                    sort_util.toggleSort(&self.sort_column, &self.sort_ascending, COL_AGE);
+                    self.applySorting();
+                    return .handled;
+                },
+                'd' => return .request_describe,
+                'y' => return .request_yaml,
+                '/' => return .request_filter,
                 'r' => {
                     try self.refresh();
                     return .handled;
@@ -254,14 +328,7 @@ pub const JobsView = struct {
 
     fn getHints(ptr: *anyopaque) hints_model.HintConfig {
         _ = ptr;
-        const hint_items = comptime [_]hints_model.Hint{
-            hints_model.Hint.plain("↑↓ Navigate", 1),
-            hints_model.Hint.plain("r Refresh", 2),
-            hints_model.Hint.plain("0 All Namespaces", 3),
-        };
-        return hints_model.HintConfig{
-            .hints = &hint_items,
-        };
+        return hints_model.resourceHints();
     }
 
     fn deinitView(ptr: *anyopaque) void {

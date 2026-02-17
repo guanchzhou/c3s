@@ -61,7 +61,7 @@ pub const HelpView = struct {
     }
     
     fn navigateDown(self: *HelpView) !void {
-        if (self.selected_row < self.help_lines.items.len - 1) {
+        if (self.selected_row + 1 < self.help_lines.items.len) {
             self.selected_row += 1;
             // Adjust scroll if needed
             if (self.selected_row >= self.scroll_offset + self.visible_rows) {

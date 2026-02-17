@@ -118,6 +118,54 @@ pub fn helpHints() HintConfig {
     };
 }
 
+/// Detail view hints (describe/yaml)
+pub fn detailHints() HintConfig {
+    const hint_items = comptime [_]Hint{
+        Hint.highlighted("Esc", "", " back", 1),
+        Hint.highlighted("j/k", "", " down/up", 2),
+        Hint.highlighted("h/l", "", " left/right", 3),
+        Hint.highlighted("g", "", " top", 4),
+        Hint.highlighted("G", "shift-", " bottom", 5),
+    };
+
+    return .{
+        .quick_commands = &.{},
+        .hints = &hint_items,
+    };
+}
+
+/// Logs view hints
+pub fn logsHints() HintConfig {
+    const hint_items = comptime [_]Hint{
+        Hint.highlighted("Esc", "", " back", 1),
+        Hint.highlighted("j/k", "", " down/up", 2),
+        Hint.highlighted("g", "", " top", 3),
+        Hint.highlighted("G", "shift-", " bottom", 4),
+    };
+
+    return .{
+        .quick_commands = &.{},
+        .hints = &hint_items,
+    };
+}
+
+/// Resource view hints (common for all resource views with d/y/delete support)
+pub fn resourceHints() HintConfig {
+    const hint_items = comptime [_]Hint{
+        Hint.highlighted("d", "", "escribe", 1),
+        Hint.highlighted("y", "", " yaml", 2),
+        Hint.highlighted("/", "", " filter", 3),
+        Hint.highlighted("r", "", "efresh", 4),
+        Hint.plain("<ctrl-d> delete", 5),
+        Hint.highlighted("?", "", " help", 20),
+    };
+
+    return .{
+        .quick_commands = &.{},
+        .hints = &hint_items,
+    };
+}
+
 /// Common hints (for future use - can be merged with view-specific hints)
 pub fn commonHints() HintConfig {
     const hint_items = [_]Hint{

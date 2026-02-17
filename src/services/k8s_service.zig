@@ -1160,6 +1160,47 @@ pub const K8sService = struct {
         return contexts;
     }
 
+    // ===== Generic Resource Operations =====
+
+    /// Get raw JSON for any resource (for describe/yaml views)
+    pub fn getRawJson(self: *K8sService, resource_type: ResourceType, name: []const u8, namespace: []const u8) ![]u8 {
+        if (!self.isConnected()) return error.NotConnected;
+
+        const path = if (resource_type.isClusterScoped())
+            try std.fmt.allocPrint(self.allocator, "{s}/{s}/{s}", .{ resource_type.apiPath(), resource_type.resourceName(), name })
+        else
+            try std.fmt.allocPrint(self.allocator, "{s}/namespaces/{s}/{s}/{s}", .{ resource_type.apiPath(), namespace, resource_type.resourceName(), name });
+        defer self.allocator.free(path);
+
+        const body = try self.client.?.request(.GET, path, null);
+        return body;
+    }
+
+    /// Delete any resource by type, name, namespace
+    pub fn deleteResource(self: *K8sService, resource_type: ResourceType, name: []const u8, namespace: []const u8) !void {
+        if (!self.isConnected()) return error.NotConnected;
+
+        const path = if (resource_type.isClusterScoped())
+            try std.fmt.allocPrint(self.allocator, "{s}/{s}/{s}", .{ resource_type.apiPath(), resource_type.resourceName(), name })
+        else
+            try std.fmt.allocPrint(self.allocator, "{s}/namespaces/{s}/{s}/{s}", .{ resource_type.apiPath(), namespace, resource_type.resourceName(), name });
+        defer self.allocator.free(path);
+
+        const body = try self.client.?.request(.DELETE, path, null);
+        self.allocator.free(body);
+    }
+
+    /// Get pod logs
+    pub fn getPodLogs(self: *K8sService, name: []const u8, namespace: ?[]const u8) ![]u8 {
+        if (!self.isConnected()) return error.NotConnected;
+
+        const ns = namespace orelse "default";
+        const path = try std.fmt.allocPrint(self.allocator, "/api/v1/namespaces/{s}/pods/{s}/log?tailLines=1000", .{ ns, name });
+        defer self.allocator.free(path);
+
+        return try self.client.?.request(.GET, path, null);
+    }
+
     /// Switch to a different context
     pub fn switchContext(self: *K8sService, context_name: []const u8) !void {
         Logger.info("Switching to context: {s}", .{context_name});
@@ -1183,4 +1224,96 @@ pub const ClusterInfo = struct {
     cluster: []const u8,
     namespace: []const u8,
     connected: bool,
+};
+
+/// Resource type enum for generic operations (describe, delete, etc.)
+pub const ResourceType = enum {
+    pods,
+    deployments,
+    services,
+    namespaces,
+    nodes,
+    statefulsets,
+    daemonsets,
+    replicasets,
+    jobs,
+    cronjobs,
+    configmaps,
+    secrets,
+    persistentvolumes,
+    persistentvolumeclaims,
+    ingresses,
+    networkpolicies,
+    serviceaccounts,
+    roles,
+    rolebindings,
+    clusterroles,
+    clusterrolebindings,
+    events,
+    resourcequotas,
+    limitranges,
+    poddisruptionbudgets,
+    hpa,
+    contexts,
+
+    pub fn apiPath(self: ResourceType) []const u8 {
+        return switch (self) {
+            .pods, .services, .namespaces, .nodes, .configmaps, .secrets,
+            .persistentvolumes, .persistentvolumeclaims, .serviceaccounts,
+            .events, .resourcequotas, .limitranges,
+            => "/api/v1",
+            .deployments, .statefulsets, .daemonsets, .replicasets => "/apis/apps/v1",
+            .jobs, .cronjobs => "/apis/batch/v1",
+            .ingresses, .networkpolicies => "/apis/networking.k8s.io/v1",
+            .roles, .rolebindings, .clusterroles, .clusterrolebindings => "/apis/rbac.authorization.k8s.io/v1",
+            .poddisruptionbudgets => "/apis/policy/v1",
+            .hpa => "/apis/autoscaling/v2",
+            .contexts => "/api/v1", // not a real K8s resource
+        };
+    }
+
+    pub fn resourceName(self: ResourceType) []const u8 {
+        return switch (self) {
+            .pods => "pods",
+            .deployments => "deployments",
+            .services => "services",
+            .namespaces => "namespaces",
+            .nodes => "nodes",
+            .statefulsets => "statefulsets",
+            .daemonsets => "daemonsets",
+            .replicasets => "replicasets",
+            .jobs => "jobs",
+            .cronjobs => "cronjobs",
+            .configmaps => "configmaps",
+            .secrets => "secrets",
+            .persistentvolumes => "persistentvolumes",
+            .persistentvolumeclaims => "persistentvolumeclaims",
+            .ingresses => "ingresses",
+            .networkpolicies => "networkpolicies",
+            .serviceaccounts => "serviceaccounts",
+            .roles => "roles",
+            .rolebindings => "rolebindings",
+            .clusterroles => "clusterroles",
+            .clusterrolebindings => "clusterrolebindings",
+            .events => "events",
+            .resourcequotas => "resourcequotas",
+            .limitranges => "limitranges",
+            .poddisruptionbudgets => "poddisruptionbudgets",
+            .hpa => "horizontalpodautoscalers",
+            .contexts => "contexts",
+        };
+    }
+
+    pub fn isClusterScoped(self: ResourceType) bool {
+        return switch (self) {
+            .namespaces, .nodes, .persistentvolumes, .clusterroles, .clusterrolebindings => true,
+            else => false,
+        };
+    }
+};
+
+/// Resource info returned by views for generic operations
+pub const ResourceInfo = struct {
+    name: []const u8,
+    namespace: []const u8,
 };

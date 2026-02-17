@@ -48,9 +48,14 @@ const HPAView = @import("view/hpa_view.zig").HPAView;
 const ContextsView = @import("view/contexts_view.zig").ContextsView;
 const ThemesView = @import("view/themes_view.zig").ThemesView;
 const HelpView = @import("view/help_view.zig").HelpView;
+const DetailView = @import("view/detail_view.zig").DetailView;
+const LogsView = @import("view/logs_view.zig").LogsView;
 
 // Service imports
-const K8sService = @import("services/k8s_service.zig").K8sService;
+const k8s_service_mod = @import("services/k8s_service.zig");
+const K8sService = k8s_service_mod.K8sService;
+const ResourceType = k8s_service_mod.ResourceType;
+const ResourceInfo = k8s_service_mod.ResourceInfo;
 
 // Global flag for terminal resize signal
 var terminal_resized: std.atomic.Value(bool) = std.atomic.Value(bool).init(false);
@@ -112,6 +117,14 @@ pub const App = struct {
     // UI views
     themes_view: *ThemesView,
     help_view: *HelpView,
+    detail_view: *DetailView,
+    logs_view: *LogsView,
+
+    // Delete confirmation state
+    delete_pending: bool = false,
+    delete_resource_name: ?[]u8 = null,
+    delete_resource_namespace: ?[]u8 = null,
+    delete_resource_type: ?ResourceType = null,
 
     // Track which primary view is active (for view switching, not pushing)
     current_primary_view: enum { pods, deployments, services, namespaces, nodes, statefulsets, daemonsets, replicasets, jobs, cronjobs, configmaps, secrets, persistentvolumes, persistentvolumeclaims, ingresses, networkpolicies, serviceaccounts, roles, rolebindings, clusterroles, clusterrolebindings, events, resourcequotas, limitranges, poddisruptionbudgets, hpa, contexts, themes } = .pods,
@@ -183,6 +196,14 @@ pub const App = struct {
         const help_view = try allocator.create(HelpView);
         help_view.* = try HelpView.init(allocator, theme);
         errdefer help_view.cleanup();
+
+        const detail_view = try allocator.create(DetailView);
+        detail_view.* = try DetailView.init(allocator, theme);
+        errdefer detail_view.cleanup();
+
+        const logs_view = try allocator.create(LogsView);
+        logs_view.* = try LogsView.init(allocator, theme);
+        errdefer logs_view.cleanup();
 
         // Initialize header with cluster info
         const cluster_info = k8s_service.getClusterInfo();
@@ -260,6 +281,8 @@ pub const App = struct {
             .contexts_view = contexts_view,
             .themes_view = themes_view,
             .help_view = help_view,
+            .detail_view = detail_view,
+            .logs_view = logs_view,
         };
 
         // NOW initialize resource views with stable pointer to app.k8s_service
@@ -441,6 +464,15 @@ pub const App = struct {
 
         self.help_view.cleanup();
         self.allocator.destroy(self.help_view);
+
+        self.detail_view.cleanup();
+        self.allocator.destroy(self.detail_view);
+
+        self.logs_view.cleanup();
+        self.allocator.destroy(self.logs_view);
+
+        // Clean up delete state
+        self.clearDeleteState();
 
         // Clean up MVVM components
         self.view_manager.deinit();
@@ -851,12 +883,16 @@ pub const App = struct {
 
                     if (std.mem.eql(u8, prompt, "/")) {
                         // Apply filter to current view
-                        if (self.view_manager.getCurrentView()) |current_view| {
-                            if (std.mem.eql(u8, current_view.getName(), "pods")) {
-                                try self.pods_view.applyFilter(cmd_text);
-                            } else if (std.mem.eql(u8, current_view.getName(), "themes")) {
-                                try self.themes_view.applyFilter(cmd_text);
+                        if (self.delete_pending) {
+                            // During delete confirmation, "y" confirms
+                            if (std.mem.eql(u8, cmd_text, "y") or std.mem.eql(u8, cmd_text, "yes")) {
+                                self.executeDelete() catch |err| {
+                                    Logger.err("Delete failed: {any}", .{err});
+                                };
                             }
+                            self.clearDeleteState();
+                        } else {
+                            try self.applyFilterToCurrentView(cmd_text);
                         }
                     } else if (std.mem.eql(u8, prompt, ":")) {
                         // Execute command
@@ -927,15 +963,8 @@ pub const App = struct {
                 },
                 'x' => {
                     // Clear filter with 'x' key (like delete)
-                    if (self.view_manager.getCurrentView()) |current_view| {
-                        if (std.mem.eql(u8, current_view.getName(), "pods")) {
-                            try self.pods_view.applyFilter("");
-                            self.dirty = true;
-                        } else if (std.mem.eql(u8, current_view.getName(), "themes")) {
-                            try self.themes_view.applyFilter("");
-                            self.dirty = true;
-                        }
-                    }
+                    try self.applyFilterToCurrentView("");
+                    self.dirty = true;
                 },
                 '/' => {
                     self.command_input.showWithPrompt("/");
@@ -962,30 +991,7 @@ pub const App = struct {
                     // Pass to current view
                     if (self.view_manager.getCurrentView()) |current_view| {
                         const result = try current_view.handleKey(key);
-                        switch (result) {
-                            .handled => self.dirty = true,
-                            .not_handled => {},
-                            .request_command_palette => {
-                                // Check if we're in themes view and Enter was pressed
-                                if (std.mem.eql(u8, current_view.getName(), "themes") and key == .enter) {
-                                    // Execute theme selection directly
-                                    const selected_theme = self.themes_view.getSelectedThemeName();
-                                    try self.saveThemeToConfig(selected_theme);
-                                    try self.themes_view.setCurrentTheme(selected_theme);
-                                    self.dirty = true;
-                                } else {
-                                    self.command_input.showWithPrompt(":");
-                                    self.dirty = true;
-                                }
-                            },
-                            .request_filter => {
-                                self.command_input.showWithPrompt("/");
-                                self.dirty = true;
-                            },
-                            .request_quit => {
-                                self.running = false;
-                            },
-                        }
+                        try self.handleViewResult(result, current_view, key);
                     }
                 },
             },
@@ -1046,29 +1052,22 @@ pub const App = struct {
                 }
             },
             .escape => {
-                // First, check if there's an active filter to clear
-                var filter_cleared = false;
-                if (self.view_manager.getCurrentView()) |current_view| {
-                    if (std.mem.eql(u8, current_view.getName(), "pods")) {
-                        if (self.pods_view.filter_text.len > 0) {
-                            try self.pods_view.applyFilter("");
-                            self.dirty = true;
-                            filter_cleared = true;
-                        }
-                    } else if (std.mem.eql(u8, current_view.getName(), "themes")) {
-                        if (self.themes_view.filter_text.len > 0) {
-                            try self.themes_view.applyFilter("");
-                            self.dirty = true;
-                            filter_cleared = true;
-                        }
-                    }
+                // Clear delete state if pending
+                if (self.delete_pending) {
+                    self.clearDeleteState();
+                    self.dirty = true;
+                    return;
                 }
 
-                // Only pop if:
-                // 1. No filter was cleared AND
-                // 2. We're in a pushed sub-view (depth > 1, like help view)
-                // Primary views (pods, themes) are at depth 1, so they don't get popped
-                if (!filter_cleared and self.view_manager.getDepth() > 1) {
+                // First, check if there's an active filter to clear
+                const filter_cleared = self.clearCurrentViewFilter() catch false;
+                if (filter_cleared) {
+                    self.dirty = true;
+                    return;
+                }
+
+                // Only pop if we're in a pushed sub-view (depth > 1, like help/detail/logs view)
+                if (self.view_manager.getDepth() > 1) {
                     _ = self.view_manager.popView();
                     self.dirty = true;
                 }
@@ -1077,7 +1076,12 @@ pub const App = struct {
                 // Ctrl+C doesn't exit in k9s, use :q command instead
             },
             .ctrl_d => {
-                // Ctrl+D reserved for delete action (k9s compat)
+                // Ctrl+D: delete resource (k9s compat)
+                if (self.view_manager.getCurrentView()) |_| {
+                    self.handleDeleteRequest() catch |err| {
+                        Logger.err("Delete request failed: {any}", .{err});
+                    };
+                }
             },
             .shift_g => {
                 // Pass to current view
@@ -1124,30 +1128,7 @@ pub const App = struct {
                 // Pass to current view
                 if (self.view_manager.getCurrentView()) |current_view| {
                     const result = try current_view.handleKey(key);
-                    switch (result) {
-                        .handled => self.dirty = true,
-                        .not_handled => {},
-                        .request_command_palette => {
-                            // Check if we're in themes view and Enter was pressed
-                            if (std.mem.eql(u8, current_view.getName(), "themes")) {
-                                // Execute theme selection directly
-                                const selected_theme = self.themes_view.getSelectedThemeName();
-                                try self.saveThemeToConfig(selected_theme);
-                                try self.themes_view.setCurrentTheme(selected_theme);
-                                self.dirty = true;
-                            } else {
-                                self.command_input.showWithPrompt(":");
-                                self.dirty = true;
-                            }
-                        },
-                        .request_filter => {
-                            self.command_input.showWithPrompt("/");
-                            self.dirty = true;
-                        },
-                        .request_quit => {
-                            self.running = false;
-                        },
-                    }
+                    try self.handleViewResult(result, current_view, key);
                 }
             },
             .unsupported => {},
@@ -1156,6 +1137,461 @@ pub const App = struct {
                 self.dirty = true;
             },
         }
+    }
+
+    /// Central handler for view KeyResult values
+    fn handleViewResult(self: *App, result: View.KeyResult, current_view: View, key: Key) !void {
+        switch (result) {
+            .handled => self.dirty = true,
+            .not_handled => {},
+            .request_command_palette => {
+                if (std.mem.eql(u8, current_view.getName(), "themes") and key == .enter) {
+                    const selected_theme = self.themes_view.getSelectedThemeName();
+                    try self.saveThemeToConfig(selected_theme);
+                    try self.themes_view.setCurrentTheme(selected_theme);
+                    self.dirty = true;
+                } else {
+                    self.command_input.showWithPrompt(":");
+                    self.dirty = true;
+                }
+            },
+            .request_filter => {
+                self.command_input.showWithPrompt("/");
+                self.dirty = true;
+            },
+            .request_quit => {
+                self.running = false;
+            },
+            .request_describe => {
+                self.showDetailView(true) catch |err| {
+                    Logger.err("Failed to show describe view: {any}", .{err});
+                };
+            },
+            .request_yaml => {
+                self.showDetailView(false) catch |err| {
+                    Logger.err("Failed to show YAML view: {any}", .{err});
+                };
+            },
+            .request_logs => {
+                self.showLogsView() catch |err| {
+                    Logger.err("Failed to show logs view: {any}", .{err});
+                };
+            },
+            .request_delete => {
+                self.handleDeleteRequest() catch |err| {
+                    Logger.err("Delete request failed: {any}", .{err});
+                };
+            },
+        }
+    }
+
+    /// Map current_primary_view to ResourceType
+    fn currentResourceType(self: *App) ?ResourceType {
+        return switch (self.current_primary_view) {
+            .pods => .pods,
+            .deployments => .deployments,
+            .services => .services,
+            .namespaces => .namespaces,
+            .nodes => .nodes,
+            .statefulsets => .statefulsets,
+            .daemonsets => .daemonsets,
+            .replicasets => .replicasets,
+            .jobs => .jobs,
+            .cronjobs => .cronjobs,
+            .configmaps => .configmaps,
+            .secrets => .secrets,
+            .persistentvolumes => .persistentvolumes,
+            .persistentvolumeclaims => .persistentvolumeclaims,
+            .ingresses => .ingresses,
+            .networkpolicies => .networkpolicies,
+            .serviceaccounts => .serviceaccounts,
+            .roles => .roles,
+            .rolebindings => .rolebindings,
+            .clusterroles => .clusterroles,
+            .clusterrolebindings => .clusterrolebindings,
+            .events => .events,
+            .resourcequotas => .resourcequotas,
+            .limitranges => .limitranges,
+            .poddisruptionbudgets => .poddisruptionbudgets,
+            .hpa => .hpa,
+            .contexts => .contexts,
+            .themes => null,
+        };
+    }
+
+    /// Get selected resource info from the current primary view
+    fn getSelectedResourceFromCurrentView(self: *App) ?ResourceInfo {
+        return switch (self.current_primary_view) {
+            .pods => self.pods_view.getSelectedResourceInfo(),
+            .deployments => self.deployments_view.getSelectedResourceInfo(),
+            .services => self.services_view.getSelectedResourceInfo(),
+            .namespaces => self.namespaces_view.getSelectedResourceInfo(),
+            .nodes => self.nodes_view.getSelectedResourceInfo(),
+            .statefulsets => self.statefulsets_view.getSelectedResourceInfo(),
+            .daemonsets => self.daemonsets_view.getSelectedResourceInfo(),
+            .replicasets => self.replicasets_view.getSelectedResourceInfo(),
+            .jobs => self.jobs_view.getSelectedResourceInfo(),
+            .cronjobs => self.cronjobs_view.getSelectedResourceInfo(),
+            .configmaps => self.configmaps_view.getSelectedResourceInfo(),
+            .secrets => self.secrets_view.getSelectedResourceInfo(),
+            .persistentvolumes => self.persistentvolumes_view.getSelectedResourceInfo(),
+            .persistentvolumeclaims => self.persistentvolumeclaims_view.getSelectedResourceInfo(),
+            .ingresses => self.ingresses_view.getSelectedResourceInfo(),
+            .networkpolicies => self.networkpolicies_view.getSelectedResourceInfo(),
+            .serviceaccounts => self.serviceaccounts_view.getSelectedResourceInfo(),
+            .roles => self.roles_view.getSelectedResourceInfo(),
+            .rolebindings => self.rolebindings_view.getSelectedResourceInfo(),
+            .clusterroles => self.clusterroles_view.getSelectedResourceInfo(),
+            .clusterrolebindings => self.clusterrolebindings_view.getSelectedResourceInfo(),
+            .events => self.events_view.getSelectedResourceInfo(),
+            .resourcequotas => self.resourcequotas_view.getSelectedResourceInfo(),
+            .limitranges => self.limitranges_view.getSelectedResourceInfo(),
+            .poddisruptionbudgets => self.poddisruptionbudgets_view.getSelectedResourceInfo(),
+            .hpa => self.hpa_view.getSelectedResourceInfo(),
+            .contexts => null,
+            .themes => null,
+        };
+    }
+
+    /// Show detail view (describe or JSON)
+    fn showDetailView(self: *App, describe: bool) !void {
+        const resource_type = self.currentResourceType() orelse return;
+        const info = self.getSelectedResourceFromCurrentView() orelse return;
+
+        // Fetch raw JSON from K8s API
+        const json_data = self.k8s_service.getRawJson(resource_type, info.name, info.namespace) catch |err| {
+            Logger.err("Failed to get resource JSON: {any}", .{err});
+            return;
+        };
+        defer self.allocator.free(json_data);
+
+        // Set content on detail view
+        const title = if (describe)
+            try std.fmt.allocPrint(self.allocator, "Describe {s}/{s}", .{ resource_type.resourceName(), info.name })
+        else
+            try std.fmt.allocPrint(self.allocator, "YAML {s}/{s}", .{ resource_type.resourceName(), info.name });
+        defer self.allocator.free(title);
+
+        if (describe) {
+            try self.detail_view.setContentDescribe(json_data, title);
+        } else {
+            try self.detail_view.setContentJson(json_data, title);
+        }
+
+        // Push detail view as sub-view
+        try self.view_manager.pushView(self.detail_view.createView());
+        self.dirty = true;
+    }
+
+    /// Show logs view for selected pod
+    fn showLogsView(self: *App) !void {
+        if (self.current_primary_view != .pods) return;
+
+        const info = self.pods_view.getSelectedResourceInfo() orelse return;
+
+        // Fetch logs from K8s API
+        const log_data = self.k8s_service.getPodLogs(info.name, info.namespace) catch |err| {
+            Logger.err("Failed to get pod logs: {any}", .{err});
+            return;
+        };
+        defer self.allocator.free(log_data);
+
+        try self.logs_view.setContent(log_data, info.name);
+
+        // Push logs view as sub-view
+        try self.view_manager.pushView(self.logs_view.createView());
+        self.dirty = true;
+    }
+
+    /// Handle delete request - enter confirmation mode
+    fn handleDeleteRequest(self: *App) !void {
+        const resource_type = self.currentResourceType() orelse return;
+        const info = self.getSelectedResourceFromCurrentView() orelse return;
+
+        // Store delete state
+        self.clearDeleteState();
+        self.delete_pending = true;
+        self.delete_resource_name = try self.allocator.dupe(u8, info.name);
+        self.delete_resource_namespace = try self.allocator.dupe(u8, info.namespace);
+        self.delete_resource_type = resource_type;
+
+        // Show confirmation prompt
+        const prompt_text = try std.fmt.allocPrint(self.allocator, "Delete {s}/{s}? [y/n]: ", .{ resource_type.resourceName(), info.name });
+        defer self.allocator.free(prompt_text);
+        self.command_input.showWithPrompt("/");
+        self.footer.setStatus(prompt_text);
+        self.dirty = true;
+    }
+
+    /// Execute pending delete
+    fn executeDelete(self: *App) !void {
+        if (!self.delete_pending) return;
+
+        const name = self.delete_resource_name orelse return;
+        const namespace = self.delete_resource_namespace orelse return;
+        const resource_type = self.delete_resource_type orelse return;
+
+        self.k8s_service.deleteResource(resource_type, name, namespace) catch |err| {
+            Logger.err("Failed to delete {s}/{s}: {any}", .{ resource_type.resourceName(), name, err });
+            self.footer.setStatus("Delete failed");
+            return;
+        };
+
+        Logger.info("Deleted {s}/{s} in namespace {s}", .{ resource_type.resourceName(), name, namespace });
+        self.footer.setStatus(null);
+
+        // Refresh current view
+        self.refreshCurrentView();
+        self.dirty = true;
+    }
+
+    /// Clear delete confirmation state
+    fn clearDeleteState(self: *App) void {
+        self.delete_pending = false;
+        if (self.delete_resource_name) |n| self.allocator.free(n);
+        if (self.delete_resource_namespace) |n| self.allocator.free(n);
+        self.delete_resource_name = null;
+        self.delete_resource_namespace = null;
+        self.delete_resource_type = null;
+    }
+
+    /// Apply filter to the current view
+    fn applyFilterToCurrentView(self: *App, filter: []const u8) !void {
+        switch (self.current_primary_view) {
+            .pods => try self.pods_view.applyFilter(filter),
+            .themes => try self.themes_view.applyFilter(filter),
+            .deployments => try self.deployments_view.applyFilter(filter),
+            .services => try self.services_view.applyFilter(filter),
+            .namespaces => try self.namespaces_view.applyFilter(filter),
+            .nodes => try self.nodes_view.applyFilter(filter),
+            .statefulsets => try self.statefulsets_view.applyFilter(filter),
+            .daemonsets => try self.daemonsets_view.applyFilter(filter),
+            .replicasets => try self.replicasets_view.applyFilter(filter),
+            .jobs => try self.jobs_view.applyFilter(filter),
+            .cronjobs => try self.cronjobs_view.applyFilter(filter),
+            .configmaps => try self.configmaps_view.applyFilter(filter),
+            .secrets => try self.secrets_view.applyFilter(filter),
+            .persistentvolumes => try self.persistentvolumes_view.applyFilter(filter),
+            .persistentvolumeclaims => try self.persistentvolumeclaims_view.applyFilter(filter),
+            .ingresses => try self.ingresses_view.applyFilter(filter),
+            .networkpolicies => try self.networkpolicies_view.applyFilter(filter),
+            .serviceaccounts => try self.serviceaccounts_view.applyFilter(filter),
+            .roles => try self.roles_view.applyFilter(filter),
+            .rolebindings => try self.rolebindings_view.applyFilter(filter),
+            .clusterroles => try self.clusterroles_view.applyFilter(filter),
+            .clusterrolebindings => try self.clusterrolebindings_view.applyFilter(filter),
+            .events => try self.events_view.applyFilter(filter),
+            .resourcequotas => try self.resourcequotas_view.applyFilter(filter),
+            .limitranges => try self.limitranges_view.applyFilter(filter),
+            .poddisruptionbudgets => try self.poddisruptionbudgets_view.applyFilter(filter),
+            .hpa => try self.hpa_view.applyFilter(filter),
+            .contexts => {},
+        }
+        self.dirty = true;
+    }
+
+    /// Check if current view has an active filter and clear it
+    fn clearCurrentViewFilter(self: *App) !bool {
+        return switch (self.current_primary_view) {
+            .pods => if (self.pods_view.filter_text.len > 0) {
+                try self.pods_view.applyFilter("");
+                return true;
+            } else false,
+            .themes => if (self.themes_view.filter_text.len > 0) {
+                try self.themes_view.applyFilter("");
+                return true;
+            } else false,
+            .deployments => if (self.deployments_view.filter_text.len > 0) {
+                try self.deployments_view.applyFilter("");
+                return true;
+            } else false,
+            .services => if (self.services_view.filter_text.len > 0) {
+                try self.services_view.applyFilter("");
+                return true;
+            } else false,
+            .namespaces => if (self.namespaces_view.filter_text.len > 0) {
+                try self.namespaces_view.applyFilter("");
+                return true;
+            } else false,
+            .nodes => if (self.nodes_view.filter_text.len > 0) {
+                try self.nodes_view.applyFilter("");
+                return true;
+            } else false,
+            .statefulsets => if (self.statefulsets_view.filter_text.len > 0) {
+                try self.statefulsets_view.applyFilter("");
+                return true;
+            } else false,
+            .daemonsets => if (self.daemonsets_view.filter_text.len > 0) {
+                try self.daemonsets_view.applyFilter("");
+                return true;
+            } else false,
+            .replicasets => if (self.replicasets_view.filter_text.len > 0) {
+                try self.replicasets_view.applyFilter("");
+                return true;
+            } else false,
+            .jobs => if (self.jobs_view.filter_text.len > 0) {
+                try self.jobs_view.applyFilter("");
+                return true;
+            } else false,
+            .cronjobs => if (self.cronjobs_view.filter_text.len > 0) {
+                try self.cronjobs_view.applyFilter("");
+                return true;
+            } else false,
+            .configmaps => if (self.configmaps_view.filter_text.len > 0) {
+                try self.configmaps_view.applyFilter("");
+                return true;
+            } else false,
+            .secrets => if (self.secrets_view.filter_text.len > 0) {
+                try self.secrets_view.applyFilter("");
+                return true;
+            } else false,
+            .persistentvolumes => if (self.persistentvolumes_view.filter_text.len > 0) {
+                try self.persistentvolumes_view.applyFilter("");
+                return true;
+            } else false,
+            .persistentvolumeclaims => if (self.persistentvolumeclaims_view.filter_text.len > 0) {
+                try self.persistentvolumeclaims_view.applyFilter("");
+                return true;
+            } else false,
+            .ingresses => if (self.ingresses_view.filter_text.len > 0) {
+                try self.ingresses_view.applyFilter("");
+                return true;
+            } else false,
+            .networkpolicies => if (self.networkpolicies_view.filter_text.len > 0) {
+                try self.networkpolicies_view.applyFilter("");
+                return true;
+            } else false,
+            .serviceaccounts => if (self.serviceaccounts_view.filter_text.len > 0) {
+                try self.serviceaccounts_view.applyFilter("");
+                return true;
+            } else false,
+            .roles => if (self.roles_view.filter_text.len > 0) {
+                try self.roles_view.applyFilter("");
+                return true;
+            } else false,
+            .rolebindings => if (self.rolebindings_view.filter_text.len > 0) {
+                try self.rolebindings_view.applyFilter("");
+                return true;
+            } else false,
+            .clusterroles => if (self.clusterroles_view.filter_text.len > 0) {
+                try self.clusterroles_view.applyFilter("");
+                return true;
+            } else false,
+            .clusterrolebindings => if (self.clusterrolebindings_view.filter_text.len > 0) {
+                try self.clusterrolebindings_view.applyFilter("");
+                return true;
+            } else false,
+            .events => if (self.events_view.filter_text.len > 0) {
+                try self.events_view.applyFilter("");
+                return true;
+            } else false,
+            .resourcequotas => if (self.resourcequotas_view.filter_text.len > 0) {
+                try self.resourcequotas_view.applyFilter("");
+                return true;
+            } else false,
+            .limitranges => if (self.limitranges_view.filter_text.len > 0) {
+                try self.limitranges_view.applyFilter("");
+                return true;
+            } else false,
+            .poddisruptionbudgets => if (self.poddisruptionbudgets_view.filter_text.len > 0) {
+                try self.poddisruptionbudgets_view.applyFilter("");
+                return true;
+            } else false,
+            .hpa => if (self.hpa_view.filter_text.len > 0) {
+                try self.hpa_view.applyFilter("");
+                return true;
+            } else false,
+            .contexts => false,
+        };
+    }
+
+    /// Refresh the current view
+    fn refreshCurrentView(self: *App) void {
+        switch (self.current_primary_view) {
+            .pods => self.pods_view.refresh() catch |err| {
+                Logger.err("Failed to refresh pods: {any}", .{err});
+            },
+            .deployments => self.deployments_view.refresh() catch |err| {
+                Logger.err("Failed to refresh deployments: {any}", .{err});
+            },
+            .services => self.services_view.refresh() catch |err| {
+                Logger.err("Failed to refresh services: {any}", .{err});
+            },
+            .namespaces => self.namespaces_view.refresh() catch |err| {
+                Logger.err("Failed to refresh namespaces: {any}", .{err});
+            },
+            .nodes => self.nodes_view.refresh() catch |err| {
+                Logger.err("Failed to refresh nodes: {any}", .{err});
+            },
+            .statefulsets => self.statefulsets_view.refresh() catch |err| {
+                Logger.err("Failed to refresh statefulsets: {any}", .{err});
+            },
+            .daemonsets => self.daemonsets_view.refresh() catch |err| {
+                Logger.err("Failed to refresh daemonsets: {any}", .{err});
+            },
+            .replicasets => self.replicasets_view.refresh() catch |err| {
+                Logger.err("Failed to refresh replicasets: {any}", .{err});
+            },
+            .jobs => self.jobs_view.refresh() catch |err| {
+                Logger.err("Failed to refresh jobs: {any}", .{err});
+            },
+            .cronjobs => self.cronjobs_view.refresh() catch |err| {
+                Logger.err("Failed to refresh cronjobs: {any}", .{err});
+            },
+            .configmaps => self.configmaps_view.refresh() catch |err| {
+                Logger.err("Failed to refresh configmaps: {any}", .{err});
+            },
+            .secrets => self.secrets_view.refresh() catch |err| {
+                Logger.err("Failed to refresh secrets: {any}", .{err});
+            },
+            .persistentvolumes => self.persistentvolumes_view.refresh() catch |err| {
+                Logger.err("Failed to refresh persistentvolumes: {any}", .{err});
+            },
+            .persistentvolumeclaims => self.persistentvolumeclaims_view.refresh() catch |err| {
+                Logger.err("Failed to refresh persistentvolumeclaims: {any}", .{err});
+            },
+            .ingresses => self.ingresses_view.refresh() catch |err| {
+                Logger.err("Failed to refresh ingresses: {any}", .{err});
+            },
+            .networkpolicies => self.networkpolicies_view.refresh() catch |err| {
+                Logger.err("Failed to refresh networkpolicies: {any}", .{err});
+            },
+            .serviceaccounts => self.serviceaccounts_view.refresh() catch |err| {
+                Logger.err("Failed to refresh serviceaccounts: {any}", .{err});
+            },
+            .roles => self.roles_view.refresh() catch |err| {
+                Logger.err("Failed to refresh roles: {any}", .{err});
+            },
+            .rolebindings => self.rolebindings_view.refresh() catch |err| {
+                Logger.err("Failed to refresh rolebindings: {any}", .{err});
+            },
+            .clusterroles => self.clusterroles_view.refresh() catch |err| {
+                Logger.err("Failed to refresh clusterroles: {any}", .{err});
+            },
+            .clusterrolebindings => self.clusterrolebindings_view.refresh() catch |err| {
+                Logger.err("Failed to refresh clusterrolebindings: {any}", .{err});
+            },
+            .events => self.events_view.refresh() catch |err| {
+                Logger.err("Failed to refresh events: {any}", .{err});
+            },
+            .resourcequotas => self.resourcequotas_view.refresh() catch |err| {
+                Logger.err("Failed to refresh resourcequotas: {any}", .{err});
+            },
+            .limitranges => self.limitranges_view.refresh() catch |err| {
+                Logger.err("Failed to refresh limitranges: {any}", .{err});
+            },
+            .poddisruptionbudgets => self.poddisruptionbudgets_view.refresh() catch |err| {
+                Logger.err("Failed to refresh poddisruptionbudgets: {any}", .{err});
+            },
+            .hpa => self.hpa_view.refresh() catch |err| {
+                Logger.err("Failed to refresh hpa: {any}", .{err});
+            },
+            .contexts => self.contexts_view.refresh() catch |err| {
+                Logger.err("Failed to refresh contexts: {any}", .{err});
+            },
+            .themes => {},
+        }
+        self.dirty = true;
     }
 
     fn saveThemeToConfig(self: *App, theme_name: []const u8) !void {

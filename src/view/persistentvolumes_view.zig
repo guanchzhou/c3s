@@ -8,7 +8,11 @@ const Terminal = @import("../core/terminal.zig").Terminal;
 const Theme = @import("../theme.zig");
 const theme_loader = @import("../model/theme_loader.zig");
 const hints_model = @import("../model/hints.zig");
-const K8sService = @import("../services/k8s_service.zig").K8sService;
+const k8s_service_mod = @import("../services/k8s_service.zig");
+const K8sService = k8s_service_mod.K8sService;
+const ResourceInfo = k8s_service_mod.ResourceInfo;
+const universal_filter = @import("../viewmodel/filter.zig");
+const sort_util = @import("../viewmodel/sort.zig");
 const Logger = @import("../core/logger.zig");
 
 pub const PersistentVolumesView = struct {
@@ -17,11 +21,20 @@ pub const PersistentVolumesView = struct {
     k8s_service: *K8sService,
 
     items: std.ArrayListUnmanaged(PVInfo),
-    selected_row: usize,
-    scroll_offset: usize,
+    filtered_indices: std.ArrayListUnmanaged(usize),
+    selected_row: u32,
+    scroll_offset: u32,
+    visible_rows: u32,
     loading: bool,
     error_message: ?[]const u8,
     filter_text: []const u8,
+    sort_column: ?u8 = null,
+    sort_ascending: bool = true,
+
+    // Sort column indices
+    const COL_NAME: u8 = 0;
+    const COL_AGE: u8 = 1;
+    const COL_STATUS: u8 = 2;
 
     const PVInfo = struct {
         name: []const u8,
@@ -39,6 +52,10 @@ pub const PersistentVolumesView = struct {
             allocator.free(self.status);
             allocator.free(self.age);
         }
+
+        fn getName(self: *const PVInfo) []const u8 { return self.name; }
+        fn getAge(self: *const PVInfo) []const u8 { return self.age; }
+        fn getStatus(self: *const PVInfo) []const u8 { return self.status; }
     };
 
     pub fn init(allocator: std.mem.Allocator, theme: *const theme_loader.ThemeColors, k8s_service: *K8sService) !PersistentVolumesView {
@@ -47,8 +64,10 @@ pub const PersistentVolumesView = struct {
             .theme = theme,
             .k8s_service = k8s_service,
             .items = .{},
+            .filtered_indices = std.ArrayListUnmanaged(usize){},
             .selected_row = 0,
             .scroll_offset = 0,
+            .visible_rows = 0,
             .loading = false,
             .error_message = null,
             .filter_text = "",
@@ -60,6 +79,7 @@ pub const PersistentVolumesView = struct {
             item.deinit(self.allocator);
         }
         self.items.deinit(self.allocator);
+        self.filtered_indices.deinit(self.allocator);
         if (self.error_message) |msg| {
             self.allocator.free(msg);
         }
@@ -106,11 +126,50 @@ pub const PersistentVolumesView = struct {
         }
 
         self.loading = false;
-        if (self.items.items.len == 0) {
-            self.selected_row = 0;
-        } else if (self.selected_row >= self.items.items.len) {
-            self.selected_row = self.items.items.len - 1;
+        try self.applyFilter(self.filter_text);
+    }
+
+    pub fn getSelectedResourceInfo(self: *PersistentVolumesView) ?ResourceInfo {
+        if (self.filtered_indices.items.len == 0) return null;
+        if (self.selected_row >= self.filtered_indices.items.len) return null;
+        const idx = self.filtered_indices.items[self.selected_row];
+        const item = self.items.items[idx];
+        return ResourceInfo{
+            .name = item.name,
+            .namespace = "cluster",
+        };
+    }
+
+    pub fn applyFilter(self: *PersistentVolumesView, filter: []const u8) !void {
+        self.filter_text = filter;
+        try universal_filter.applyFilter(
+            PVInfo,
+            self.allocator,
+            self.items.items,
+            &self.filtered_indices,
+            filter,
+            &self.selected_row,
+            &self.scroll_offset,
+            self.visible_rows,
+            pvMatchFn,
+        );
+        self.applySorting();
+    }
+
+    fn applySorting(self: *PersistentVolumesView) void {
+        if (self.sort_column) |col| {
+            switch (col) {
+                COL_NAME => sort_util.sortFilteredIndices(PVInfo, self.items.items, &self.filtered_indices, PVInfo.getName, self.sort_ascending),
+                COL_AGE => sort_util.sortFilteredIndices(PVInfo, self.items.items, &self.filtered_indices, PVInfo.getAge, self.sort_ascending),
+                COL_STATUS => sort_util.sortFilteredIndices(PVInfo, self.items.items, &self.filtered_indices, PVInfo.getStatus, self.sort_ascending),
+                else => {},
+            }
         }
+    }
+
+    fn pvMatchFn(item: *const PVInfo, filter: []const u8) bool {
+        return std.mem.indexOf(u8, item.name, filter) != null or
+            std.mem.indexOf(u8, item.status, filter) != null;
     }
 
     pub fn createView(self: *PersistentVolumesView) View {
@@ -120,6 +179,7 @@ pub const PersistentVolumesView = struct {
     fn render(ptr: *anyopaque, term: *Terminal, x: u16, y: u16, width: u16, height: u16) !void {
         const self: *PersistentVolumesView = @ptrCast(@alignCast(ptr));
         _ = width;
+        self.visible_rows = if (height > 1) height - 1 else 0;
 
         if (self.loading) {
             try Theme.writeStringWithTheme(term, x, y, "Loading persistent volumes...", self.theme.main_fg, self.theme.main_bg);
@@ -129,24 +189,32 @@ pub const PersistentVolumesView = struct {
             try Theme.writeStringWithTheme(term, x, y, msg, self.theme.status_failed, self.theme.main_bg);
             return;
         }
-        if (self.items.items.len == 0) {
+        if (self.filtered_indices.items.len == 0) {
             try Theme.writeStringWithTheme(term, x, y, "No persistent volumes found", self.theme.main_fg, self.theme.main_bg);
             return;
         }
 
-        const header = "  NAME                          CAPACITY   ACCESS   RECLAIM   STATUS      AGE";
+        const name_ind = sort_util.sortIndicator(self.sort_column, self.sort_ascending, COL_NAME);
+        const age_ind = sort_util.sortIndicator(self.sort_column, self.sort_ascending, COL_AGE);
+        const status_ind = sort_util.sortIndicator(self.sort_column, self.sort_ascending, COL_STATUS);
+        var name_hdr_buf: [32]u8 = undefined;
+        var age_hdr_buf: [16]u8 = undefined;
+        var status_hdr_buf: [16]u8 = undefined;
+        const name_hdr = std.fmt.bufPrint(&name_hdr_buf, "NAME{s}", .{name_ind}) catch "NAME";
+        const age_hdr = std.fmt.bufPrint(&age_hdr_buf, "AGE{s}", .{age_ind}) catch "AGE";
+        const status_hdr = std.fmt.bufPrint(&status_hdr_buf, "STATUS{s}", .{status_ind}) catch "STATUS";
+        var hdr_buf: [128]u8 = undefined;
+        const header = std.fmt.bufPrint(&hdr_buf, "  {s: <30}CAPACITY   ACCESS   RECLAIM   {s: <12}{s}", .{ name_hdr, status_hdr, age_hdr }) catch "  NAME                          CAPACITY   ACCESS   RECLAIM   STATUS      AGE";
         try Theme.writeStringWithTheme(term, x, y, header, self.theme.title, self.theme.main_bg);
 
-        const visible_rows = if (height > 1) height - 1 else 0;
+        const start_idx = self.scroll_offset;
+        const end_idx = @min(start_idx + self.visible_rows, self.filtered_indices.items.len);
         var row: u16 = 0;
-        var idx = self.scroll_offset;
 
-        while (row < visible_rows and idx < self.items.items.len) : ({
-            row += 1;
-            idx += 1;
-        }) {
-            const item = &self.items.items[idx];
-            const is_selected = (idx == self.selected_row);
+        for (start_idx..end_idx) |fi| {
+            const item_idx = self.filtered_indices.items[fi];
+            const item = &self.items.items[item_idx];
+            const is_selected = (fi == self.selected_row);
             const fg_color = if (is_selected) self.theme.selected_fg else self.theme.main_fg;
             const bg_color = if (is_selected) self.theme.selected_bg else self.theme.main_bg;
 
@@ -164,6 +232,7 @@ pub const PersistentVolumesView = struct {
             );
             defer self.allocator.free(line);
             try Theme.writeStringWithTheme(term, x, y + 1 + row, line, fg_color, bg_color);
+            row += 1;
         }
     }
 
@@ -171,37 +240,78 @@ pub const PersistentVolumesView = struct {
         const self: *PersistentVolumesView = @ptrCast(@alignCast(ptr));
         switch (key) {
             .down => {
-                if (self.selected_row < self.items.items.len -| 1) {
+                if (self.filtered_indices.items.len > 0 and self.selected_row < self.filtered_indices.items.len - 1) {
                     self.selected_row += 1;
+                    if (self.selected_row >= self.scroll_offset + self.visible_rows) {
+                        self.scroll_offset = self.selected_row - self.visible_rows + 1;
+                    }
                 }
                 return .handled;
             },
             .up => {
                 if (self.selected_row > 0) {
                     self.selected_row -= 1;
+                    if (self.selected_row < self.scroll_offset) self.scroll_offset = self.selected_row;
                 }
                 return .handled;
             },
             .char => |c| switch (c) {
                 'j' => {
-                    if (self.selected_row < self.items.items.len -| 1) {
+                    if (self.filtered_indices.items.len > 0 and self.selected_row < self.filtered_indices.items.len - 1) {
                         self.selected_row += 1;
+                        if (self.selected_row >= self.scroll_offset + self.visible_rows) {
+                            self.scroll_offset = self.selected_row - self.visible_rows + 1;
+                        }
                     }
                     return .handled;
                 },
                 'k' => {
-                    if (self.selected_row > 0) self.selected_row -= 1;
+                    if (self.selected_row > 0) {
+                        self.selected_row -= 1;
+                        if (self.selected_row < self.scroll_offset) self.scroll_offset = self.selected_row;
+                    }
                     return .handled;
                 },
+                'g' => {
+                    self.selected_row = 0;
+                    self.scroll_offset = 0;
+                    return .handled;
+                },
+                'G' => {
+                    if (self.filtered_indices.items.len > 0) {
+                        self.selected_row = @intCast(self.filtered_indices.items.len - 1);
+                        if (self.selected_row >= self.visible_rows) {
+                            self.scroll_offset = self.selected_row - self.visible_rows + 1;
+                        }
+                    }
+                    return .handled;
+                },
+                'N' => {
+                    sort_util.toggleSort(&self.sort_column, &self.sort_ascending, COL_NAME);
+                    self.applySorting();
+                    return .handled;
+                },
+                'A' => {
+                    sort_util.toggleSort(&self.sort_column, &self.sort_ascending, COL_AGE);
+                    self.applySorting();
+                    return .handled;
+                },
+                'S' => {
+                    sort_util.toggleSort(&self.sort_column, &self.sort_ascending, COL_STATUS);
+                    self.applySorting();
+                    return .handled;
+                },
+                'd' => return .request_describe,
+                'y' => return .request_yaml,
+                '/' => return .request_filter,
                 'r' => {
                     try self.refresh();
                     return .handled;
                 },
-                else => {},
+                else => return .not_handled,
             },
-            else => {},
+            else => return .not_handled,
         }
-        return .not_handled;
     }
 
     fn onShow(ptr: *anyopaque) void {
@@ -222,11 +332,7 @@ pub const PersistentVolumesView = struct {
 
     fn getHints(ptr: *anyopaque) hints_model.HintConfig {
         _ = ptr;
-        const hint_items = comptime [_]hints_model.Hint{
-            hints_model.Hint.plain("↑↓ Navigate", 1),
-            hints_model.Hint.plain("r Refresh", 2),
-        };
-        return hints_model.HintConfig{ .hints = &hint_items };
+        return hints_model.resourceHints();
     }
 
     fn deinitView(ptr: *anyopaque) void {

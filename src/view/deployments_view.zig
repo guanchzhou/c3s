@@ -7,23 +7,34 @@ const View = @import("../viewmodel/view.zig").View;
 const Key = @import("../core/terminal.zig").Key;
 const KeyResult = View.KeyResult;
 const Logger = @import("../core/logger.zig");
-const K8sService = @import("../services/k8s_service.zig").K8sService;
+const k8s_service_mod = @import("../services/k8s_service.zig");
+const K8sService = k8s_service_mod.K8sService;
+const ResourceInfo = k8s_service_mod.ResourceInfo;
 const klient = @import("klient");
 const hints_model = @import("../model/hints.zig");
 const BoxDrawing = @import("../ui/box_drawing.zig");
+const universal_filter = @import("../viewmodel/filter.zig");
+const sort_util = @import("../viewmodel/sort.zig");
 
 pub const DeploymentsView = struct {
     allocator: std.mem.Allocator,
     theme: *const theme_loader.ThemeColors,
     k8s_service: *K8sService,
     deployments: std.ArrayListUnmanaged(DeploymentInfo),
-    selected_row: usize,
-    scroll_offset: usize,
-    visible_rows: u16,
+    filtered_indices: std.ArrayListUnmanaged(usize),
+    selected_row: u32,
+    scroll_offset: u32,
+    visible_rows: u32,
     filter_text: []const u8,
     show_all_namespaces: bool,
+    sort_column: ?u8 = null,
+    sort_ascending: bool = true,
     loading: bool,
     error_message: ?[]const u8,
+
+    // Sort column indices
+    const COL_NAME: u8 = 0;
+    const COL_AGE: u8 = 1;
 
     const DeploymentInfo = struct {
         name: []const u8,
@@ -39,6 +50,9 @@ pub const DeploymentsView = struct {
             self.allocator.free(self.namespace);
             self.allocator.free(self.age);
         }
+
+        fn getName(self: *const DeploymentInfo) []const u8 { return self.name; }
+        fn getAge(self: *const DeploymentInfo) []const u8 { return self.age; }
     };
 
     pub fn init(
@@ -51,6 +65,7 @@ pub const DeploymentsView = struct {
             .theme = theme,
             .k8s_service = k8s_service,
             .deployments = std.ArrayListUnmanaged(DeploymentInfo){},
+            .filtered_indices = std.ArrayListUnmanaged(usize){},
             .selected_row = 0,
             .scroll_offset = 0,
             .visible_rows = 0,
@@ -70,6 +85,7 @@ pub const DeploymentsView = struct {
             dep.deinit();
         }
         self.deployments.deinit(self.allocator);
+        self.filtered_indices.deinit(self.allocator);
 
         if (self.error_message) |msg| {
             self.allocator.free(msg);
@@ -168,6 +184,51 @@ pub const DeploymentsView = struct {
         }
 
         Logger.info("Loaded {} deployments", .{self.deployments.items.len});
+
+        // Rebuild filtered indices
+        try self.applyFilter(self.filter_text);
+    }
+
+    pub fn getSelectedResourceInfo(self: *DeploymentsView) ?ResourceInfo {
+        if (self.filtered_indices.items.len == 0) return null;
+        if (self.selected_row >= self.filtered_indices.items.len) return null;
+        const idx = self.filtered_indices.items[self.selected_row];
+        const item = self.deployments.items[idx];
+        return ResourceInfo{
+            .name = item.name,
+            .namespace = item.namespace,
+        };
+    }
+
+    pub fn applyFilter(self: *DeploymentsView, filter: []const u8) !void {
+        self.filter_text = filter;
+        try universal_filter.applyFilter(
+            DeploymentInfo,
+            self.allocator,
+            self.deployments.items,
+            &self.filtered_indices,
+            filter,
+            &self.selected_row,
+            &self.scroll_offset,
+            self.visible_rows,
+            deploymentMatchFn,
+        );
+        self.applySorting();
+    }
+
+    fn applySorting(self: *DeploymentsView) void {
+        if (self.sort_column) |col| {
+            switch (col) {
+                COL_NAME => sort_util.sortFilteredIndices(DeploymentInfo, self.deployments.items, &self.filtered_indices, DeploymentInfo.getName, self.sort_ascending),
+                COL_AGE => sort_util.sortFilteredIndices(DeploymentInfo, self.deployments.items, &self.filtered_indices, DeploymentInfo.getAge, self.sort_ascending),
+                else => {},
+            }
+        }
+    }
+
+    fn deploymentMatchFn(item: *const DeploymentInfo, filter: []const u8) bool {
+        return std.mem.indexOf(u8, item.name, filter) != null or
+            std.mem.indexOf(u8, item.namespace, filter) != null;
     }
 
     fn calculateAge(self: *DeploymentsView, timestamp: ?[]const u8) ![]const u8 {
@@ -199,7 +260,7 @@ pub const DeploymentsView = struct {
             "all"
         else
             self.k8s_service.getCurrentNamespace();
-        const title_text = try std.fmt.bufPrint(&title_buf, "deployments({s})[{d}]", .{ ns, self.deployments.items.len });
+        const title_text = try std.fmt.bufPrint(&title_buf, "deployments({s})[{d}]", .{ ns, self.filtered_indices.items.len });
 
         // Draw box border with title
         try BoxDrawing.Box.createBox(terminal, x, y, width, height, self.theme.proc_box, self.theme.main_bg, title_text, .rounded, self.theme.main_fg, self.theme.title_highlight);
@@ -214,22 +275,29 @@ pub const DeploymentsView = struct {
             return;
         }
 
-        // Render header row
+        // Render header row with sort indicators
         const header_y = y + 1;
+        const name_ind = sort_util.sortIndicator(self.sort_column, self.sort_ascending, COL_NAME);
+        const age_ind = sort_util.sortIndicator(self.sort_column, self.sort_ascending, COL_AGE);
+        var name_hdr_buf: [32]u8 = undefined;
+        var age_hdr_buf: [16]u8 = undefined;
+        const name_hdr = std.fmt.bufPrint(&name_hdr_buf, "NAME{s}", .{name_ind}) catch "NAME";
+        const age_hdr = std.fmt.bufPrint(&age_hdr_buf, "AGE{s}", .{age_ind}) catch "AGE";
         try Theme.writeStringWithTheme(terminal, x + 1, header_y, "NAMESPACE", self.theme.title, self.theme.main_bg);
-        try Theme.writeStringWithTheme(terminal, x + 20, header_y, "NAME", self.theme.title, self.theme.main_bg);
+        try Theme.writeStringWithTheme(terminal, x + 20, header_y, name_hdr, self.theme.title, self.theme.main_bg);
         try Theme.writeStringWithTheme(terminal, x + 50, header_y, "READY", self.theme.title, self.theme.main_bg);
         try Theme.writeStringWithTheme(terminal, x + 62, header_y, "AVAILABLE", self.theme.title, self.theme.main_bg);
-        try Theme.writeStringWithTheme(terminal, x + 78, header_y, "AGE", self.theme.title, self.theme.main_bg);
+        try Theme.writeStringWithTheme(terminal, x + 78, header_y, age_hdr, self.theme.title, self.theme.main_bg);
 
         // Render deployment rows
         var row_y = y + 2;
         const end_idx = @min(
             self.scroll_offset + self.visible_rows,
-            self.deployments.items.len,
+            @as(u32, @intCast(self.filtered_indices.items.len)),
         );
 
-        for (self.deployments.items[self.scroll_offset..end_idx], 0..) |dep, i| {
+        for (self.filtered_indices.items[self.scroll_offset..end_idx], 0..) |dep_idx, i| {
+            const dep = self.deployments.items[dep_idx];
             const is_selected = (self.scroll_offset + i) == self.selected_row;
 
             // Determine colors based on selection
@@ -270,7 +338,7 @@ pub const DeploymentsView = struct {
             .char => |c| {
                 switch (c) {
                     'j' => {
-                        if (self.selected_row + 1 < self.deployments.items.len) {
+                        if (self.selected_row + 1 < self.filtered_indices.items.len) {
                             self.selected_row += 1;
                             if (self.selected_row >= self.scroll_offset + self.visible_rows) {
                                 self.scroll_offset += 1;
@@ -293,8 +361,8 @@ pub const DeploymentsView = struct {
                         return .handled;
                     },
                     'G' => {
-                        if (self.deployments.items.len > 0) {
-                            self.selected_row = self.deployments.items.len - 1;
+                        if (self.filtered_indices.items.len > 0) {
+                            self.selected_row = @intCast(self.filtered_indices.items.len - 1);
                             if (self.selected_row >= self.visible_rows) {
                                 self.scroll_offset = self.selected_row - self.visible_rows + 1;
                             }
@@ -318,13 +386,25 @@ pub const DeploymentsView = struct {
                         };
                         return .handled;
                     },
+                    'N' => {
+                        sort_util.toggleSort(&self.sort_column, &self.sort_ascending, COL_NAME);
+                        self.applySorting();
+                        return .handled;
+                    },
+                    'A' => {
+                        sort_util.toggleSort(&self.sort_column, &self.sort_ascending, COL_AGE);
+                        self.applySorting();
+                        return .handled;
+                    },
+                    'd' => return .request_describe,
+                    'y' => return .request_yaml,
                     ':' => return .request_command_palette,
                     '/' => return .request_filter,
                     else => return .not_handled,
                 }
             },
             .down => {
-                if (self.selected_row + 1 < self.deployments.items.len) {
+                if (self.selected_row + 1 < self.filtered_indices.items.len) {
                     self.selected_row += 1;
                     if (self.selected_row >= self.scroll_offset + self.visible_rows) {
                         self.scroll_offset += 1;
@@ -342,7 +422,8 @@ pub const DeploymentsView = struct {
                 return .handled;
             },
             .page_down => {
-                const jump = @min(self.visible_rows, self.deployments.items.len -| self.selected_row -| 1);
+                const items_len: u32 = @intCast(self.filtered_indices.items.len);
+                const jump = @min(self.visible_rows, items_len -| self.selected_row -| 1);
                 self.selected_row += jump;
                 if (self.selected_row >= self.scroll_offset + self.visible_rows) {
                     self.scroll_offset = self.selected_row - self.visible_rows + 1;
@@ -363,8 +444,8 @@ pub const DeploymentsView = struct {
                 return .handled;
             },
             .end => {
-                if (self.deployments.items.len > 0) {
-                    self.selected_row = self.deployments.items.len - 1;
+                if (self.filtered_indices.items.len > 0) {
+                    self.selected_row = @intCast(self.filtered_indices.items.len - 1);
                     if (self.selected_row >= self.visible_rows) {
                         self.scroll_offset = self.selected_row - self.visible_rows + 1;
                     }
@@ -400,7 +481,7 @@ pub const DeploymentsView = struct {
     }
 
     fn getHints(_: *anyopaque) hints_model.HintConfig {
-        return hints_model.podsHints(); // TODO: Create deploymentsHints
+        return hints_model.resourceHints();
     }
 
     fn deinitView(ptr: *anyopaque) void {

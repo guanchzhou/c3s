@@ -7,18 +7,31 @@ const Terminal = @import("../core/terminal.zig").Terminal;
 const Theme = @import("../theme.zig");
 const theme_loader = @import("../model/theme_loader.zig");
 const hints_model = @import("../model/hints.zig");
-const K8sService = @import("../services/k8s_service.zig").K8sService;
+const k8s_service_mod = @import("../services/k8s_service.zig");
+const K8sService = k8s_service_mod.K8sService;
+const ResourceInfo = k8s_service_mod.ResourceInfo;
 const Logger = @import("../core/logger.zig");
+const sort_util = @import("../viewmodel/sort.zig");
 
 pub const ContextsView = struct {
     allocator: std.mem.Allocator,
     theme: *const theme_loader.ThemeColors,
     k8s_service: *K8sService,
     items: std.ArrayListUnmanaged(K8sService.ContextInfo),
-    selected_row: usize,
-    scroll_offset: usize,
+    filtered_indices: std.ArrayListUnmanaged(usize),
+    selected_row: u32,
+    scroll_offset: u32,
+    visible_rows: u32,
     loading: bool,
     error_message: ?[]const u8,
+    filter_text: []const u8,
+    sort_column: ?u8 = null,
+    sort_ascending: bool = true,
+
+    // Sort column indices
+    const COL_NAME: u8 = 0;
+
+    fn getContextName(item: *const K8sService.ContextInfo) []const u8 { return item.name; }
 
     pub fn init(allocator: std.mem.Allocator, theme: *const theme_loader.ThemeColors, k8s_service: *K8sService) !ContextsView {
         return ContextsView{
@@ -26,10 +39,13 @@ pub const ContextsView = struct {
             .theme = theme,
             .k8s_service = k8s_service,
             .items = .{},
+            .filtered_indices = .{},
             .selected_row = 0,
             .scroll_offset = 0,
+            .visible_rows = 0,
             .loading = false,
             .error_message = null,
+            .filter_text = "",
         };
     }
 
@@ -41,6 +57,7 @@ pub const ContextsView = struct {
             if (item.namespace) |ns| self.allocator.free(ns);
         }
         self.items.deinit(self.allocator);
+        self.filtered_indices.deinit(self.allocator);
         if (self.error_message) |msg| self.allocator.free(msg);
     }
 
@@ -71,7 +88,38 @@ pub const ContextsView = struct {
         self.loading = false;
 
         if (self.selected_row >= self.items.items.len and self.items.items.len > 0) {
-            self.selected_row = self.items.items.len - 1;
+            self.selected_row = @intCast(self.items.items.len - 1);
+        }
+        try self.applyFilter(self.filter_text);
+    }
+
+    pub fn getSelectedResourceInfo(self: *ContextsView) ?ResourceInfo {
+        _ = self;
+        return null;
+    }
+
+    pub fn applyFilter(self: *ContextsView, filter: []const u8) !void {
+        self.filter_text = filter;
+        self.filtered_indices.clearRetainingCapacity();
+        for (self.items.items, 0..) |item, i| {
+            if (filter.len == 0 or std.mem.indexOf(u8, item.name, filter) != null or
+                std.mem.indexOf(u8, item.cluster, filter) != null)
+            {
+                try self.filtered_indices.append(self.allocator, i);
+            }
+        }
+        if (self.selected_row >= self.filtered_indices.items.len and self.filtered_indices.items.len > 0) {
+            self.selected_row = @intCast(self.filtered_indices.items.len - 1);
+        }
+        self.applySorting();
+    }
+
+    fn applySorting(self: *ContextsView) void {
+        if (self.sort_column) |col| {
+            switch (col) {
+                COL_NAME => sort_util.sortFilteredIndices(K8sService.ContextInfo, self.items.items, &self.filtered_indices, getContextName, self.sort_ascending),
+                else => {},
+            }
         }
     }
 
@@ -92,6 +140,7 @@ pub const ContextsView = struct {
     fn render(ctx: *anyopaque, terminal: *Terminal, x: u16, y: u16, width: u16, height: u16) anyerror!void {
         const self: *ContextsView = @ptrCast(@alignCast(ctx));
         _ = width;
+        self.visible_rows = if (height > 1) height - 1 else 0;
         if (self.loading) {
             try Theme.writeStringWithTheme(terminal, x, y, "Loading contexts...", self.theme.main_fg, self.theme.main_bg);
             return;
@@ -100,22 +149,28 @@ pub const ContextsView = struct {
             try Theme.writeStringWithTheme(terminal, x, y, msg, self.theme.status_failed, self.theme.main_bg);
             return;
         }
-        if (self.items.items.len == 0) {
+        if (self.filtered_indices.items.len == 0) {
             try Theme.writeStringWithTheme(terminal, x, y, "No contexts found", self.theme.main_fg, self.theme.main_bg);
             return;
         }
 
-        // Header
-        try Theme.writeStringWithTheme(terminal, x, y, "CURRENT  NAME                           CLUSTER                        NAMESPACE", self.theme.title, self.theme.main_bg);
+        // Header with sort indicators
+        var name_hdr_buf: [32]u8 = undefined;
+        const name_ind = sort_util.sortIndicator(self.sort_column, self.sort_ascending, COL_NAME);
+        const name_hdr = std.fmt.bufPrint(&name_hdr_buf, "NAME{s}", .{name_ind}) catch "NAME";
+        var hdr_buf: [128]u8 = undefined;
+        const header = std.fmt.bufPrint(&hdr_buf, "CURRENT  {s: <31}CLUSTER                        NAMESPACE", .{name_hdr}) catch "CURRENT  NAME                           CLUSTER                        NAMESPACE";
+        try Theme.writeStringWithTheme(terminal, x, y, header, self.theme.title, self.theme.main_bg);
 
-        // Render contexts
+        // Render contexts using filtered_indices
         var row: u16 = 1;
-        const visible_rows = height -| 1;
-        for (self.items.items, 0..) |item, i| {
-            if (i < self.scroll_offset) continue;
-            if (row >= visible_rows) break;
+        const visible_rows_count = height -| 1;
+        var fi: u32 = self.scroll_offset;
+        while (row < visible_rows_count and fi < self.filtered_indices.items.len) : ({ row += 1; fi += 1; }) {
+            const idx = self.filtered_indices.items[fi];
+            const item = self.items.items[idx];
 
-            const is_selected = (i == self.selected_row);
+            const is_selected = (fi == self.selected_row);
             const fg = if (is_selected) self.theme.selected_fg else self.theme.main_fg;
             const bg = if (is_selected) self.theme.selected_bg else self.theme.main_bg;
 
@@ -125,7 +180,6 @@ pub const ContextsView = struct {
             const line = try std.fmt.allocPrint(self.allocator, "{s}        {s: <30} {s: <30} {s}", .{ current_marker, item.name, item.cluster, ns });
             defer self.allocator.free(line);
             try Theme.writeStringWithTheme(terminal, x, y + row, line, fg, bg);
-            row += 1;
         }
     }
 
@@ -134,7 +188,7 @@ pub const ContextsView = struct {
         switch (key) {
             .char => |c| switch (c) {
                 'j' => {
-                    if (self.selected_row < self.items.items.len -| 1) self.selected_row += 1;
+                    if (self.selected_row < self.filtered_indices.items.len -| 1) self.selected_row += 1;
                     return .handled;
                 },
                 'k' => {
@@ -147,19 +201,28 @@ pub const ContextsView = struct {
                 },
                 '\r', '\n' => {
                     // Switch to selected context
-                    if (self.items.items.len > 0) {
-                        const selected = self.items.items[self.selected_row];
+                    if (self.filtered_indices.items.len > 0 and self.selected_row < self.filtered_indices.items.len) {
+                        const idx = self.filtered_indices.items[self.selected_row];
+                        const selected = self.items.items[idx];
                         try self.k8s_service.switchContext(selected.name);
                         try self.refresh();
                     }
                     return .handled;
                 },
+                'N' => {
+                    sort_util.toggleSort(&self.sort_column, &self.sort_ascending, COL_NAME);
+                    self.applySorting();
+                    return .handled;
+                },
+                'd' => return .request_describe,
+                'y' => return .request_yaml,
+                '/' => return .request_filter,
                 'q' => return .request_quit,
                 ':' => return .request_command_palette,
                 else => return .not_handled,
             },
             .down => {
-                if (self.selected_row < self.items.items.len -| 1) self.selected_row += 1;
+                if (self.selected_row < self.filtered_indices.items.len -| 1) self.selected_row += 1;
                 return .handled;
             },
             .up => {
@@ -184,13 +247,7 @@ pub const ContextsView = struct {
     }
 
     fn getHints(_: *anyopaque) hints_model.HintConfig {
-        return hints_model.HintConfig{
-            .hints = &[_]hints_model.Hint{
-                hints_model.Hint.plain("j/k navigate", 1),
-                hints_model.Hint.plain("Enter switch", 2),
-                hints_model.Hint.plain("r refresh", 3),
-            },
-        };
+        return hints_model.resourceHints();
     }
 
     fn deinitView(ctx: *anyopaque) void {

@@ -7,7 +7,10 @@ const theme_loader = @import("../model/theme_loader.zig");
 const universal_filter = @import("../viewmodel/filter.zig");
 const hints_model = @import("../model/hints.zig");
 const table_layout = @import("../ui/table_layout.zig");
-const K8sService = @import("../services/k8s_service.zig").K8sService;
+const sort_util = @import("../viewmodel/sort.zig");
+const k8s_service_mod = @import("../services/k8s_service.zig");
+const K8sService = k8s_service_mod.K8sService;
+const ResourceInfo = k8s_service_mod.ResourceInfo;
 
 /// PodsView - displays Kubernetes pods with filtering and navigation
 pub const PodsView = struct {
@@ -24,9 +27,17 @@ pub const PodsView = struct {
     horizontal_scroll: table_layout.TableScroll = .{ .scroll_offset = 0, .visible_width = 0, .total_width = 0 },
     error_message: ?[]u8 = null,
     show_all_namespaces: bool = false,
+    sort_column: ?u8 = null,
+    sort_ascending: bool = true,
     // Cache for column widths to avoid recalculation on every render
     cached_col_widths: ?table_layout.ColumnWidths = null,
     cached_terminal_width: u16 = 0,
+
+    // Sort column indices
+    const COL_NAME: u8 = 0;
+    const COL_STATUS: u8 = 1;
+    const COL_AGE: u8 = 2;
+    const COL_READY: u8 = 3;
 
     const Pod = struct {
         namespace: []const u8,
@@ -38,6 +49,11 @@ pub const PodsView = struct {
         ip: []const u8,
         node: []const u8,
         age: []const u8,
+
+        fn getName(self: *const Pod) []const u8 { return self.name; }
+        fn getStatus(self: *const Pod) []const u8 { return self.status; }
+        fn getAge(self: *const Pod) []const u8 { return self.age; }
+        fn getReady(self: *const Pod) []const u8 { return self.ready; }
     };
 
     pub fn init(allocator: std.mem.Allocator, theme: *theme_loader.ThemeColors, k8s_service: *K8sService) !PodsView {
@@ -175,6 +191,18 @@ pub const PodsView = struct {
         }
     }
 
+    /// Get the name and namespace of the currently selected pod
+    pub fn getSelectedResourceInfo(self: *PodsView) ?ResourceInfo {
+        if (self.filtered_indices.items.len == 0) return null;
+        if (self.selected_row >= self.filtered_indices.items.len) return null;
+        const pod_idx = self.filtered_indices.items[self.selected_row];
+        const pod = self.pods.items[pod_idx];
+        return ResourceInfo{
+            .name = pod.name,
+            .namespace = pod.namespace,
+        };
+    }
+
     fn loadSampleData(self: *PodsView) !void {
         const sample_pods = [_]struct { []const u8, []const u8, []const u8, []const u8, []const u8, []const u8, []const u8, []const u8, []const u8 }{
             .{ "default", "nginx-deployment-7d4b4b8c9c-abc123", "1/1", "Running", "2m", "45Mi", "10.244.1.5", "worker-1", "2d" },
@@ -226,6 +254,21 @@ pub const PodsView = struct {
             self.visible_rows,
             podMatchFn,
         );
+
+        // Re-apply sorting after filter
+        self.applySorting();
+    }
+
+    fn applySorting(self: *PodsView) void {
+        if (self.sort_column) |col| {
+            switch (col) {
+                COL_NAME => sort_util.sortFilteredIndices(Pod, self.pods.items, &self.filtered_indices, Pod.getName, self.sort_ascending),
+                COL_STATUS => sort_util.sortFilteredIndices(Pod, self.pods.items, &self.filtered_indices, Pod.getStatus, self.sort_ascending),
+                COL_AGE => sort_util.sortFilteredIndices(Pod, self.pods.items, &self.filtered_indices, Pod.getAge, self.sort_ascending),
+                COL_READY => sort_util.sortFilteredIndices(Pod, self.pods.items, &self.filtered_indices, Pod.getReady, self.sort_ascending),
+                else => {},
+            }
+        }
     }
 
     fn podMatchFn(pod: *const Pod, filter: []const u8) bool {
@@ -244,7 +287,7 @@ pub const PodsView = struct {
     }
 
     fn navigateDown(self: *PodsView) !void {
-        if (self.selected_row < self.filtered_indices.items.len - 1) {
+        if (self.selected_row + 1 < self.filtered_indices.items.len) {
             self.selected_row += 1;
             // Adjust scroll if needed
             if (self.selected_row >= self.scroll_offset + self.visible_rows) {
@@ -391,21 +434,36 @@ pub const PodsView = struct {
         self.horizontal_scroll.visible_width = available_width;
         self.horizontal_scroll.total_width = col_widths.total_width;
 
-        // Draw column headers
+        // Draw column headers with sort indicators
         const header_y = y + 1;
         var col_x = x + 1;
-        for (col_names, col_widths.widths) |name, w| {
+        // Map column index to sort column id (only for sortable columns)
+        const col_sort_ids = [_]?u8{ null, COL_NAME, COL_READY, COL_STATUS, null, null, null, null, COL_AGE };
+        for (col_names, col_widths.widths, 0..) |name, w, col_i| {
             if (w == 0) continue; // Skip hidden columns
 
             try terminal.setCursor(col_x, header_y);
             try terminal.writeAll(self.theme.title);
 
-            // Truncate header if needed
-            const header_text = if (name.len > w)
-                try table_layout.truncateText(self.allocator, name, w, false)
+            // Add sort indicator if this column is sorted
+            const indicator = if (col_i < col_sort_ids.len)
+                if (col_sort_ids[col_i]) |sid|
+                    sort_util.sortIndicator(self.sort_column, self.sort_ascending, sid)
+                else
+                    ""
             else
-                try self.allocator.dupe(u8, name);
-            defer self.allocator.free(header_text);
+                "";
+
+            const header_with_indicator = try std.fmt.allocPrint(self.allocator, "{s}{s}", .{ name, indicator });
+            defer self.allocator.free(header_with_indicator);
+
+            // Truncate header if needed
+            const header_text = if (header_with_indicator.len > w)
+                try table_layout.truncateText(self.allocator, header_with_indicator, w, false)
+            else
+                header_with_indicator;
+            // Only free if truncateText allocated a new string
+            defer if (header_text.ptr != header_with_indicator.ptr) self.allocator.free(header_text);
 
             try terminal.writeAll(header_text);
             try terminal.writeAll("\x1b[0m");
@@ -495,8 +553,13 @@ pub const PodsView = struct {
                     self.horizontal_scroll.scrollLeft(5);
                     return .handled;
                 },
-                'l' => {
-                    self.horizontal_scroll.scrollRight(5);
+                'l' => return .request_logs,
+                'd' => return .request_describe,
+                'y' => return .request_yaml,
+                'r' => {
+                    self.refresh() catch |err| {
+                        Logger.err("Failed to refresh pods: {any}", .{err});
+                    };
                     return .handled;
                 },
                 '0' => {
@@ -509,6 +572,26 @@ pub const PodsView = struct {
                 },
                 '$' => {
                     self.horizontal_scroll.scrollToEnd();
+                    return .handled;
+                },
+                'N' => {
+                    sort_util.toggleSort(&self.sort_column, &self.sort_ascending, COL_NAME);
+                    self.applySorting();
+                    return .handled;
+                },
+                'S' => {
+                    sort_util.toggleSort(&self.sort_column, &self.sort_ascending, COL_STATUS);
+                    self.applySorting();
+                    return .handled;
+                },
+                'A' => {
+                    sort_util.toggleSort(&self.sort_column, &self.sort_ascending, COL_AGE);
+                    self.applySorting();
+                    return .handled;
+                },
+                'R' => {
+                    sort_util.toggleSort(&self.sort_column, &self.sort_ascending, COL_READY);
+                    self.applySorting();
                     return .handled;
                 },
                 '/' => return .request_filter,

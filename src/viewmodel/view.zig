@@ -37,6 +37,10 @@ pub const View = struct {
         request_command_palette,
         request_filter,
         request_quit,
+        request_describe,
+        request_yaml,
+        request_logs,
+        request_delete,
     };
 
     pub fn render(self: View, terminal: *Terminal, x: u16, y: u16, width: u16, height: u16) !void {
