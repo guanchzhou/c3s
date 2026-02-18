@@ -93,6 +93,13 @@ pub fn build(b: *std.Build) void {
     // step when running `zig build`).
     b.installArtifact(exe);
 
+    // Install bundled skins alongside the binary
+    b.installDirectory(.{
+        .source_dir = b.path("skins"),
+        .install_dir = .{ .custom = "bin" },
+        .install_subdir = "skins",
+    });
+
     // Create a run step
     const run_step = b.step("run", "Run the app");
     const run_cmd = b.addRunArtifact(exe);
@@ -224,6 +231,76 @@ pub fn build(b: *std.Build) void {
     const advanced_features_test_step = b.step("test-advanced", "Run advanced features tests (TLS, Pool, CRD)");
     advanced_features_test_step.dependOn(&run_advanced_features_tests.step);
 
+    // Create K8s service unit tests
+    const k8s_service_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/services/k8s_service_test.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    k8s_service_tests.root_module.addImport("c3s", c3s_module);
+
+    const run_k8s_service_tests = b.addRunArtifact(k8s_service_tests);
+    const k8s_service_test_step = b.step("test-k8s-service", "Run K8s service unit tests");
+    k8s_service_test_step.dependOn(&run_k8s_service_tests.step);
+
+    // Create authorization view tests
+    const auth_view_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/view/authorization_view_test.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    auth_view_tests.root_module.addImport("c3s", c3s_module);
+
+    const run_auth_view_tests = b.addRunArtifact(auth_view_tests);
+    const auth_view_test_step = b.step("test-auth-view", "Run authorization view tests");
+    auth_view_test_step.dependOn(&run_auth_view_tests.step);
+
+    // Create table state unit tests
+    const table_state_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/ui/table_state_test.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    table_state_tests.root_module.addImport("c3s", c3s_module);
+
+    const run_table_state_tests = b.addRunArtifact(table_state_tests);
+    const table_state_test_step = b.step("test-table-state", "Run table state unit tests");
+    table_state_test_step.dependOn(&run_table_state_tests.step);
+
+    // Create sort utility tests
+    const sort_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/viewmodel/sort_test.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    sort_tests.root_module.addImport("c3s", c3s_module);
+
+    const run_sort_tests = b.addRunArtifact(sort_tests);
+    const sort_test_step = b.step("test-sort", "Run sort utility tests");
+    sort_test_step.dependOn(&run_sort_tests.step);
+
+    // Create view trait tests
+    const view_trait_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/viewmodel/view_test.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    view_trait_tests.root_module.addImport("c3s", c3s_module);
+
+    const run_view_trait_tests = b.addRunArtifact(view_trait_tests);
+    const view_trait_test_step = b.step("test-view-trait", "Run view trait tests");
+    view_trait_test_step.dependOn(&run_view_trait_tests.step);
+
     // Create a step to run all tests
     const all_tests_step = b.step("test-all", "Run all tests");
     all_tests_step.dependOn(&run_unit_tests.step);
@@ -234,4 +311,9 @@ pub fn build(b: *std.Build) void {
     all_tests_step.dependOn(&run_retry_tests.step);
     all_tests_step.dependOn(&run_new_resources_tests.step);
     all_tests_step.dependOn(&run_advanced_features_tests.step);
+    all_tests_step.dependOn(&run_k8s_service_tests.step);
+    all_tests_step.dependOn(&run_auth_view_tests.step);
+    all_tests_step.dependOn(&run_table_state_tests.step);
+    all_tests_step.dependOn(&run_sort_tests.step);
+    all_tests_step.dependOn(&run_view_trait_tests.step);
 }
