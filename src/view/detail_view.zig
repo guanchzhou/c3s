@@ -4,7 +4,6 @@ const View = @import("../viewmodel/view.zig").View;
 const Terminal = @import("../core/terminal.zig").Terminal;
 const Key = @import("../core/terminal.zig").Key;
 const Logger = @import("../core/logger.zig");
-const BoxDrawing = @import("../ui/box_drawing.zig");
 const theme_loader = @import("../model/theme_loader.zig");
 const hints_model = @import("../model/hints.zig");
 
@@ -228,27 +227,24 @@ pub const DetailView = struct {
 
     fn render(ptr: *anyopaque, terminal: *Terminal, x: u16, y: u16, width: u16, height: u16) !void {
         const self: *DetailView = @ptrCast(@alignCast(ptr));
-        self.visible_rows = if (height > 3) height - 3 else 0;
-
-        // Draw box
-        try BoxDrawing.Box.createBox(terminal, x, y, width, height, self.theme.proc_box, self.theme.main_bg, self.title, .rounded, self.theme.main_fg, self.theme.title);
+        self.visible_rows = if (height > 1) height - 1 else 0;
 
         if (self.lines.items.len == 0) {
-            const Theme = @import("../theme.zig");
-            try Theme.writeStringWithTheme(terminal, x + 2, y + height / 2, "No content", self.theme.inactive_fg, self.theme.main_bg);
+            const Theme = theme_loader;
+            try Theme.writeStringWithTheme(terminal, x, y, "No content", self.theme.inactive_fg, self.theme.main_bg);
             return;
         }
 
         // Draw content lines
         const start_row = self.scroll_offset;
         const end_row = @min(start_row + self.visible_rows, self.lines.items.len);
-        const content_width: u16 = if (width > 4) width - 4 else 1;
+        const content_width: u16 = if (width > 2) width - 2 else 1;
 
         for (start_row..end_row, 0..) |line_idx, display_idx| {
             const line = self.lines.items[line_idx];
-            const row_y = y + @as(u16, @intCast(display_idx)) + 1;
+            const row_y = y + @as(u16, @intCast(display_idx));
 
-            try terminal.setCursor(x + 2, row_y);
+            try terminal.setCursor(x, row_y);
             try terminal.writeAll(self.theme.main_fg);
 
             // Apply horizontal scroll

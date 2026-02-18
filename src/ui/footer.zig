@@ -1,7 +1,7 @@
 const std = @import("std");
 const Terminal = @import("../core/terminal.zig").Terminal;
-const Theme = @import("../theme.zig");
 const theme_loader = @import("../model/theme_loader.zig");
+const Theme = theme_loader;
 
 pub const Footer = struct {
     allocator: std.mem.Allocator,
@@ -9,6 +9,7 @@ pub const Footer = struct {
     current_resource: []const u8,
     current_view: ?[]const u8 = null, // Additional view status (e.g., "help")
     status: ?[]const u8 = null, // e.g., connection status
+    preview_status: ?[]const u8 = null, // e.g., "previewing snazzy"
 
     pub fn init(allocator: std.mem.Allocator, theme: *const theme_loader.ThemeColors) !Footer {
         return Footer{
@@ -31,6 +32,10 @@ pub const Footer = struct {
         self.status = status;
     }
 
+    pub fn setPreviewStatus(self: *Footer, theme_name: ?[]const u8) void {
+        self.preview_status = theme_name;
+    }
+
     pub fn setHelpMode(self: *Footer, help_visible: bool) void {
         if (help_visible) {
             self.current_view = "help";
@@ -47,9 +52,7 @@ pub const Footer = struct {
         _ = height; // Fixed height
 
         // Fill the footer line with theme background
-        for (0..width) |i| {
-            try Theme.writeStringWithTheme(terminal, @intCast(x + i), y, " ", self.theme.main_fg, self.theme.main_bg);
-        }
+        try terminal.fillRow(x, y, width, self.theme.main_fg, self.theme.main_bg);
 
         // Display current resource and view status with padding like other components (offset by 1)
         // Use bold text without brackets, like btop: "pods | help" or just "pod"
@@ -64,6 +67,15 @@ pub const Footer = struct {
             // Just the resource name
             try Theme.writeStringWithBold(terminal, x + 1, y, self.current_resource, self.theme.hi_fg, self.theme.main_bg);
             display_len = self.current_resource.len;
+        }
+
+        // Append preview status if present: " | previewing <theme>"
+        if (self.preview_status) |theme_name| {
+            const start_x: u16 = x + 1 + @as(u16, @intCast(display_len));
+            try Theme.writeStringWithTheme(terminal, start_x, y, " | ", self.theme.main_fg, self.theme.main_bg);
+            try Theme.writeStringWithTheme(terminal, start_x + 3, y, "previewing ", self.theme.title_highlight, self.theme.main_bg);
+            try Theme.writeStringWithTheme(terminal, start_x + 3 + 11, y, theme_name, self.theme.title_highlight, self.theme.main_bg);
+            display_len += 3 + 11 + theme_name.len;
         }
 
         // Append status if present: " | <status>"

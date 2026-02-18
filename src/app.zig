@@ -6,7 +6,8 @@ const Key = terminal.Key;
 const Header = @import("ui/header.zig").Header;
 const Footer = @import("ui/footer.zig").Footer;
 const CommandInput = @import("ui/command_input.zig").CommandInput;
-const Theme = @import("theme.zig");
+const Theme = theme_loader;
+const BoxDrawing = @import("ui/box_drawing.zig");
 const Cli = @import("cli.zig");
 const Config = @import("model/config.zig");
 const Logger = @import("core/logger.zig");
@@ -48,14 +49,17 @@ const HPAView = @import("view/hpa_view.zig").HPAView;
 const ContextsView = @import("view/contexts_view.zig").ContextsView;
 const ThemesView = @import("view/themes_view.zig").ThemesView;
 const HelpView = @import("view/help_view.zig").HelpView;
+const ViewType = @import("viewmodel/keybindings_vm.zig").ViewType;
 const DetailView = @import("view/detail_view.zig").DetailView;
 const LogsView = @import("view/logs_view.zig").LogsView;
+const AuthorizationView = @import("view/authorization_view.zig").AuthorizationView;
 
 // Service imports
 const k8s_service_mod = @import("services/k8s_service.zig");
 const K8sService = k8s_service_mod.K8sService;
 const ResourceType = k8s_service_mod.ResourceType;
-const ResourceInfo = k8s_service_mod.ResourceInfo;
+const view_mod = @import("viewmodel/view.zig");
+const ResourceInfo = view_mod.ResourceInfo;
 
 // Global flag for terminal resize signal
 var terminal_resized: std.atomic.Value(bool) = std.atomic.Value(bool).init(false);
@@ -119,6 +123,7 @@ pub const App = struct {
     help_view: *HelpView,
     detail_view: *DetailView,
     logs_view: *LogsView,
+    authorization_view: *AuthorizationView,
 
     // Delete confirmation state
     delete_pending: bool = false,
@@ -127,7 +132,7 @@ pub const App = struct {
     delete_resource_type: ?ResourceType = null,
 
     // Track which primary view is active (for view switching, not pushing)
-    current_primary_view: enum { pods, deployments, services, namespaces, nodes, statefulsets, daemonsets, replicasets, jobs, cronjobs, configmaps, secrets, persistentvolumes, persistentvolumeclaims, ingresses, networkpolicies, serviceaccounts, roles, rolebindings, clusterroles, clusterrolebindings, events, resourcequotas, limitranges, poddisruptionbudgets, hpa, contexts, themes } = .pods,
+    current_primary_view: enum { pods, deployments, services, namespaces, nodes, statefulsets, daemonsets, replicasets, jobs, cronjobs, configmaps, secrets, persistentvolumes, persistentvolumeclaims, ingresses, networkpolicies, serviceaccounts, roles, rolebindings, clusterroles, clusterrolebindings, events, resourcequotas, limitranges, poddisruptionbudgets, hpa, contexts, themes, authorization } = .pods,
 
     pub fn init(allocator: std.mem.Allocator, config: Cli.Config) !App {
         // Initialize terminal
@@ -209,6 +214,8 @@ pub const App = struct {
         logs_view.* = try LogsView.init(allocator, theme);
         errdefer logs_view.cleanup();
 
+        const authorization_view = try allocator.create(AuthorizationView);
+
         // Initialize header with cluster info
         const cluster_info = k8s_service.getClusterInfo();
         var header = if (cluster_info.connected) blk: {
@@ -223,8 +230,8 @@ pub const App = struct {
             }{
                 .context = cluster_info.context,
                 .cluster = cluster_info.cluster,
-                .user = "system:admin", // TODO: Get from kubeconfig
-                .k8s_version = "v1.34.1+k3s1", // TODO: Get from cluster
+                .user = cluster_info.user,
+                .k8s_version = k8s_service.getServerVersion(),
                 .cpu_usage = 0,
                 .mem_usage = 0,
             };
@@ -287,6 +294,7 @@ pub const App = struct {
             .help_view = help_view,
             .detail_view = detail_view,
             .logs_view = logs_view,
+            .authorization_view = authorization_view,
         };
 
         // NOW initialize resource views with stable pointer to app.k8s_service
@@ -372,6 +380,9 @@ pub const App = struct {
         contexts_view.* = try ContextsView.init(allocator, theme, app.k8s_service);
         errdefer contexts_view.deinit();
 
+        authorization_view.* = try AuthorizationView.init(allocator, theme, app.k8s_service);
+        errdefer authorization_view.deinit();
+
         // Register commands
         try app.registerCommands();
 
@@ -387,6 +398,9 @@ pub const App = struct {
         self.allocator.destroy(self.poddisruptionbudgets_view);
         self.hpa_view.deinit();
         self.allocator.destroy(self.hpa_view);
+        self.authorization_view.deinit();
+        self.allocator.destroy(self.authorization_view);
+
         self.contexts_view.deinit();
         self.allocator.destroy(self.contexts_view);
 
@@ -499,214 +513,23 @@ pub const App = struct {
     }
 
     fn registerCommands(self: *App) !void {
-        // === QUIT COMMANDS ===
-        try self.command_registry.register("q", Command{ .name = "q", .execute = quitCommand });
-        try self.command_registry.register("q!", Command{ .name = "q!", .execute = quitCommand });
-        try self.command_registry.register("qa", Command{ .name = "qa", .execute = quitCommand });
-        try self.command_registry.register("Q", Command{ .name = "Q", .execute = quitCommand });
-        try self.command_registry.register("quit", Command{ .name = "quit", .execute = quitCommand });
-        try self.command_registry.register("exit", Command{ .name = "exit", .execute = quitCommand });
+        // Special commands
+        for ([_][]const u8{ "q", "q!", "qa", "Q", "quit", "exit" }) |alias| {
+            try self.command_registry.register(alias, Command{ .name = alias, .execute = quitCommand });
+        }
+        for ([_][]const u8{ "?", "h", "help" }) |alias| {
+            try self.command_registry.register(alias, Command{ .name = alias, .execute = helpCommand });
+        }
 
-        // === HELP COMMANDS ===
-        try self.command_registry.register("?", Command{ .name = "?", .execute = helpCommand });
-        try self.command_registry.register("h", Command{ .name = "h", .execute = helpCommand });
-        try self.command_registry.register("help", Command{ .name = "help", .execute = helpCommand });
+        // Comptime-generated view switch commands from declarative table
+        inline for (view_commands) |vc| {
+            const cmd_fn = comptime makeViewCommand(vc.field, vc.primary);
+            for (vc.aliases) |alias| {
+                try self.command_registry.register(alias, Command{ .name = alias, .execute = cmd_fn });
+            }
+        }
 
-        // === CONTEXT COMMANDS ===
-        try self.command_registry.register("ctx", Command{ .name = "ctx", .execute = contextsCommand });
-        try self.command_registry.register("context", Command{ .name = "context", .execute = contextsCommand });
-        try self.command_registry.register("contexts", Command{ .name = "contexts", .execute = contextsCommand });
-
-        // === NAMESPACE COMMANDS ===
-        try self.command_registry.register("ns", Command{ .name = "ns", .execute = namespacesCommand });
-        try self.command_registry.register("namespace", Command{ .name = "namespace", .execute = namespacesCommand });
-        try self.command_registry.register("namespaces", Command{ .name = "namespaces", .execute = namespacesCommand });
-
-        // === PODS COMMANDS ===
-        try self.command_registry.register("pods", Command{ .name = "pods", .execute = podsCommand });
-        try self.command_registry.register("po", Command{ .name = "po", .execute = podsCommand });
-
-        // === DEPLOYMENTS ===
-        try self.command_registry.register("deployments", Command{ .name = "deployments", .execute = deploymentsCommand });
-        try self.command_registry.register("deploy", Command{ .name = "deploy", .execute = deploymentsCommand });
-        try self.command_registry.register("dp", Command{ .name = "dp", .execute = deploymentsCommand });
-
-        // === SERVICES ===
-        try self.command_registry.register("services", Command{ .name = "services", .execute = servicesCommand });
-        try self.command_registry.register("svc", Command{ .name = "svc", .execute = servicesCommand });
-
-        // === NODES ===
-        try self.command_registry.register("nodes", Command{ .name = "nodes", .execute = nodesCommand });
-        try self.command_registry.register("no", Command{ .name = "no", .execute = nodesCommand });
-
-        // === STATEFULSETS ===
-        try self.command_registry.register("statefulsets", Command{ .name = "statefulsets", .execute = statefulsetsCommand });
-        try self.command_registry.register("sts", Command{ .name = "sts", .execute = statefulsetsCommand });
-
-        // === DAEMONSETS ===
-        try self.command_registry.register("daemonsets", Command{ .name = "daemonsets", .execute = daemonsetsCommand });
-        try self.command_registry.register("ds", Command{ .name = "ds", .execute = daemonsetsCommand });
-
-        // === REPLICASETS ===
-        try self.command_registry.register("replicasets", Command{ .name = "replicasets", .execute = replicasetsCommand });
-        try self.command_registry.register("rs", Command{ .name = "rs", .execute = replicasetsCommand });
-
-        // === CONFIGMAPS ===
-        try self.command_registry.register("configmaps", Command{ .name = "configmaps", .execute = notImplementedCommand });
-        try self.command_registry.register("cm", Command{ .name = "cm", .execute = notImplementedCommand });
-
-        // === SECRETS ===
-        try self.command_registry.register("secrets", Command{ .name = "secrets", .execute = notImplementedCommand });
-        try self.command_registry.register("sec", Command{ .name = "sec", .execute = notImplementedCommand });
-
-        // === INGRESS ===
-        try self.command_registry.register("ingresses", Command{ .name = "ingresses", .execute = notImplementedCommand });
-        try self.command_registry.register("ing", Command{ .name = "ing", .execute = notImplementedCommand });
-
-        // === JOBS ===
-        try self.command_registry.register("jobs", Command{ .name = "jobs", .execute = jobsCommand });
-        try self.command_registry.register("jo", Command{ .name = "jo", .execute = jobsCommand });
-        try self.command_registry.register("job", Command{ .name = "job", .execute = jobsCommand });
-
-        // === CRONJOBS ===
-        try self.command_registry.register("cronjobs", Command{ .name = "cronjobs", .execute = cronjobsCommand });
-        try self.command_registry.register("cj", Command{ .name = "cj", .execute = cronjobsCommand });
-
-        // === CONFIGMAPS ===
-        try self.command_registry.register("configmaps", Command{ .name = "configmaps", .execute = configmapsCommand });
-        try self.command_registry.register("cm", Command{ .name = "cm", .execute = configmapsCommand });
-
-        // === SECRETS ===
-        try self.command_registry.register("secrets", Command{ .name = "secrets", .execute = secretsCommand });
-        try self.command_registry.register("secret", Command{ .name = "secret", .execute = secretsCommand });
-
-        // === PERSISTENTVOLUMES ===
-        try self.command_registry.register("persistentvolumes", Command{ .name = "persistentvolumes", .execute = persistentvolumesCommand });
-        try self.command_registry.register("pv", Command{ .name = "pv", .execute = persistentvolumesCommand });
-
-        // === PERSISTENTVOLUMECLAIMS ===
-        try self.command_registry.register("persistentvolumeclaims", Command{ .name = "persistentvolumeclaims", .execute = persistentvolumeclaimsCommand });
-        try self.command_registry.register("pvc", Command{ .name = "pvc", .execute = persistentvolumeclaimsCommand });
-
-        // === INGRESSES ===
-        try self.command_registry.register("ingresses", Command{ .name = "ingresses", .execute = ingressesCommand });
-        try self.command_registry.register("ing", Command{ .name = "ing", .execute = ingressesCommand });
-
-        // === NETWORKPOLICIES ===
-        try self.command_registry.register("networkpolicies", Command{ .name = "networkpolicies", .execute = networkpoliciesCommand });
-        try self.command_registry.register("netpol", Command{ .name = "netpol", .execute = networkpoliciesCommand });
-
-        // === SERVICEACCOUNTS ===
-        try self.command_registry.register("serviceaccounts", Command{ .name = "serviceaccounts", .execute = serviceaccountsCommand });
-        try self.command_registry.register("sa", Command{ .name = "sa", .execute = serviceaccountsCommand });
-
-        // === ROLES ===
-        try self.command_registry.register("roles", Command{ .name = "roles", .execute = rolesCommand });
-
-        // === ROLEBINDINGS ===
-        try self.command_registry.register("rolebindings", Command{ .name = "rolebindings", .execute = rolebindingsCommand });
-
-        // === CLUSTERROLES ===
-        try self.command_registry.register("clusterroles", Command{ .name = "clusterroles", .execute = clusterrolesCommand });
-
-        // === CLUSTERROLEBINDINGS ===
-        try self.command_registry.register("clusterrolebindings", Command{ .name = "clusterrolebindings", .execute = clusterrolebindingsCommand });
-
-        // === EVENTS ===
-        try self.command_registry.register("events", Command{ .name = "events", .execute = eventsCommand });
-        try self.command_registry.register("ev", Command{ .name = "ev", .execute = eventsCommand });
-
-        // === RESOURCEQUOTAS ===
-        try self.command_registry.register("resourcequotas", Command{ .name = "resourcequotas", .execute = resourcequotasCommand });
-        try self.command_registry.register("quota", Command{ .name = "quota", .execute = resourcequotasCommand });
-
-        // === LIMITRANGES ===
-        try self.command_registry.register("limitranges", Command{ .name = "limitranges", .execute = limitrangesCommand });
-        try self.command_registry.register("limits", Command{ .name = "limits", .execute = limitrangesCommand });
-
-        // === PODDISRUPTIONBUDGETS ===
-        try self.command_registry.register("poddisruptionbudgets", Command{ .name = "poddisruptionbudgets", .execute = poddisruptionbudgetsCommand });
-        try self.command_registry.register("pdb", Command{ .name = "pdb", .execute = poddisruptionbudgetsCommand });
-
-        // === HORIZONTALPODAUTOSCALERS ===
-        try self.command_registry.register("horizontalpodautoscalers", Command{ .name = "horizontalpodautoscalers", .execute = hpaCommand });
-        try self.command_registry.register("hpa", Command{ .name = "hpa", .execute = hpaCommand });
-
-        // === NODES ===
-        try self.command_registry.register("nodes", Command{ .name = "nodes", .execute = notImplementedCommand });
-        try self.command_registry.register("no", Command{ .name = "no", .execute = notImplementedCommand });
-
-        // === PVC ===
-        try self.command_registry.register("persistentvolumeclaims", Command{ .name = "persistentvolumeclaims", .execute = notImplementedCommand });
-        try self.command_registry.register("pvc", Command{ .name = "pvc", .execute = notImplementedCommand });
-
-        // === PV ===
-        try self.command_registry.register("persistentvolumes", Command{ .name = "persistentvolumes", .execute = notImplementedCommand });
-        try self.command_registry.register("pv", Command{ .name = "pv", .execute = notImplementedCommand });
-
-        // === STORAGE CLASSES ===
-        try self.command_registry.register("storageclasses", Command{ .name = "storageclasses", .execute = notImplementedCommand });
-        try self.command_registry.register("sc", Command{ .name = "sc", .execute = notImplementedCommand });
-
-        // === SERVICE ACCOUNTS ===
-        try self.command_registry.register("serviceaccounts", Command{ .name = "serviceaccounts", .execute = notImplementedCommand });
-        try self.command_registry.register("sa", Command{ .name = "sa", .execute = notImplementedCommand });
-
-        // === RBAC ===
-        try self.command_registry.register("clusterroles", Command{ .name = "clusterroles", .execute = notImplementedCommand });
-        try self.command_registry.register("cr", Command{ .name = "cr", .execute = notImplementedCommand });
-        try self.command_registry.register("clusterrolebindings", Command{ .name = "clusterrolebindings", .execute = notImplementedCommand });
-        try self.command_registry.register("crb", Command{ .name = "crb", .execute = notImplementedCommand });
-        try self.command_registry.register("roles", Command{ .name = "roles", .execute = notImplementedCommand });
-        try self.command_registry.register("ro", Command{ .name = "ro", .execute = notImplementedCommand });
-        try self.command_registry.register("rolebindings", Command{ .name = "rolebindings", .execute = notImplementedCommand });
-        try self.command_registry.register("rb", Command{ .name = "rb", .execute = notImplementedCommand });
-
-        // === NETWORK ===
-        try self.command_registry.register("networkpolicies", Command{ .name = "networkpolicies", .execute = notImplementedCommand });
-        try self.command_registry.register("np", Command{ .name = "np", .execute = notImplementedCommand });
-        try self.command_registry.register("endpoints", Command{ .name = "endpoints", .execute = notImplementedCommand });
-        try self.command_registry.register("ep", Command{ .name = "ep", .execute = notImplementedCommand });
-
-        // === AUTOSCALING ===
-        try self.command_registry.register("horizontalpodautoscalers", Command{ .name = "horizontalpodautoscalers", .execute = notImplementedCommand });
-        try self.command_registry.register("hpa", Command{ .name = "hpa", .execute = notImplementedCommand });
-
-        // === POLICY ===
-        try self.command_registry.register("poddisruptionbudgets", Command{ .name = "poddisruptionbudgets", .execute = notImplementedCommand });
-        try self.command_registry.register("pdb", Command{ .name = "pdb", .execute = notImplementedCommand });
-
-        // === EVENTS ===
-        try self.command_registry.register("events", Command{ .name = "events", .execute = notImplementedCommand });
-        try self.command_registry.register("ev", Command{ .name = "ev", .execute = notImplementedCommand });
-
-        // === CRD ===
-        try self.command_registry.register("customresourcedefinitions", Command{ .name = "customresourcedefinitions", .execute = notImplementedCommand });
-        try self.command_registry.register("crd", Command{ .name = "crd", .execute = notImplementedCommand });
-
-        // === K9S SPECIFIC COMMANDS ===
-        try self.command_registry.register("aliases", Command{ .name = "aliases", .execute = notImplementedCommand });
-        try self.command_registry.register("a", Command{ .name = "a", .execute = notImplementedCommand });
-        try self.command_registry.register("xray", Command{ .name = "xray", .execute = notImplementedCommand });
-        try self.command_registry.register("xr", Command{ .name = "xr", .execute = notImplementedCommand });
-        try self.command_registry.register("x", Command{ .name = "x", .execute = notImplementedCommand });
-        try self.command_registry.register("portforwards", Command{ .name = "portforwards", .execute = notImplementedCommand });
-        try self.command_registry.register("pf", Command{ .name = "pf", .execute = notImplementedCommand });
-        try self.command_registry.register("benchmarks", Command{ .name = "benchmarks", .execute = notImplementedCommand });
-        try self.command_registry.register("containers", Command{ .name = "containers", .execute = notImplementedCommand });
-        try self.command_registry.register("co", Command{ .name = "co", .execute = notImplementedCommand });
-
-        // === DIRECTORY/LS ===
-        try self.command_registry.register("dir", Command{ .name = "dir", .execute = notImplementedCommand });
-        try self.command_registry.register("dirs", Command{ .name = "dirs", .execute = notImplementedCommand });
-        try self.command_registry.register("d", Command{ .name = "d", .execute = notImplementedCommand });
-        try self.command_registry.register("ls", Command{ .name = "ls", .execute = notImplementedCommand });
-
-        // === THEMES/SKINS ===
-        try self.command_registry.register("themes", Command{ .name = "themes", .execute = themesCommand });
-        try self.command_registry.register("skins", Command{ .name = "skins", .execute = themesCommand });
-
-        // === INTERNAL COMMANDS ===
+        // Internal commands
         try self.command_registry.register("select_theme", Command{ .name = "select_theme", .execute = selectThemeCommand });
     }
 
@@ -719,6 +542,16 @@ pub const App = struct {
 
         try self.terminal.enableRawMode();
         defer self.terminal.disableRawMode();
+
+        // Generate 256-color palette from terminal's base16 theme
+        const color256 = @import("model/color256.zig");
+        const palette_applied = color256.queryAndApplyPalette(
+            self.terminal.stdin.handle,
+            self.terminal.stdout,
+        );
+        defer if (palette_applied) {
+            color256.resetPalette(self.terminal.stdout, 16, 256) catch {};
+        };
 
         // Setup SIGWINCH handler for terminal resize
         setupResizeHandler() catch |err| {
@@ -805,6 +638,11 @@ pub const App = struct {
         self.header.setTheme(effective_theme);
         self.footer.setTheme(effective_theme);
 
+        // Update header with current cluster info and server version
+        const cluster_info = self.k8s_service.getClusterInfo();
+        self.header.updateClusterInfo(cluster_info.context, cluster_info.cluster, cluster_info.user) catch {};
+        self.header.updateK8sVersion(self.k8s_service.getServerVersion()) catch {};
+
         // Render header with hints from current view
         if (size.height >= self.header_height) {
             if (self.view_manager.getCurrentView()) |current_view| {
@@ -830,10 +668,32 @@ pub const App = struct {
             body_height = if (remaining > footer_height) remaining - footer_height else remaining;
         }
 
-        // Render current view
+        // Render current view inside a box border
         if (body_height > 0) {
             if (self.view_manager.getCurrentView()) |current_view| {
-                try current_view.render(&self.terminal, 0, body_start, size.width, body_height);
+                // Draw box border at framework level
+                const view_name = current_view.getName();
+                self.footer.current_resource = view_name;
+                try BoxDrawing.Box.createBox(&self.terminal, 0, body_start, size.width, body_height, effective_theme.proc_box, effective_theme.main_bg, view_name, .rounded, effective_theme.main_fg, effective_theme.title_highlight);
+                // Render view inside the box (inner coordinates)
+                if (body_height > 2 and size.width > 2) {
+                    const inner_x: u16 = 1;
+                    const inner_y = body_start + 1;
+                    const inner_w = size.width - 2;
+                    const inner_h = body_height - 2;
+
+                    // Views that work without a cluster connection
+                    const offline_ok = std.mem.eql(u8, view_name, "contexts") or
+                        std.mem.eql(u8, view_name, "themes") or
+                        std.mem.eql(u8, view_name, "help");
+
+                    if (!self.k8s_service.isConnected() and !offline_ok) {
+                        // Show centered disconnected dialog
+                        try self.renderDisconnectedDialog(inner_x, inner_y, inner_w, inner_h);
+                    } else {
+                        try current_view.render(&self.terminal, inner_x, inner_y, inner_w, inner_h);
+                    }
+                }
             } else {
                 // No view - show error message
                 const error_msg = "No view loaded - press :pods to start";
@@ -852,6 +712,11 @@ pub const App = struct {
                 0;
             if (footer_y < size.height) {
                 // Update footer status before rendering
+                if (self.themes_view.preview_theme != null) {
+                    self.footer.setPreviewStatus(self.themes_view.getSelectedThemeName());
+                } else {
+                    self.footer.setPreviewStatus(null);
+                }
                 if (self.k8s_service.isConnected()) {
                     self.footer.setStatus(null);
                 } else {
@@ -872,6 +737,39 @@ pub const App = struct {
         self.prev_width = size.width;
         self.prev_height = size.height;
         self.dirty = false;
+    }
+
+    fn renderDisconnectedDialog(self: *App, x: u16, y: u16, w: u16, h: u16) !void {
+        const lines = [_][]const u8{
+            "Not connected to Kubernetes cluster",
+            "",
+            "Ensure your kubeconfig is valid and",
+            "the cluster is reachable.",
+            "",
+            "Press  r  to retry connection",
+            "Press  :ctx  to switch context",
+        };
+        const box_w: u16 = 42;
+        const box_h: u16 = lines.len + 2; // +2 for top/bottom border
+
+        // Center the dialog
+        const box_x = if (w > box_w) x + (w - box_w) / 2 else x;
+        const box_y = if (h > box_h) y + (h - box_h) / 2 else y;
+        const actual_w = @min(box_w, w);
+        const actual_h = @min(box_h, h);
+
+        // Draw dialog box
+        try BoxDrawing.Box.createBox(&self.terminal, box_x, box_y, actual_w, actual_h, self.theme.status_failed, self.theme.main_bg, null, .rounded, self.theme.main_fg, self.theme.title_highlight);
+
+        // Render lines centered inside the box
+        for (lines, 0..) |line, i| {
+            const row: u16 = @intCast(i);
+            if (row + 1 >= actual_h) break;
+            const inner_w = actual_w -| 2;
+            const text_x = if (line.len < inner_w) box_x + 1 + @as(u16, @intCast((inner_w - line.len) / 2)) else box_x + 1;
+            const fg = if (i == 0) self.theme.status_failed else self.theme.main_fg;
+            try Theme.writeStringWithTheme(&self.terminal, text_x, box_y + 1 + row, line, fg, self.theme.main_bg);
+        }
     }
 
     fn handleKey(self: *App, key: Key) !void {
@@ -931,48 +829,6 @@ pub const App = struct {
         // Handle global keys
         switch (key) {
             .char => |c| switch (c) {
-                'h' => {
-                    // Pass to current view
-                    if (self.view_manager.getCurrentView()) |current_view| {
-                        const result = try current_view.handleKey(key);
-                        if (result == .handled) self.dirty = true;
-                    }
-                },
-                'j' => {
-                    // Pass to current view
-                    if (self.view_manager.getCurrentView()) |current_view| {
-                        const result = try current_view.handleKey(key);
-                        if (result == .handled) self.dirty = true;
-                    }
-                },
-                'k' => {
-                    // Pass to current view
-                    if (self.view_manager.getCurrentView()) |current_view| {
-                        const result = try current_view.handleKey(key);
-                        if (result == .handled) self.dirty = true;
-                    }
-                },
-                'l' => {
-                    // Pass to current view
-                    if (self.view_manager.getCurrentView()) |current_view| {
-                        const result = try current_view.handleKey(key);
-                        if (result == .handled) self.dirty = true;
-                    }
-                },
-                'g' => {
-                    // Pass to current view
-                    if (self.view_manager.getCurrentView()) |current_view| {
-                        const result = try current_view.handleKey(key);
-                        if (result == .handled) self.dirty = true;
-                    }
-                },
-                'G' => {
-                    // Pass to current view
-                    if (self.view_manager.getCurrentView()) |current_view| {
-                        const result = try current_view.handleKey(key);
-                        if (result == .handled) self.dirty = true;
-                    }
-                },
                 'x' => {
                     // Clear filter with 'x' key (like delete)
                     try self.applyFilterToCurrentView("");
@@ -995,6 +851,7 @@ pub const App = struct {
                         _ = self.view_manager.popView();
                     } else {
                         Logger.info("Opening help view", .{});
+                        try self.help_view.setViewType(self.currentViewType());
                         try self.view_manager.pushView(self.help_view.createView());
                     }
                     self.dirty = true;
@@ -1081,14 +938,18 @@ pub const App = struct {
                 // Only pop if we're in a pushed sub-view (depth > 1, like help/detail/logs view)
                 if (self.view_manager.getDepth() > 1) {
                     _ = self.view_manager.popView();
+                    // Restore current_primary_view based on what's now on top
+                    if (self.view_manager.getCurrentView()) |v| {
+                        self.current_primary_view = viewNameToPrimaryView(v.getName());
+                    }
                     self.dirty = true;
                 }
             },
             .ctrl_c => {
-                // Ctrl+C doesn't exit in k9s, use :q command instead
+                // Ctrl+C doesn't exit, use :q command instead
             },
             .ctrl_d => {
-                // Ctrl+D: delete resource (k9s compat)
+                // Ctrl+D: delete resource
                 if (self.view_manager.getCurrentView()) |_| {
                     self.handleDeleteRequest() catch |err| {
                         Logger.err("Delete request failed: {any}", .{err});
@@ -1127,6 +988,7 @@ pub const App = struct {
                     _ = self.view_manager.popView();
                 } else {
                     Logger.debug("Opening help view", .{});
+                    try self.help_view.setViewType(self.currentViewType());
                     try self.view_manager.pushView(self.help_view.createView());
                 }
                 self.dirty = true;
@@ -1141,6 +1003,14 @@ pub const App = struct {
                 if (self.view_manager.getCurrentView()) |current_view| {
                     const result = try current_view.handleKey(key);
                     try self.handleViewResult(result, current_view, key);
+
+                    // After selecting a namespace, push pods view on top
+                    // Esc will pop back to namespaces view
+                    if (result == .handled and self.current_primary_view == .namespaces) {
+                        try self.view_manager.pushView(self.pods_view.createView());
+                        self.current_primary_view = .pods;
+                        self.dirty = true;
+                    }
                 }
             },
             .unsupported => {},
@@ -1197,6 +1067,33 @@ pub const App = struct {
         }
     }
 
+    /// Map current_primary_view to ViewType for context-aware help
+    fn currentViewType(self: *App) ViewType {
+        return switch (self.current_primary_view) {
+            .pods => .pods,
+            .deployments => .deployments,
+            .services => .services,
+            .namespaces => .namespaces,
+            .nodes => .nodes,
+            .statefulsets => .statefulsets,
+            .daemonsets => .daemonsets,
+            .replicasets => .replicasets,
+            .jobs => .jobs,
+            .cronjobs => .cronjobs,
+            .configmaps => .configmaps,
+            .secrets => .secrets,
+            .persistentvolumeclaims => .persistentvolumeclaims,
+            .serviceaccounts => .serviceaccounts,
+            .roles => .roles,
+            .rolebindings => .rolebindings,
+            .clusterroles => .clusterroles,
+            .clusterrolebindings => .clusterrolebindings,
+            .events => .events,
+            .contexts => .contexts,
+            else => .pods, // fallback
+        };
+    }
+
     /// Map current_primary_view to ResourceType
     fn currentResourceType(self: *App) ?ResourceType {
         return switch (self.current_primary_view) {
@@ -1228,41 +1125,16 @@ pub const App = struct {
             .hpa => .hpa,
             .contexts => .contexts,
             .themes => null,
+            .authorization => null,
         };
     }
 
     /// Get selected resource info from the current primary view
     fn getSelectedResourceFromCurrentView(self: *App) ?ResourceInfo {
-        return switch (self.current_primary_view) {
-            .pods => self.pods_view.getSelectedResourceInfo(),
-            .deployments => self.deployments_view.getSelectedResourceInfo(),
-            .services => self.services_view.getSelectedResourceInfo(),
-            .namespaces => self.namespaces_view.getSelectedResourceInfo(),
-            .nodes => self.nodes_view.getSelectedResourceInfo(),
-            .statefulsets => self.statefulsets_view.getSelectedResourceInfo(),
-            .daemonsets => self.daemonsets_view.getSelectedResourceInfo(),
-            .replicasets => self.replicasets_view.getSelectedResourceInfo(),
-            .jobs => self.jobs_view.getSelectedResourceInfo(),
-            .cronjobs => self.cronjobs_view.getSelectedResourceInfo(),
-            .configmaps => self.configmaps_view.getSelectedResourceInfo(),
-            .secrets => self.secrets_view.getSelectedResourceInfo(),
-            .persistentvolumes => self.persistentvolumes_view.getSelectedResourceInfo(),
-            .persistentvolumeclaims => self.persistentvolumeclaims_view.getSelectedResourceInfo(),
-            .ingresses => self.ingresses_view.getSelectedResourceInfo(),
-            .networkpolicies => self.networkpolicies_view.getSelectedResourceInfo(),
-            .serviceaccounts => self.serviceaccounts_view.getSelectedResourceInfo(),
-            .roles => self.roles_view.getSelectedResourceInfo(),
-            .rolebindings => self.rolebindings_view.getSelectedResourceInfo(),
-            .clusterroles => self.clusterroles_view.getSelectedResourceInfo(),
-            .clusterrolebindings => self.clusterrolebindings_view.getSelectedResourceInfo(),
-            .events => self.events_view.getSelectedResourceInfo(),
-            .resourcequotas => self.resourcequotas_view.getSelectedResourceInfo(),
-            .limitranges => self.limitranges_view.getSelectedResourceInfo(),
-            .poddisruptionbudgets => self.poddisruptionbudgets_view.getSelectedResourceInfo(),
-            .hpa => self.hpa_view.getSelectedResourceInfo(),
-            .contexts => null,
-            .themes => null,
-        };
+        if (self.view_manager.getCurrentView()) |current| {
+            return current.getSelectedResource();
+        }
+        return null;
     }
 
     /// Show detail view (describe or JSON)
@@ -1369,239 +1241,26 @@ pub const App = struct {
 
     /// Apply filter to the current view
     fn applyFilterToCurrentView(self: *App, filter: []const u8) !void {
-        switch (self.current_primary_view) {
-            .pods => try self.pods_view.applyFilter(filter),
-            .themes => try self.themes_view.applyFilter(filter),
-            .deployments => try self.deployments_view.applyFilter(filter),
-            .services => try self.services_view.applyFilter(filter),
-            .namespaces => try self.namespaces_view.applyFilter(filter),
-            .nodes => try self.nodes_view.applyFilter(filter),
-            .statefulsets => try self.statefulsets_view.applyFilter(filter),
-            .daemonsets => try self.daemonsets_view.applyFilter(filter),
-            .replicasets => try self.replicasets_view.applyFilter(filter),
-            .jobs => try self.jobs_view.applyFilter(filter),
-            .cronjobs => try self.cronjobs_view.applyFilter(filter),
-            .configmaps => try self.configmaps_view.applyFilter(filter),
-            .secrets => try self.secrets_view.applyFilter(filter),
-            .persistentvolumes => try self.persistentvolumes_view.applyFilter(filter),
-            .persistentvolumeclaims => try self.persistentvolumeclaims_view.applyFilter(filter),
-            .ingresses => try self.ingresses_view.applyFilter(filter),
-            .networkpolicies => try self.networkpolicies_view.applyFilter(filter),
-            .serviceaccounts => try self.serviceaccounts_view.applyFilter(filter),
-            .roles => try self.roles_view.applyFilter(filter),
-            .rolebindings => try self.rolebindings_view.applyFilter(filter),
-            .clusterroles => try self.clusterroles_view.applyFilter(filter),
-            .clusterrolebindings => try self.clusterrolebindings_view.applyFilter(filter),
-            .events => try self.events_view.applyFilter(filter),
-            .resourcequotas => try self.resourcequotas_view.applyFilter(filter),
-            .limitranges => try self.limitranges_view.applyFilter(filter),
-            .poddisruptionbudgets => try self.poddisruptionbudgets_view.applyFilter(filter),
-            .hpa => try self.hpa_view.applyFilter(filter),
-            .contexts => {},
+        if (self.view_manager.getCurrentView()) |current| {
+            try current.applyFilter(filter);
         }
         self.dirty = true;
     }
 
     /// Check if current view has an active filter and clear it
     fn clearCurrentViewFilter(self: *App) !bool {
-        return switch (self.current_primary_view) {
-            .pods => if (self.pods_view.filter_text.len > 0) {
-                try self.pods_view.applyFilter("");
-                return true;
-            } else false,
-            .themes => if (self.themes_view.filter_text.len > 0) {
-                try self.themes_view.applyFilter("");
-                return true;
-            } else false,
-            .deployments => if (self.deployments_view.filter_text.len > 0) {
-                try self.deployments_view.applyFilter("");
-                return true;
-            } else false,
-            .services => if (self.services_view.filter_text.len > 0) {
-                try self.services_view.applyFilter("");
-                return true;
-            } else false,
-            .namespaces => if (self.namespaces_view.filter_text.len > 0) {
-                try self.namespaces_view.applyFilter("");
-                return true;
-            } else false,
-            .nodes => if (self.nodes_view.filter_text.len > 0) {
-                try self.nodes_view.applyFilter("");
-                return true;
-            } else false,
-            .statefulsets => if (self.statefulsets_view.filter_text.len > 0) {
-                try self.statefulsets_view.applyFilter("");
-                return true;
-            } else false,
-            .daemonsets => if (self.daemonsets_view.filter_text.len > 0) {
-                try self.daemonsets_view.applyFilter("");
-                return true;
-            } else false,
-            .replicasets => if (self.replicasets_view.filter_text.len > 0) {
-                try self.replicasets_view.applyFilter("");
-                return true;
-            } else false,
-            .jobs => if (self.jobs_view.filter_text.len > 0) {
-                try self.jobs_view.applyFilter("");
-                return true;
-            } else false,
-            .cronjobs => if (self.cronjobs_view.filter_text.len > 0) {
-                try self.cronjobs_view.applyFilter("");
-                return true;
-            } else false,
-            .configmaps => if (self.configmaps_view.filter_text.len > 0) {
-                try self.configmaps_view.applyFilter("");
-                return true;
-            } else false,
-            .secrets => if (self.secrets_view.filter_text.len > 0) {
-                try self.secrets_view.applyFilter("");
-                return true;
-            } else false,
-            .persistentvolumes => if (self.persistentvolumes_view.filter_text.len > 0) {
-                try self.persistentvolumes_view.applyFilter("");
-                return true;
-            } else false,
-            .persistentvolumeclaims => if (self.persistentvolumeclaims_view.filter_text.len > 0) {
-                try self.persistentvolumeclaims_view.applyFilter("");
-                return true;
-            } else false,
-            .ingresses => if (self.ingresses_view.filter_text.len > 0) {
-                try self.ingresses_view.applyFilter("");
-                return true;
-            } else false,
-            .networkpolicies => if (self.networkpolicies_view.filter_text.len > 0) {
-                try self.networkpolicies_view.applyFilter("");
-                return true;
-            } else false,
-            .serviceaccounts => if (self.serviceaccounts_view.filter_text.len > 0) {
-                try self.serviceaccounts_view.applyFilter("");
-                return true;
-            } else false,
-            .roles => if (self.roles_view.filter_text.len > 0) {
-                try self.roles_view.applyFilter("");
-                return true;
-            } else false,
-            .rolebindings => if (self.rolebindings_view.filter_text.len > 0) {
-                try self.rolebindings_view.applyFilter("");
-                return true;
-            } else false,
-            .clusterroles => if (self.clusterroles_view.filter_text.len > 0) {
-                try self.clusterroles_view.applyFilter("");
-                return true;
-            } else false,
-            .clusterrolebindings => if (self.clusterrolebindings_view.filter_text.len > 0) {
-                try self.clusterrolebindings_view.applyFilter("");
-                return true;
-            } else false,
-            .events => if (self.events_view.filter_text.len > 0) {
-                try self.events_view.applyFilter("");
-                return true;
-            } else false,
-            .resourcequotas => if (self.resourcequotas_view.filter_text.len > 0) {
-                try self.resourcequotas_view.applyFilter("");
-                return true;
-            } else false,
-            .limitranges => if (self.limitranges_view.filter_text.len > 0) {
-                try self.limitranges_view.applyFilter("");
-                return true;
-            } else false,
-            .poddisruptionbudgets => if (self.poddisruptionbudgets_view.filter_text.len > 0) {
-                try self.poddisruptionbudgets_view.applyFilter("");
-                return true;
-            } else false,
-            .hpa => if (self.hpa_view.filter_text.len > 0) {
-                try self.hpa_view.applyFilter("");
-                return true;
-            } else false,
-            .contexts => false,
-        };
+        if (self.view_manager.getCurrentView()) |current| {
+            return current.clearFilter();
+        }
+        return false;
     }
 
     /// Refresh the current view
     fn refreshCurrentView(self: *App) void {
-        switch (self.current_primary_view) {
-            .pods => self.pods_view.refresh() catch |err| {
-                Logger.err("Failed to refresh pods: {any}", .{err});
-            },
-            .deployments => self.deployments_view.refresh() catch |err| {
-                Logger.err("Failed to refresh deployments: {any}", .{err});
-            },
-            .services => self.services_view.refresh() catch |err| {
-                Logger.err("Failed to refresh services: {any}", .{err});
-            },
-            .namespaces => self.namespaces_view.refresh() catch |err| {
-                Logger.err("Failed to refresh namespaces: {any}", .{err});
-            },
-            .nodes => self.nodes_view.refresh() catch |err| {
-                Logger.err("Failed to refresh nodes: {any}", .{err});
-            },
-            .statefulsets => self.statefulsets_view.refresh() catch |err| {
-                Logger.err("Failed to refresh statefulsets: {any}", .{err});
-            },
-            .daemonsets => self.daemonsets_view.refresh() catch |err| {
-                Logger.err("Failed to refresh daemonsets: {any}", .{err});
-            },
-            .replicasets => self.replicasets_view.refresh() catch |err| {
-                Logger.err("Failed to refresh replicasets: {any}", .{err});
-            },
-            .jobs => self.jobs_view.refresh() catch |err| {
-                Logger.err("Failed to refresh jobs: {any}", .{err});
-            },
-            .cronjobs => self.cronjobs_view.refresh() catch |err| {
-                Logger.err("Failed to refresh cronjobs: {any}", .{err});
-            },
-            .configmaps => self.configmaps_view.refresh() catch |err| {
-                Logger.err("Failed to refresh configmaps: {any}", .{err});
-            },
-            .secrets => self.secrets_view.refresh() catch |err| {
-                Logger.err("Failed to refresh secrets: {any}", .{err});
-            },
-            .persistentvolumes => self.persistentvolumes_view.refresh() catch |err| {
-                Logger.err("Failed to refresh persistentvolumes: {any}", .{err});
-            },
-            .persistentvolumeclaims => self.persistentvolumeclaims_view.refresh() catch |err| {
-                Logger.err("Failed to refresh persistentvolumeclaims: {any}", .{err});
-            },
-            .ingresses => self.ingresses_view.refresh() catch |err| {
-                Logger.err("Failed to refresh ingresses: {any}", .{err});
-            },
-            .networkpolicies => self.networkpolicies_view.refresh() catch |err| {
-                Logger.err("Failed to refresh networkpolicies: {any}", .{err});
-            },
-            .serviceaccounts => self.serviceaccounts_view.refresh() catch |err| {
-                Logger.err("Failed to refresh serviceaccounts: {any}", .{err});
-            },
-            .roles => self.roles_view.refresh() catch |err| {
-                Logger.err("Failed to refresh roles: {any}", .{err});
-            },
-            .rolebindings => self.rolebindings_view.refresh() catch |err| {
-                Logger.err("Failed to refresh rolebindings: {any}", .{err});
-            },
-            .clusterroles => self.clusterroles_view.refresh() catch |err| {
-                Logger.err("Failed to refresh clusterroles: {any}", .{err});
-            },
-            .clusterrolebindings => self.clusterrolebindings_view.refresh() catch |err| {
-                Logger.err("Failed to refresh clusterrolebindings: {any}", .{err});
-            },
-            .events => self.events_view.refresh() catch |err| {
-                Logger.err("Failed to refresh events: {any}", .{err});
-            },
-            .resourcequotas => self.resourcequotas_view.refresh() catch |err| {
-                Logger.err("Failed to refresh resourcequotas: {any}", .{err});
-            },
-            .limitranges => self.limitranges_view.refresh() catch |err| {
-                Logger.err("Failed to refresh limitranges: {any}", .{err});
-            },
-            .poddisruptionbudgets => self.poddisruptionbudgets_view.refresh() catch |err| {
-                Logger.err("Failed to refresh poddisruptionbudgets: {any}", .{err});
-            },
-            .hpa => self.hpa_view.refresh() catch |err| {
-                Logger.err("Failed to refresh hpa: {any}", .{err});
-            },
-            .contexts => self.contexts_view.refresh() catch |err| {
-                Logger.err("Failed to refresh contexts: {any}", .{err});
-            },
-            .themes => {},
+        if (self.view_manager.getCurrentView()) |current| {
+            current.refresh() catch |err| {
+                Logger.err("Failed to refresh view: {any}", .{err});
+            };
         }
         self.dirty = true;
     }
@@ -1694,91 +1353,165 @@ pub const App = struct {
     }
 };
 
-// Command implementations
+/// Map a view name string back to the PrimaryView enum value
+pub fn viewNameToPrimaryView(name: []const u8) @TypeOf(@as(App, undefined).current_primary_view) {
+    const map = .{
+        .{ "pods", .pods },
+        .{ "deployments", .deployments },
+        .{ "services", .services },
+        .{ "namespaces", .namespaces },
+        .{ "nodes", .nodes },
+        .{ "statefulsets", .statefulsets },
+        .{ "daemonsets", .daemonsets },
+        .{ "replicasets", .replicasets },
+        .{ "jobs", .jobs },
+        .{ "cronjobs", .cronjobs },
+        .{ "configmaps", .configmaps },
+        .{ "secrets", .secrets },
+        .{ "persistentvolumes", .persistentvolumes },
+        .{ "persistentvolumeclaims", .persistentvolumeclaims },
+        .{ "ingresses", .ingresses },
+        .{ "networkpolicies", .networkpolicies },
+        .{ "serviceaccounts", .serviceaccounts },
+        .{ "roles", .roles },
+        .{ "rolebindings", .rolebindings },
+        .{ "clusterroles", .clusterroles },
+        .{ "clusterrolebindings", .clusterrolebindings },
+        .{ "events", .events },
+        .{ "resourcequotas", .resourcequotas },
+        .{ "limitranges", .limitranges },
+        .{ "poddisruptionbudgets", .poddisruptionbudgets },
+        .{ "hpa", .hpa },
+        .{ "contexts", .contexts },
+        .{ "themes", .themes },
+        .{ "authorization", .authorization },
+    };
+    inline for (map) |entry| {
+        if (std.mem.eql(u8, name, entry[0])) return entry[1];
+    }
+    return .pods; // fallback
+}
+
+test "viewNameToPrimaryView - maps all view names correctly" {
+    // Views that previously had capitalized names (the bug)
+    try std.testing.expectEqual(.namespaces, viewNameToPrimaryView("namespaces"));
+    try std.testing.expectEqual(.deployments, viewNameToPrimaryView("deployments"));
+    try std.testing.expectEqual(.services, viewNameToPrimaryView("services"));
+    try std.testing.expectEqual(.nodes, viewNameToPrimaryView("nodes"));
+    try std.testing.expectEqual(.contexts, viewNameToPrimaryView("contexts"));
+    try std.testing.expectEqual(.hpa, viewNameToPrimaryView("hpa"));
+
+    // Other views
+    try std.testing.expectEqual(.pods, viewNameToPrimaryView("pods"));
+    try std.testing.expectEqual(.statefulsets, viewNameToPrimaryView("statefulsets"));
+    try std.testing.expectEqual(.daemonsets, viewNameToPrimaryView("daemonsets"));
+    try std.testing.expectEqual(.replicasets, viewNameToPrimaryView("replicasets"));
+    try std.testing.expectEqual(.jobs, viewNameToPrimaryView("jobs"));
+    try std.testing.expectEqual(.cronjobs, viewNameToPrimaryView("cronjobs"));
+    try std.testing.expectEqual(.configmaps, viewNameToPrimaryView("configmaps"));
+    try std.testing.expectEqual(.secrets, viewNameToPrimaryView("secrets"));
+    try std.testing.expectEqual(.persistentvolumes, viewNameToPrimaryView("persistentvolumes"));
+    try std.testing.expectEqual(.persistentvolumeclaims, viewNameToPrimaryView("persistentvolumeclaims"));
+    try std.testing.expectEqual(.ingresses, viewNameToPrimaryView("ingresses"));
+    try std.testing.expectEqual(.networkpolicies, viewNameToPrimaryView("networkpolicies"));
+    try std.testing.expectEqual(.serviceaccounts, viewNameToPrimaryView("serviceaccounts"));
+    try std.testing.expectEqual(.roles, viewNameToPrimaryView("roles"));
+    try std.testing.expectEqual(.rolebindings, viewNameToPrimaryView("rolebindings"));
+    try std.testing.expectEqual(.clusterroles, viewNameToPrimaryView("clusterroles"));
+    try std.testing.expectEqual(.clusterrolebindings, viewNameToPrimaryView("clusterrolebindings"));
+    try std.testing.expectEqual(.events, viewNameToPrimaryView("events"));
+    try std.testing.expectEqual(.resourcequotas, viewNameToPrimaryView("resourcequotas"));
+    try std.testing.expectEqual(.limitranges, viewNameToPrimaryView("limitranges"));
+    try std.testing.expectEqual(.poddisruptionbudgets, viewNameToPrimaryView("poddisruptionbudgets"));
+    try std.testing.expectEqual(.themes, viewNameToPrimaryView("themes"));
+    try std.testing.expectEqual(.authorization, viewNameToPrimaryView("authorization"));
+
+    // Unknown name falls back to pods
+    try std.testing.expectEqual(.pods, viewNameToPrimaryView("unknown"));
+}
+
+test "viewNameToPrimaryView - rejects old capitalized names" {
+    // These capitalized names were the root cause of the namespace navigation bug.
+    // After Esc popped pods, the namespaces view returned "Namespaces" (capitalized),
+    // which mapped to .pods (fallback), so the second Enter check
+    // `current_primary_view == .namespaces` would fail.
+    try std.testing.expectEqual(.pods, viewNameToPrimaryView("Namespaces")); // fallback
+    try std.testing.expectEqual(.pods, viewNameToPrimaryView("Deployments")); // fallback
+    try std.testing.expectEqual(.pods, viewNameToPrimaryView("Services")); // fallback
+    try std.testing.expectEqual(.pods, viewNameToPrimaryView("Nodes")); // fallback
+    try std.testing.expectEqual(.pods, viewNameToPrimaryView("Contexts")); // fallback
+    try std.testing.expectEqual(.pods, viewNameToPrimaryView("HorizontalPodAutoscalers")); // fallback
+}
+
+// ============================================================================
+// Comptime-generated view command handlers
+// ============================================================================
+
+/// Declarative view command registry. Each entry maps a struct field to
+/// its primary view enum value and command aliases.
+const ViewCommandEntry = struct {
+    field: []const u8,
+    primary: @TypeOf(@as(App, undefined).current_primary_view),
+    aliases: []const []const u8,
+};
+
+const view_commands = [_]ViewCommandEntry{
+    .{ .field = "pods_view", .primary = .pods, .aliases = &.{ "pods", "po" } },
+    .{ .field = "deployments_view", .primary = .deployments, .aliases = &.{ "deployments", "deploy", "dp" } },
+    .{ .field = "services_view", .primary = .services, .aliases = &.{ "services", "svc" } },
+    .{ .field = "namespaces_view", .primary = .namespaces, .aliases = &.{ "namespaces", "namespace", "ns" } },
+    .{ .field = "nodes_view", .primary = .nodes, .aliases = &.{ "nodes", "no" } },
+    .{ .field = "statefulsets_view", .primary = .statefulsets, .aliases = &.{ "statefulsets", "sts" } },
+    .{ .field = "daemonsets_view", .primary = .daemonsets, .aliases = &.{ "daemonsets", "ds" } },
+    .{ .field = "replicasets_view", .primary = .replicasets, .aliases = &.{ "replicasets", "rs" } },
+    .{ .field = "jobs_view", .primary = .jobs, .aliases = &.{ "jobs", "job", "jo" } },
+    .{ .field = "cronjobs_view", .primary = .cronjobs, .aliases = &.{ "cronjobs", "cj" } },
+    .{ .field = "configmaps_view", .primary = .configmaps, .aliases = &.{ "configmaps", "cm" } },
+    .{ .field = "secrets_view", .primary = .secrets, .aliases = &.{ "secrets", "secret" } },
+    .{ .field = "persistentvolumes_view", .primary = .persistentvolumes, .aliases = &.{ "persistentvolumes", "pv" } },
+    .{ .field = "persistentvolumeclaims_view", .primary = .persistentvolumeclaims, .aliases = &.{ "persistentvolumeclaims", "pvc" } },
+    .{ .field = "ingresses_view", .primary = .ingresses, .aliases = &.{ "ingresses", "ing" } },
+    .{ .field = "networkpolicies_view", .primary = .networkpolicies, .aliases = &.{ "networkpolicies", "netpol" } },
+    .{ .field = "serviceaccounts_view", .primary = .serviceaccounts, .aliases = &.{ "serviceaccounts", "sa" } },
+    .{ .field = "roles_view", .primary = .roles, .aliases = &.{"roles"} },
+    .{ .field = "rolebindings_view", .primary = .rolebindings, .aliases = &.{"rolebindings"} },
+    .{ .field = "clusterroles_view", .primary = .clusterroles, .aliases = &.{"clusterroles"} },
+    .{ .field = "clusterrolebindings_view", .primary = .clusterrolebindings, .aliases = &.{"clusterrolebindings"} },
+    .{ .field = "events_view", .primary = .events, .aliases = &.{ "events", "ev" } },
+    .{ .field = "resourcequotas_view", .primary = .resourcequotas, .aliases = &.{"resourcequotas"} },
+    .{ .field = "limitranges_view", .primary = .limitranges, .aliases = &.{"limitranges"} },
+    .{ .field = "poddisruptionbudgets_view", .primary = .poddisruptionbudgets, .aliases = &.{ "poddisruptionbudgets", "pdb" } },
+    .{ .field = "hpa_view", .primary = .hpa, .aliases = &.{ "horizontalpodautoscalers", "hpa" } },
+    .{ .field = "contexts_view", .primary = .contexts, .aliases = &.{ "contexts", "context", "ctx" } },
+    .{ .field = "themes_view", .primary = .themes, .aliases = &.{"themes"} },
+    .{ .field = "authorization_view", .primary = .authorization, .aliases = &.{ "authorization", "auth" } },
+};
+
+/// Generate a view switch command from a field name and primary view enum.
+fn makeViewCommand(comptime field_name: []const u8, comptime primary: @TypeOf(@as(App, undefined).current_primary_view)) *const fn (*Command.CommandContext) anyerror!void {
+    return &struct {
+        fn command(ctx_arg: *Command.CommandContext) anyerror!void {
+            const app: *App = @ptrCast(@alignCast(ctx_arg.data.?));
+            if (ctx_arg.view_manager.getDepth() == 1) {
+                _ = ctx_arg.view_manager.popView();
+                try ctx_arg.view_manager.pushView(@field(app, field_name).createView());
+                app.current_primary_view = primary;
+            }
+        }
+    }.command;
+}
+
+// Special command handlers (non-generic)
 fn quitCommand(ctx: *Command.CommandContext) !void {
     const app: *App = @ptrCast(@alignCast(ctx.data.?));
     app.running = false;
-    Logger.info("Quit command executed", .{});
-}
-
-fn themesCommand(ctx: *Command.CommandContext) !void {
-    const app: *App = @ptrCast(@alignCast(ctx.data.?));
-
-    // Don't push - replace the root view with themes view
-    if (ctx.view_manager.getDepth() == 1) {
-        // We're at root level, switch primary view
-        _ = ctx.view_manager.popView();
-        try ctx.view_manager.pushView(app.themes_view.createView());
-        app.current_primary_view = .themes;
-    }
-    Logger.info("Themes command executed", .{});
-}
-
-fn podsCommand(ctx: *Command.CommandContext) !void {
-    const app: *App = @ptrCast(@alignCast(ctx.data.?));
-
-    // Switch to pods view
-    if (ctx.view_manager.getDepth() == 1) {
-        _ = ctx.view_manager.popView();
-        try ctx.view_manager.pushView(app.pods_view.createView());
-        app.current_primary_view = .pods;
-    }
-    Logger.info("Pods command executed", .{});
-}
-
-fn deploymentsCommand(ctx: *Command.CommandContext) !void {
-    const app: *App = @ptrCast(@alignCast(ctx.data.?));
-
-    if (ctx.view_manager.getDepth() == 1) {
-        _ = ctx.view_manager.popView();
-        try ctx.view_manager.pushView(app.deployments_view.createView());
-        app.current_primary_view = .deployments;
-    }
-    Logger.info("Deployments command executed", .{});
-}
-
-fn servicesCommand(ctx: *Command.CommandContext) !void {
-    const app: *App = @ptrCast(@alignCast(ctx.data.?));
-
-    if (ctx.view_manager.getDepth() == 1) {
-        _ = ctx.view_manager.popView();
-        try ctx.view_manager.pushView(app.services_view.createView());
-        app.current_primary_view = .services;
-    }
-    Logger.info("Services command executed", .{});
-}
-
-fn namespacesCommand(ctx: *Command.CommandContext) !void {
-    const app: *App = @ptrCast(@alignCast(ctx.data.?));
-
-    if (ctx.view_manager.getDepth() == 1) {
-        _ = ctx.view_manager.popView();
-        try ctx.view_manager.pushView(app.namespaces_view.createView());
-        app.current_primary_view = .namespaces;
-    }
-    Logger.info("Namespaces command executed", .{});
-}
-
-fn nodesCommand(ctx: *Command.CommandContext) !void {
-    const app: *App = @ptrCast(@alignCast(ctx.data.?));
-
-    if (ctx.view_manager.getDepth() == 1) {
-        _ = ctx.view_manager.popView();
-        try ctx.view_manager.pushView(app.nodes_view.createView());
-        app.current_primary_view = .nodes;
-    }
-    Logger.info("Nodes command executed", .{});
 }
 
 fn helpCommand(ctx: *Command.CommandContext) !void {
     const app: *App = @ptrCast(@alignCast(ctx.data.?));
-
-    // Toggle help view - don't stack it!
     if (ctx.view_manager.isViewActive("help")) {
-        Logger.info("Help command: closing help view", .{});
         _ = ctx.view_manager.popView();
     } else {
-        Logger.info("Help command: opening help view", .{});
         try ctx.view_manager.pushView(app.help_view.createView());
     }
 }
@@ -1788,255 +1521,6 @@ fn selectThemeCommand(ctx: *Command.CommandContext) !void {
     const selected_theme = app.themes_view.getSelectedThemeName();
     try app.saveThemeToConfig(selected_theme);
     try app.themes_view.setCurrentTheme(selected_theme);
-    Logger.info("Theme selected: {s}", .{selected_theme});
-}
-
-fn statefulsetsCommand(ctx: *Command.CommandContext) !void {
-    const app: *App = @ptrCast(@alignCast(ctx.data.?));
-
-    if (ctx.view_manager.getDepth() == 1) {
-        _ = ctx.view_manager.popView();
-        try ctx.view_manager.pushView(app.statefulsets_view.createView());
-        app.current_primary_view = .statefulsets;
-    }
-    Logger.info("StatefulSets command executed", .{});
-}
-
-fn daemonsetsCommand(ctx: *Command.CommandContext) !void {
-    const app: *App = @ptrCast(@alignCast(ctx.data.?));
-
-    if (ctx.view_manager.getDepth() == 1) {
-        _ = ctx.view_manager.popView();
-        try ctx.view_manager.pushView(app.daemonsets_view.createView());
-        app.current_primary_view = .daemonsets;
-    }
-    Logger.info("DaemonSets command executed", .{});
-}
-
-fn replicasetsCommand(ctx: *Command.CommandContext) !void {
-    const app: *App = @ptrCast(@alignCast(ctx.data.?));
-
-    if (ctx.view_manager.getDepth() == 1) {
-        _ = ctx.view_manager.popView();
-        try ctx.view_manager.pushView(app.replicasets_view.createView());
-        app.current_primary_view = .replicasets;
-    }
-    Logger.info("ReplicaSets command executed", .{});
-}
-
-fn jobsCommand(ctx: *Command.CommandContext) !void {
-    const app: *App = @ptrCast(@alignCast(ctx.data.?));
-
-    if (ctx.view_manager.getDepth() == 1) {
-        _ = ctx.view_manager.popView();
-        try ctx.view_manager.pushView(app.jobs_view.createView());
-        app.current_primary_view = .jobs;
-    }
-    Logger.info("Jobs command executed", .{});
-}
-
-fn cronjobsCommand(ctx: *Command.CommandContext) !void {
-    const app: *App = @ptrCast(@alignCast(ctx.data.?));
-
-    if (ctx.view_manager.getDepth() == 1) {
-        _ = ctx.view_manager.popView();
-        try ctx.view_manager.pushView(app.cronjobs_view.createView());
-        app.current_primary_view = .cronjobs;
-    }
-    Logger.info("CronJobs command executed", .{});
-}
-
-fn configmapsCommand(ctx: *Command.CommandContext) !void {
-    const app: *App = @ptrCast(@alignCast(ctx.data.?));
-
-    if (ctx.view_manager.getDepth() == 1) {
-        _ = ctx.view_manager.popView();
-        try ctx.view_manager.pushView(app.configmaps_view.createView());
-        app.current_primary_view = .configmaps;
-    }
-    Logger.info("ConfigMaps command executed", .{});
-}
-
-fn secretsCommand(ctx: *Command.CommandContext) !void {
-    const app: *App = @ptrCast(@alignCast(ctx.data.?));
-
-    if (ctx.view_manager.getDepth() == 1) {
-        _ = ctx.view_manager.popView();
-        try ctx.view_manager.pushView(app.secrets_view.createView());
-        app.current_primary_view = .secrets;
-    }
-    Logger.info("Secrets command executed", .{});
-}
-
-fn persistentvolumesCommand(ctx: *Command.CommandContext) !void {
-    const app: *App = @ptrCast(@alignCast(ctx.data.?));
-
-    if (ctx.view_manager.getDepth() == 1) {
-        _ = ctx.view_manager.popView();
-        try ctx.view_manager.pushView(app.persistentvolumes_view.createView());
-        app.current_primary_view = .persistentvolumes;
-    }
-    Logger.info("PersistentVolumes command executed", .{});
-}
-
-fn persistentvolumeclaimsCommand(ctx: *Command.CommandContext) !void {
-    const app: *App = @ptrCast(@alignCast(ctx.data.?));
-
-    if (ctx.view_manager.getDepth() == 1) {
-        _ = ctx.view_manager.popView();
-        try ctx.view_manager.pushView(app.persistentvolumeclaims_view.createView());
-        app.current_primary_view = .persistentvolumeclaims;
-    }
-    Logger.info("PersistentVolumeClaims command executed", .{});
-}
-
-fn ingressesCommand(ctx: *Command.CommandContext) !void {
-    const app: *App = @ptrCast(@alignCast(ctx.data.?));
-
-    if (ctx.view_manager.getDepth() == 1) {
-        _ = ctx.view_manager.popView();
-        try ctx.view_manager.pushView(app.ingresses_view.createView());
-        app.current_primary_view = .ingresses;
-    }
-    Logger.info("Ingresses command executed", .{});
-}
-
-fn networkpoliciesCommand(ctx: *Command.CommandContext) !void {
-    const app: *App = @ptrCast(@alignCast(ctx.data.?));
-
-    if (ctx.view_manager.getDepth() == 1) {
-        _ = ctx.view_manager.popView();
-        try ctx.view_manager.pushView(app.networkpolicies_view.createView());
-        app.current_primary_view = .networkpolicies;
-    }
-    Logger.info("NetworkPolicies command executed", .{});
-}
-
-fn serviceaccountsCommand(ctx: *Command.CommandContext) !void {
-    const app: *App = @ptrCast(@alignCast(ctx.data.?));
-
-    if (ctx.view_manager.getDepth() == 1) {
-        _ = ctx.view_manager.popView();
-        try ctx.view_manager.pushView(app.serviceaccounts_view.createView());
-        app.current_primary_view = .serviceaccounts;
-    }
-    Logger.info("ServiceAccounts command executed", .{});
-}
-
-fn rolesCommand(ctx: *Command.CommandContext) !void {
-    const app: *App = @ptrCast(@alignCast(ctx.data.?));
-
-    if (ctx.view_manager.getDepth() == 1) {
-        _ = ctx.view_manager.popView();
-        try ctx.view_manager.pushView(app.roles_view.createView());
-        app.current_primary_view = .roles;
-    }
-    Logger.info("Roles command executed", .{});
-}
-
-fn rolebindingsCommand(ctx: *Command.CommandContext) !void {
-    const app: *App = @ptrCast(@alignCast(ctx.data.?));
-
-    if (ctx.view_manager.getDepth() == 1) {
-        _ = ctx.view_manager.popView();
-        try ctx.view_manager.pushView(app.rolebindings_view.createView());
-        app.current_primary_view = .rolebindings;
-    }
-    Logger.info("RoleBindings command executed", .{});
-}
-
-fn clusterrolesCommand(ctx: *Command.CommandContext) !void {
-    const app: *App = @ptrCast(@alignCast(ctx.data.?));
-
-    if (ctx.view_manager.getDepth() == 1) {
-        _ = ctx.view_manager.popView();
-        try ctx.view_manager.pushView(app.clusterroles_view.createView());
-        app.current_primary_view = .clusterroles;
-    }
-    Logger.info("ClusterRoles command executed", .{});
-}
-
-fn clusterrolebindingsCommand(ctx: *Command.CommandContext) !void {
-    const app: *App = @ptrCast(@alignCast(ctx.data.?));
-
-    if (ctx.view_manager.getDepth() == 1) {
-        _ = ctx.view_manager.popView();
-        try ctx.view_manager.pushView(app.clusterrolebindings_view.createView());
-        app.current_primary_view = .clusterrolebindings;
-    }
-    Logger.info("ClusterRoleBindings command executed", .{});
-}
-
-fn eventsCommand(ctx: *Command.CommandContext) !void {
-    const app: *App = @ptrCast(@alignCast(ctx.data.?));
-
-    if (ctx.view_manager.getDepth() == 1) {
-        _ = ctx.view_manager.popView();
-        try ctx.view_manager.pushView(app.events_view.createView());
-        app.current_primary_view = .events;
-    }
-    Logger.info("Events command executed", .{});
-}
-
-fn resourcequotasCommand(ctx: *Command.CommandContext) !void {
-    const app: *App = @ptrCast(@alignCast(ctx.data.?));
-
-    if (ctx.view_manager.getDepth() == 1) {
-        _ = ctx.view_manager.popView();
-        try ctx.view_manager.pushView(app.resourcequotas_view.createView());
-        app.current_primary_view = .resourcequotas;
-    }
-    Logger.info("ResourceQuotas command executed", .{});
-}
-
-fn limitrangesCommand(ctx: *Command.CommandContext) !void {
-    const app: *App = @ptrCast(@alignCast(ctx.data.?));
-
-    if (ctx.view_manager.getDepth() == 1) {
-        _ = ctx.view_manager.popView();
-        try ctx.view_manager.pushView(app.limitranges_view.createView());
-        app.current_primary_view = .limitranges;
-    }
-    Logger.info("LimitRanges command executed", .{});
-}
-
-fn poddisruptionbudgetsCommand(ctx: *Command.CommandContext) !void {
-    const app: *App = @ptrCast(@alignCast(ctx.data.?));
-
-    if (ctx.view_manager.getDepth() == 1) {
-        _ = ctx.view_manager.popView();
-        try ctx.view_manager.pushView(app.poddisruptionbudgets_view.createView());
-        app.current_primary_view = .poddisruptionbudgets;
-    }
-    Logger.info("PodDisruptionBudgets command executed", .{});
-}
-
-fn hpaCommand(ctx: *Command.CommandContext) !void {
-    const app: *App = @ptrCast(@alignCast(ctx.data.?));
-
-    if (ctx.view_manager.getDepth() == 1) {
-        _ = ctx.view_manager.popView();
-        try ctx.view_manager.pushView(app.hpa_view.createView());
-        app.current_primary_view = .hpa;
-    }
-    Logger.info("HorizontalPodAutoscalers command executed", .{});
-}
-
-fn contextsCommand(ctx: *Command.CommandContext) !void {
-    const app: *App = @ptrCast(@alignCast(ctx.data.?));
-
-    if (ctx.view_manager.getDepth() == 1) {
-        _ = ctx.view_manager.popView();
-        try ctx.view_manager.pushView(app.contexts_view.createView());
-        app.current_primary_view = .contexts;
-    }
-    Logger.info("Contexts command executed", .{});
-}
-
-fn notImplementedCommand(ctx: *Command.CommandContext) !void {
-    _ = ctx;
-    Logger.warn("Command not implemented yet", .{});
-    // TODO: Show "Not implemented" message to user
 }
 
 // SIGWINCH signal handler for terminal resize

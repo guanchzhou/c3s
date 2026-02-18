@@ -1,7 +1,6 @@
 const std = @import("std");
 
 /// Pod information for testing
-/// Based on real k9s testdata from testdata/k8s/pods/
 pub const PodInfo = struct {
     name: []const u8,
     namespace: []const u8,
@@ -11,7 +10,7 @@ pub const PodInfo = struct {
     age: []const u8,
 };
 
-/// Default set of test pods - from k9s testdata
+/// Default set of test pods
 /// Source: testdata/k8s/pods/po.json (nginx pod)
 /// Source: testdata/k8s/deployments/dp.json (icx-db pod)
 pub const default_pods = [_]PodInfo{
@@ -143,22 +142,22 @@ fn randomId() []const u8 {
     return ids[@import("std").crypto.random.intRangeAtMost(usize, 0, ids.len - 1)];
 }
 
-/// Namespaced pods for testing filtering - based on k9s testdata
+/// Namespaced pods for testing filtering
 pub const namespaced_pods = struct {
-    /// Pods in default namespace - from k9s testdata
+    /// Pods in default namespace
     pub const default_ns = [_]PodInfo{
         .{ .name = "nginx", .namespace = "default", .ready = "1/1", .status = "Running", .restarts = 0, .age = "22m" },
         .{ .name = "dictionary1-svc-pod", .namespace = "default", .ready = "1/1", .status = "Running", .restarts = 0, .age = "45m" },
     };
     
-    /// Pods in kube-system namespace - from k9s node/minikube
+    /// Pods in kube-system namespace
     pub const kube_system = [_]PodInfo{
         .{ .name = "coredns-5d78c9684d-m7np2", .namespace = "kube-system", .ready = "1/1", .status = "Running", .restarts = 0, .age = "67d" },
         .{ .name = "kube-proxy-xr4mp", .namespace = "kube-system", .ready = "1/1", .status = "Running", .restarts = 0, .age = "67d" },
         .{ .name = "storage-provisioner", .namespace = "kube-system", .ready = "1/1", .status = "Running", .restarts = 1, .age = "67d" },
     };
     
-    /// Pods in icx namespace - from k9s deployment testdata
+    /// Pods in icx namespace
     pub const icx_ns = [_]PodInfo{
         .{ .name = "icx-db-7d4b578979-abc12", .namespace = "icx", .ready = "1/1", .status = "Running", .restarts = 0, .age = "67d" },
     };

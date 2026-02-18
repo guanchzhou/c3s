@@ -1,42 +1,27 @@
 /// SecretsView - View for Kubernetes Secrets
 const std = @import("std");
 const klient = @import("klient");
-const View = @import("../viewmodel/view.zig").View;
+const view_mod = @import("../viewmodel/view.zig");
+const View = view_mod.View;
 const KeyResult = View.KeyResult;
 const Key = @import("../core/terminal.zig").Key;
 const Terminal = @import("../core/terminal.zig").Terminal;
-const Theme = @import("../theme.zig");
+const Theme = theme_loader;
 const theme_loader = @import("../model/theme_loader.zig");
 const hints_model = @import("../model/hints.zig");
 const k8s_service_mod = @import("../services/k8s_service.zig");
 const K8sService = k8s_service_mod.K8sService;
-const ResourceInfo = k8s_service_mod.ResourceInfo;
-const universal_filter = @import("../viewmodel/filter.zig");
+const ResourceInfo = view_mod.ResourceInfo;
+
 const sort_util = @import("../viewmodel/sort.zig");
 const age_util = @import("../viewmodel/age.zig");
 const Logger = @import("../core/logger.zig");
+const TableState = @import("../ui/table_state.zig").TableState;
 
 pub const SecretsView = struct {
-    allocator: std.mem.Allocator,
     theme: *const theme_loader.ThemeColors,
     k8s_service: *K8sService,
-
-    // State
-    items: std.ArrayListUnmanaged(SecretInfo),
-    filtered_indices: std.ArrayListUnmanaged(usize),
-    selected_row: u32,
-    scroll_offset: u32,
-    visible_rows: u32,
-    loading: bool,
-    error_message: ?[]const u8,
-
-    // Filtering
-    filter_text: []const u8,
-    show_all_namespaces: bool,
-
-    // Sorting
-    sort_column: ?u8 = null,
-    sort_ascending: bool = true,
+    table: TableState(SecretInfo),
 
     // Sort column indices
     const COL_NAME: u8 = 0;
@@ -48,12 +33,13 @@ pub const SecretsView = struct {
         secret_type: []const u8,
         keys: usize,
         age: []const u8,
+        allocator: std.mem.Allocator,
 
-        pub fn deinit(self: *SecretInfo, allocator: std.mem.Allocator) void {
-            allocator.free(self.name);
-            allocator.free(self.namespace);
-            allocator.free(self.secret_type);
-            allocator.free(self.age);
+        pub fn deinit(self: *SecretInfo) void {
+            self.allocator.free(self.name);
+            self.allocator.free(self.namespace);
+            self.allocator.free(self.secret_type);
+            self.allocator.free(self.age);
         }
 
         fn getName(self: *const SecretInfo) []const u8 { return self.name; }
@@ -62,124 +48,75 @@ pub const SecretsView = struct {
 
     pub fn init(allocator: std.mem.Allocator, theme: *const theme_loader.ThemeColors, k8s_service: *K8sService) !SecretsView {
         return SecretsView{
-            .allocator = allocator,
             .theme = theme,
             .k8s_service = k8s_service,
-            .items = .{},
-            .filtered_indices = std.ArrayListUnmanaged(usize){},
-            .selected_row = 0,
-            .scroll_offset = 0,
-            .visible_rows = 0,
-            .loading = false,
-            .error_message = null,
-            .filter_text = "",
-            .show_all_namespaces = true,
+            .table = TableState(SecretInfo).init(allocator),
         };
     }
 
     pub fn deinit(self: *SecretsView) void {
-        for (self.items.items) |*item| {
-            item.deinit(self.allocator);
-        }
-        self.items.deinit(self.allocator);
-        self.filtered_indices.deinit(self.allocator);
-
-        if (self.error_message) |msg| {
-            self.allocator.free(msg);
-        }
+        self.table.deinit();
     }
 
     pub fn refresh(self: *SecretsView) !void {
-        Logger.info("SecretsView: Refreshing secrets...", .{});
-        self.loading = true;
-
-        if (self.error_message) |msg| {
-            self.allocator.free(msg);
-            self.error_message = null;
-        }
-
-        for (self.items.items) |*item| {
-            item.deinit(self.allocator);
-        }
-        self.items.clearRetainingCapacity();
+        self.table.loading = true;
+        defer self.table.loading = false;
+        self.table.clearItems();
 
         if (!self.k8s_service.isConnected()) {
-            self.error_message = try self.allocator.dupe(u8, "Not connected to Kubernetes cluster");
+            try self.table.setError("Not connected to Kubernetes cluster");
             return;
         }
 
-        const secrets = if (self.show_all_namespaces)
+        const secrets = if (self.table.show_all_namespaces)
             self.k8s_service.listAllSecrets() catch |err| {
-                self.error_message = try std.fmt.allocPrint(self.allocator, "Failed to list secrets: {}", .{err});
+                try self.table.setErrorFmt("Failed to list secrets: {}", .{err});
                 return;
             }
         else
             self.k8s_service.listSecrets(null) catch |err| {
-                self.error_message = try std.fmt.allocPrint(self.allocator, "Failed to list secrets: {}", .{err});
+                try self.table.setErrorFmt("Failed to list secrets: {}", .{err});
                 return;
             };
-        defer self.allocator.free(secrets);
+        defer self.table.allocator.free(secrets);
 
         for (secrets) |secret| {
-            const name = try self.allocator.dupe(u8, secret.metadata.name);
-            const namespace = try self.allocator.dupe(u8, secret.metadata.namespace orelse "default");
-            const secret_type = if (secret.type) |t|
-                try self.allocator.dupe(u8, t)
-            else
-                try self.allocator.dupe(u8, "Opaque");
-
             const keys: usize = if (secret.data) |data_json| blk: {
                 if (data_json == .object) break :blk data_json.object.count();
                 break :blk 0;
             } else 0;
 
-            const age = try age_util.calculateAge(self.allocator, secret.metadata.creationTimestamp);
-
-            try self.items.append(self.allocator, SecretInfo{
-                .name = name,
-                .namespace = namespace,
-                .secret_type = secret_type,
+            try self.table.appendItem(.{
+                .name = try self.table.allocator.dupe(u8, secret.metadata.name),
+                .namespace = try self.table.allocator.dupe(u8, secret.metadata.namespace orelse "default"),
+                .secret_type = if (secret.type) |t|
+                    try self.table.allocator.dupe(u8, t)
+                else
+                    try self.table.allocator.dupe(u8, "Opaque"),
                 .keys = keys,
-                .age = age,
+                .age = try age_util.calculateAge(self.table.allocator, secret.metadata.creationTimestamp),
+                .allocator = self.table.allocator,
             });
         }
 
-        self.loading = false;
-        try self.applyFilter(self.filter_text);
+        try self.applyFilter(self.table.filter_text);
     }
 
     pub fn getSelectedResourceInfo(self: *SecretsView) ?ResourceInfo {
-        if (self.filtered_indices.items.len == 0) return null;
-        if (self.selected_row >= self.filtered_indices.items.len) return null;
-        const idx = self.filtered_indices.items[self.selected_row];
-        const item = self.items.items[idx];
-        return ResourceInfo{
-            .name = item.name,
-            .namespace = item.namespace,
-        };
+        const item = self.table.getSelectedItem() orelse return null;
+        return ResourceInfo{ .name = item.name, .namespace = item.namespace };
     }
 
     pub fn applyFilter(self: *SecretsView, filter: []const u8) !void {
-        self.filter_text = filter;
-        try universal_filter.applyFilter(
-            SecretInfo,
-            self.allocator,
-            self.items.items,
-            &self.filtered_indices,
-            filter,
-            &self.selected_row,
-            &self.scroll_offset,
-            self.visible_rows,
-            secretMatchFn,
-        );
+        try self.table.applyFilter(filter, secretMatchFn);
         self.applySorting();
     }
 
     fn applySorting(self: *SecretsView) void {
-        if (self.sort_column) |col| {
+        if (self.table.sort_column) |col| {
             switch (col) {
-                COL_NAME => sort_util.sortFilteredIndices(SecretInfo, self.items.items, &self.filtered_indices, SecretInfo.getName, self.sort_ascending),
-                COL_AGE => sort_util.sortFilteredIndices(SecretInfo, self.items.items, &self.filtered_indices, SecretInfo.getAge, self.sort_ascending),
+                COL_NAME => self.table.sortBy(SecretInfo.getName),
+                COL_AGE => self.table.sortBy(SecretInfo.getAge),
                 else => {},
             }
         }
@@ -194,171 +131,6 @@ pub const SecretsView = struct {
         return View.create(SecretsView, self, &vtable);
     }
 
-    fn render(ptr: *anyopaque, term: *Terminal, x: u16, y: u16, width: u16, height: u16) !void {
-        const self: *SecretsView = @ptrCast(@alignCast(ptr));
-        _ = width;
-        self.visible_rows = if (height > 1) height - 1 else 0;
-
-        if (self.loading) {
-            try Theme.writeStringWithTheme(term, x, y, "Loading secrets...", self.theme.main_fg, self.theme.main_bg);
-            return;
-        }
-
-        if (self.error_message) |msg| {
-            try Theme.writeStringWithTheme(term, x, y, msg, self.theme.status_failed, self.theme.main_bg);
-            return;
-        }
-
-        if (self.filtered_indices.items.len == 0) {
-            const msg = if (self.show_all_namespaces) "No secrets found in cluster" else "No secrets in current namespace";
-            try Theme.writeStringWithTheme(term, x, y, msg, self.theme.main_fg, self.theme.main_bg);
-            return;
-        }
-
-        const name_ind = sort_util.sortIndicator(self.sort_column, self.sort_ascending, COL_NAME);
-        const age_ind = sort_util.sortIndicator(self.sort_column, self.sort_ascending, COL_AGE);
-        var name_hdr_buf: [32]u8 = undefined;
-        var age_hdr_buf: [16]u8 = undefined;
-        const name_hdr = std.fmt.bufPrint(&name_hdr_buf, "NAME{s}", .{name_ind}) catch "NAME";
-        const age_hdr = std.fmt.bufPrint(&age_hdr_buf, "AGE{s}", .{age_ind}) catch "AGE";
-        var hdr_buf: [128]u8 = undefined;
-        const header = std.fmt.bufPrint(&hdr_buf, "  NAMESPACE             {s: <30}TYPE             KEYS   {s}", .{ name_hdr, age_hdr }) catch "  NAMESPACE             NAME                          TYPE             KEYS   AGE";
-        try Theme.writeStringWithTheme(term, x, y, header, self.theme.title, self.theme.main_bg);
-
-        const start_idx = self.scroll_offset;
-        const end_idx = @min(start_idx + self.visible_rows, self.filtered_indices.items.len);
-        var row: u16 = 0;
-
-        for (start_idx..end_idx) |fi| {
-            const item_idx = self.filtered_indices.items[fi];
-            const item = &self.items.items[item_idx];
-            const is_selected = (fi == self.selected_row);
-
-            const fg_color = if (is_selected) self.theme.selected_fg else self.theme.main_fg;
-            const bg_color = if (is_selected) self.theme.selected_bg else self.theme.main_bg;
-
-            const line = try std.fmt.allocPrint(
-                self.allocator,
-                "  {s: <20} {s: <28} {s: <15} {d: >6} {s}",
-                .{
-                    if (item.namespace.len > 20) item.namespace[0..20] else item.namespace,
-                    if (item.name.len > 28) item.name[0..28] else item.name,
-                    if (item.secret_type.len > 15) item.secret_type[0..15] else item.secret_type,
-                    item.keys,
-                    item.age,
-                },
-            );
-            defer self.allocator.free(line);
-            try Theme.writeStringWithTheme(term, x, y + 1 + row, line, fg_color, bg_color);
-            row += 1;
-        }
-    }
-
-    fn handleKey(ptr: *anyopaque, key: Key) !KeyResult {
-        const self: *SecretsView = @ptrCast(@alignCast(ptr));
-        switch (key) {
-            .down => {
-                if (self.filtered_indices.items.len > 0 and self.selected_row < self.filtered_indices.items.len - 1) {
-                    self.selected_row += 1;
-                    if (self.selected_row >= self.scroll_offset + self.visible_rows) {
-                        self.scroll_offset = self.selected_row - self.visible_rows + 1;
-                    }
-                }
-                return .handled;
-            },
-            .up => {
-                if (self.selected_row > 0) {
-                    self.selected_row -= 1;
-                    if (self.selected_row < self.scroll_offset) self.scroll_offset = self.selected_row;
-                }
-                return .handled;
-            },
-            .char => |c| switch (c) {
-                'j' => {
-                    if (self.filtered_indices.items.len > 0 and self.selected_row < self.filtered_indices.items.len - 1) {
-                        self.selected_row += 1;
-                        if (self.selected_row >= self.scroll_offset + self.visible_rows) {
-                            self.scroll_offset = self.selected_row - self.visible_rows + 1;
-                        }
-                    }
-                    return .handled;
-                },
-                'k' => {
-                    if (self.selected_row > 0) {
-                        self.selected_row -= 1;
-                        if (self.selected_row < self.scroll_offset) self.scroll_offset = self.selected_row;
-                    }
-                    return .handled;
-                },
-                'g' => {
-                    self.selected_row = 0;
-                    self.scroll_offset = 0;
-                    return .handled;
-                },
-                'G' => {
-                    if (self.filtered_indices.items.len > 0) {
-                        self.selected_row = @intCast(self.filtered_indices.items.len - 1);
-                        if (self.selected_row >= self.visible_rows) {
-                            self.scroll_offset = self.selected_row - self.visible_rows + 1;
-                        }
-                    }
-                    return .handled;
-                },
-                'N' => {
-                    sort_util.toggleSort(&self.sort_column, &self.sort_ascending, COL_NAME);
-                    self.applySorting();
-                    return .handled;
-                },
-                'A' => {
-                    sort_util.toggleSort(&self.sort_column, &self.sort_ascending, COL_AGE);
-                    self.applySorting();
-                    return .handled;
-                },
-                'd' => return .request_describe,
-                'y' => return .request_yaml,
-                '/' => return .request_filter,
-                'r' => {
-                    try self.refresh();
-                    return .handled;
-                },
-                '0' => {
-                    self.show_all_namespaces = !self.show_all_namespaces;
-                    try self.refresh();
-                    return .handled;
-                },
-                else => return .not_handled,
-            },
-            else => return .not_handled,
-        }
-    }
-
-    fn onShow(ptr: *anyopaque) void {
-        const self: *SecretsView = @ptrCast(@alignCast(ptr));
-        Logger.info("SecretsView shown", .{});
-        self.refresh() catch |err| {
-            Logger.err("Failed to refresh Secrets on show: {}", .{err});
-        };
-    }
-
-    fn onHide(ptr: *anyopaque) void {
-        _ = ptr;
-    }
-
-    fn getName(ptr: *anyopaque) []const u8 {
-        _ = ptr;
-        return "secrets";
-    }
-
-    fn getHints(ptr: *anyopaque) hints_model.HintConfig {
-        _ = ptr;
-        return hints_model.resourceHints();
-    }
-
-    fn deinitView(ptr: *anyopaque) void {
-        const self: *SecretsView = @ptrCast(@alignCast(ptr));
-        self.deinit();
-    }
-
     const vtable = View.VTable{
         .render = render,
         .handleKey = handleKey,
@@ -367,5 +139,122 @@ pub const SecretsView = struct {
         .getName = getName,
         .getHints = getHints,
         .deinit = deinitView,
+        .applyFilter = vtableApplyFilter,
+        .clearFilter = vtableClearFilter,
+        .refresh = vtableRefresh,
+        .getSelectedResource = vtableGetSelectedResource,
     };
+
+    fn vtableApplyFilter(ptr: *anyopaque, filter: []const u8) anyerror!void {
+        const self: *SecretsView = @ptrCast(@alignCast(ptr));
+        try self.applyFilter(filter);
+    }
+
+    fn vtableClearFilter(ptr: *anyopaque) anyerror!bool {
+        const self: *SecretsView = @ptrCast(@alignCast(ptr));
+        if (self.table.filter_text.len > 0) {
+            try self.applyFilter("");
+            return true;
+        }
+        return false;
+    }
+
+    fn vtableRefresh(ptr: *anyopaque) anyerror!void {
+        const self: *SecretsView = @ptrCast(@alignCast(ptr));
+        try self.refresh();
+    }
+
+    fn vtableGetSelectedResource(ptr: *anyopaque) ?ResourceInfo {
+        const self: *SecretsView = @ptrCast(@alignCast(ptr));
+        return self.getSelectedResourceInfo();
+    }
+
+    fn render(ptr: *anyopaque, term: *Terminal, x: u16, y: u16, width: u16, height: u16) !void {
+        const self: *SecretsView = @ptrCast(@alignCast(ptr));
+        _ = width;
+        self.table.visible_rows = if (height > 1) height - 1 else 0;
+
+        if (try self.table.renderStatus(term, x, y, self.theme)) return;
+
+        // Header row with sort indicators
+        const name_ind = sort_util.sortIndicator(self.table.sort_column, self.table.sort_ascending, COL_NAME);
+        const age_ind = sort_util.sortIndicator(self.table.sort_column, self.table.sort_ascending, COL_AGE);
+        var name_hdr_buf: [32]u8 = undefined;
+        var age_hdr_buf: [16]u8 = undefined;
+        const name_hdr = std.fmt.bufPrint(&name_hdr_buf, "NAME{s}", .{name_ind}) catch "NAME";
+        const age_hdr = std.fmt.bufPrint(&age_hdr_buf, "AGE{s}", .{age_ind}) catch "AGE";
+        var hdr_buf: [128]u8 = undefined;
+        const header = std.fmt.bufPrint(&hdr_buf, "  NAMESPACE             {s: <30}TYPE             KEYS   {s}", .{ name_hdr, age_hdr }) catch "  NAMESPACE             NAME                          TYPE             KEYS   AGE";
+        try Theme.writeStringWithTheme(term, x, y, header, self.theme.title, self.theme.main_bg);
+
+        // Data rows
+        const range = self.table.getVisibleRange();
+        for (self.table.filtered_indices.items[range.start..range.end], 0..) |item_idx, i| {
+            const item = self.table.items.items[item_idx];
+            const colors = self.table.rowColors(i, self.theme);
+            const row_y = y + 1 + @as(u16, @intCast(i));
+
+            var keys_buf: [16]u8 = undefined;
+            const keys_str = std.fmt.bufPrint(&keys_buf, "{d}", .{item.keys}) catch "?";
+
+            try Theme.writeStringWithTheme(term, x, row_y, "  ", colors.fg, colors.bg);
+            try Theme.writeStringWithTheme(term, x + 2, row_y, item.namespace[0..@min(20, item.namespace.len)], colors.fg, colors.bg);
+            try Theme.writeStringWithTheme(term, x + 24, row_y, item.name[0..@min(28, item.name.len)], colors.fg, colors.bg);
+            try Theme.writeStringWithTheme(term, x + 54, row_y, item.secret_type[0..@min(15, item.secret_type.len)], colors.fg, colors.bg);
+            try Theme.writeStringWithTheme(term, x + 71, row_y, keys_str, colors.fg, colors.bg);
+            try Theme.writeStringWithTheme(term, x + 78, row_y, item.age, colors.fg, colors.bg);
+        }
+    }
+
+    fn handleKey(ptr: *anyopaque, key: Key) !KeyResult {
+        const self: *SecretsView = @ptrCast(@alignCast(ptr));
+
+        // Common navigation keys
+        if (self.table.handleNavigationKey(key)) |result| return result;
+
+        // View-specific keys
+        switch (key) {
+            .char => |c| switch (c) {
+                'r' => {
+                    self.refresh() catch |err| Logger.err("Failed to refresh secrets: {}", .{err});
+                    return .handled;
+                },
+                '0' => {
+                    self.table.show_all_namespaces = !self.table.show_all_namespaces;
+                    self.table.gotoTop();
+                    self.refresh() catch |err| Logger.err("Failed to refresh secrets: {}", .{err});
+                    return .handled;
+                },
+                'N' => { self.table.toggleSort(COL_NAME); self.applySorting(); return .handled; },
+                'A' => { self.table.toggleSort(COL_AGE); self.applySorting(); return .handled; },
+                else => return .not_handled,
+            },
+            else => return .not_handled,
+        }
+    }
+
+    fn onShow(ptr: *anyopaque) void {
+        const self: *SecretsView = @ptrCast(@alignCast(ptr));
+        self.refresh() catch |err| {
+            Logger.err("Failed to refresh secrets: {any}", .{err});
+            if (self.table.error_message == null) {
+                self.table.setError("Unexpected error during refresh") catch {};
+            }
+        };
+    }
+
+    fn onHide(_: *anyopaque) void {}
+
+    fn getName(_: *anyopaque) []const u8 {
+        return "secrets";
+    }
+
+    fn getHints(_: *anyopaque) hints_model.HintConfig {
+        return hints_model.resourceHints();
+    }
+
+    fn deinitView(ptr: *anyopaque) void {
+        const self: *SecretsView = @ptrCast(@alignCast(ptr));
+        self.deinit();
+    }
 };

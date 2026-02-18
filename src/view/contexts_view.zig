@@ -4,12 +4,13 @@ const View = @import("../viewmodel/view.zig").View;
 const KeyResult = View.KeyResult;
 const Key = @import("../core/terminal.zig").Key;
 const Terminal = @import("../core/terminal.zig").Terminal;
-const Theme = @import("../theme.zig");
+const Theme = theme_loader;
 const theme_loader = @import("../model/theme_loader.zig");
 const hints_model = @import("../model/hints.zig");
 const k8s_service_mod = @import("../services/k8s_service.zig");
 const K8sService = k8s_service_mod.K8sService;
-const ResourceInfo = k8s_service_mod.ResourceInfo;
+const view_mod = @import("../viewmodel/view.zig");
+const ResourceInfo = view_mod.ResourceInfo;
 const Logger = @import("../core/logger.zig");
 const sort_util = @import("../viewmodel/sort.zig");
 
@@ -127,6 +128,27 @@ pub const ContextsView = struct {
         return View.create(ContextsView, self, &vtable);
     }
 
+    fn vtableApplyFilter(ptr: *anyopaque, filter: []const u8) anyerror!void {
+        const self: *ContextsView = @ptrCast(@alignCast(ptr));
+        try self.applyFilter(filter);
+    }
+    fn vtableClearFilter(ptr: *anyopaque) anyerror!bool {
+        const self: *ContextsView = @ptrCast(@alignCast(ptr));
+        if (self.filter_text.len > 0) {
+            try self.applyFilter("");
+            return true;
+        }
+        return false;
+    }
+    fn vtableRefresh(ptr: *anyopaque) anyerror!void {
+        const self: *ContextsView = @ptrCast(@alignCast(ptr));
+        try self.refresh();
+    }
+    fn vtableGetSelectedResource(ptr: *anyopaque) ?view_mod.ResourceInfo {
+        const self: *ContextsView = @ptrCast(@alignCast(ptr));
+        return self.getSelectedResourceInfo();
+    }
+
     const vtable = View.VTable{
         .render = render,
         .handleKey = handleKey,
@@ -135,12 +157,16 @@ pub const ContextsView = struct {
         .getName = getName,
         .getHints = getHints,
         .deinit = deinitView,
+        .applyFilter = vtableApplyFilter,
+        .clearFilter = vtableClearFilter,
+        .refresh = vtableRefresh,
+        .getSelectedResource = vtableGetSelectedResource,
     };
 
     fn render(ctx: *anyopaque, terminal: *Terminal, x: u16, y: u16, width: u16, height: u16) anyerror!void {
         const self: *ContextsView = @ptrCast(@alignCast(ctx));
-        _ = width;
         self.visible_rows = if (height > 1) height - 1 else 0;
+
         if (self.loading) {
             try Theme.writeStringWithTheme(terminal, x, y, "Loading contexts...", self.theme.main_fg, self.theme.main_bg);
             return;
@@ -154,19 +180,25 @@ pub const ContextsView = struct {
             return;
         }
 
-        // Header with sort indicators
+        const w: usize = @intCast(width);
+        // Column widths: 2 for current marker, rest split 4 ways
+        const cw = if (w > 12) (w - 2) / 4 else 3;
+
+        // Header
         var name_hdr_buf: [32]u8 = undefined;
         const name_ind = sort_util.sortIndicator(self.sort_column, self.sort_ascending, COL_NAME);
         const name_hdr = std.fmt.bufPrint(&name_hdr_buf, "NAME{s}", .{name_ind}) catch "NAME";
-        var hdr_buf: [128]u8 = undefined;
-        const header = std.fmt.bufPrint(&hdr_buf, "CURRENT  {s: <31}CLUSTER                        NAMESPACE", .{name_hdr}) catch "CURRENT  NAME                           CLUSTER                        NAMESPACE";
-        try Theme.writeStringWithTheme(terminal, x, y, header, self.theme.title, self.theme.main_bg);
+        const hdr_line = try buildLine(self.allocator, w, cw, " ", name_hdr, "CLUSTER", "USER", "NAMESPACE");
+        defer self.allocator.free(hdr_line);
+        try Theme.writeStringWithTheme(terminal, x, y, hdr_line, self.theme.title, self.theme.main_bg);
 
         // Render contexts using filtered_indices
-        var row: u16 = 1;
-        const visible_rows_count = height -| 1;
+        var row: u16 = 0;
         var fi: u32 = self.scroll_offset;
-        while (row < visible_rows_count and fi < self.filtered_indices.items.len) : ({ row += 1; fi += 1; }) {
+        while (row < self.visible_rows and fi < self.filtered_indices.items.len) : ({
+            row += 1;
+            fi += 1;
+        }) {
             const idx = self.filtered_indices.items[fi];
             const item = self.items.items[idx];
 
@@ -174,13 +206,52 @@ pub const ContextsView = struct {
             const fg = if (is_selected) self.theme.selected_fg else self.theme.main_fg;
             const bg = if (is_selected) self.theme.selected_bg else self.theme.main_bg;
 
-            const current_marker = if (item.is_current) "*" else " ";
+            const current_marker: []const u8 = if (item.is_current) "*" else " ";
             const ns = item.namespace orelse "default";
 
-            const line = try std.fmt.allocPrint(self.allocator, "{s}        {s: <30} {s: <30} {s}", .{ current_marker, item.name, item.cluster, ns });
+            const line = try buildLine(self.allocator, w, cw, current_marker, item.name, item.cluster, item.user, ns);
             defer self.allocator.free(line);
-            try Theme.writeStringWithTheme(terminal, x, y + row, line, fg, bg);
+            try Theme.writeStringWithTheme(terminal, x, y + 1 + row, line, fg, bg);
         }
+    }
+
+    /// Build a full-width line with 5 columns padded with spaces.
+    fn buildLine(allocator: std.mem.Allocator, total_width: usize, col_w: usize, current: []const u8, name: []const u8, cluster: []const u8, user: []const u8, ns: []const u8) ![]u8 {
+        const buf = try allocator.alloc(u8, total_width);
+        @memset(buf, ' ');
+
+        // Col 0: current marker (1 char at pos 0)
+        if (current.len > 0) buf[0] = current[0];
+
+        // Col 1: name at pos 2
+        const name_start: usize = 2;
+        const name_len = @min(name.len, col_w -| 1);
+        if (name_start + name_len <= total_width) {
+            @memcpy(buf[name_start..][0..name_len], name[0..name_len]);
+        }
+
+        // Col 2: cluster
+        const cluster_start = name_start + col_w;
+        const cluster_len = @min(cluster.len, col_w -| 1);
+        if (cluster_start + cluster_len <= total_width) {
+            @memcpy(buf[cluster_start..][0..cluster_len], cluster[0..cluster_len]);
+        }
+
+        // Col 3: user
+        const user_start = cluster_start + col_w;
+        const user_len = @min(user.len, col_w -| 1);
+        if (user_start + user_len <= total_width) {
+            @memcpy(buf[user_start..][0..user_len], user[0..user_len]);
+        }
+
+        // Col 4: namespace
+        const ns_start = user_start + col_w;
+        const ns_len = @min(ns.len, total_width -| ns_start);
+        if (ns_start + ns_len <= total_width) {
+            @memcpy(buf[ns_start..][0..ns_len], ns[0..ns_len]);
+        }
+
+        return buf;
     }
 
     fn handleKey(ctx: *anyopaque, key: Key) anyerror!KeyResult {
@@ -229,6 +300,48 @@ pub const ContextsView = struct {
                 if (self.selected_row > 0) self.selected_row -= 1;
                 return .handled;
             },
+            .enter => {
+                // Switch to selected context
+                if (self.filtered_indices.items.len > 0 and self.selected_row < self.filtered_indices.items.len) {
+                    const idx = self.filtered_indices.items[self.selected_row];
+                    const selected = self.items.items[idx];
+                    try self.k8s_service.switchContext(selected.name);
+                    try self.refresh();
+                }
+                return .handled;
+            },
+            .page_down => {
+                const items_len: u32 = @intCast(self.filtered_indices.items.len);
+                const jump = @min(self.visible_rows, items_len -| self.selected_row -| 1);
+                self.selected_row += jump;
+                if (self.selected_row >= self.scroll_offset + self.visible_rows) {
+                    self.scroll_offset = self.selected_row -| self.visible_rows + 1;
+                }
+                return .handled;
+            },
+            .page_up => {
+                const jump = @min(self.visible_rows, self.selected_row);
+                self.selected_row -= jump;
+                if (self.selected_row < self.scroll_offset) {
+                    self.scroll_offset = self.selected_row;
+                }
+                return .handled;
+            },
+            .home => {
+                self.selected_row = 0;
+                self.scroll_offset = 0;
+                return .handled;
+            },
+            .end => {
+                const items_len: u32 = @intCast(self.filtered_indices.items.len);
+                if (items_len > 0) {
+                    self.selected_row = items_len - 1;
+                    if (self.selected_row >= self.visible_rows) {
+                        self.scroll_offset = self.selected_row - self.visible_rows + 1;
+                    }
+                }
+                return .handled;
+            },
             else => return .not_handled,
         }
     }
@@ -243,7 +356,7 @@ pub const ContextsView = struct {
     fn onHide(_: *anyopaque) void {}
 
     fn getName(_: *anyopaque) []const u8 {
-        return "Contexts";
+        return "contexts";
     }
 
     fn getHints(_: *anyopaque) hints_model.HintConfig {

@@ -3,7 +3,6 @@ const View = @import("../viewmodel/view.zig").View;
 const Terminal = @import("../core/terminal.zig").Terminal;
 const Key = @import("../core/terminal.zig").Key;
 const Logger = @import("../core/logger.zig");
-const BoxDrawing = @import("../ui/box_drawing.zig");
 const theme_loader = @import("../model/theme_loader.zig");
 const hints_model = @import("../model/hints.zig");
 const keybindings = @import("../model/keybindings.zig");
@@ -21,8 +20,7 @@ pub const HelpView = struct {
     bindings_vm: KeyBindingsViewModel,
     
     pub fn init(allocator: std.mem.Allocator, theme: *const theme_loader.ThemeColors) !HelpView {
-        // For now, HelpView shows pods bindings. 
-        // TODO: Make this context-aware to show bindings for current view
+        // Default to pods bindings; updated via setViewType() when help is opened
         const bindings_vm = try KeyBindingsViewModel.init(allocator, .pods);
         
         var view = HelpView{
@@ -36,6 +34,28 @@ pub const HelpView = struct {
         return view;
     }
     
+    /// Update the help view to show keybindings for a different view type.
+    /// Called before pushing the help view so it shows context-relevant bindings.
+    pub fn setViewType(self: *HelpView, view_type: ViewType) !void {
+        if (self.bindings_vm.view_type == view_type) return;
+
+        // Clean up old bindings and help lines
+        self.bindings_vm.deinit();
+        for (self.help_lines.items) |line| {
+            self.allocator.free(line);
+        }
+        self.help_lines.deinit(self.allocator);
+
+        // Reinitialize with new view type
+        self.bindings_vm = try KeyBindingsViewModel.init(self.allocator, view_type);
+        self.help_lines = std.ArrayListUnmanaged([]const u8){};
+        try self.loadHelpContent();
+
+        // Reset scroll position
+        self.selected_row = 0;
+        self.scroll_offset = 0;
+    }
+
     pub fn cleanup(self: *HelpView) void {
         for (self.help_lines.items) |line| {
             self.allocator.free(line);
@@ -123,23 +143,20 @@ pub const HelpView = struct {
         .deinit = deinit,
     };
     
-    fn render(ptr: *anyopaque, terminal: *Terminal, x: u16, y: u16, width: u16, height: u16) !void {
+    fn render(ptr: *anyopaque, terminal: *Terminal, x: u16, y: u16, _: u16, height: u16) !void {
         const self: *HelpView = @ptrCast(@alignCast(ptr));
-        
-        self.visible_rows = if (height > 3) height - 3 else 0;
-        
-        // Draw box with theme colors
-        try BoxDrawing.Box.createBox(terminal, x, y, width, height, self.theme.proc_box, self.theme.main_bg, "Help", .rounded, self.theme.main_fg, self.theme.title);
-        
+
+        self.visible_rows = if (height > 1) height - 1 else 0;
+
         // Draw help content
         const start_row = self.scroll_offset;
         const end_row = @min(start_row + self.visible_rows, self.help_lines.items.len);
-        
+
         for (start_row..end_row, 0..) |line_idx, display_idx| {
             const line = self.help_lines.items[line_idx];
-            const row_y = y + @as(u16, @intCast(display_idx)) + 1;
-            
-            try terminal.setCursor(x + 1, row_y);
+            const row_y = y + @as(u16, @intCast(display_idx));
+
+            try terminal.setCursor(x, row_y);
             try terminal.writeAll(self.theme.main_fg);
             try terminal.writeAll(line);
             try terminal.writeAll("\x1b[0m");

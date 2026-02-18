@@ -206,7 +206,7 @@ fn printInfo() void {
 
     const ver = formatVersion();
     
-    // Cyan color (matching k9s style)
+    // Cyan color
     const cyan = "\x1b[36m";
 
     // Print logo first

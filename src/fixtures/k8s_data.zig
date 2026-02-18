@@ -1,7 +1,6 @@
 const std = @import("std");
 
 /// Kubernetes cluster data for testing and development
-/// Based on real k9s testdata from testdata/k8s/
 pub const K8sData = struct {
     context: []const u8,
     cluster: []const u8,
@@ -11,7 +10,7 @@ pub const K8sData = struct {
     mem_usage: u8,
 };
 
-/// Default test data - from k9s testdata (minikube node, fred context)
+/// Default test data (minikube node, fred context)
 /// Source: testdata/k8s/nodes/no.json + testdata/k8s/config/kubeconfig
 pub const default_data = K8sData{
     .context = "fred [RW]",           // from kubeconfig current-context
@@ -32,7 +31,7 @@ pub const minimal_data = K8sData{
     .mem_usage = 10,
 };
 
-/// Blee context test data - from k9s testdata (alternate context)
+/// Blee context test data (alternate context)
 /// Source: testdata/k8s/config/kubeconfig (blee context)
 pub const blee_data = K8sData{
     .context = "blee [RW]",           // from kubeconfig
@@ -43,7 +42,7 @@ pub const blee_data = K8sData{
     .mem_usage = 42,
 };
 
-/// Minikube test data - from k9s testdata (explicit minikube)
+/// Minikube test data (explicit minikube)
 /// Source: testdata/k8s/nodes/no.json (real minikube node)
 pub const minikube_data = K8sData{
     .context = "minikube [RW]",
@@ -74,7 +73,7 @@ pub const high_load_data = K8sData{
     .mem_usage = 98,
 };
 
-/// Multi-cluster test data - from k9s kubeconfig testdata
+/// Multi-cluster test data
 /// Source: testdata/k8s/config/kubeconfig (all 3 contexts)
 pub const multi_cluster_data = [_]K8sData{
     .{

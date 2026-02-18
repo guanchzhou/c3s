@@ -4,7 +4,6 @@ const Terminal = @import("../core/terminal.zig").Terminal;
 const Key = @import("../core/terminal.zig").Key;
 const Logger = @import("../core/logger.zig");
 const theme_loader = @import("../model/theme_loader.zig");
-const BoxDrawing = @import("../ui/box_drawing.zig");
 const universal_filter = @import("../viewmodel/filter.zig");
 const hints_model = @import("../model/hints.zig");
 
@@ -74,16 +73,42 @@ pub const ThemesView = struct {
     }
     
     fn scanThemes(self: *ThemesView) !void {
-        // Scan bundled skins directory
-        try self.scanDirectory("skins");
-        
         // Scan user skins directory ($XDG_CONFIG_HOME/c3s/skins)
         const xdg = @import("../core/xdg.zig");
-        const paths = xdg.ensurePaths() catch return;
-        self.scanDirectory(paths.skins_dir) catch {}; // Ignore errors if directory doesn't exist
-        
-        // Sort alphabetically by name
+        if (xdg.ensurePaths()) |paths| {
+            self.scanDirectory(paths.skins_dir) catch {};
+        } else |_| {}
+
+        // Scan skins relative to executable directory (installed location)
+        var exe_dir_buf: [std.fs.max_path_bytes]u8 = undefined;
+        if (std.fs.selfExeDirPath(&exe_dir_buf)) |exe_dir| {
+            const skins_path = std.fs.path.join(self.allocator, &[_][]const u8{ exe_dir, "skins" }) catch null;
+            if (skins_path) |path| {
+                defer self.allocator.free(path);
+                self.scanDirectory(path) catch {};
+            }
+        } else |_| {}
+
+        // Scan bundled skins directory relative to CWD (development fallback)
+        self.scanDirectory("skins") catch {};
+
+        // Sort alphabetically by name (stable, so first-found wins on dedup)
         std.mem.sort(ThemeInfo, self.themes.items, {}, compareThemeInfo);
+
+        // Deduplicate by name (keep first occurrence)
+        if (self.themes.items.len > 1) {
+            var write: usize = 1;
+            for (1..self.themes.items.len) |read| {
+                if (std.mem.eql(u8, self.themes.items[read].name, self.themes.items[write - 1].name)) {
+                    self.allocator.free(self.themes.items[read].name);
+                    self.allocator.free(self.themes.items[read].path);
+                } else {
+                    self.themes.items[write] = self.themes.items[read];
+                    write += 1;
+                }
+            }
+            self.themes.items.len = write;
+        }
     }
     
     fn compareThemeInfo(_: void, a: ThemeInfo, b: ThemeInfo) bool {
@@ -91,19 +116,26 @@ pub const ThemesView = struct {
     }
     
     fn scanDirectory(self: *ThemesView, dir_path: []const u8) !void {
-        var dir = std.fs.cwd().openDir(dir_path, .{ .iterate = true }) catch return;
+        Logger.debug("ThemesView: scanDirectory trying '{s}'", .{dir_path});
+        var dir = std.fs.cwd().openDir(dir_path, .{ .iterate = true }) catch |err| {
+            Logger.debug("ThemesView: scanDirectory failed to open '{s}': {}", .{ dir_path, err });
+            return;
+        };
         defer dir.close();
         
+        var count: usize = 0;
         var iterator = dir.iterate();
         while (try iterator.next()) |e| {
             if (e.kind == .file and std.mem.endsWith(u8, e.name, ".yaml")) {
-                const name = std.mem.trimRight(u8, e.name, ".yaml");
+                const name = e.name[0 .. e.name.len - ".yaml".len];
                 try self.themes.append(self.allocator, .{
                     .name = try self.allocator.dupe(u8, name),
                     .path = try self.allocator.dupe(u8, dir_path),
                 });
+                count += 1;
             }
         }
+        Logger.debug("ThemesView: scanDirectory '{s}' found {d} themes", .{ dir_path, count });
     }
     
     fn navigateUp(self: *ThemesView) !void {
@@ -198,18 +230,19 @@ pub const ThemesView = struct {
         if (self.preview_theme) |preview| {
             theme_loader.deinitTheme(preview);
             self.allocator.destroy(preview);
+            self.preview_theme = null;
         }
-        
+
         // Load new preview theme (if we have filtered items)
         if (self.filtered_indices.items.len == 0 or self.selected_row >= self.filtered_indices.items.len) return;
-        
+
         const theme_idx = self.filtered_indices.items[self.selected_row];
         const selected_theme = self.themes.items[theme_idx];
-        Logger.debug("ThemesView: Loading preview for theme '{s}'", .{selected_theme.name});
+        Logger.debug("ThemesView: Loading preview for '{s}' from '{s}'", .{ selected_theme.name, selected_theme.path });
         const preview = try self.allocator.create(theme_loader.ThemeColors);
-        preview.* = try theme_loader.loadTheme(self.allocator, selected_theme.name);
+        preview.* = try theme_loader.loadThemeFromDir(self.allocator, selected_theme.name, selected_theme.path);
         self.preview_theme = preview;
-        Logger.debug("ThemesView: Preview theme loaded successfully", .{});
+        Logger.debug("ThemesView: Preview loaded, main_bg='{s}'", .{preview.main_bg});
     }
     
     pub fn getSelectedThemeName(self: *const ThemesView) []const u8 {
@@ -263,6 +296,19 @@ pub const ThemesView = struct {
         return View.create(ThemesView, self, &vtable);
     }
     
+    fn vtableApplyFilter(ptr: *anyopaque, filter: []const u8) anyerror!void {
+        const self: *ThemesView = @ptrCast(@alignCast(ptr));
+        try self.applyFilter(filter);
+    }
+    fn vtableClearFilter(ptr: *anyopaque) anyerror!bool {
+        const self: *ThemesView = @ptrCast(@alignCast(ptr));
+        if (self.filter_text.len > 0) {
+            try self.applyFilter("");
+            return true;
+        }
+        return false;
+    }
+
     const vtable = View.VTable{
         .render = render,
         .handleKey = handleKey,
@@ -271,11 +317,13 @@ pub const ThemesView = struct {
         .getName = getName,
         .getHints = getHints,
         .deinit = deinit,
+        .applyFilter = vtableApplyFilter,
+        .clearFilter = vtableClearFilter,
     };
     
     fn render(ptr: *anyopaque, terminal: *Terminal, x: u16, y: u16, width: u16, height: u16) !void {
         const self: *ThemesView = @ptrCast(@alignCast(ptr));
-        
+
         // Use preview theme if available, otherwise use base theme
         const active_theme = if (self.preview_theme) |preview| preview else self.theme;
         if (self.preview_theme != null) {
@@ -283,63 +331,42 @@ pub const ThemesView = struct {
         } else {
             Logger.debug("ThemesView: Rendering with BASE theme", .{});
         }
-        
-        // Draw box using theme colors
-        try BoxDrawing.Box.createBox(terminal, x, y, width, height, active_theme.proc_box, active_theme.main_bg, null, .rounded, active_theme.main_fg, active_theme.title);
-        
-        // Draw title with count using theme colors
-        const title_x = x + 2;
-        try terminal.setCursor(title_x, y);
-        try terminal.writeAll(active_theme.proc_box);
-        try terminal.writeAll(BoxDrawing.Symbols.title_left);
-        try terminal.writeAll("\x1b[0m");
-        
-        // Render title with count and filter: "Available Skins[35]" or "Available Skins(filtered)[10/35]"
-        var title_buf: [128]u8 = undefined;
-        const title_text = if (self.filter_text.len > 0)
-            try std.fmt.bufPrint(&title_buf, "Available Skins({s})[{d}/{d}]", .{self.filter_text, self.filtered_indices.items.len, self.themes.items.len})
-        else
-            try std.fmt.bufPrint(&title_buf, "Available Skins[{d}]", .{self.themes.items.len});
-        try terminal.setCursor(title_x + 1, y);
-        try terminal.writeAll(active_theme.title);
-        try terminal.writeAll(title_text);
-        try terminal.writeAll("\x1b[0m");
-        
-        try terminal.setCursor(title_x + 1 + @as(u16, @intCast(title_text.len)), y);
-        try terminal.writeAll(active_theme.proc_box);
-        try terminal.writeAll(BoxDrawing.Symbols.title_right);
-        try terminal.writeAll("\x1b[0m");
-        
+
+        // Fill entire view area with theme background
+        for (0..height) |row| {
+            try terminal.fillRow(x, y + @as(u16, @intCast(row)), width, active_theme.main_fg, active_theme.main_bg);
+        }
+
         // Column headers
-        const header_y = y + 1;
-        try terminal.setCursor(x + 2, header_y);
+        const header_y = y;
+        try terminal.setCursor(x + 1, header_y);
         try terminal.writeAll(active_theme.title);
         try terminal.writeAll("  NAME");
         try terminal.writeAll("\x1b[0m");
-        
+
         // Render theme list (using filtered indices)
-        const visible_rows = if (height > 3) height - 3 else 0;
+        const visible_rows = if (height > 1) height - 1 else 0;
         self.visible_rows = visible_rows; // Store for navigation functions
         const start_row = self.scroll_offset;
         const end_row = @min(start_row + visible_rows, self.filtered_indices.items.len);
-        
+
         for (start_row..end_row, 0..) |filtered_idx, display_idx| {
             const theme_idx = self.filtered_indices.items[filtered_idx];
             const theme_info = self.themes.items[theme_idx];
             const row_y = header_y + @as(u16, @intCast(display_idx)) + 1;
-            
+
             const is_selected = filtered_idx == self.selected_row;
             const is_current = std.mem.eql(u8, theme_info.name, self.current_theme_name);
-            
+
             // Fill row background
-            if (width > 2) {
-                try terminal.fillRow(x + 1, row_y, width - 2, active_theme.main_fg, 
+            if (width > 0) {
+                try terminal.fillRow(x, row_y, width, active_theme.main_fg,
                     if (is_selected) active_theme.selected_bg else active_theme.main_bg);
             }
-            
+
             // Enabled marker (small bullet, same as pods page)
             const marker = if (is_current) "•" else " ";
-            try terminal.setCursor(x + 2, row_y);
+            try terminal.setCursor(x + 1, row_y);
             if (is_selected) {
                 try terminal.writeAll(active_theme.selected_fg);
                 try terminal.writeAll(active_theme.selected_bg);
@@ -348,9 +375,9 @@ pub const ThemesView = struct {
             }
             try terminal.writeAll(marker);
             try terminal.writeAll("\x1b[0m");
-            
+
             // Skin name
-            try terminal.setCursor(x + 4, row_y);
+            try terminal.setCursor(x + 3, row_y);
             if (is_selected) {
                 try terminal.writeAll(active_theme.selected_fg);
                 try terminal.writeAll(active_theme.selected_bg);

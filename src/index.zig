@@ -34,15 +34,20 @@ pub const ThemesView = @import("view/themes_view.zig").ThemesView;
 pub const HelpView = @import("view/help_view.zig").HelpView;
 pub const DetailView = @import("view/detail_view.zig").DetailView;
 pub const LogsView = @import("view/logs_view.zig").LogsView;
+pub const AuthorizationView = @import("view/authorization_view.zig").AuthorizationView;
+pub const View = @import("viewmodel/view.zig").View;
 pub const App = @import("app.zig").App;
+pub const viewNameToPrimaryView = @import("app.zig").viewNameToPrimaryView;
 pub const Config = @import("model/config.zig");
 pub const Logger = @import("core/logger.zig");
 pub const version = @import("model/version.zig");
 pub const theme_loader = @import("model/theme_loader.zig");
+pub const color256 = @import("model/color256.zig");
 pub const fixtures = @import("fixtures/index.zig");
 
 // Services
 pub const K8sService = @import("services/k8s_service.zig").K8sService;
+pub const ClusterInfo = @import("services/k8s_service.zig").ClusterInfo;
 
 // K8s module exports (from zig-klient library)
 pub const klient = @import("klient");

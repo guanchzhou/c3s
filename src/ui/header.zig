@@ -1,10 +1,10 @@
 const std = @import("std");
 const Terminal = @import("../core/terminal.zig").Terminal;
 const BoxDrawing = @import("box_drawing.zig");
-const Theme = @import("../theme.zig");
+const theme_loader = @import("../model/theme_loader.zig");
+const Theme = theme_loader;
 const build = @import("c3s_build");
 const version = @import("../model/version.zig");
-const theme_loader = @import("../model/theme_loader.zig");
 const fixtures = @import("../fixtures/index.zig");
 const Logger = @import("../core/logger.zig");
 
@@ -14,7 +14,7 @@ pub const Header = struct {
     context: []const u8,
     cluster: []const u8,
     user: []const u8,
-    k9s_version: []const u8,
+    app_version: []const u8,
     k8s_version: []const u8,
     cpu_usage: u8,
     mem_usage: u8,
@@ -26,8 +26,8 @@ pub const Header = struct {
     debug: bool = false,
 
     pub fn init(allocator: std.mem.Allocator, theme: *const theme_loader.ThemeColors, debug: bool) !Header {
-        const k9s_version = try version.ownedString(allocator);
-        const title_with_version = k9s_version; // Just store version, we'll render "c3s" separately
+        const app_version = try version.ownedString(allocator);
+        const title_with_version = app_version;
 
         // Get K8s data from fixtures based on debug flag
         const k8s_data = fixtures.k8s_data.getData(debug);
@@ -49,7 +49,7 @@ pub const Header = struct {
             .context = try allocator.dupe(u8, k8s_data.context),
             .cluster = try allocator.dupe(u8, k8s_data.cluster),
             .user = try allocator.dupe(u8, k8s_data.user),
-            .k9s_version = k9s_version,
+            .app_version = app_version,
             .k8s_version = try allocator.dupe(u8, k8s_data.k8s_version),
             .cpu_usage = k8s_data.cpu_usage,
             .mem_usage = k8s_data.mem_usage,
@@ -62,8 +62,8 @@ pub const Header = struct {
 
     /// Initialize header with K8s cluster data (from real K8s client or fixtures)
     pub fn initWithData(allocator: std.mem.Allocator, theme: *const theme_loader.ThemeColors, cluster_data: anytype) !Header {
-        const k9s_version = try version.ownedString(allocator);
-        const title_with_version = k9s_version;
+        const app_version = try version.ownedString(allocator);
+        const title_with_version = app_version;
 
         const cpu_str = try std.fmt.allocPrint(allocator, "{d}%", .{cluster_data.cpu_usage});
         const mem_str = try std.fmt.allocPrint(allocator, "{d}%", .{cluster_data.mem_usage});
@@ -75,7 +75,7 @@ pub const Header = struct {
             .context = try allocator.dupe(u8, cluster_data.context),
             .cluster = try allocator.dupe(u8, cluster_data.cluster),
             .user = try allocator.dupe(u8, cluster_data.user),
-            .k9s_version = k9s_version,
+            .app_version = app_version,
             .k8s_version = try allocator.dupe(u8, cluster_data.k8s_version),
             .cpu_usage = cluster_data.cpu_usage,
             .mem_usage = cluster_data.mem_usage,
@@ -437,6 +437,23 @@ pub const Header = struct {
         return try version.ownedString(allocator);
     }
 
+    pub fn updateClusterInfo(self: *Header, context: []const u8, cluster: []const u8, user: []const u8) !void {
+        self.allocator.free(self.context);
+        self.allocator.free(self.cluster);
+        self.allocator.free(self.user);
+        self.context = try self.allocator.dupe(u8, context);
+        self.cluster = try self.allocator.dupe(u8, cluster);
+        self.user = try self.allocator.dupe(u8, user);
+    }
+
+    /// Update the displayed Kubernetes server version
+    pub fn updateK8sVersion(self: *Header, k8s_version: []const u8) !void {
+        // Only update if the value actually changed
+        if (std.mem.eql(u8, self.k8s_version, k8s_version)) return;
+        self.allocator.free(self.k8s_version);
+        self.k8s_version = try self.allocator.dupe(u8, k8s_version);
+    }
+
     pub fn deinit(self: *Header) void {
         // Free allocated strings (from initWithData)
         self.allocator.free(self.context);
@@ -503,22 +520,24 @@ pub const Header = struct {
         // Render custom title with "c3s" in bold white and version in normal color
         const title_x = x + 2;
         const title_y = y;
-        try Theme.writeText(terminal, title_x, title_y, BoxDrawing.Symbols.title_left, self.theme.proc_box);
+        try Theme.writeStringWithTheme(terminal, title_x, title_y, BoxDrawing.Symbols.title_left, self.theme.proc_box, self.theme.main_bg);
 
         // "c3s" in bold white
         try terminal.setCursor(title_x + 1, title_y);
+        try terminal.writeAll(self.theme.main_bg);
         try terminal.writeAll(self.theme.app_name);
         try terminal.writeAll("c3s");
         try terminal.writeAll("\x1b[0m");
 
         // Version in normal color
+        try terminal.writeAll(self.theme.main_bg);
         try terminal.writeAll(" ");
         try terminal.writeAll(self.theme.title);
         try terminal.writeAll(self.title_with_version);
         try terminal.writeAll("\x1b[0m");
 
         const title_end_x = title_x + 1 + 3 + 1 + @as(u16, @intCast(self.title_with_version.len));
-        try Theme.writeText(terminal, title_end_x, title_y, BoxDrawing.Symbols.title_right, self.theme.proc_box);
+        try Theme.writeStringWithTheme(terminal, title_end_x, title_y, BoxDrawing.Symbols.title_right, self.theme.proc_box, self.theme.main_bg);
 
         // System information (left side) - offset by 1 for border, properly aligned
         const label_width = 9; // Fixed width for all labels for alignment
@@ -602,7 +621,7 @@ pub const Header = struct {
 
                 const qx = shortcuts_start_x + (col * quick_width);
                 const qy = y + 1 + row;
-                try Theme.writeShortcut(terminal, qx, qy, item.key, item.cmd, self.theme.main_bg);
+                try Theme.writeShortcut(terminal, qx, qy, item.key, item.cmd, self.theme.main_bg, self.theme.key_highlight);
             }
         }
 
@@ -660,7 +679,7 @@ pub const Header = struct {
                         // Calculate total length for highlighted hint
                         const total_len = item.before.len + item.key.len + item.after.len;
                         if (total_len > 0 and total_len <= max_text_len) {
-                            try Theme.writeShortcutWithHighlight(terminal, hx, hy, item.before, item.key, item.after);
+                            try Theme.writeShortcutWithHighlight(terminal, hx, hy, item.before, item.key, item.after, self.theme.key_highlight);
                         }
                     },
                 }

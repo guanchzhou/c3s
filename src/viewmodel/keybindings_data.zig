@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Authors of C3S
 //
-// K9s-compatible key bindings data for all resource views
-// Based on k9s internal/view/*.go files
+// Key bindings data for all resource views
 
 const std = @import("std");
 const KeyBinding = @import("../model/keybindings.zig").KeyBinding;
@@ -11,7 +10,7 @@ const KeyBinding = @import("../model/keybindings.zig").KeyBinding;
 // CORE RESOURCES
 // ============================================================================
 
-/// Namespaces bindings (from k9s namespace.go)
+/// Namespaces bindings
 pub fn loadNamespacesBindings(allocator: std.mem.Allocator) ![]const KeyBinding {
     const bindings = [_]KeyBinding{
         .{ .key = "enter", .description = "Switch Context", .category = .resource, .action = "switch" },

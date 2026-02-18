@@ -1,35 +1,26 @@
 /// CronJobsView - View for Kubernetes CronJobs
 const std = @import("std");
 const klient = @import("klient");
-const View = @import("../viewmodel/view.zig").View;
+const view_mod = @import("../viewmodel/view.zig");
+const View = view_mod.View;
 const KeyResult = View.KeyResult;
 const Key = @import("../core/terminal.zig").Key;
 const Terminal = @import("../core/terminal.zig").Terminal;
-const Theme = @import("../theme.zig");
 const theme_loader = @import("../model/theme_loader.zig");
+const Theme = theme_loader;
 const hints_model = @import("../model/hints.zig");
 const k8s_service_mod = @import("../services/k8s_service.zig");
 const K8sService = k8s_service_mod.K8sService;
-const ResourceInfo = k8s_service_mod.ResourceInfo;
-const universal_filter = @import("../viewmodel/filter.zig");
+const ResourceInfo = view_mod.ResourceInfo;
 const sort_util = @import("../viewmodel/sort.zig");
+const age_util = @import("../viewmodel/age.zig");
 const Logger = @import("../core/logger.zig");
+const TableState = @import("../ui/table_state.zig").TableState;
 
 pub const CronJobsView = struct {
-    allocator: std.mem.Allocator,
     theme: *const theme_loader.ThemeColors,
     k8s_service: *K8sService,
-    items: std.ArrayListUnmanaged(CronJobInfo),
-    filtered_indices: std.ArrayListUnmanaged(usize),
-    selected_row: u32,
-    scroll_offset: u32,
-    visible_rows: u32,
-    loading: bool,
-    error_message: ?[]const u8,
-    filter_text: []const u8,
-    show_all_namespaces: bool,
-    sort_column: ?u8 = null,
-    sort_ascending: bool = true,
+    table: TableState(CronJobInfo),
 
     // Sort column indices
     const COL_NAME: u8 = 0;
@@ -42,12 +33,13 @@ pub const CronJobsView = struct {
         suspended: bool,
         active: i32,
         last_schedule: []const u8,
+        allocator: std.mem.Allocator,
 
-        pub fn deinit(self: *CronJobInfo, allocator: std.mem.Allocator) void {
-            allocator.free(self.name);
-            allocator.free(self.namespace);
-            allocator.free(self.schedule);
-            allocator.free(self.last_schedule);
+        pub fn deinit(self: *CronJobInfo) void {
+            self.allocator.free(self.name);
+            self.allocator.free(self.namespace);
+            self.allocator.free(self.schedule);
+            self.allocator.free(self.last_schedule);
         }
 
         fn getName(self: *const CronJobInfo) []const u8 { return self.name; }
@@ -55,70 +47,44 @@ pub const CronJobsView = struct {
     };
 
     pub fn init(allocator: std.mem.Allocator, theme: *const theme_loader.ThemeColors, k8s_service: *K8sService) !CronJobsView {
-        var view = CronJobsView{
-            .allocator = allocator,
+        return CronJobsView{
             .theme = theme,
             .k8s_service = k8s_service,
-            .items = std.ArrayListUnmanaged(CronJobInfo){},
-            .filtered_indices = std.ArrayListUnmanaged(usize){},
-            .selected_row = 0,
-            .scroll_offset = 0,
-            .visible_rows = 0,
-            .loading = false,
-            .error_message = null,
-            .filter_text = try allocator.dupe(u8, ""),
-            .show_all_namespaces = false,
+            .table = TableState(CronJobInfo).init(allocator),
         };
-        try view.refresh();
-        return view;
     }
 
     pub fn deinit(self: *CronJobsView) void {
-        for (self.items.items) |*item| {
-            item.deinit(self.allocator);
-        }
-        self.items.deinit(self.allocator);
-        self.filtered_indices.deinit(self.allocator);
-        self.allocator.free(self.filter_text);
-        if (self.error_message) |msg| {
-            self.allocator.free(msg);
-        }
+        self.table.deinit();
     }
 
     pub fn refresh(self: *CronJobsView) !void {
-        self.loading = true;
-        defer self.loading = false;
+        self.table.loading = true;
+        defer self.table.loading = false;
+        self.table.clearItems();
 
-        if (self.error_message) |msg| {
-            self.allocator.free(msg);
-            self.error_message = null;
+        if (!self.k8s_service.isConnected()) {
+            try self.table.setError("Not connected to Kubernetes cluster");
+            return;
         }
 
-        for (self.items.items) |*item| {
-            item.deinit(self.allocator);
-        }
-        self.items.clearRetainingCapacity();
-
-        const cronjobs = if (self.show_all_namespaces)
+        const cronjobs = if (self.table.show_all_namespaces)
             self.k8s_service.listAllCronJobs() catch |err| {
-                self.error_message = try std.fmt.allocPrint(self.allocator, "Failed to list cronjobs: {}", .{err});
+                try self.table.setErrorFmt("Failed to list cronjobs: {}", .{err});
                 return;
             }
         else
             self.k8s_service.listCronJobs(null) catch |err| {
-                self.error_message = try std.fmt.allocPrint(self.allocator, "Failed to list cronjobs: {}", .{err});
+                try self.table.setErrorFmt("Failed to list cronjobs: {}", .{err});
                 return;
             };
-        defer self.allocator.free(cronjobs);
+        defer self.table.allocator.free(cronjobs);
 
         for (cronjobs) |cj| {
-            const name = try self.allocator.dupe(u8, cj.metadata.name);
-            const namespace = try self.allocator.dupe(u8, cj.metadata.namespace orelse "default");
-
             const schedule = if (cj.spec) |s|
-                if (s.schedule) |sched| try self.allocator.dupe(u8, sched) else try self.allocator.dupe(u8, "")
+                if (s.schedule) |sched| try self.table.allocator.dupe(u8, sched) else try self.table.allocator.dupe(u8, "")
             else
-                try self.allocator.dupe(u8, "");
+                try self.table.allocator.dupe(u8, "");
             const suspended = if (cj.spec) |s| s.suspended orelse false else false;
 
             // Extract active from JSON Value (it's an array of references)
@@ -131,53 +97,50 @@ pub const CronJobsView = struct {
                 break :blk 0;
             } else 0;
 
-            const last_schedule = try self.allocator.dupe(u8, "1m"); // TODO: Calculate from lastScheduleTime
+            // Calculate last schedule age from lastScheduleTime in status JSON
+            const last_schedule_str: ?[]const u8 = if (cj.status) |status_json| lst: {
+                if (status_json == .object) {
+                    if (status_json.object.get("lastScheduleTime")) |val| {
+                        if (val == .string) break :lst val.string;
+                    }
+                }
+                break :lst null;
+            } else null;
 
-            try self.items.append(self.allocator, CronJobInfo{
-                .name = name,
-                .namespace = namespace,
+            const last_schedule = if (last_schedule_str != null)
+                try age_util.calculateAge(self.table.allocator, last_schedule_str)
+            else
+                try self.table.allocator.dupe(u8, "-");
+
+            try self.table.appendItem(.{
+                .name = try self.table.allocator.dupe(u8, cj.metadata.name),
+                .namespace = try self.table.allocator.dupe(u8, cj.metadata.namespace orelse "default"),
                 .schedule = schedule,
                 .suspended = suspended,
                 .active = active,
                 .last_schedule = last_schedule,
+                .allocator = self.table.allocator,
             });
         }
 
-        try self.applyFilter(self.filter_text);
+        try self.applyFilter(self.table.filter_text);
     }
 
     pub fn getSelectedResourceInfo(self: *CronJobsView) ?ResourceInfo {
-        if (self.filtered_indices.items.len == 0) return null;
-        if (self.selected_row >= self.filtered_indices.items.len) return null;
-        const idx = self.filtered_indices.items[self.selected_row];
-        const item = self.items.items[idx];
-        return ResourceInfo{
-            .name = item.name,
-            .namespace = item.namespace,
-        };
+        const item = self.table.getSelectedItem() orelse return null;
+        return ResourceInfo{ .name = item.name, .namespace = item.namespace };
     }
 
     pub fn applyFilter(self: *CronJobsView, filter: []const u8) !void {
-        self.filter_text = filter;
-        try universal_filter.applyFilter(
-            CronJobInfo,
-            self.allocator,
-            self.items.items,
-            &self.filtered_indices,
-            filter,
-            &self.selected_row,
-            &self.scroll_offset,
-            self.visible_rows,
-            cronjobMatchFn,
-        );
+        try self.table.applyFilter(filter, cronjobMatchFn);
         self.applySorting();
     }
 
     fn applySorting(self: *CronJobsView) void {
-        if (self.sort_column) |col| {
+        if (self.table.sort_column) |col| {
             switch (col) {
-                COL_NAME => sort_util.sortFilteredIndices(CronJobInfo, self.items.items, &self.filtered_indices, CronJobInfo.getName, self.sort_ascending),
-                COL_AGE => sort_util.sortFilteredIndices(CronJobInfo, self.items.items, &self.filtered_indices, CronJobInfo.getLastSchedule, self.sort_ascending),
+                COL_NAME => self.table.sortBy(CronJobInfo.getName),
+                COL_AGE => self.table.sortBy(CronJobInfo.getLastSchedule),
                 else => {},
             }
         }
@@ -192,30 +155,53 @@ pub const CronJobsView = struct {
         return View.create(CronJobsView, self, &vtable);
     }
 
-    fn render(ptr: *anyopaque, term: *Terminal, x: u16, y: u16, width: u16, height: u16) !void {
+    const vtable = View.VTable{
+        .render = render,
+        .handleKey = handleKey,
+        .onShow = onShow,
+        .onHide = onHide,
+        .getName = getName,
+        .getHints = getHints,
+        .deinit = deinitView,
+        .applyFilter = vtableApplyFilter,
+        .clearFilter = vtableClearFilter,
+        .refresh = vtableRefresh,
+        .getSelectedResource = vtableGetSelectedResource,
+    };
+
+    fn vtableApplyFilter(ptr: *anyopaque, filter: []const u8) anyerror!void {
         const self: *CronJobsView = @ptrCast(@alignCast(ptr));
-        _ = width;
-        self.visible_rows = if (height > 1) height - 1 else 0;
+        try self.applyFilter(filter);
+    }
 
-        if (self.loading) {
-            try Theme.writeStringWithTheme(term, x, y, "Loading cronjobs...", self.theme.main_fg, self.theme.main_bg);
-            return;
+    fn vtableClearFilter(ptr: *anyopaque) anyerror!bool {
+        const self: *CronJobsView = @ptrCast(@alignCast(ptr));
+        if (self.table.filter_text.len > 0) {
+            try self.applyFilter("");
+            return true;
         }
+        return false;
+    }
 
-        if (self.error_message) |msg| {
-            try Theme.writeStringWithTheme(term, x, y, msg, self.theme.status_failed, self.theme.main_bg);
-            return;
-        }
+    fn vtableRefresh(ptr: *anyopaque) anyerror!void {
+        const self: *CronJobsView = @ptrCast(@alignCast(ptr));
+        try self.refresh();
+    }
 
-        if (self.filtered_indices.items.len == 0) {
-            const msg = if (self.show_all_namespaces) "No cronjobs found in cluster" else "No cronjobs in current namespace";
-            try Theme.writeStringWithTheme(term, x, y, msg, self.theme.main_fg, self.theme.main_bg);
-            return;
-        }
+    fn vtableGetSelectedResource(ptr: *anyopaque) ?ResourceInfo {
+        const self: *CronJobsView = @ptrCast(@alignCast(ptr));
+        return self.getSelectedResourceInfo();
+    }
+
+    fn render(ptr: *anyopaque, term: *Terminal, x: u16, y: u16, _: u16, height: u16) !void {
+        const self: *CronJobsView = @ptrCast(@alignCast(ptr));
+        self.table.visible_rows = if (height > 1) height - 1 else 0;
+
+        if (try self.table.renderStatus(term, x, y, self.theme)) return;
 
         // Header with sort indicators
-        const name_ind = sort_util.sortIndicator(self.sort_column, self.sort_ascending, COL_NAME);
-        const age_ind = sort_util.sortIndicator(self.sort_column, self.sort_ascending, COL_AGE);
+        const name_ind = sort_util.sortIndicator(self.table.sort_column, self.table.sort_ascending, COL_NAME);
+        const age_ind = sort_util.sortIndicator(self.table.sort_column, self.table.sort_ascending, COL_AGE);
         var name_hdr_buf: [32]u8 = undefined;
         var age_hdr_buf: [16]u8 = undefined;
         const name_hdr = std.fmt.bufPrint(&name_hdr_buf, "NAME{s}", .{name_ind}) catch "NAME";
@@ -224,23 +210,17 @@ pub const CronJobsView = struct {
         const header = std.fmt.bufPrint(&hdr_buf, "  NAMESPACE             {s: <25}SCHEDULE       SUSPEND ACTIVE {s}", .{ name_hdr, age_hdr }) catch "  NAMESPACE             NAME                     SCHEDULE       SUSPEND ACTIVE LAST";
         try Theme.writeStringWithTheme(term, x, y, header, self.theme.title, self.theme.main_bg);
 
-        // Items
-        const start_idx = self.scroll_offset;
-        const end_idx = @min(start_idx + self.visible_rows, self.filtered_indices.items.len);
-        var row: u16 = 0;
-
-        for (start_idx..end_idx) |fi| {
-            const item_idx = self.filtered_indices.items[fi];
-            const item = &self.items.items[item_idx];
-            const is_selected = (fi == self.selected_row);
-
-            const fg_color = if (is_selected) self.theme.selected_fg else self.theme.main_fg;
-            const bg_color = if (is_selected) self.theme.selected_bg else self.theme.main_bg;
+        // Data rows
+        const range = self.table.getVisibleRange();
+        for (self.table.filtered_indices.items[range.start..range.end], 0..) |actual_idx, i| {
+            const item = self.table.items.items[actual_idx];
+            const colors = self.table.rowColors(i, self.theme);
+            const row_y = y + 1 + @as(u16, @intCast(i));
 
             const suspend_str = if (item.suspended) "True" else "False";
 
             const line = try std.fmt.allocPrint(
-                self.allocator,
+                self.table.allocator,
                 "  {s: <20} {s: <23} {s: <14} {s: <7} {d: >6} {s}",
                 .{
                     if (item.namespace.len > 20) item.namespace[0..20] else item.namespace,
@@ -251,79 +231,41 @@ pub const CronJobsView = struct {
                     item.last_schedule,
                 },
             );
-            defer self.allocator.free(line);
-            try Theme.writeStringWithTheme(term, x, y + 1 + row, line, fg_color, bg_color);
-            row += 1;
+            defer self.table.allocator.free(line);
+            try Theme.writeStringWithTheme(term, x, row_y, line, colors.fg, colors.bg);
         }
     }
 
     fn handleKey(ptr: *anyopaque, key: Key) !KeyResult {
         const self: *CronJobsView = @ptrCast(@alignCast(ptr));
+
+        // Common navigation keys
+        if (self.table.handleNavigationKey(key)) |result| return result;
+
+        // View-specific keys
         switch (key) {
             .char => |c| switch (c) {
-                'j' => {
-                    if (self.filtered_indices.items.len > 0 and self.selected_row < self.filtered_indices.items.len - 1) {
-                        self.selected_row += 1;
-                        if (self.selected_row >= self.scroll_offset + self.visible_rows) {
-                            self.scroll_offset = self.selected_row - self.visible_rows + 1;
-                        }
-                    }
-                    return .handled;
-                },
-                'k' => {
-                    if (self.selected_row > 0) {
-                        self.selected_row -= 1;
-                        if (self.selected_row < self.scroll_offset) self.scroll_offset = self.selected_row;
-                    }
-                    return .handled;
-                },
-                'g' => {
-                    self.selected_row = 0;
-                    self.scroll_offset = 0;
-                    return .handled;
-                },
-                'G' => {
-                    if (self.filtered_indices.items.len > 0) {
-                        self.selected_row = @intCast(self.filtered_indices.items.len - 1);
-                        if (self.selected_row >= self.visible_rows) {
-                            self.scroll_offset = self.selected_row - self.visible_rows + 1;
-                        }
-                    }
-                    return .handled;
-                },
-                'N' => {
-                    sort_util.toggleSort(&self.sort_column, &self.sort_ascending, COL_NAME);
-                    self.applySorting();
-                    return .handled;
-                },
-                'A' => {
-                    sort_util.toggleSort(&self.sort_column, &self.sort_ascending, COL_AGE);
-                    self.applySorting();
-                    return .handled;
-                },
-                'd' => return .request_describe,
-                'y' => return .request_yaml,
-                '/' => return .request_filter,
                 'r' => {
-                    try self.refresh();
+                    self.refresh() catch |err| Logger.err("Failed to refresh cronjobs: {}", .{err});
                     return .handled;
                 },
                 '0' => {
-                    self.show_all_namespaces = !self.show_all_namespaces;
-                    try self.refresh();
+                    self.table.show_all_namespaces = !self.table.show_all_namespaces;
+                    self.table.gotoTop();
+                    self.refresh() catch |err| Logger.err("Failed to refresh cronjobs: {}", .{err});
                     return .handled;
                 },
+                'N' => { self.table.toggleSort(COL_NAME); self.applySorting(); return .handled; },
+                'A' => { self.table.toggleSort(COL_AGE); self.applySorting(); return .handled; },
                 's' => {
                     // Toggle suspend/resume on selected cronjob
-                    if (self.filtered_indices.items.len > 0 and self.selected_row < self.filtered_indices.items.len) {
-                        const item_idx = self.filtered_indices.items[self.selected_row];
-                        const item = &self.items.items[item_idx];
+                    if (self.table.getSelectedItem()) |item| {
                         const new_suspended = !item.suspended;
                         self.k8s_service.setCronJobSuspend(item.name, new_suspended, item.namespace) catch |err| {
                             Logger.err("Failed to suspend/resume cronjob: {}", .{err});
                             return .handled;
                         };
-                        try self.refresh();
+                        self.refresh() catch |err| Logger.err("Failed to refresh cronjobs: {}", .{err});
                     }
                     return .handled;
                 },
@@ -335,23 +277,21 @@ pub const CronJobsView = struct {
 
     fn onShow(ptr: *anyopaque) void {
         const self: *CronJobsView = @ptrCast(@alignCast(ptr));
-        Logger.info("CronJobsView shown", .{});
         self.refresh() catch |err| {
-            Logger.err("Failed to refresh CronJobs on show: {}", .{err});
+            Logger.err("Failed to refresh cronjobs: {any}", .{err});
+            if (self.table.error_message == null) {
+                self.table.setError("Unexpected error during refresh") catch {};
+            }
         };
     }
 
-    fn onHide(ptr: *anyopaque) void {
-        _ = ptr;
-    }
+    fn onHide(_: *anyopaque) void {}
 
-    fn getName(ptr: *anyopaque) []const u8 {
-        _ = ptr;
+    fn getName(_: *anyopaque) []const u8 {
         return "cronjobs";
     }
 
-    fn getHints(ptr: *anyopaque) hints_model.HintConfig {
-        _ = ptr;
+    fn getHints(_: *anyopaque) hints_model.HintConfig {
         return hints_model.resourceHints();
     }
 
@@ -359,14 +299,4 @@ pub const CronJobsView = struct {
         const self: *CronJobsView = @ptrCast(@alignCast(ptr));
         self.deinit();
     }
-
-    const vtable = View.VTable{
-        .render = render,
-        .handleKey = handleKey,
-        .onShow = onShow,
-        .onHide = onHide,
-        .getName = getName,
-        .getHints = getHints,
-        .deinit = deinitView,
-    };
 };

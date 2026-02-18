@@ -11,7 +11,8 @@ const sort_util = @import("../viewmodel/sort.zig");
 const age_util = @import("../viewmodel/age.zig");
 const k8s_service_mod = @import("../services/k8s_service.zig");
 const K8sService = k8s_service_mod.K8sService;
-const ResourceInfo = k8s_service_mod.ResourceInfo;
+const view_mod = @import("../viewmodel/view.zig");
+const ResourceInfo = view_mod.ResourceInfo;
 
 /// PodsView - displays Kubernetes pods with filtering and navigation
 pub const PodsView = struct {
@@ -118,6 +119,13 @@ pub const PodsView = struct {
 
         const k8s_pods = k8s_pod_list.value.items;
 
+        // Fetch pod metrics (gracefully — metrics server may not be installed)
+        var metrics_map = self.k8s_service.getPodMetrics(self.show_all_namespaces) catch |err| blk: {
+            Logger.warn("Failed to fetch pod metrics: {any}", .{err});
+            break :blk null;
+        };
+        defer if (metrics_map) |*m| self.k8s_service.freePodMetrics(m);
+
         // Convert to view pods
         for (k8s_pods) |k8s_pod| {
             // Parse status (dynamic JSON)
@@ -147,13 +155,28 @@ pub const PodsView = struct {
                 }
             }
 
+            // Look up metrics for this pod
+            const pod_ns = k8s_pod.metadata.namespace orelse "default";
+            const pod_name = k8s_pod.metadata.name;
+            const metric_key = std.fmt.allocPrint(self.allocator, "{s}/{s}", .{ pod_ns, pod_name }) catch null;
+            defer if (metric_key) |k| self.allocator.free(k);
+
+            const cpu_val = if (metric_key) |k|
+                if (metrics_map) |m| (if (m.get(k)) |pm| pm.cpu else null) else null
+            else
+                null;
+            const mem_val = if (metric_key) |k|
+                if (metrics_map) |m| (if (m.get(k)) |pm| pm.mem else null) else null
+            else
+                null;
+
             try self.pods.append(self.allocator, .{
-                .namespace = try self.allocator.dupe(u8, k8s_pod.metadata.namespace orelse "default"),
-                .name = try self.allocator.dupe(u8, k8s_pod.metadata.name),
+                .namespace = try self.allocator.dupe(u8, pod_ns),
+                .name = try self.allocator.dupe(u8, pod_name),
                 .ready = try std.fmt.allocPrint(self.allocator, "{d}/{d}", .{ ready_count, total_count }),
                 .status = try self.allocator.dupe(u8, phase),
-                .cpu_l = try self.allocator.dupe(u8, "0m"), // TODO: Get from metrics
-                .mem_l = try self.allocator.dupe(u8, "0Mi"), // TODO: Get from metrics
+                .cpu_l = try self.allocator.dupe(u8, cpu_val orelse "n/a"),
+                .mem_l = try self.allocator.dupe(u8, mem_val orelse "n/a"),
                 .ip = try self.allocator.dupe(u8, pod_ip),
                 .node = try self.allocator.dupe(u8, if (k8s_pod.spec) |spec| spec.nodeName orelse "-" else "-"),
                 .age = try age_util.calculateAge(self.allocator, k8s_pod.metadata.creationTimestamp),
@@ -348,34 +371,45 @@ pub const PodsView = struct {
         .getName = getName,
         .getHints = getHints,
         .deinit = deinit,
+        .applyFilter = vtableApplyFilter,
+        .clearFilter = vtableClearFilter,
+        .refresh = vtableRefresh,
+        .getSelectedResource = vtableGetSelectedResource,
     };
+
+    fn vtableApplyFilter(ptr: *anyopaque, filter: []const u8) anyerror!void {
+        const self: *PodsView = @ptrCast(@alignCast(ptr));
+        try self.applyFilter(filter);
+    }
+
+    fn vtableClearFilter(ptr: *anyopaque) anyerror!bool {
+        const self: *PodsView = @ptrCast(@alignCast(ptr));
+        if (self.filter_text.len > 0) {
+            try self.applyFilter("");
+            return true;
+        }
+        return false;
+    }
+
+    fn vtableRefresh(ptr: *anyopaque) anyerror!void {
+        const self: *PodsView = @ptrCast(@alignCast(ptr));
+        try self.refresh();
+    }
+
+    fn vtableGetSelectedResource(ptr: *anyopaque) ?ResourceInfo {
+        const self: *PodsView = @ptrCast(@alignCast(ptr));
+        return self.getSelectedResourceInfo();
+    }
 
     fn render(ptr: *anyopaque, terminal: *Terminal, x: u16, y: u16, width: u16, height: u16) !void {
         const self: *PodsView = @ptrCast(@alignCast(ptr));
 
-        self.visible_rows = if (height > 3) height - 3 else 0;
-
-        // Build title first
-        var title_buf: [256]u8 = undefined;
-        const ns = if (self.show_all_namespaces)
-            "all"
-        else
-            // Always show an effective namespace, even when disconnected
-            self.k8s_service.getCurrentNamespace();
-
-        const title_text = if (self.filter_text.len > 0)
-            try std.fmt.bufPrint(&title_buf, "pods({s})[{d}] </{s}>", .{ ns, self.filtered_indices.items.len, self.filter_text })
-        else
-            try std.fmt.bufPrint(&title_buf, "pods({s})[{d}]", .{ ns, self.filtered_indices.items.len });
-
-        // Draw box border with title
-        const BoxDrawing = @import("../ui/box_drawing.zig");
-        try BoxDrawing.Box.createBox(terminal, x, y, width, height, self.theme.proc_box, self.theme.main_bg, title_text, .rounded, self.theme.main_fg, self.theme.title);
+        self.visible_rows = if (height > 1) height - 1 else 0;
 
         // Show error message if present
         if (self.error_message) |msg| {
-            const Theme = @import("../theme.zig");
-            try Theme.writeStringWithTheme(terminal, x + 2, y + height / 2, msg, self.theme.status_failed, self.theme.main_bg);
+            const Theme = theme_loader;
+            try Theme.writeStringWithTheme(terminal, x, y, msg, self.theme.status_failed, self.theme.main_bg);
             return;
         }
 
@@ -393,7 +427,7 @@ pub const PodsView = struct {
         };
 
         const col_names = [_][]const u8{ "NAMESPACE", "NAME", "READY", "STATUS", "CPU", "MEM", "IP", "NODE", "AGE" };
-        const available_width = if (width > 2) width - 2 else 0;
+        const available_width = width;
 
         // Use cached column widths if terminal width hasn't changed
         const use_cache = self.cached_col_widths != null and self.cached_terminal_width == available_width;
@@ -436,8 +470,8 @@ pub const PodsView = struct {
         self.horizontal_scroll.total_width = col_widths.total_width;
 
         // Draw column headers with sort indicators
-        const header_y = y + 1;
-        var col_x = x + 1;
+        const header_y = y;
+        var col_x = x;
         // Map column index to sort column id (only for sortable columns)
         const col_sort_ids = [_]?u8{ null, COL_NAME, COL_READY, COL_STATUS, null, null, null, null, COL_AGE };
         for (col_names, col_widths.widths, 0..) |name, w, col_i| {
@@ -473,9 +507,9 @@ pub const PodsView = struct {
 
         // Show empty message if no pods
         if (self.filtered_indices.items.len == 0) {
-            const Theme = @import("../theme.zig");
+            const Theme = theme_loader;
             const empty_msg = "No pods found";
-            try Theme.writeStringWithTheme(terminal, x + 2, y + height / 2, empty_msg, self.theme.inactive_fg, self.theme.main_bg);
+            try Theme.writeStringWithTheme(terminal, x, y, empty_msg, self.theme.inactive_fg, self.theme.main_bg);
             return;
         }
 
@@ -491,11 +525,11 @@ pub const PodsView = struct {
 
             // Highlight selected row
             if (is_selected) {
-                try terminal.setCursor(x + 1, row_y);
+                try terminal.setCursor(x, row_y);
                 try terminal.writeAll(self.theme.selected_bg);
                 var spaces_buf: [256]u8 = undefined;
                 @memset(&spaces_buf, ' ');
-                var remaining: usize = width - 2;
+                var remaining: usize = width;
                 while (remaining > 0) {
                     const chunk = @min(remaining, spaces_buf.len);
                     try terminal.writeAll(spaces_buf[0..chunk]);
@@ -505,7 +539,7 @@ pub const PodsView = struct {
             }
 
             // Draw pod data with adaptive widths
-            col_x = x + 1;
+            col_x = x;
             const pod_data = [_][]const u8{ pod.namespace, pod.name, pod.ready, pod.status, pod.cpu_l, pod.mem_l, pod.ip, pod.node, pod.age };
 
             for (pod_data, col_widths.widths) |data, w| {

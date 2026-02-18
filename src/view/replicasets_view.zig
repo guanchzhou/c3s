@@ -5,32 +5,22 @@ const View = @import("../viewmodel/view.zig").View;
 const KeyResult = View.KeyResult;
 const Key = @import("../core/terminal.zig").Key;
 const Terminal = @import("../core/terminal.zig").Terminal;
-const Theme = @import("../theme.zig");
 const theme_loader = @import("../model/theme_loader.zig");
+const Theme = theme_loader;
 const hints_model = @import("../model/hints.zig");
 const k8s_service_mod = @import("../services/k8s_service.zig");
 const K8sService = k8s_service_mod.K8sService;
-const ResourceInfo = k8s_service_mod.ResourceInfo;
+const view_mod = @import("../viewmodel/view.zig");
+const ResourceInfo = view_mod.ResourceInfo;
 const Logger = @import("../core/logger.zig");
-const universal_filter = @import("../viewmodel/filter.zig");
 const sort_util = @import("../viewmodel/sort.zig");
 const age_util = @import("../viewmodel/age.zig");
+const TableState = @import("../ui/table_state.zig").TableState;
 
 pub const ReplicaSetsView = struct {
-    allocator: std.mem.Allocator,
     theme: *const theme_loader.ThemeColors,
     k8s_service: *K8sService,
-    items: std.ArrayListUnmanaged(ReplicaSetInfo),
-    filtered_indices: std.ArrayListUnmanaged(usize),
-    selected_row: u32,
-    scroll_offset: u32,
-    visible_rows: u32,
-    loading: bool,
-    error_message: ?[]const u8,
-    filter_text: []const u8,
-    show_all_namespaces: bool,
-    sort_column: ?u8 = null,
-    sort_ascending: bool = true,
+    table: TableState(ReplicaSetInfo),
 
     // Sort column indices
     const COL_NAME: u8 = 0;
@@ -43,11 +33,12 @@ pub const ReplicaSetsView = struct {
         current: i32,
         ready: i32,
         age: []const u8,
+        allocator: std.mem.Allocator,
 
-        pub fn deinit(self: *ReplicaSetInfo, allocator: std.mem.Allocator) void {
-            allocator.free(self.name);
-            allocator.free(self.namespace);
-            allocator.free(self.age);
+        pub fn deinit(self: *ReplicaSetInfo) void {
+            self.allocator.free(self.name);
+            self.allocator.free(self.namespace);
+            self.allocator.free(self.age);
         }
 
         fn getName(self: *const ReplicaSetInfo) []const u8 { return self.name; }
@@ -55,65 +46,40 @@ pub const ReplicaSetsView = struct {
     };
 
     pub fn init(allocator: std.mem.Allocator, theme: *const theme_loader.ThemeColors, k8s_service: *K8sService) !ReplicaSetsView {
-        var view = ReplicaSetsView{
-            .allocator = allocator,
+        return ReplicaSetsView{
             .theme = theme,
             .k8s_service = k8s_service,
-            .items = std.ArrayListUnmanaged(ReplicaSetInfo){},
-            .filtered_indices = std.ArrayListUnmanaged(usize){},
-            .selected_row = 0,
-            .scroll_offset = 0,
-            .visible_rows = 0,
-            .loading = false,
-            .error_message = null,
-            .filter_text = "",
-            .show_all_namespaces = false,
+            .table = TableState(ReplicaSetInfo).init(allocator),
         };
-        try view.refresh();
-        return view;
     }
 
     pub fn deinit(self: *ReplicaSetsView) void {
-        for (self.items.items) |*item| {
-            item.deinit(self.allocator);
-        }
-        self.items.deinit(self.allocator);
-        self.filtered_indices.deinit(self.allocator);
-        if (self.error_message) |msg| {
-            self.allocator.free(msg);
-        }
+        self.table.deinit();
     }
 
     pub fn refresh(self: *ReplicaSetsView) !void {
-        self.loading = true;
-        defer self.loading = false;
+        self.table.loading = true;
+        defer self.table.loading = false;
+        self.table.clearItems();
 
-        if (self.error_message) |msg| {
-            self.allocator.free(msg);
-            self.error_message = null;
+        if (!self.k8s_service.isConnected()) {
+            try self.table.setError("Not connected to Kubernetes cluster");
+            return;
         }
 
-        for (self.items.items) |*item| {
-            item.deinit(self.allocator);
-        }
-        self.items.clearRetainingCapacity();
-
-        const replicasets = if (self.show_all_namespaces)
+        const replicasets = if (self.table.show_all_namespaces)
             self.k8s_service.listAllReplicaSets() catch |err| {
-                self.error_message = try std.fmt.allocPrint(self.allocator, "Failed to list replicasets: {}", .{err});
+                try self.table.setErrorFmt("Failed to list replicasets: {}", .{err});
                 return;
             }
         else
             self.k8s_service.listReplicaSets(null) catch |err| {
-                self.error_message = try std.fmt.allocPrint(self.allocator, "Failed to list replicasets: {}", .{err});
+                try self.table.setErrorFmt("Failed to list replicasets: {}", .{err});
                 return;
             };
-        defer self.allocator.free(replicasets);
+        defer self.table.allocator.free(replicasets);
 
         for (replicasets) |rs| {
-            const name = try self.allocator.dupe(u8, rs.metadata.name);
-            const namespace = try self.allocator.dupe(u8, rs.metadata.namespace orelse "default");
-
             const desired = if (rs.spec) |s| s.replicas orelse 0 else 0;
 
             // Extract status fields from JSON Value
@@ -135,54 +101,35 @@ pub const ReplicaSetsView = struct {
                 break :blk 0;
             } else 0;
 
-            const age = try age_util.calculateAge(self.allocator, rs.metadata.creationTimestamp);
-
-            try self.items.append(self.allocator, ReplicaSetInfo{
-                .name = name,
-                .namespace = namespace,
+            try self.table.appendItem(.{
+                .name = try self.table.allocator.dupe(u8, rs.metadata.name),
+                .namespace = try self.table.allocator.dupe(u8, rs.metadata.namespace orelse "default"),
                 .desired = desired,
                 .current = current,
                 .ready = ready,
-                .age = age,
+                .age = try age_util.calculateAge(self.table.allocator, rs.metadata.creationTimestamp),
+                .allocator = self.table.allocator,
             });
         }
 
-        // Rebuild filtered indices
-        try self.applyFilter(self.filter_text);
+        try self.applyFilter(self.table.filter_text);
     }
 
     pub fn getSelectedResourceInfo(self: *ReplicaSetsView) ?ResourceInfo {
-        if (self.filtered_indices.items.len == 0) return null;
-        if (self.selected_row >= self.filtered_indices.items.len) return null;
-        const idx = self.filtered_indices.items[self.selected_row];
-        const item = self.items.items[idx];
-        return ResourceInfo{
-            .name = item.name,
-            .namespace = item.namespace,
-        };
+        const item = self.table.getSelectedItem() orelse return null;
+        return ResourceInfo{ .name = item.name, .namespace = item.namespace };
     }
 
     pub fn applyFilter(self: *ReplicaSetsView, filter: []const u8) !void {
-        self.filter_text = filter;
-        try universal_filter.applyFilter(
-            ReplicaSetInfo,
-            self.allocator,
-            self.items.items,
-            &self.filtered_indices,
-            filter,
-            &self.selected_row,
-            &self.scroll_offset,
-            self.visible_rows,
-            replicasetMatchFn,
-        );
+        try self.table.applyFilter(filter, replicasetMatchFn);
         self.applySorting();
     }
 
     fn applySorting(self: *ReplicaSetsView) void {
-        if (self.sort_column) |col| {
+        if (self.table.sort_column) |col| {
             switch (col) {
-                COL_NAME => sort_util.sortFilteredIndices(ReplicaSetInfo, self.items.items, &self.filtered_indices, ReplicaSetInfo.getName, self.sort_ascending),
-                COL_AGE => sort_util.sortFilteredIndices(ReplicaSetInfo, self.items.items, &self.filtered_indices, ReplicaSetInfo.getAge, self.sort_ascending),
+                COL_NAME => self.table.sortBy(ReplicaSetInfo.getName),
+                COL_AGE => self.table.sortBy(ReplicaSetInfo.getAge),
                 else => {},
             }
         }
@@ -197,51 +144,66 @@ pub const ReplicaSetsView = struct {
         return View.create(ReplicaSetsView, self, &vtable);
     }
 
-    fn render(ptr: *anyopaque, term: *Terminal, x: u16, y: u16, width: u16, height: u16) !void {
+    const vtable = View.VTable{
+        .render = render,
+        .handleKey = handleKey,
+        .onShow = onShow,
+        .onHide = onHide,
+        .getName = getName,
+        .getHints = getHints,
+        .deinit = deinitView,
+        .applyFilter = vtableApplyFilter,
+        .clearFilter = vtableClearFilter,
+        .refresh = vtableRefresh,
+        .getSelectedResource = vtableGetSelectedResource,
+    };
+
+    fn vtableApplyFilter(ptr: *anyopaque, filter: []const u8) anyerror!void {
         const self: *ReplicaSetsView = @ptrCast(@alignCast(ptr));
-        _ = width;
+        try self.applyFilter(filter);
+    }
 
-        if (self.loading) {
-            try Theme.writeStringWithTheme(term, x, y, "Loading replicasets...", self.theme.main_fg, self.theme.main_bg);
-            return;
+    fn vtableClearFilter(ptr: *anyopaque) anyerror!bool {
+        const self: *ReplicaSetsView = @ptrCast(@alignCast(ptr));
+        if (self.table.filter_text.len > 0) {
+            try self.applyFilter("");
+            return true;
         }
+        return false;
+    }
 
-        if (self.error_message) |msg| {
-            try Theme.writeStringWithTheme(term, x, y, msg, self.theme.status_failed, self.theme.main_bg);
-            return;
-        }
+    fn vtableRefresh(ptr: *anyopaque) anyerror!void {
+        const self: *ReplicaSetsView = @ptrCast(@alignCast(ptr));
+        try self.refresh();
+    }
 
-        if (self.items.items.len == 0) {
-            const msg = if (self.show_all_namespaces) "No replicasets found in cluster" else "No replicasets in current namespace";
-            try Theme.writeStringWithTheme(term, x, y, msg, self.theme.main_fg, self.theme.main_bg);
-            return;
-        }
+    fn vtableGetSelectedResource(ptr: *anyopaque) ?ResourceInfo {
+        const self: *ReplicaSetsView = @ptrCast(@alignCast(ptr));
+        return self.getSelectedResourceInfo();
+    }
+
+    fn render(ptr: *anyopaque, term: *Terminal, x: u16, y: u16, _: u16, height: u16) !void {
+        const self: *ReplicaSetsView = @ptrCast(@alignCast(ptr));
+        self.table.visible_rows = if (height > 1) height - 1 else 0;
+
+        if (try self.table.renderStatus(term, x, y, self.theme)) return;
 
         // Header with sort indicators
-        const name_ind = sort_util.sortIndicator(self.sort_column, self.sort_ascending, COL_NAME);
-        const age_ind = sort_util.sortIndicator(self.sort_column, self.sort_ascending, COL_AGE);
+        const name_ind = sort_util.sortIndicator(self.table.sort_column, self.table.sort_ascending, COL_NAME);
+        const age_ind = sort_util.sortIndicator(self.table.sort_column, self.table.sort_ascending, COL_AGE);
         var hdr_buf: [128]u8 = undefined;
         const header = std.fmt.bufPrint(&hdr_buf, "  NAMESPACE             NAME{s: <28}DESIRED CURRENT READY AGE{s}", .{ name_ind, age_ind }) catch "  NAMESPACE             NAME                          DESIRED CURRENT READY AGE";
         try Theme.writeStringWithTheme(term, x, y, header, self.theme.title, self.theme.main_bg);
 
-        // Items
-        self.visible_rows = if (height > 1) height - 1 else 0;
-        var row: u16 = 0;
-        var idx: u32 = self.scroll_offset;
-
-        while (row < self.visible_rows and idx < self.filtered_indices.items.len) : ({
-            row += 1;
-            idx += 1;
-        }) {
-            const actual_idx = self.filtered_indices.items[idx];
-            const item = &self.items.items[actual_idx];
-            const is_selected = (idx == self.selected_row);
-
-            const fg_color = if (is_selected) self.theme.selected_fg else self.theme.main_fg;
-            const bg_color = if (is_selected) self.theme.selected_bg else self.theme.main_bg;
+        // Data rows
+        const range = self.table.getVisibleRange();
+        for (self.table.filtered_indices.items[range.start..range.end], 0..) |actual_idx, i| {
+            const item = self.table.items.items[actual_idx];
+            const colors = self.table.rowColors(i, self.theme);
+            const row_y = y + 1 + @as(u16, @intCast(i));
 
             const line = try std.fmt.allocPrint(
-                self.allocator,
+                self.table.allocator,
                 "  {s: <20} {s: <28} {d: >7} {d: >7} {d: >5} {s}",
                 .{
                     if (item.namespace.len > 20) item.namespace[0..20] else item.namespace,
@@ -252,122 +214,33 @@ pub const ReplicaSetsView = struct {
                     item.age,
                 },
             );
-            defer self.allocator.free(line);
-            try Theme.writeStringWithTheme(term, x, y + 1 + row, line, fg_color, bg_color);
+            defer self.table.allocator.free(line);
+            try Theme.writeStringWithTheme(term, x, row_y, line, colors.fg, colors.bg);
         }
-
-        // Clear remaining lines (optional - terminal typically handles this)
     }
 
     fn handleKey(ptr: *anyopaque, key: Key) !KeyResult {
         const self: *ReplicaSetsView = @ptrCast(@alignCast(ptr));
+
+        // Common navigation keys
+        if (self.table.handleNavigationKey(key)) |result| return result;
+
+        // View-specific keys
         switch (key) {
             .char => |c| switch (c) {
-                'j' => {
-                    if (self.selected_row + 1 < self.filtered_indices.items.len) {
-                        self.selected_row += 1;
-                        if (self.selected_row >= self.scroll_offset + self.visible_rows) {
-                            self.scroll_offset += 1;
-                        }
-                    }
-                    return .handled;
-                },
-                'k' => {
-                    if (self.selected_row > 0) {
-                        self.selected_row -= 1;
-                        if (self.selected_row < self.scroll_offset) {
-                            self.scroll_offset = self.selected_row;
-                        }
-                    }
-                    return .handled;
-                },
-                'g' => {
-                    self.selected_row = 0;
-                    self.scroll_offset = 0;
-                    return .handled;
-                },
-                'G' => {
-                    if (self.filtered_indices.items.len > 0) {
-                        self.selected_row = @intCast(self.filtered_indices.items.len - 1);
-                        if (self.selected_row >= self.visible_rows) {
-                            self.scroll_offset = self.selected_row - self.visible_rows + 1;
-                        }
-                    }
-                    return .handled;
-                },
                 'r' => {
-                    try self.refresh();
+                    self.refresh() catch |err| Logger.err("Failed to refresh replicasets: {}", .{err});
                     return .handled;
                 },
                 '0' => {
-                    self.show_all_namespaces = !self.show_all_namespaces;
-                    try self.refresh();
+                    self.table.show_all_namespaces = !self.table.show_all_namespaces;
+                    self.table.gotoTop();
+                    self.refresh() catch |err| Logger.err("Failed to refresh replicasets: {}", .{err});
                     return .handled;
                 },
-                'N' => {
-                    sort_util.toggleSort(&self.sort_column, &self.sort_ascending, COL_NAME);
-                    self.applySorting();
-                    return .handled;
-                },
-                'A' => {
-                    sort_util.toggleSort(&self.sort_column, &self.sort_ascending, COL_AGE);
-                    self.applySorting();
-                    return .handled;
-                },
-                'd' => return .request_describe,
-                'y' => return .request_yaml,
-                ':' => return .request_command_palette,
-                '/' => return .request_filter,
+                'N' => { self.table.toggleSort(COL_NAME); self.applySorting(); return .handled; },
+                'A' => { self.table.toggleSort(COL_AGE); self.applySorting(); return .handled; },
                 else => return .not_handled,
-            },
-            .down => {
-                if (self.selected_row + 1 < self.filtered_indices.items.len) {
-                    self.selected_row += 1;
-                    if (self.selected_row >= self.scroll_offset + self.visible_rows) {
-                        self.scroll_offset += 1;
-                    }
-                }
-                return .handled;
-            },
-            .up => {
-                if (self.selected_row > 0) {
-                    self.selected_row -= 1;
-                    if (self.selected_row < self.scroll_offset) {
-                        self.scroll_offset = self.selected_row;
-                    }
-                }
-                return .handled;
-            },
-            .page_down => {
-                const items_len: u32 = @intCast(self.filtered_indices.items.len);
-                const jump = @min(self.visible_rows, items_len -| self.selected_row -| 1);
-                self.selected_row += jump;
-                if (self.selected_row >= self.scroll_offset + self.visible_rows) {
-                    self.scroll_offset = self.selected_row - self.visible_rows + 1;
-                }
-                return .handled;
-            },
-            .page_up => {
-                const jump = @min(self.visible_rows, self.selected_row);
-                self.selected_row -= jump;
-                if (self.selected_row < self.scroll_offset) {
-                    self.scroll_offset = self.selected_row;
-                }
-                return .handled;
-            },
-            .home => {
-                self.selected_row = 0;
-                self.scroll_offset = 0;
-                return .handled;
-            },
-            .end => {
-                if (self.filtered_indices.items.len > 0) {
-                    self.selected_row = @intCast(self.filtered_indices.items.len - 1);
-                    if (self.selected_row >= self.visible_rows) {
-                        self.scroll_offset = self.selected_row - self.visible_rows + 1;
-                    }
-                }
-                return .handled;
             },
             else => return .not_handled,
         }
@@ -375,23 +248,21 @@ pub const ReplicaSetsView = struct {
 
     fn onShow(ptr: *anyopaque) void {
         const self: *ReplicaSetsView = @ptrCast(@alignCast(ptr));
-        Logger.info("ReplicaSetsView shown", .{});
         self.refresh() catch |err| {
-            Logger.err("Failed to refresh ReplicaSets on show: {}", .{err});
+            Logger.err("Failed to refresh replicasets: {any}", .{err});
+            if (self.table.error_message == null) {
+                self.table.setError("Unexpected error during refresh") catch {};
+            }
         };
     }
 
-    fn onHide(ptr: *anyopaque) void {
-        _ = ptr;
-    }
+    fn onHide(_: *anyopaque) void {}
 
-    fn getName(ptr: *anyopaque) []const u8 {
-        _ = ptr;
+    fn getName(_: *anyopaque) []const u8 {
         return "replicasets";
     }
 
-    fn getHints(ptr: *anyopaque) hints_model.HintConfig {
-        _ = ptr;
+    fn getHints(_: *anyopaque) hints_model.HintConfig {
         return hints_model.resourceHints();
     }
 
@@ -399,14 +270,4 @@ pub const ReplicaSetsView = struct {
         const self: *ReplicaSetsView = @ptrCast(@alignCast(ptr));
         self.deinit();
     }
-
-    const vtable = View.VTable{
-        .render = render,
-        .handleKey = handleKey,
-        .onShow = onShow,
-        .onHide = onHide,
-        .getName = getName,
-        .getHints = getHints,
-        .deinit = deinitView,
-    };
 };

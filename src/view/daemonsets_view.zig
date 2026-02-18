@@ -5,36 +5,22 @@ const View = @import("../viewmodel/view.zig").View;
 const KeyResult = View.KeyResult;
 const Key = @import("../core/terminal.zig").Key;
 const Terminal = @import("../core/terminal.zig").Terminal;
-const Theme = @import("../theme.zig");
 const theme_loader = @import("../model/theme_loader.zig");
+const Theme = theme_loader;
 const hints_model = @import("../model/hints.zig");
 const k8s_service_mod = @import("../services/k8s_service.zig");
 const K8sService = k8s_service_mod.K8sService;
-const ResourceInfo = k8s_service_mod.ResourceInfo;
+const view_mod = @import("../viewmodel/view.zig");
+const ResourceInfo = view_mod.ResourceInfo;
 const Logger = @import("../core/logger.zig");
-const universal_filter = @import("../viewmodel/filter.zig");
 const sort_util = @import("../viewmodel/sort.zig");
 const age_util = @import("../viewmodel/age.zig");
+const TableState = @import("../ui/table_state.zig").TableState;
 
 pub const DaemonSetsView = struct {
-    allocator: std.mem.Allocator,
     theme: *const theme_loader.ThemeColors,
     k8s_service: *K8sService,
-
-    // State
-    items: std.ArrayListUnmanaged(DaemonSetInfo),
-    filtered_indices: std.ArrayListUnmanaged(usize),
-    selected_row: u32,
-    scroll_offset: u32,
-    visible_rows: u32,
-    loading: bool,
-    error_message: ?[]const u8,
-
-    // Filtering
-    filter_text: []const u8,
-    show_all_namespaces: bool,
-    sort_column: ?u8 = null,
-    sort_ascending: bool = true,
+    table: TableState(DaemonSetInfo),
 
     // Sort column indices
     const COL_NAME: u8 = 0;
@@ -48,11 +34,12 @@ pub const DaemonSetsView = struct {
         ready: i32,
         up_to_date: i32,
         age: []const u8,
+        allocator: std.mem.Allocator,
 
-        pub fn deinit(self: *DaemonSetInfo, allocator: std.mem.Allocator) void {
-            allocator.free(self.name);
-            allocator.free(self.namespace);
-            allocator.free(self.age);
+        pub fn deinit(self: *DaemonSetInfo) void {
+            self.allocator.free(self.name);
+            self.allocator.free(self.namespace);
+            self.allocator.free(self.age);
         }
 
         fn getName(self: *const DaemonSetInfo) []const u8 { return self.name; }
@@ -60,68 +47,40 @@ pub const DaemonSetsView = struct {
     };
 
     pub fn init(allocator: std.mem.Allocator, theme: *const theme_loader.ThemeColors, k8s_service: *K8sService) !DaemonSetsView {
-        var view = DaemonSetsView{
-            .allocator = allocator,
+        return DaemonSetsView{
             .theme = theme,
             .k8s_service = k8s_service,
-            .items = std.ArrayListUnmanaged(DaemonSetInfo){},
-            .filtered_indices = std.ArrayListUnmanaged(usize){},
-            .selected_row = 0,
-            .scroll_offset = 0,
-            .visible_rows = 0,
-            .loading = false,
-            .error_message = null,
-            .filter_text = "",
-            .show_all_namespaces = false,
+            .table = TableState(DaemonSetInfo).init(allocator),
         };
-
-        try view.refresh();
-        return view;
     }
 
     pub fn deinit(self: *DaemonSetsView) void {
-        for (self.items.items) |*item| {
-            item.deinit(self.allocator);
-        }
-        self.items.deinit(self.allocator);
-        self.filtered_indices.deinit(self.allocator);
-        if (self.error_message) |msg| {
-            self.allocator.free(msg);
-        }
+        self.table.deinit();
     }
 
     pub fn refresh(self: *DaemonSetsView) !void {
-        self.loading = true;
-        defer self.loading = false;
+        self.table.loading = true;
+        defer self.table.loading = false;
+        self.table.clearItems();
 
-        if (self.error_message) |msg| {
-            self.allocator.free(msg);
-            self.error_message = null;
+        if (!self.k8s_service.isConnected()) {
+            try self.table.setError("Not connected to Kubernetes cluster");
+            return;
         }
 
-        for (self.items.items) |*item| {
-            item.deinit(self.allocator);
-        }
-        self.items.clearRetainingCapacity();
-
-        const daemonsets = if (self.show_all_namespaces)
+        const daemonsets = if (self.table.show_all_namespaces)
             self.k8s_service.listAllDaemonSets() catch |err| {
-                self.error_message = try std.fmt.allocPrint(self.allocator, "Failed to list daemonsets: {}", .{err});
-                Logger.err("Failed to list all daemonsets: {}", .{err});
+                try self.table.setErrorFmt("Failed to list daemonsets: {}", .{err});
                 return;
             }
         else
             self.k8s_service.listDaemonSets(null) catch |err| {
-                self.error_message = try std.fmt.allocPrint(self.allocator, "Failed to list daemonsets: {}", .{err});
-                Logger.err("Failed to list daemonsets: {}", .{err});
+                try self.table.setErrorFmt("Failed to list daemonsets: {}", .{err});
                 return;
             };
-        defer self.allocator.free(daemonsets);
+        defer self.table.allocator.free(daemonsets);
 
         for (daemonsets) |ds| {
-            const name = try self.allocator.dupe(u8, ds.metadata.name);
-            const namespace = try self.allocator.dupe(u8, ds.metadata.namespace orelse "default");
-
             // Extract status fields from JSON Value
             const desired: i32 = if (ds.status) |status_json| blk: {
                 if (status_json == .object) {
@@ -159,55 +118,36 @@ pub const DaemonSetsView = struct {
                 break :blk 0;
             } else 0;
 
-            const age = try age_util.calculateAge(self.allocator, ds.metadata.creationTimestamp);
-
-            try self.items.append(self.allocator, DaemonSetInfo{
-                .name = name,
-                .namespace = namespace,
+            try self.table.appendItem(.{
+                .name = try self.table.allocator.dupe(u8, ds.metadata.name),
+                .namespace = try self.table.allocator.dupe(u8, ds.metadata.namespace orelse "default"),
                 .desired = desired,
                 .current = current,
                 .ready = ready,
                 .up_to_date = up_to_date,
-                .age = age,
+                .age = try age_util.calculateAge(self.table.allocator, ds.metadata.creationTimestamp),
+                .allocator = self.table.allocator,
             });
         }
 
-        // Rebuild filtered indices
-        try self.applyFilter(self.filter_text);
+        try self.applyFilter(self.table.filter_text);
     }
 
     pub fn getSelectedResourceInfo(self: *DaemonSetsView) ?ResourceInfo {
-        if (self.filtered_indices.items.len == 0) return null;
-        if (self.selected_row >= self.filtered_indices.items.len) return null;
-        const idx = self.filtered_indices.items[self.selected_row];
-        const item = self.items.items[idx];
-        return ResourceInfo{
-            .name = item.name,
-            .namespace = item.namespace,
-        };
+        const item = self.table.getSelectedItem() orelse return null;
+        return ResourceInfo{ .name = item.name, .namespace = item.namespace };
     }
 
     pub fn applyFilter(self: *DaemonSetsView, filter: []const u8) !void {
-        self.filter_text = filter;
-        try universal_filter.applyFilter(
-            DaemonSetInfo,
-            self.allocator,
-            self.items.items,
-            &self.filtered_indices,
-            filter,
-            &self.selected_row,
-            &self.scroll_offset,
-            self.visible_rows,
-            daemonsetMatchFn,
-        );
+        try self.table.applyFilter(filter, daemonsetMatchFn);
         self.applySorting();
     }
 
     fn applySorting(self: *DaemonSetsView) void {
-        if (self.sort_column) |col| {
+        if (self.table.sort_column) |col| {
             switch (col) {
-                COL_NAME => sort_util.sortFilteredIndices(DaemonSetInfo, self.items.items, &self.filtered_indices, DaemonSetInfo.getName, self.sort_ascending),
-                COL_AGE => sort_util.sortFilteredIndices(DaemonSetInfo, self.items.items, &self.filtered_indices, DaemonSetInfo.getAge, self.sort_ascending),
+                COL_NAME => self.table.sortBy(DaemonSetInfo.getName),
+                COL_AGE => self.table.sortBy(DaemonSetInfo.getAge),
                 else => {},
             }
         }
@@ -222,54 +162,67 @@ pub const DaemonSetsView = struct {
         return View.create(DaemonSetsView, self, &vtable);
     }
 
+    const vtable = View.VTable{
+        .render = render,
+        .handleKey = handleKey,
+        .onShow = onShow,
+        .onHide = onHide,
+        .getName = getName,
+        .getHints = getHints,
+        .deinit = deinitView,
+        .applyFilter = vtableApplyFilter,
+        .clearFilter = vtableClearFilter,
+        .refresh = vtableRefresh,
+        .getSelectedResource = vtableGetSelectedResource,
+    };
+
+    fn vtableApplyFilter(ptr: *anyopaque, filter: []const u8) anyerror!void {
+        const self: *DaemonSetsView = @ptrCast(@alignCast(ptr));
+        try self.applyFilter(filter);
+    }
+
+    fn vtableClearFilter(ptr: *anyopaque) anyerror!bool {
+        const self: *DaemonSetsView = @ptrCast(@alignCast(ptr));
+        if (self.table.filter_text.len > 0) {
+            try self.applyFilter("");
+            return true;
+        }
+        return false;
+    }
+
+    fn vtableRefresh(ptr: *anyopaque) anyerror!void {
+        const self: *DaemonSetsView = @ptrCast(@alignCast(ptr));
+        try self.refresh();
+    }
+
+    fn vtableGetSelectedResource(ptr: *anyopaque) ?ResourceInfo {
+        const self: *DaemonSetsView = @ptrCast(@alignCast(ptr));
+        return self.getSelectedResourceInfo();
+    }
+
     fn render(ptr: *anyopaque, term: *Terminal, x: u16, y: u16, width: u16, height: u16) !void {
         const self: *DaemonSetsView = @ptrCast(@alignCast(ptr));
         _ = width;
+        self.table.visible_rows = if (height > 1) height - 1 else 0;
 
-        if (self.loading) {
-            try Theme.writeStringWithTheme(term, x, y, "Loading daemonsets...", self.theme.main_fg, self.theme.main_bg);
-            return;
-        }
+        if (try self.table.renderStatus(term, x, y, self.theme)) return;
 
-        if (self.error_message) |msg| {
-            try Theme.writeStringWithTheme(term, x, y, msg, self.theme.status_failed, self.theme.main_bg);
-            return;
-        }
-
-        if (self.items.items.len == 0) {
-            const msg = if (self.show_all_namespaces)
-                "No daemonsets found in cluster"
-            else
-                "No daemonsets in current namespace";
-            try Theme.writeStringWithTheme(term, x, y, msg, self.theme.main_fg, self.theme.main_bg);
-            return;
-        }
-
-        // Render header with sort indicators
-        const name_ind = sort_util.sortIndicator(self.sort_column, self.sort_ascending, COL_NAME);
-        const age_ind = sort_util.sortIndicator(self.sort_column, self.sort_ascending, COL_AGE);
+        // Header with sort indicators
+        const name_ind = sort_util.sortIndicator(self.table.sort_column, self.table.sort_ascending, COL_NAME);
+        const age_ind = sort_util.sortIndicator(self.table.sort_column, self.table.sort_ascending, COL_AGE);
         var hdr_buf: [128]u8 = undefined;
         const header = std.fmt.bufPrint(&hdr_buf, "  NAMESPACE             NAME{s: <22}DESIRED CURRENT READY UP-TO-DATE AGE{s}", .{ name_ind, age_ind }) catch "  NAMESPACE             NAME                    DESIRED CURRENT READY UP-TO-DATE AGE";
         try Theme.writeStringWithTheme(term, x, y, header, self.theme.title, self.theme.main_bg);
 
-        // Render items
-        self.visible_rows = if (height > 1) height - 1 else 0;
-        var row: u16 = 0;
-        var idx: u32 = self.scroll_offset;
-
-        while (row < self.visible_rows and idx < self.filtered_indices.items.len) : ({
-            row += 1;
-            idx += 1;
-        }) {
-            const actual_idx = self.filtered_indices.items[idx];
-            const item = &self.items.items[actual_idx];
-            const is_selected = (idx == self.selected_row);
-
-            const fg_color = if (is_selected) self.theme.selected_fg else self.theme.main_fg;
-            const bg_color = if (is_selected) self.theme.selected_bg else self.theme.main_bg;
+        // Data rows
+        const range = self.table.getVisibleRange();
+        for (self.table.filtered_indices.items[range.start..range.end], 0..) |actual_idx, i| {
+            const item = self.table.items.items[actual_idx];
+            const colors = self.table.rowColors(i, self.theme);
+            const row_y = y + 1 + @as(u16, @intCast(i));
 
             const line = try std.fmt.allocPrint(
-                self.allocator,
+                self.table.allocator,
                 "  {s: <20} {s: <22} {d: >7} {d: >7} {d: >5} {d: >10} {s}",
                 .{
                     if (item.namespace.len > 20) item.namespace[0..20] else item.namespace,
@@ -281,124 +234,34 @@ pub const DaemonSetsView = struct {
                     item.age,
                 },
             );
-            defer self.allocator.free(line);
+            defer self.table.allocator.free(line);
 
-            try Theme.writeStringWithTheme(term, x, y + 1 + row, line, fg_color, bg_color);
+            try Theme.writeStringWithTheme(term, x, row_y, line, colors.fg, colors.bg);
         }
-
-        // Clear remaining lines (optional - terminal typically handles this)
     }
 
     fn handleKey(ptr: *anyopaque, key: Key) !KeyResult {
         const self: *DaemonSetsView = @ptrCast(@alignCast(ptr));
 
+        // Common navigation keys
+        if (self.table.handleNavigationKey(key)) |result| return result;
+
+        // View-specific keys
         switch (key) {
             .char => |c| switch (c) {
-                'j' => {
-                    if (self.selected_row + 1 < self.filtered_indices.items.len) {
-                        self.selected_row += 1;
-                        if (self.selected_row >= self.scroll_offset + self.visible_rows) {
-                            self.scroll_offset += 1;
-                        }
-                    }
-                    return .handled;
-                },
-                'k' => {
-                    if (self.selected_row > 0) {
-                        self.selected_row -= 1;
-                        if (self.selected_row < self.scroll_offset) {
-                            self.scroll_offset = self.selected_row;
-                        }
-                    }
-                    return .handled;
-                },
-                'g' => {
-                    self.selected_row = 0;
-                    self.scroll_offset = 0;
-                    return .handled;
-                },
-                'G' => {
-                    if (self.filtered_indices.items.len > 0) {
-                        self.selected_row = @intCast(self.filtered_indices.items.len - 1);
-                        if (self.selected_row >= self.visible_rows) {
-                            self.scroll_offset = self.selected_row - self.visible_rows + 1;
-                        }
-                    }
-                    return .handled;
-                },
                 'r' => {
-                    try self.refresh();
+                    self.refresh() catch |err| Logger.err("Failed to refresh daemonsets: {}", .{err});
                     return .handled;
                 },
                 '0' => {
-                    self.show_all_namespaces = !self.show_all_namespaces;
-                    try self.refresh();
+                    self.table.show_all_namespaces = !self.table.show_all_namespaces;
+                    self.table.gotoTop();
+                    self.refresh() catch |err| Logger.err("Failed to refresh daemonsets: {}", .{err});
                     return .handled;
                 },
-                'N' => {
-                    sort_util.toggleSort(&self.sort_column, &self.sort_ascending, COL_NAME);
-                    self.applySorting();
-                    return .handled;
-                },
-                'A' => {
-                    sort_util.toggleSort(&self.sort_column, &self.sort_ascending, COL_AGE);
-                    self.applySorting();
-                    return .handled;
-                },
-                'd' => return .request_describe,
-                'y' => return .request_yaml,
-                ':' => return .request_command_palette,
-                '/' => return .request_filter,
+                'N' => { self.table.toggleSort(COL_NAME); self.applySorting(); return .handled; },
+                'A' => { self.table.toggleSort(COL_AGE); self.applySorting(); return .handled; },
                 else => return .not_handled,
-            },
-            .down => {
-                if (self.selected_row + 1 < self.filtered_indices.items.len) {
-                    self.selected_row += 1;
-                    if (self.selected_row >= self.scroll_offset + self.visible_rows) {
-                        self.scroll_offset += 1;
-                    }
-                }
-                return .handled;
-            },
-            .up => {
-                if (self.selected_row > 0) {
-                    self.selected_row -= 1;
-                    if (self.selected_row < self.scroll_offset) {
-                        self.scroll_offset = self.selected_row;
-                    }
-                }
-                return .handled;
-            },
-            .page_down => {
-                const items_len: u32 = @intCast(self.filtered_indices.items.len);
-                const jump = @min(self.visible_rows, items_len -| self.selected_row -| 1);
-                self.selected_row += jump;
-                if (self.selected_row >= self.scroll_offset + self.visible_rows) {
-                    self.scroll_offset = self.selected_row - self.visible_rows + 1;
-                }
-                return .handled;
-            },
-            .page_up => {
-                const jump = @min(self.visible_rows, self.selected_row);
-                self.selected_row -= jump;
-                if (self.selected_row < self.scroll_offset) {
-                    self.scroll_offset = self.selected_row;
-                }
-                return .handled;
-            },
-            .home => {
-                self.selected_row = 0;
-                self.scroll_offset = 0;
-                return .handled;
-            },
-            .end => {
-                if (self.filtered_indices.items.len > 0) {
-                    self.selected_row = @intCast(self.filtered_indices.items.len - 1);
-                    if (self.selected_row >= self.visible_rows) {
-                        self.scroll_offset = self.selected_row - self.visible_rows + 1;
-                    }
-                }
-                return .handled;
             },
             else => return .not_handled,
         }
@@ -406,23 +269,21 @@ pub const DaemonSetsView = struct {
 
     fn onShow(ptr: *anyopaque) void {
         const self: *DaemonSetsView = @ptrCast(@alignCast(ptr));
-        Logger.info("DaemonSetsView shown", .{});
         self.refresh() catch |err| {
-            Logger.err("Failed to refresh DaemonSets on show: {}", .{err});
+            Logger.err("Failed to refresh daemonsets: {any}", .{err});
+            if (self.table.error_message == null) {
+                self.table.setError("Unexpected error during refresh") catch {};
+            }
         };
     }
 
-    fn onHide(ptr: *anyopaque) void {
-        _ = ptr;
-    }
+    fn onHide(_: *anyopaque) void {}
 
-    fn getName(ptr: *anyopaque) []const u8 {
-        _ = ptr;
+    fn getName(_: *anyopaque) []const u8 {
         return "daemonsets";
     }
 
-    fn getHints(ptr: *anyopaque) hints_model.HintConfig {
-        _ = ptr;
+    fn getHints(_: *anyopaque) hints_model.HintConfig {
         return hints_model.resourceHints();
     }
 
@@ -430,14 +291,4 @@ pub const DaemonSetsView = struct {
         const self: *DaemonSetsView = @ptrCast(@alignCast(ptr));
         self.deinit();
     }
-
-    const vtable = View.VTable{
-        .render = render,
-        .handleKey = handleKey,
-        .onShow = onShow,
-        .onHide = onHide,
-        .getName = getName,
-        .getHints = getHints,
-        .deinit = deinitView,
-    };
 };

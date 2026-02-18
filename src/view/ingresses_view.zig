@@ -1,37 +1,27 @@
 /// IngressesView - View for Kubernetes Ingresses
 const std = @import("std");
 const klient = @import("klient");
-const View = @import("../viewmodel/view.zig").View;
+const view_mod = @import("../viewmodel/view.zig");
+const View = view_mod.View;
 const KeyResult = View.KeyResult;
 const Key = @import("../core/terminal.zig").Key;
 const Terminal = @import("../core/terminal.zig").Terminal;
-const Theme = @import("../theme.zig");
+const Theme = theme_loader;
 const theme_loader = @import("../model/theme_loader.zig");
 const hints_model = @import("../model/hints.zig");
 const k8s_service_mod = @import("../services/k8s_service.zig");
 const K8sService = k8s_service_mod.K8sService;
-const ResourceInfo = k8s_service_mod.ResourceInfo;
-const universal_filter = @import("../viewmodel/filter.zig");
+const ResourceInfo = view_mod.ResourceInfo;
+
 const sort_util = @import("../viewmodel/sort.zig");
 const age_util = @import("../viewmodel/age.zig");
 const Logger = @import("../core/logger.zig");
+const TableState = @import("../ui/table_state.zig").TableState;
 
 pub const IngressesView = struct {
-    allocator: std.mem.Allocator,
     theme: *const theme_loader.ThemeColors,
     k8s_service: *K8sService,
-
-    items: std.ArrayListUnmanaged(IngressInfo),
-    filtered_indices: std.ArrayListUnmanaged(usize),
-    selected_row: u32,
-    scroll_offset: u32,
-    visible_rows: u32,
-    loading: bool,
-    error_message: ?[]const u8,
-    filter_text: []const u8,
-    show_all_namespaces: bool,
-    sort_column: ?u8 = null,
-    sort_ascending: bool = true,
+    table: TableState(IngressInfo),
 
     // Sort column indices
     const COL_NAME: u8 = 0;
@@ -44,14 +34,15 @@ pub const IngressesView = struct {
         hosts: []const u8,
         address: []const u8,
         age: []const u8,
+        allocator: std.mem.Allocator,
 
-        pub fn deinit(self: *IngressInfo, allocator: std.mem.Allocator) void {
-            allocator.free(self.name);
-            allocator.free(self.namespace);
-            allocator.free(self.class);
-            allocator.free(self.hosts);
-            allocator.free(self.address);
-            allocator.free(self.age);
+        pub fn deinit(self: *IngressInfo) void {
+            self.allocator.free(self.name);
+            self.allocator.free(self.namespace);
+            self.allocator.free(self.class);
+            self.allocator.free(self.hosts);
+            self.allocator.free(self.address);
+            self.allocator.free(self.age);
         }
 
         fn getName(self: *const IngressInfo) []const u8 { return self.name; }
@@ -60,114 +51,68 @@ pub const IngressesView = struct {
 
     pub fn init(allocator: std.mem.Allocator, theme: *const theme_loader.ThemeColors, k8s_service: *K8sService) !IngressesView {
         return IngressesView{
-            .allocator = allocator,
             .theme = theme,
             .k8s_service = k8s_service,
-            .items = .{},
-            .filtered_indices = std.ArrayListUnmanaged(usize){},
-            .selected_row = 0,
-            .scroll_offset = 0,
-            .visible_rows = 0,
-            .loading = false,
-            .error_message = null,
-            .filter_text = "",
-            .show_all_namespaces = true,
+            .table = TableState(IngressInfo).init(allocator),
         };
     }
 
     pub fn deinit(self: *IngressesView) void {
-        for (self.items.items) |*item| {
-            item.deinit(self.allocator);
-        }
-        self.items.deinit(self.allocator);
-        self.filtered_indices.deinit(self.allocator);
-        if (self.error_message) |msg| {
-            self.allocator.free(msg);
-        }
+        self.table.deinit();
     }
 
     pub fn refresh(self: *IngressesView) !void {
-        self.loading = true;
-        if (self.error_message) |msg| {
-            self.allocator.free(msg);
-            self.error_message = null;
-        }
-        for (self.items.items) |*item| {
-            item.deinit(self.allocator);
-        }
-        self.items.clearRetainingCapacity();
+        self.table.loading = true;
+        defer self.table.loading = false;
+        self.table.clearItems();
 
         if (!self.k8s_service.isConnected()) {
-            self.error_message = try self.allocator.dupe(u8, "Not connected to Kubernetes cluster");
+            try self.table.setError("Not connected to Kubernetes cluster");
             return;
         }
 
-        const ingresses = if (self.show_all_namespaces)
+        const ingresses = if (self.table.show_all_namespaces)
             self.k8s_service.listAllIngresses() catch |err| {
-                self.error_message = try std.fmt.allocPrint(self.allocator, "Failed to list ingresses: {}", .{err});
+                try self.table.setErrorFmt("Failed to list ingresses: {}", .{err});
                 return;
             }
         else
             self.k8s_service.listIngresses(null) catch |err| {
-                self.error_message = try std.fmt.allocPrint(self.allocator, "Failed to list ingresses: {}", .{err});
+                try self.table.setErrorFmt("Failed to list ingresses: {}", .{err});
                 return;
             };
-        defer self.allocator.free(ingresses);
+        defer self.table.allocator.free(ingresses);
 
         for (ingresses) |ing| {
-            const name = try self.allocator.dupe(u8, ing.metadata.name);
-            const namespace = try self.allocator.dupe(u8, ing.metadata.namespace orelse "default");
-            const class = try self.allocator.dupe(u8, "nginx");
-            const hosts = try self.allocator.dupe(u8, "*");
-            const address = try self.allocator.dupe(u8, "10.0.0.1");
-            const age = try age_util.calculateAge(self.allocator, ing.metadata.creationTimestamp);
-
-            try self.items.append(self.allocator, IngressInfo{
-                .name = name,
-                .namespace = namespace,
-                .class = class,
-                .hosts = hosts,
-                .address = address,
-                .age = age,
+            try self.table.appendItem(.{
+                .name = try self.table.allocator.dupe(u8, ing.metadata.name),
+                .namespace = try self.table.allocator.dupe(u8, ing.metadata.namespace orelse "default"),
+                .class = try self.table.allocator.dupe(u8, "nginx"),
+                .hosts = try self.table.allocator.dupe(u8, "*"),
+                .address = try self.table.allocator.dupe(u8, "10.0.0.1"),
+                .age = try age_util.calculateAge(self.table.allocator, ing.metadata.creationTimestamp),
+                .allocator = self.table.allocator,
             });
         }
 
-        self.loading = false;
-        try self.applyFilter(self.filter_text);
+        try self.applyFilter(self.table.filter_text);
     }
 
     pub fn getSelectedResourceInfo(self: *IngressesView) ?ResourceInfo {
-        if (self.filtered_indices.items.len == 0) return null;
-        if (self.selected_row >= self.filtered_indices.items.len) return null;
-        const idx = self.filtered_indices.items[self.selected_row];
-        const item = self.items.items[idx];
-        return ResourceInfo{
-            .name = item.name,
-            .namespace = item.namespace,
-        };
+        const item = self.table.getSelectedItem() orelse return null;
+        return ResourceInfo{ .name = item.name, .namespace = item.namespace };
     }
 
     pub fn applyFilter(self: *IngressesView, filter: []const u8) !void {
-        self.filter_text = filter;
-        try universal_filter.applyFilter(
-            IngressInfo,
-            self.allocator,
-            self.items.items,
-            &self.filtered_indices,
-            filter,
-            &self.selected_row,
-            &self.scroll_offset,
-            self.visible_rows,
-            ingressMatchFn,
-        );
+        try self.table.applyFilter(filter, ingressMatchFn);
         self.applySorting();
     }
 
     fn applySorting(self: *IngressesView) void {
-        if (self.sort_column) |col| {
+        if (self.table.sort_column) |col| {
             switch (col) {
-                COL_NAME => sort_util.sortFilteredIndices(IngressInfo, self.items.items, &self.filtered_indices, IngressInfo.getName, self.sort_ascending),
-                COL_AGE => sort_util.sortFilteredIndices(IngressInfo, self.items.items, &self.filtered_indices, IngressInfo.getAge, self.sort_ascending),
+                COL_NAME => self.table.sortBy(IngressInfo.getName),
+                COL_AGE => self.table.sortBy(IngressInfo.getAge),
                 else => {},
             }
         }
@@ -182,27 +127,53 @@ pub const IngressesView = struct {
         return View.create(IngressesView, self, &vtable);
     }
 
-    fn render(ptr: *anyopaque, term: *Terminal, x: u16, y: u16, width: u16, height: u16) !void {
+    const vtable = View.VTable{
+        .render = render,
+        .handleKey = handleKey,
+        .onShow = onShow,
+        .onHide = onHide,
+        .getName = getName,
+        .getHints = getHints,
+        .deinit = deinitView,
+        .applyFilter = vtableApplyFilter,
+        .clearFilter = vtableClearFilter,
+        .refresh = vtableRefresh,
+        .getSelectedResource = vtableGetSelectedResource,
+    };
+
+    fn vtableApplyFilter(ptr: *anyopaque, filter: []const u8) anyerror!void {
         const self: *IngressesView = @ptrCast(@alignCast(ptr));
-        _ = width;
-        self.visible_rows = if (height > 1) height - 1 else 0;
+        try self.applyFilter(filter);
+    }
 
-        if (self.loading) {
-            try Theme.writeStringWithTheme(term, x, y, "Loading ingresses...", self.theme.main_fg, self.theme.main_bg);
-            return;
+    fn vtableClearFilter(ptr: *anyopaque) anyerror!bool {
+        const self: *IngressesView = @ptrCast(@alignCast(ptr));
+        if (self.table.filter_text.len > 0) {
+            try self.applyFilter("");
+            return true;
         }
-        if (self.error_message) |msg| {
-            try Theme.writeStringWithTheme(term, x, y, msg, self.theme.status_failed, self.theme.main_bg);
-            return;
-        }
-        if (self.filtered_indices.items.len == 0) {
-            const msg = if (self.show_all_namespaces) "No ingresses found in cluster" else "No ingresses in current namespace";
-            try Theme.writeStringWithTheme(term, x, y, msg, self.theme.main_fg, self.theme.main_bg);
-            return;
-        }
+        return false;
+    }
 
-        const name_ind = sort_util.sortIndicator(self.sort_column, self.sort_ascending, COL_NAME);
-        const age_ind = sort_util.sortIndicator(self.sort_column, self.sort_ascending, COL_AGE);
+    fn vtableRefresh(ptr: *anyopaque) anyerror!void {
+        const self: *IngressesView = @ptrCast(@alignCast(ptr));
+        try self.refresh();
+    }
+
+    fn vtableGetSelectedResource(ptr: *anyopaque) ?ResourceInfo {
+        const self: *IngressesView = @ptrCast(@alignCast(ptr));
+        return self.getSelectedResourceInfo();
+    }
+
+    fn render(ptr: *anyopaque, term: *Terminal, x: u16, y: u16, _: u16, height: u16) !void {
+        const self: *IngressesView = @ptrCast(@alignCast(ptr));
+        self.table.visible_rows = if (height > 1) height - 1 else 0;
+
+        if (try self.table.renderStatus(term, x, y, self.theme)) return;
+
+        // Header row with sort indicators
+        const name_ind = sort_util.sortIndicator(self.table.sort_column, self.table.sort_ascending, COL_NAME);
+        const age_ind = sort_util.sortIndicator(self.table.sort_column, self.table.sort_ascending, COL_AGE);
         var name_hdr_buf: [32]u8 = undefined;
         var age_hdr_buf: [16]u8 = undefined;
         const name_hdr = std.fmt.bufPrint(&name_hdr_buf, "NAME{s}", .{name_ind}) catch "NAME";
@@ -211,107 +182,44 @@ pub const IngressesView = struct {
         const header = std.fmt.bufPrint(&hdr_buf, "  NAMESPACE             {s: <22}CLASS      HOSTS      ADDRESS       {s}", .{ name_hdr, age_hdr }) catch "  NAMESPACE             NAME                  CLASS      HOSTS      ADDRESS       AGE";
         try Theme.writeStringWithTheme(term, x, y, header, self.theme.title, self.theme.main_bg);
 
-        const start_idx = self.scroll_offset;
-        const end_idx = @min(start_idx + self.visible_rows, self.filtered_indices.items.len);
-        var row: u16 = 0;
+        // Data rows
+        const range = self.table.getVisibleRange();
+        for (self.table.filtered_indices.items[range.start..range.end], 0..) |item_idx, i| {
+            const item = self.table.items.items[item_idx];
+            const colors = self.table.rowColors(i, self.theme);
+            const row_y = y + 1 + @as(u16, @intCast(i));
 
-        for (start_idx..end_idx) |fi| {
-            const item_idx = self.filtered_indices.items[fi];
-            const item = &self.items.items[item_idx];
-            const is_selected = (fi == self.selected_row);
-            const fg_color = if (is_selected) self.theme.selected_fg else self.theme.main_fg;
-            const bg_color = if (is_selected) self.theme.selected_bg else self.theme.main_bg;
-
-            const line = try std.fmt.allocPrint(
-                self.allocator,
-                "  {s: <20} {s: <20} {s: <10} {s: <10} {s: <13} {s}",
-                .{
-                    if (item.namespace.len > 20) item.namespace[0..20] else item.namespace,
-                    if (item.name.len > 20) item.name[0..20] else item.name,
-                    if (item.class.len > 10) item.class[0..10] else item.class,
-                    if (item.hosts.len > 10) item.hosts[0..10] else item.hosts,
-                    if (item.address.len > 13) item.address[0..13] else item.address,
-                    item.age,
-                },
-            );
-            defer self.allocator.free(line);
-            try Theme.writeStringWithTheme(term, x, y + 1 + row, line, fg_color, bg_color);
-            row += 1;
+            try Theme.writeStringWithTheme(term, x, row_y, "  ", colors.fg, colors.bg);
+            try Theme.writeStringWithTheme(term, x + 2, row_y, item.namespace[0..@min(20, item.namespace.len)], colors.fg, colors.bg);
+            try Theme.writeStringWithTheme(term, x + 24, row_y, item.name[0..@min(20, item.name.len)], colors.fg, colors.bg);
+            try Theme.writeStringWithTheme(term, x + 46, row_y, item.class[0..@min(10, item.class.len)], colors.fg, colors.bg);
+            try Theme.writeStringWithTheme(term, x + 57, row_y, item.hosts[0..@min(10, item.hosts.len)], colors.fg, colors.bg);
+            try Theme.writeStringWithTheme(term, x + 68, row_y, item.address[0..@min(13, item.address.len)], colors.fg, colors.bg);
+            try Theme.writeStringWithTheme(term, x + 82, row_y, item.age, colors.fg, colors.bg);
         }
     }
 
     fn handleKey(ptr: *anyopaque, key: Key) !KeyResult {
         const self: *IngressesView = @ptrCast(@alignCast(ptr));
+
+        // Common navigation keys
+        if (self.table.handleNavigationKey(key)) |result| return result;
+
+        // View-specific keys
         switch (key) {
-            .down => {
-                if (self.filtered_indices.items.len > 0 and self.selected_row < self.filtered_indices.items.len - 1) {
-                    self.selected_row += 1;
-                    if (self.selected_row >= self.scroll_offset + self.visible_rows) {
-                        self.scroll_offset = self.selected_row - self.visible_rows + 1;
-                    }
-                }
-                return .handled;
-            },
-            .up => {
-                if (self.selected_row > 0) {
-                    self.selected_row -= 1;
-                    if (self.selected_row < self.scroll_offset) self.scroll_offset = self.selected_row;
-                }
-                return .handled;
-            },
             .char => |c| switch (c) {
-                'j' => {
-                    if (self.filtered_indices.items.len > 0 and self.selected_row < self.filtered_indices.items.len - 1) {
-                        self.selected_row += 1;
-                        if (self.selected_row >= self.scroll_offset + self.visible_rows) {
-                            self.scroll_offset = self.selected_row - self.visible_rows + 1;
-                        }
-                    }
-                    return .handled;
-                },
-                'k' => {
-                    if (self.selected_row > 0) {
-                        self.selected_row -= 1;
-                        if (self.selected_row < self.scroll_offset) self.scroll_offset = self.selected_row;
-                    }
-                    return .handled;
-                },
-                'g' => {
-                    self.selected_row = 0;
-                    self.scroll_offset = 0;
-                    return .handled;
-                },
-                'G' => {
-                    if (self.filtered_indices.items.len > 0) {
-                        self.selected_row = @intCast(self.filtered_indices.items.len - 1);
-                        if (self.selected_row >= self.visible_rows) {
-                            self.scroll_offset = self.selected_row - self.visible_rows + 1;
-                        }
-                    }
-                    return .handled;
-                },
-                'N' => {
-                    sort_util.toggleSort(&self.sort_column, &self.sort_ascending, COL_NAME);
-                    self.applySorting();
-                    return .handled;
-                },
-                'A' => {
-                    sort_util.toggleSort(&self.sort_column, &self.sort_ascending, COL_AGE);
-                    self.applySorting();
-                    return .handled;
-                },
-                'd' => return .request_describe,
-                'y' => return .request_yaml,
-                '/' => return .request_filter,
                 'r' => {
-                    try self.refresh();
+                    self.refresh() catch |err| Logger.err("Failed to refresh ingresses: {}", .{err});
                     return .handled;
                 },
                 '0' => {
-                    self.show_all_namespaces = !self.show_all_namespaces;
-                    try self.refresh();
+                    self.table.show_all_namespaces = !self.table.show_all_namespaces;
+                    self.table.gotoTop();
+                    self.refresh() catch |err| Logger.err("Failed to refresh ingresses: {}", .{err});
                     return .handled;
                 },
+                'N' => { self.table.toggleSort(COL_NAME); self.applySorting(); return .handled; },
+                'A' => { self.table.toggleSort(COL_AGE); self.applySorting(); return .handled; },
                 else => return .not_handled,
             },
             else => return .not_handled,
@@ -321,21 +229,20 @@ pub const IngressesView = struct {
     fn onShow(ptr: *anyopaque) void {
         const self: *IngressesView = @ptrCast(@alignCast(ptr));
         self.refresh() catch |err| {
-            Logger.err("Failed to refresh Ingresses: {}", .{err});
+            Logger.err("Failed to refresh ingresses: {any}", .{err});
+            if (self.table.error_message == null) {
+                self.table.setError("Unexpected error during refresh") catch {};
+            }
         };
     }
 
-    fn onHide(ptr: *anyopaque) void {
-        _ = ptr;
-    }
+    fn onHide(_: *anyopaque) void {}
 
-    fn getName(ptr: *anyopaque) []const u8 {
-        _ = ptr;
+    fn getName(_: *anyopaque) []const u8 {
         return "ingresses";
     }
 
-    fn getHints(ptr: *anyopaque) hints_model.HintConfig {
-        _ = ptr;
+    fn getHints(_: *anyopaque) hints_model.HintConfig {
         return hints_model.resourceHints();
     }
 
@@ -343,14 +250,4 @@ pub const IngressesView = struct {
         const self: *IngressesView = @ptrCast(@alignCast(ptr));
         self.deinit();
     }
-
-    const vtable = View.VTable{
-        .render = render,
-        .handleKey = handleKey,
-        .onShow = onShow,
-        .onHide = onHide,
-        .getName = getName,
-        .getHints = getHints,
-        .deinit = deinitView,
-    };
 };

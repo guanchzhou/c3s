@@ -35,7 +35,7 @@ fn calculateMaxWidths(bindings: []const KeyBinding) struct { key: usize, desc: u
         if (binding.key.len > max_key) max_key = binding.key.len;
         if (binding.description.len > max_desc) max_desc = binding.description.len;
     }
-    return .{ .key = max_key + 2, .desc = max_desc };  // +2 padding for key like k9s
+    return .{ .key = max_key + 2, .desc = max_desc };  // +2 padding for key column
 }
 
 /// Generate help content dynamically from key bindings
@@ -43,7 +43,7 @@ pub fn generateHelpContent(allocator: std.mem.Allocator, bindings: []const KeyBi
     var lines = std.ArrayListUnmanaged([]const u8){};
     try lines.ensureTotalCapacity(allocator, 50);
     
-    try lines.append(allocator, try allocator.dupe(u8, "C3S - Kubernetes TUI Client (k9s-compatible)"));
+    try lines.append(allocator, try allocator.dupe(u8, "C3S - Kubernetes TUI Client"));
     try lines.append(allocator, try allocator.dupe(u8, ""));
     
     // Filter bindings by category at runtime
@@ -70,7 +70,7 @@ pub fn generateHelpContent(allocator: std.mem.Allocator, bindings: []const KeyBi
     const navigation_bindings = navigation_list.items;
     const sorting_bindings = sorting_list.items;
     
-    // Calculate column widths dynamically (like k9s)
+    // Calculate column widths dynamically
     const res_widths = calculateMaxWidths(resource_bindings);
     const gen_widths = calculateMaxWidths(general_bindings);
     const nav_widths = calculateMaxWidths(navigation_bindings);

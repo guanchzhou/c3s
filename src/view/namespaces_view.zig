@@ -1,7 +1,7 @@
 /// Namespaces View - Display and switch between Kubernetes namespaces
 const std = @import("std");
 const Terminal = @import("../core/terminal.zig").Terminal;
-const Theme = @import("../theme.zig");
+const Theme = theme_loader;
 const theme_loader = @import("../model/theme_loader.zig");
 const View = @import("../viewmodel/view.zig").View;
 const Key = @import("../core/terminal.zig").Key;
@@ -9,27 +9,18 @@ const KeyResult = View.KeyResult;
 const Logger = @import("../core/logger.zig");
 const k8s_service_mod = @import("../services/k8s_service.zig");
 const K8sService = k8s_service_mod.K8sService;
-const ResourceInfo = k8s_service_mod.ResourceInfo;
+const view_mod = @import("../viewmodel/view.zig");
+const ResourceInfo = view_mod.ResourceInfo;
 const klient = @import("klient");
 const hints_model = @import("../model/hints.zig");
-const universal_filter = @import("../viewmodel/filter.zig");
 const sort_util = @import("../viewmodel/sort.zig");
 const age_util = @import("../viewmodel/age.zig");
+const TableState = @import("../ui/table_state.zig").TableState;
 
 pub const NamespacesView = struct {
-    allocator: std.mem.Allocator,
     theme: *const theme_loader.ThemeColors,
     k8s_service: *K8sService,
-    namespaces: std.ArrayListUnmanaged(NamespaceInfo),
-    filtered_indices: std.ArrayListUnmanaged(usize),
-    selected_row: u32,
-    scroll_offset: u32,
-    visible_rows: u32,
-    filter_text: []const u8,
-    sort_column: ?u8 = null,
-    sort_ascending: bool = true,
-    loading: bool,
-    error_message: ?[]const u8,
+    table: TableState(NamespaceInfo),
     current_namespace: []const u8,
 
     // Sort column indices
@@ -61,70 +52,35 @@ pub const NamespacesView = struct {
     ) !NamespacesView {
         const current_ns = k8s_service.getCurrentNamespace();
 
-        const view = NamespacesView{
-            .allocator = allocator,
+        return NamespacesView{
             .theme = theme,
             .k8s_service = k8s_service,
-            .namespaces = std.ArrayListUnmanaged(NamespaceInfo){},
-            .filtered_indices = std.ArrayListUnmanaged(usize){},
-            .selected_row = 0,
-            .scroll_offset = 0,
-            .visible_rows = 0,
-            .filter_text = "",
-            .loading = false,
-            .error_message = null,
+            .table = TableState(NamespaceInfo).init(allocator),
             .current_namespace = try allocator.dupe(u8, current_ns),
         };
-
-        // Don't call refresh() here - k8s_service pointer will become invalid after App is created
-        // Views will refresh when first activated
-        return view;
     }
 
     pub fn deinit(self: *NamespacesView) void {
-        for (self.namespaces.items) |*ns| {
-            ns.deinit();
-        }
-        self.namespaces.deinit(self.allocator);
-        self.filtered_indices.deinit(self.allocator);
-        self.allocator.free(self.current_namespace);
-
-        if (self.error_message) |msg| {
-            self.allocator.free(msg);
-        }
+        self.table.allocator.free(self.current_namespace);
+        self.table.deinit();
     }
 
     /// Refresh namespaces list from K8s API
     pub fn refresh(self: *NamespacesView) !void {
-        self.loading = true;
-        defer self.loading = false;
-
-        // Clear existing namespaces
-        for (self.namespaces.items) |*ns| {
-            ns.deinit();
-        }
-        self.namespaces.clearRetainingCapacity();
-
-        // Clear any previous error
-        if (self.error_message) |msg| {
-            self.allocator.free(msg);
-            self.error_message = null;
-        }
+        self.table.loading = true;
+        defer self.table.loading = false;
+        self.table.clearItems();
 
         // SAFETY: Check if connected to k8s before making requests
         if (!self.k8s_service.isConnected()) {
-            self.error_message = try self.allocator.dupe(u8, "Not connected to Kubernetes cluster");
+            try self.table.setError("Not connected to Kubernetes cluster");
             Logger.warn("NamespacesView: Cannot refresh - not connected to k8s", .{});
             return;
         }
 
         // Fetch namespaces
         const k8s_namespaces = self.k8s_service.listNamespaces() catch |err| {
-            self.error_message = try std.fmt.allocPrint(
-                self.allocator,
-                "Failed to list namespaces: {}",
-                .{err},
-            );
+            try self.table.setErrorFmt("Failed to list namespaces: {}", .{err});
             return;
         };
 
@@ -136,18 +92,18 @@ pub const NamespacesView = struct {
                 if (status_json == .object) {
                     if (status_json.object.get("phase")) |phase| {
                         if (phase == .string) {
-                            break :blk try self.allocator.dupe(u8, phase.string);
+                            break :blk try self.table.allocator.dupe(u8, phase.string);
                         }
                     }
                 }
-                break :blk try self.allocator.dupe(u8, "Active");
-            } else try self.allocator.dupe(u8, "Unknown");
+                break :blk try self.table.allocator.dupe(u8, "Active");
+            } else try self.table.allocator.dupe(u8, "Unknown");
 
             const info = NamespaceInfo{
-                .name = try self.allocator.dupe(u8, ns.metadata.name),
+                .name = try self.table.allocator.dupe(u8, ns.metadata.name),
                 .status = status,
-                .age = try age_util.calculateAge(self.allocator, ns.metadata.creationTimestamp),
-                .allocator = self.allocator,
+                .age = try age_util.calculateAge(self.table.allocator, ns.metadata.creationTimestamp),
+                .allocator = self.table.allocator,
             };
 
             // Check if this is the current namespace
@@ -155,28 +111,25 @@ pub const NamespacesView = struct {
                 selected_idx = i;
             }
 
-            try self.namespaces.append(self.allocator, info);
+            try self.table.appendItem(info);
         }
 
         // Set selected row to current namespace
         if (selected_idx) |idx| {
-            self.selected_row = @intCast(idx);
-            if (self.selected_row >= self.visible_rows) {
-                self.scroll_offset = self.selected_row - self.visible_rows / 2;
+            self.table.selected_row = @intCast(idx);
+            if (self.table.selected_row >= self.table.visible_rows) {
+                self.table.scroll_offset = self.table.selected_row - self.table.visible_rows / 2;
             }
         }
 
-        Logger.info("Loaded {} namespaces", .{self.namespaces.items.len});
+        Logger.info("Loaded {} namespaces", .{self.table.items.items.len});
 
         // Rebuild filtered indices
-        try self.applyFilter(self.filter_text);
+        try self.applyFilter(self.table.filter_text);
     }
 
     pub fn getSelectedResourceInfo(self: *NamespacesView) ?ResourceInfo {
-        if (self.filtered_indices.items.len == 0) return null;
-        if (self.selected_row >= self.filtered_indices.items.len) return null;
-        const idx = self.filtered_indices.items[self.selected_row];
-        const item = self.namespaces.items[idx];
+        const item = self.table.getSelectedItem() orelse return null;
         return ResourceInfo{
             .name = item.name,
             .namespace = "cluster",
@@ -184,27 +137,16 @@ pub const NamespacesView = struct {
     }
 
     pub fn applyFilter(self: *NamespacesView, filter: []const u8) !void {
-        self.filter_text = filter;
-        try universal_filter.applyFilter(
-            NamespaceInfo,
-            self.allocator,
-            self.namespaces.items,
-            &self.filtered_indices,
-            filter,
-            &self.selected_row,
-            &self.scroll_offset,
-            self.visible_rows,
-            namespaceMatchFn,
-        );
+        try self.table.applyFilter(filter, namespaceMatchFn);
         self.applySorting();
     }
 
     fn applySorting(self: *NamespacesView) void {
-        if (self.sort_column) |col| {
+        if (self.table.sort_column) |col| {
             switch (col) {
-                COL_NAME => sort_util.sortFilteredIndices(NamespaceInfo, self.namespaces.items, &self.filtered_indices, NamespaceInfo.getName, self.sort_ascending),
-                COL_AGE => sort_util.sortFilteredIndices(NamespaceInfo, self.namespaces.items, &self.filtered_indices, NamespaceInfo.getAge, self.sort_ascending),
-                COL_STATUS => sort_util.sortFilteredIndices(NamespaceInfo, self.namespaces.items, &self.filtered_indices, NamespaceInfo.getStatus, self.sort_ascending),
+                COL_NAME => self.table.sortBy(NamespaceInfo.getName),
+                COL_AGE => self.table.sortBy(NamespaceInfo.getAge),
+                COL_STATUS => self.table.sortBy(NamespaceInfo.getStatus),
                 else => {},
             }
         }
@@ -214,20 +156,17 @@ pub const NamespacesView = struct {
         return std.mem.indexOf(u8, item.name, filter) != null;
     }
 
-
     /// Switch to the selected namespace
     fn switchNamespace(self: *NamespacesView) !void {
-        if (self.selected_row >= self.filtered_indices.items.len) return;
-
-        const actual_idx = self.filtered_indices.items[self.selected_row];
-        const selected_ns = self.namespaces.items[actual_idx].name;
+        const item = self.table.getSelectedItem() orelse return;
+        const selected_ns = item.name;
 
         // Update K8s service namespace
         try self.k8s_service.setCurrentNamespace(selected_ns);
 
         // Update our current namespace
-        self.allocator.free(self.current_namespace);
-        self.current_namespace = try self.allocator.dupe(u8, selected_ns);
+        self.table.allocator.free(self.current_namespace);
+        self.current_namespace = try self.table.allocator.dupe(u8, selected_ns);
 
         Logger.info("Switched to namespace: {s}", .{selected_ns});
     }
@@ -244,211 +183,112 @@ pub const NamespacesView = struct {
         .getName = getName,
         .getHints = getHints,
         .deinit = deinitView,
+        .applyFilter = vtableApplyFilter,
+        .clearFilter = vtableClearFilter,
+        .refresh = vtableRefresh,
+        .getSelectedResource = vtableGetSelectedResource,
     };
 
-    fn render(ptr: *anyopaque, terminal: *Terminal, x: u16, y: u16, width: u16, height: u16) !void {
+    fn vtableApplyFilter(ptr: *anyopaque, filter: []const u8) anyerror!void {
         const self: *NamespacesView = @ptrCast(@alignCast(ptr));
-        self.visible_rows = if (height > 3) height - 3 else 0;
+        try self.applyFilter(filter);
+    }
 
-        // Draw box border
-        const BoxDrawing = @import("../ui/box_drawing.zig");
-        try BoxDrawing.Box.createBox(terminal, x, y, width, height, self.theme.proc_box, self.theme.main_bg, null, .rounded, self.theme.main_fg, self.theme.title);
-
-        // Draw title
-        var title_buf: [128]u8 = undefined;
-        const title = try std.fmt.bufPrint(&title_buf, "ns(all)[{d}]", .{self.filtered_indices.items.len});
-        try terminal.setCursor(x + 1, y);
-        try terminal.writeAll(self.theme.title);
-        try terminal.writeAll(title);
-        try terminal.writeAll("\x1b[0m");
-
-        if (self.loading) {
-            try Theme.writeStringWithTheme(terminal, x + 2, y + height / 2, "Loading namespaces...", self.theme.main_fg, self.theme.main_bg);
-            return;
+    fn vtableClearFilter(ptr: *anyopaque) anyerror!bool {
+        const self: *NamespacesView = @ptrCast(@alignCast(ptr));
+        if (self.table.filter_text.len > 0) {
+            try self.applyFilter("");
+            return true;
         }
+        return false;
+    }
 
-        if (self.error_message) |msg| {
-            try Theme.writeStringWithTheme(terminal, x + 2, y + height / 2, msg, self.theme.status_failed, self.theme.main_bg);
-            return;
-        }
+    fn vtableRefresh(ptr: *anyopaque) anyerror!void {
+        const self: *NamespacesView = @ptrCast(@alignCast(ptr));
+        try self.refresh();
+    }
+
+    fn vtableGetSelectedResource(ptr: *anyopaque) ?ResourceInfo {
+        const self: *NamespacesView = @ptrCast(@alignCast(ptr));
+        return self.getSelectedResourceInfo();
+    }
+
+    fn render(ptr: *anyopaque, terminal: *Terminal, x: u16, y: u16, _: u16, height: u16) !void {
+        const self: *NamespacesView = @ptrCast(@alignCast(ptr));
+        self.table.visible_rows = if (height > 1) height - 1 else 0;
+
+        if (try self.table.renderStatus(terminal, x, y, self.theme)) return;
 
         // Render header row with sort indicators
-        const header_y = y + 1;
-        const name_ind = sort_util.sortIndicator(self.sort_column, self.sort_ascending, COL_NAME);
-        const age_ind = sort_util.sortIndicator(self.sort_column, self.sort_ascending, COL_AGE);
-        const status_ind = sort_util.sortIndicator(self.sort_column, self.sort_ascending, COL_STATUS);
+        const header_y = y;
+        const name_ind = sort_util.sortIndicator(self.table.sort_column, self.table.sort_ascending, COL_NAME);
+        const age_ind = sort_util.sortIndicator(self.table.sort_column, self.table.sort_ascending, COL_AGE);
+        const status_ind = sort_util.sortIndicator(self.table.sort_column, self.table.sort_ascending, COL_STATUS);
         var name_hdr_buf: [32]u8 = undefined;
         var age_hdr_buf: [16]u8 = undefined;
         var status_hdr_buf: [32]u8 = undefined;
         const name_hdr = std.fmt.bufPrint(&name_hdr_buf, "NAME{s}", .{name_ind}) catch "NAME";
         const age_hdr = std.fmt.bufPrint(&age_hdr_buf, "AGE{s}", .{age_ind}) catch "AGE";
         const status_hdr = std.fmt.bufPrint(&status_hdr_buf, "STATUS{s}", .{status_ind}) catch "STATUS";
-        try Theme.writeStringWithTheme(terminal, x + 1, header_y, name_hdr, self.theme.title, self.theme.main_bg);
-        try Theme.writeStringWithTheme(terminal, x + 40, header_y, status_hdr, self.theme.title, self.theme.main_bg);
-        try Theme.writeStringWithTheme(terminal, x + 60, header_y, age_hdr, self.theme.title, self.theme.main_bg);
+        try Theme.writeStringWithTheme(terminal, x, header_y, name_hdr, self.theme.title, self.theme.main_bg);
+        try Theme.writeStringWithTheme(terminal, x + 39, header_y, status_hdr, self.theme.title, self.theme.main_bg);
+        try Theme.writeStringWithTheme(terminal, x + 59, header_y, age_hdr, self.theme.title, self.theme.main_bg);
 
         // Render namespaces
-        var row_y = y + 2;
-        const end_idx = @min(
-            self.scroll_offset + self.visible_rows,
-            @as(u32, @intCast(self.filtered_indices.items.len)),
-        );
-
-        for (self.filtered_indices.items[self.scroll_offset..end_idx], 0..) |ns_idx, i| {
-            const ns = self.namespaces.items[ns_idx];
-            const is_selected = (self.scroll_offset + i) == self.selected_row;
+        const range = self.table.getVisibleRange();
+        for (self.table.filtered_indices.items[range.start..range.end], 0..) |ns_idx, i| {
+            const ns = self.table.items.items[ns_idx];
+            const colors = self.table.rowColors(i, self.theme);
             const is_current = std.mem.eql(u8, ns.name, self.current_namespace);
-
-            const fg = if (is_selected) self.theme.selected_fg else self.theme.main_fg;
-            const bg = if (is_selected) self.theme.selected_bg else self.theme.main_bg;
+            const row_y = y + 1 + @as(u16, @intCast(i));
 
             // Current namespace indicator
-            const indicator = if (is_current) "• " else "  ";
-            try Theme.writeStringWithTheme(terminal, x + 1, row_y, indicator, fg, bg);
+            const indicator = if (is_current) "* " else "  ";
+            try Theme.writeStringWithTheme(terminal, x, row_y, indicator, colors.fg, colors.bg);
 
             // Name
-            try Theme.writeStringWithTheme(terminal, x + 3, row_y, ns.name[0..@min(36, ns.name.len)], fg, bg);
+            try Theme.writeStringWithTheme(terminal, x + 2, row_y, ns.name[0..@min(36, ns.name.len)], colors.fg, colors.bg);
 
             // Status
-            try Theme.writeStringWithTheme(terminal, x + 40, row_y, ns.status, fg, bg);
+            try Theme.writeStringWithTheme(terminal, x + 39, row_y, ns.status, colors.fg, colors.bg);
 
             // Age
-            try Theme.writeStringWithTheme(terminal, x + 60, row_y, ns.age, fg, bg);
-
-            row_y += 1;
+            try Theme.writeStringWithTheme(terminal, x + 59, row_y, ns.age, colors.fg, colors.bg);
         }
     }
 
     fn handleKey(ptr: *anyopaque, key: Key) !KeyResult {
         const self: *NamespacesView = @ptrCast(@alignCast(ptr));
 
+        // Common navigation keys
+        if (self.table.handleNavigationKey(key)) |result| return result;
+
+        // View-specific keys
         switch (key) {
-            .char => |c| {
-                switch (c) {
-                    'j' => {
-                        if (self.selected_row + 1 < self.filtered_indices.items.len) {
-                            self.selected_row += 1;
-                            if (self.selected_row >= self.scroll_offset + self.visible_rows) {
-                                self.scroll_offset += 1;
-                            }
-                        }
-                        return .handled;
-                    },
-                    'k' => {
-                        if (self.selected_row > 0) {
-                            self.selected_row -= 1;
-                            if (self.selected_row < self.scroll_offset) {
-                                self.scroll_offset = self.selected_row;
-                            }
-                        }
-                        return .handled;
-                    },
-                    'g' => {
-                        self.selected_row = 0;
-                        self.scroll_offset = 0;
-                        return .handled;
-                    },
-                    'G' => {
-                        if (self.filtered_indices.items.len > 0) {
-                            self.selected_row = @intCast(self.filtered_indices.items.len - 1);
-                            if (self.selected_row >= self.visible_rows) {
-                                self.scroll_offset = self.selected_row - self.visible_rows + 1;
-                            }
-                        }
-                        return .handled;
-                    },
-                    'r' => {
-                        self.refresh() catch |err| {
-                            Logger.err("Failed to refresh namespaces: {}", .{err});
-                        };
-                        return .handled;
-                    },
-                    '\n', '\r' => {
-                        // Switch to selected namespace
-                        self.switchNamespace() catch |err| {
-                            Logger.err("Failed to switch namespace: {}", .{err});
-                        };
-                        return .handled;
-                    },
-                    'N' => {
-                        sort_util.toggleSort(&self.sort_column, &self.sort_ascending, COL_NAME);
-                        self.applySorting();
-                        return .handled;
-                    },
-                    'A' => {
-                        sort_util.toggleSort(&self.sort_column, &self.sort_ascending, COL_AGE);
-                        self.applySorting();
-                        return .handled;
-                    },
-                    'S' => {
-                        sort_util.toggleSort(&self.sort_column, &self.sort_ascending, COL_STATUS);
-                        self.applySorting();
-                        return .handled;
-                    },
-                    'd' => return .request_describe,
-                    'y' => return .request_yaml,
-                    ':' => return .request_command_palette,
-                    '/' => return .request_filter,
-                    else => return .not_handled,
-                }
-            },
-            .down => {
-                if (self.selected_row + 1 < self.filtered_indices.items.len) {
-                    self.selected_row += 1;
-                    if (self.selected_row >= self.scroll_offset + self.visible_rows) {
-                        self.scroll_offset += 1;
-                    }
-                }
-                return .handled;
-            },
-            .up => {
-                if (self.selected_row > 0) {
-                    self.selected_row -= 1;
-                    if (self.selected_row < self.scroll_offset) {
-                        self.scroll_offset = self.selected_row;
-                    }
-                }
-                return .handled;
+            .char => |c| switch (c) {
+                'r' => {
+                    self.refresh() catch |err| {
+                        Logger.err("Failed to refresh namespaces: {}", .{err});
+                    };
+                    return .handled;
+                },
+                '\n', '\r' => {
+                    // Switch to selected namespace
+                    self.switchNamespace() catch |err| {
+                        Logger.err("Failed to switch namespace: {}", .{err});
+                    };
+                    return .handled;
+                },
+                'N' => { self.table.toggleSort(COL_NAME); self.applySorting(); return .handled; },
+                'A' => { self.table.toggleSort(COL_AGE); self.applySorting(); return .handled; },
+                'S' => { self.table.toggleSort(COL_STATUS); self.applySorting(); return .handled; },
+                else => return .not_handled,
             },
             .enter => {
                 // Switch to selected namespace
                 self.switchNamespace() catch |err| {
                     Logger.err("Failed to switch namespace: {}", .{err});
                 };
-                return .handled;
-            },
-            .page_down, .page_up, .home, .end => {
-                // Navigation shortcuts
-                switch (key) {
-                    .page_down => {
-                        const items_len: u32 = @intCast(self.filtered_indices.items.len);
-                        const jump = @min(self.visible_rows, items_len -| self.selected_row -| 1);
-                        self.selected_row += jump;
-                        if (self.selected_row >= self.scroll_offset + self.visible_rows) {
-                            self.scroll_offset = self.selected_row - self.visible_rows + 1;
-                        }
-                    },
-                    .page_up => {
-                        const jump = @min(self.visible_rows, self.selected_row);
-                        self.selected_row -= jump;
-                        if (self.selected_row < self.scroll_offset) {
-                            self.scroll_offset = self.selected_row;
-                        }
-                    },
-                    .home => {
-                        self.selected_row = 0;
-                        self.scroll_offset = 0;
-                    },
-                    .end => {
-                        if (self.filtered_indices.items.len > 0) {
-                            self.selected_row = @intCast(self.filtered_indices.items.len - 1);
-                            if (self.selected_row >= self.visible_rows) {
-                                self.scroll_offset = self.selected_row - self.visible_rows + 1;
-                            }
-                        }
-                    },
-                    else => {},
-                }
                 return .handled;
             },
             else => return .not_handled,
@@ -462,8 +302,8 @@ pub const NamespacesView = struct {
         self.refresh() catch |err| {
             Logger.err("Failed to refresh namespaces: {any}", .{err});
             // Set a fallback error message if one wasn't already set
-            if (self.error_message == null) {
-                self.error_message = self.allocator.dupe(u8, "Unexpected error during refresh") catch {
+            if (self.table.error_message == null) {
+                self.table.setError("Unexpected error during refresh") catch {
                     Logger.err("Failed to allocate error message", .{});
                     return;
                 };
@@ -476,7 +316,7 @@ pub const NamespacesView = struct {
     }
 
     fn getName(_: *anyopaque) []const u8 {
-        return "Namespaces";
+        return "namespaces";
     }
 
     fn getHints(_: *anyopaque) hints_model.HintConfig {

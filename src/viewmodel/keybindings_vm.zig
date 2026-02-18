@@ -3,7 +3,7 @@ const KeyBinding = @import("../model/keybindings.zig").KeyBinding;
 const KeyBindingsConfig = @import("../model/keybindings.zig").KeyBindingsConfig;
 const bindings_data = @import("keybindings_data.zig");
 
-/// ViewType enum for different resource types (from k9s registrar.go)
+/// ViewType enum for different resource types
 pub const ViewType = enum {
     // Core resources
     pods,
@@ -61,9 +61,9 @@ pub const KeyBindingsViewModel = struct {
     config: KeyBindingsConfig,
     
     pub fn init(allocator: std.mem.Allocator, view_type: ViewType) !KeyBindingsViewModel {
-        // Load k9s-compatible bindings for the specific view type
+        // Load bindings for the specific view type
         // In the future, this could load from:
-        // 1. k9s hotkeys.yaml
+        // 1. c3s hotkeys.yaml
         // 2. c3s config file
         // 3. Built-in defaults (current)
         const bindings = try loadBindingsForView(allocator, view_type);
@@ -87,7 +87,7 @@ pub const KeyBindingsViewModel = struct {
     }
 };
 
-/// Load k9s-compatible key bindings for a specific view type
+/// Load key bindings for a specific view type
 fn loadBindingsForView(allocator: std.mem.Allocator, view_type: ViewType) ![]const KeyBinding {
     return switch (view_type) {
         // Core resources
@@ -141,12 +141,12 @@ fn loadBindingsForView(allocator: std.mem.Allocator, view_type: ViewType) ![]con
 /// Load pods-specific key bindings
 fn loadPodsBindings(allocator: std.mem.Allocator) ![]const KeyBinding {
     // This data could be loaded from:
-    // 1. k9s hotkeys.yaml file
+    // 1. c3s hotkeys.yaml file
     // 2. c3s config file
     // 3. Built-in defaults (as fallback)
     
     const bindings = [_]KeyBinding{
-        // RESOURCE COMMANDS (sorted alphabetically like k9s)
+        // RESOURCE COMMANDS (sorted alphabetically)
         .{ .key = "0", .description = "all", .category = .resource, .action = "namespace_all" },
         .{ .key = "1", .description = "default", .category = .resource, .action = "namespace_default" },
         .{ .key = "a", .description = "Attach", .category = .resource, .action = "attach" },
@@ -221,7 +221,7 @@ fn loadPodsBindings(allocator: std.mem.Allocator) ![]const KeyBinding {
 
 /// Load nodes-specific key bindings
 fn loadNodesBindings(allocator: std.mem.Allocator) ![]const KeyBinding {
-    // From k9s internal/view/node.go
+    // Node-specific key bindings
     const bindings = [_]KeyBinding{
         // Node-specific commands
         .{ .key = "c", .description = "Cordon", .category = .resource, .action = "cordon" },
@@ -302,8 +302,41 @@ fn loadConfigMapsBindings(allocator: std.mem.Allocator) ![]const KeyBinding {
     return try allocator.dupe(KeyBinding, &bindings);
 }
 
-// TODO: Extract common bindings (general, navigation) to reduce duplication
-// This could be done by having:
-// 1. commonGeneralBindings()
-// 2. commonNavigationBindings()  
-// 3. View-specific bindings that merge with common ones
+/// Common general bindings shared by all views
+const common_general_bindings = [_]KeyBinding{
+    .{ .key = "?", .description = "Help", .category = .general, .action = "help" },
+    .{ .key = ":q", .description = "Quit", .category = .general, .action = "quit" },
+    .{ .key = "/term", .description = "Filter mode", .category = .general, .action = "filter_mode" },
+    .{ .key = "esc", .description = "Back/Clear", .category = .general, .action = "back_clear" },
+    .{ .key = "Ctrl-e", .description = "Toggle Header", .category = .general, .action = "toggle_header" },
+};
+
+/// Common navigation bindings shared by all views
+const common_navigation_bindings = [_]KeyBinding{
+    .{ .key = "j", .description = "Down", .category = .navigation, .action = "down" },
+    .{ .key = "k", .description = "Up", .category = .navigation, .action = "up" },
+    .{ .key = "g", .description = "Goto Top", .category = .navigation, .action = "goto_top" },
+    .{ .key = "Shift-g", .description = "Goto Bottom", .category = .navigation, .action = "goto_bottom" },
+    .{ .key = "Ctrl-b", .description = "Page Up", .category = .navigation, .action = "page_up" },
+    .{ .key = "Ctrl-f", .description = "Page Down", .category = .navigation, .action = "page_down" },
+};
+
+/// Merge view-specific bindings with common general + navigation bindings
+fn mergeWithCommon(allocator: std.mem.Allocator, specific: []const KeyBinding) ![]const KeyBinding {
+    const total = specific.len + common_general_bindings.len + common_navigation_bindings.len;
+    const result = try allocator.alloc(KeyBinding, total);
+    var i: usize = 0;
+    for (specific) |b| {
+        result[i] = b;
+        i += 1;
+    }
+    for (&common_general_bindings) |b| {
+        result[i] = b;
+        i += 1;
+    }
+    for (&common_navigation_bindings) |b| {
+        result[i] = b;
+        i += 1;
+    }
+    return result;
+}
