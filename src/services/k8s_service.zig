@@ -444,6 +444,31 @@ pub const K8sService = struct {
         return self.cached_k8s_version.?;
     }
 
+    // ===== Generic Resource Helpers =====
+
+    /// List all instances of a resource across all namespaces
+    fn listAllGeneric(self: *K8sService, comptime T: type, comptime ClientType: type) ![]T {
+        if (!self.isConnected()) return error.NotConnected;
+        const client = ClientType.init(self.client.?);
+        const list = try client.client.listAll();
+        defer list.deinit();
+        const items = try self.allocator.alloc(T, list.value.items.len);
+        @memcpy(items, list.value.items);
+        return items;
+    }
+
+    /// List instances of a resource in a specific namespace
+    fn listInNsGeneric(self: *K8sService, comptime T: type, comptime ClientType: type, namespace: ?[]const u8) ![]T {
+        if (!self.isConnected()) return error.NotConnected;
+        const client = ClientType.init(self.client.?);
+        const ns = namespace orelse self.current_namespace;
+        const list = try client.client.list(ns);
+        defer list.deinit();
+        const items = try self.allocator.alloc(T, list.value.items.len);
+        @memcpy(items, list.value.items);
+        return items;
+    }
+
     // ===== Pod Operations =====
 
     /// List all pods across all namespaces
@@ -485,59 +510,12 @@ pub const K8sService = struct {
 
     /// List all deployments
     pub fn listAllDeployments(self: *K8sService) ![]klient.types.Deployment {
-        Logger.info("=== listAllDeployments CALLED ===", .{});
-
-        if (!self.isConnected()) {
-            Logger.err("listAllDeployments: NOT CONNECTED", .{});
-            return error.NotConnected;
-        }
-
-        Logger.info("listAllDeployments: Creating Deployments client", .{});
-        const client = klient.resources.Deployments.init(self.client.?);
-
-        Logger.info("listAllDeployments: Calling listAll()", .{});
-        const list = client.client.listAll() catch |err| {
-            Logger.err("listAllDeployments: listAll() failed with error: {any}", .{err});
-            return err;
-        };
-        defer list.deinit();
-
-        Logger.info("listAllDeployments: Got {} deployments", .{list.value.items.len});
-
-        // Allocate a copy of the items since we defer the parsed result
-        const items = try self.allocator.alloc(klient.types.Deployment, list.value.items.len);
-        @memcpy(items, list.value.items);
-
-        return items;
+        return self.listAllGeneric(klient.types.Deployment, klient.resources.Deployments);
     }
 
     /// List deployments in a namespace
     pub fn listDeployments(self: *K8sService, namespace: ?[]const u8) ![]klient.types.Deployment {
-        Logger.info("=== listDeployments CALLED (namespace = {?s}) ===", .{namespace});
-
-        if (!self.isConnected()) {
-            Logger.err("listDeployments: NOT CONNECTED", .{});
-            return error.NotConnected;
-        }
-
-        Logger.info("listDeployments: Creating Deployments client", .{});
-        const client = klient.resources.Deployments.init(self.client.?);
-        const ns = namespace orelse self.current_namespace;
-
-        Logger.info("listDeployments: Calling list('{s}')...", .{ns});
-        const list = client.client.list(ns) catch |err| {
-            Logger.err("listDeployments: list() failed with error: {any}", .{err});
-            return err;
-        };
-        defer list.deinit();
-
-        Logger.info("listDeployments: Got {} deployments", .{list.value.items.len});
-
-        // Allocate a copy of the items since we defer the parsed result
-        const items = try self.allocator.alloc(klient.types.Deployment, list.value.items.len);
-        @memcpy(items, list.value.items);
-
-        return items;
+        return self.listInNsGeneric(klient.types.Deployment, klient.resources.Deployments, namespace);
     }
 
     /// Scale a deployment
@@ -553,156 +531,62 @@ pub const K8sService = struct {
 
     /// List all services
     pub fn listAllServices(self: *K8sService) ![]klient.types.Service {
-        if (!self.isConnected()) return error.NotConnected;
-
-        const client = klient.resources.Services.init(self.client.?);
-        const list = try client.client.listAll();
-        defer list.deinit();
-
-        const items = try self.allocator.alloc(klient.types.Service, list.value.items.len);
-        @memcpy(items, list.value.items);
-
-        return items;
+        return self.listAllGeneric(klient.types.Service, klient.resources.Services);
     }
 
     /// List services in a namespace
     pub fn listServices(self: *K8sService, namespace: ?[]const u8) ![]klient.types.Service {
-        if (!self.isConnected()) return error.NotConnected;
-
-        const client = klient.resources.Services.init(self.client.?);
-        const ns = namespace orelse self.current_namespace;
-        const list = try client.client.list(ns);
-        defer list.deinit();
-
-        const items = try self.allocator.alloc(klient.types.Service, list.value.items.len);
-        @memcpy(items, list.value.items);
-
-        return items;
+        return self.listInNsGeneric(klient.types.Service, klient.resources.Services, namespace);
     }
 
     // ===== Namespace Operations =====
 
     /// List all namespaces
     pub fn listNamespaces(self: *K8sService) ![]klient.types.Namespace {
-        if (!self.isConnected()) return error.NotConnected;
-
-        const client = klient.resources.Namespaces.init(self.client.?);
-        const list = try client.client.listAll();
-        defer list.deinit();
-
-        const items = try self.allocator.alloc(klient.types.Namespace, list.value.items.len);
-        @memcpy(items, list.value.items);
-
-        return items;
+        return self.listAllGeneric(klient.types.Namespace, klient.resources.Namespaces);
     }
 
     // ===== Node Operations =====
 
     /// List all nodes
     pub fn listNodes(self: *K8sService) ![]klient.types.Node {
-        if (!self.isConnected()) return error.NotConnected;
-
-        const client = klient.resources.Nodes.init(self.client.?);
-        const list = try client.client.listAll();
-        defer list.deinit();
-
-        const items = try self.allocator.alloc(klient.types.Node, list.value.items.len);
-        @memcpy(items, list.value.items);
-
-        return items;
+        return self.listAllGeneric(klient.types.Node, klient.resources.Nodes);
     }
 
-    // ===== ConfigMap Operations (using new ResourceClient) =====
+    // ===== ConfigMap Operations =====
 
     /// List all configmaps across all namespaces
     pub fn listAllConfigMaps(self: *K8sService) ![]klient.types.ConfigMap {
-        if (!self.isConnected()) return error.NotConnected;
-
-        const client = klient.resources.ConfigMaps.init(self.client.?);
-        const list = try client.client.listAll();
-        defer list.deinit();
-
-        const items = try self.allocator.alloc(klient.types.ConfigMap, list.value.items.len);
-        @memcpy(items, list.value.items);
-
-        return items;
+        return self.listAllGeneric(klient.types.ConfigMap, klient.resources.ConfigMaps);
     }
 
     /// List configmaps in a namespace
     pub fn listConfigMaps(self: *K8sService, namespace: ?[]const u8) ![]klient.types.ConfigMap {
-        if (!self.isConnected()) return error.NotConnected;
-
-        const client = klient.resources.ConfigMaps.init(self.client.?);
-        const ns = namespace orelse self.current_namespace;
-        const list = try client.client.list(ns);
-        defer list.deinit();
-
-        const items = try self.allocator.alloc(klient.types.ConfigMap, list.value.items.len);
-        @memcpy(items, list.value.items);
-
-        return items;
+        return self.listInNsGeneric(klient.types.ConfigMap, klient.resources.ConfigMaps, namespace);
     }
 
-    // ===== Secret Operations (using new ResourceClient) =====
+    // ===== Secret Operations =====
 
     /// List all secrets across all namespaces
     pub fn listAllSecrets(self: *K8sService) ![]klient.types.Secret {
-        if (!self.isConnected()) return error.NotConnected;
-
-        const client = klient.resources.Secrets.init(self.client.?);
-        const list = try client.client.listAll();
-        defer list.deinit();
-
-        const items = try self.allocator.alloc(klient.types.Secret, list.value.items.len);
-        @memcpy(items, list.value.items);
-
-        return items;
+        return self.listAllGeneric(klient.types.Secret, klient.resources.Secrets);
     }
 
     /// List secrets in a namespace
     pub fn listSecrets(self: *K8sService, namespace: ?[]const u8) ![]klient.types.Secret {
-        if (!self.isConnected()) return error.NotConnected;
-
-        const client = klient.resources.Secrets.init(self.client.?);
-        const ns = namespace orelse self.current_namespace;
-        const list = try client.client.list(ns);
-        defer list.deinit();
-
-        const items = try self.allocator.alloc(klient.types.Secret, list.value.items.len);
-        @memcpy(items, list.value.items);
-
-        return items;
+        return self.listInNsGeneric(klient.types.Secret, klient.resources.Secrets, namespace);
     }
 
     // ===== StatefulSet Operations =====
 
     /// List all statefulsets
     pub fn listAllStatefulSets(self: *K8sService) ![]klient.types.StatefulSet {
-        if (!self.isConnected()) return error.NotConnected;
-
-        const client = klient.resources.StatefulSets.init(self.client.?);
-        const list = try client.client.listAll();
-        defer list.deinit();
-
-        const items = try self.allocator.alloc(klient.types.StatefulSet, list.value.items.len);
-        @memcpy(items, list.value.items);
-
-        return items;
+        return self.listAllGeneric(klient.types.StatefulSet, klient.resources.StatefulSets);
     }
 
     /// List statefulsets in a namespace
     pub fn listStatefulSets(self: *K8sService, namespace: ?[]const u8) ![]klient.types.StatefulSet {
-        if (!self.isConnected()) return error.NotConnected;
-
-        const client = klient.resources.StatefulSets.init(self.client.?);
-        const ns = namespace orelse self.current_namespace;
-        const list = try client.client.list(ns);
-        defer list.deinit();
-
-        const items = try self.allocator.alloc(klient.types.StatefulSet, list.value.items.len);
-        @memcpy(items, list.value.items);
-
-        return items;
+        return self.listInNsGeneric(klient.types.StatefulSet, klient.resources.StatefulSets, namespace);
     }
 
     /// Scale a statefulset
@@ -718,62 +602,24 @@ pub const K8sService = struct {
 
     /// List all daemonsets
     pub fn listAllDaemonSets(self: *K8sService) ![]klient.types.DaemonSet {
-        if (!self.isConnected()) return error.NotConnected;
-
-        const client = klient.resources.DaemonSets.init(self.client.?);
-        const list = try client.client.listAll();
-        defer list.deinit();
-
-        const items = try self.allocator.alloc(klient.types.DaemonSet, list.value.items.len);
-        @memcpy(items, list.value.items);
-
-        return items;
+        return self.listAllGeneric(klient.types.DaemonSet, klient.resources.DaemonSets);
     }
 
     /// List daemonsets in a namespace
     pub fn listDaemonSets(self: *K8sService, namespace: ?[]const u8) ![]klient.types.DaemonSet {
-        if (!self.isConnected()) return error.NotConnected;
-
-        const client = klient.resources.DaemonSets.init(self.client.?);
-        const ns = namespace orelse self.current_namespace;
-        const list = try client.client.list(ns);
-        defer list.deinit();
-
-        const items = try self.allocator.alloc(klient.types.DaemonSet, list.value.items.len);
-        @memcpy(items, list.value.items);
-
-        return items;
+        return self.listInNsGeneric(klient.types.DaemonSet, klient.resources.DaemonSets, namespace);
     }
 
     // ===== ReplicaSet Operations =====
 
     /// List all replicasets
     pub fn listAllReplicaSets(self: *K8sService) ![]klient.types.ReplicaSet {
-        if (!self.isConnected()) return error.NotConnected;
-
-        const client = klient.resources.ReplicaSets.init(self.client.?);
-        const list = try client.client.listAll();
-        defer list.deinit();
-
-        const items = try self.allocator.alloc(klient.types.ReplicaSet, list.value.items.len);
-        @memcpy(items, list.value.items);
-
-        return items;
+        return self.listAllGeneric(klient.types.ReplicaSet, klient.resources.ReplicaSets);
     }
 
     /// List replicasets in a namespace
     pub fn listReplicaSets(self: *K8sService, namespace: ?[]const u8) ![]klient.types.ReplicaSet {
-        if (!self.isConnected()) return error.NotConnected;
-
-        const client = klient.resources.ReplicaSets.init(self.client.?);
-        const ns = namespace orelse self.current_namespace;
-        const list = try client.client.list(ns);
-        defer list.deinit();
-
-        const items = try self.allocator.alloc(klient.types.ReplicaSet, list.value.items.len);
-        @memcpy(items, list.value.items);
-
-        return items;
+        return self.listInNsGeneric(klient.types.ReplicaSet, klient.resources.ReplicaSets, namespace);
     }
 
     /// Scale a replicaset
@@ -789,62 +635,24 @@ pub const K8sService = struct {
 
     /// List all jobs
     pub fn listAllJobs(self: *K8sService) ![]klient.types.Job {
-        if (!self.isConnected()) return error.NotConnected;
-
-        const client = klient.resources.Jobs.init(self.client.?);
-        const list = try client.client.listAll();
-        defer list.deinit();
-
-        const items = try self.allocator.alloc(klient.types.Job, list.value.items.len);
-        @memcpy(items, list.value.items);
-
-        return items;
+        return self.listAllGeneric(klient.types.Job, klient.resources.Jobs);
     }
 
     /// List jobs in a namespace
     pub fn listJobs(self: *K8sService, namespace: ?[]const u8) ![]klient.types.Job {
-        if (!self.isConnected()) return error.NotConnected;
-
-        const client = klient.resources.Jobs.init(self.client.?);
-        const ns = namespace orelse self.current_namespace;
-        const list = try client.client.list(ns);
-        defer list.deinit();
-
-        const items = try self.allocator.alloc(klient.types.Job, list.value.items.len);
-        @memcpy(items, list.value.items);
-
-        return items;
+        return self.listInNsGeneric(klient.types.Job, klient.resources.Jobs, namespace);
     }
 
     // ===== CronJob Operations =====
 
     /// List all cronjobs
     pub fn listAllCronJobs(self: *K8sService) ![]klient.types.CronJob {
-        if (!self.isConnected()) return error.NotConnected;
-
-        const client = klient.resources.CronJobs.init(self.client.?);
-        const list = try client.client.listAll();
-        defer list.deinit();
-
-        const items = try self.allocator.alloc(klient.types.CronJob, list.value.items.len);
-        @memcpy(items, list.value.items);
-
-        return items;
+        return self.listAllGeneric(klient.types.CronJob, klient.resources.CronJobs);
     }
 
     /// List cronjobs in a namespace
     pub fn listCronJobs(self: *K8sService, namespace: ?[]const u8) ![]klient.types.CronJob {
-        if (!self.isConnected()) return error.NotConnected;
-
-        const client = klient.resources.CronJobs.init(self.client.?);
-        const ns = namespace orelse self.current_namespace;
-        const list = try client.client.list(ns);
-        defer list.deinit();
-
-        const items = try self.allocator.alloc(klient.types.CronJob, list.value.items.len);
-        @memcpy(items, list.value.items);
-
-        return items;
+        return self.listInNsGeneric(klient.types.CronJob, klient.resources.CronJobs, namespace);
     }
 
     /// Suspend/resume a cronjob
@@ -860,388 +668,152 @@ pub const K8sService = struct {
 
     /// List all persistent volumes (cluster-scoped)
     pub fn listAllPersistentVolumes(self: *K8sService) ![]klient.types.PersistentVolume {
-        if (!self.isConnected()) return error.NotConnected;
-
-        const client = klient.resources.PersistentVolumes.init(self.client.?);
-        const list = try client.client.listAll();
-        defer list.deinit();
-
-        const items = try self.allocator.alloc(klient.types.PersistentVolume, list.value.items.len);
-        @memcpy(items, list.value.items);
-
-        return items;
+        return self.listAllGeneric(klient.types.PersistentVolume, klient.resources.PersistentVolumes);
     }
 
     // ===== PersistentVolumeClaim Operations =====
 
     /// List all persistent volume claims
     pub fn listAllPersistentVolumeClaims(self: *K8sService) ![]klient.types.PersistentVolumeClaim {
-        if (!self.isConnected()) return error.NotConnected;
-
-        const client = klient.resources.PersistentVolumeClaims.init(self.client.?);
-        const list = try client.client.listAll();
-        defer list.deinit();
-
-        const items = try self.allocator.alloc(klient.types.PersistentVolumeClaim, list.value.items.len);
-        @memcpy(items, list.value.items);
-
-        return items;
+        return self.listAllGeneric(klient.types.PersistentVolumeClaim, klient.resources.PersistentVolumeClaims);
     }
 
     /// List persistent volume claims in a namespace
     pub fn listPersistentVolumeClaims(self: *K8sService, namespace: ?[]const u8) ![]klient.types.PersistentVolumeClaim {
-        if (!self.isConnected()) return error.NotConnected;
-
-        const client = klient.resources.PersistentVolumeClaims.init(self.client.?);
-        const ns = namespace orelse self.current_namespace;
-        const list = try client.client.list(ns);
-        defer list.deinit();
-
-        const items = try self.allocator.alloc(klient.types.PersistentVolumeClaim, list.value.items.len);
-        @memcpy(items, list.value.items);
-
-        return items;
+        return self.listInNsGeneric(klient.types.PersistentVolumeClaim, klient.resources.PersistentVolumeClaims, namespace);
     }
 
     // ===== Ingress Operations =====
 
     /// List all ingresses across all namespaces
     pub fn listAllIngresses(self: *K8sService) ![]klient.types.Ingress {
-        if (!self.isConnected()) return error.NotConnected;
-
-        const client = klient.resources.Ingresses.init(self.client.?);
-        const list = try client.client.listAll();
-        defer list.deinit();
-
-        const items = try self.allocator.alloc(klient.types.Ingress, list.value.items.len);
-        @memcpy(items, list.value.items);
-
-        return items;
+        return self.listAllGeneric(klient.types.Ingress, klient.resources.Ingresses);
     }
 
     /// List ingresses in a namespace
     pub fn listIngresses(self: *K8sService, namespace: ?[]const u8) ![]klient.types.Ingress {
-        if (!self.isConnected()) return error.NotConnected;
-
-        const client = klient.resources.Ingresses.init(self.client.?);
-        const ns = namespace orelse self.current_namespace;
-        const list = try client.client.list(ns);
-        defer list.deinit();
-
-        const items = try self.allocator.alloc(klient.types.Ingress, list.value.items.len);
-        @memcpy(items, list.value.items);
-
-        return items;
+        return self.listInNsGeneric(klient.types.Ingress, klient.resources.Ingresses, namespace);
     }
 
     // ===== NetworkPolicy Operations =====
 
     /// List all network policies across all namespaces
     pub fn listAllNetworkPolicies(self: *K8sService) ![]klient.types.NetworkPolicy {
-        if (!self.isConnected()) return error.NotConnected;
-
-        const client = klient.resources.NetworkPolicies.init(self.client.?);
-        const list = try client.client.listAll();
-        defer list.deinit();
-
-        const items = try self.allocator.alloc(klient.types.NetworkPolicy, list.value.items.len);
-        @memcpy(items, list.value.items);
-
-        return items;
+        return self.listAllGeneric(klient.types.NetworkPolicy, klient.resources.NetworkPolicies);
     }
 
     /// List network policies in a namespace
     pub fn listNetworkPolicies(self: *K8sService, namespace: ?[]const u8) ![]klient.types.NetworkPolicy {
-        if (!self.isConnected()) return error.NotConnected;
-
-        const client = klient.resources.NetworkPolicies.init(self.client.?);
-        const ns = namespace orelse self.current_namespace;
-        const list = try client.client.list(ns);
-        defer list.deinit();
-
-        const items = try self.allocator.alloc(klient.types.NetworkPolicy, list.value.items.len);
-        @memcpy(items, list.value.items);
-
-        return items;
+        return self.listInNsGeneric(klient.types.NetworkPolicy, klient.resources.NetworkPolicies, namespace);
     }
 
     // ===== ServiceAccount Operations =====
 
     /// List all service accounts across all namespaces
     pub fn listAllServiceAccounts(self: *K8sService) ![]klient.types.ServiceAccount {
-        if (!self.isConnected()) return error.NotConnected;
-
-        const client = klient.resources.ServiceAccounts.init(self.client.?);
-        const list = try client.client.listAll();
-        defer list.deinit();
-
-        const items = try self.allocator.alloc(klient.types.ServiceAccount, list.value.items.len);
-        @memcpy(items, list.value.items);
-
-        return items;
+        return self.listAllGeneric(klient.types.ServiceAccount, klient.resources.ServiceAccounts);
     }
 
     /// List service accounts in a namespace
     pub fn listServiceAccounts(self: *K8sService, namespace: ?[]const u8) ![]klient.types.ServiceAccount {
-        if (!self.isConnected()) return error.NotConnected;
-
-        const client = klient.resources.ServiceAccounts.init(self.client.?);
-        const ns = namespace orelse self.current_namespace;
-        const list = try client.client.list(ns);
-        defer list.deinit();
-
-        const items = try self.allocator.alloc(klient.types.ServiceAccount, list.value.items.len);
-        @memcpy(items, list.value.items);
-
-        return items;
+        return self.listInNsGeneric(klient.types.ServiceAccount, klient.resources.ServiceAccounts, namespace);
     }
 
     // ===== Role Operations =====
 
     /// List all roles across all namespaces
     pub fn listAllRoles(self: *K8sService) ![]klient.types.Role {
-        if (!self.isConnected()) return error.NotConnected;
-
-        const client = klient.resources.Roles.init(self.client.?);
-        const list = try client.client.listAll();
-        defer list.deinit();
-
-        const items = try self.allocator.alloc(klient.types.Role, list.value.items.len);
-        @memcpy(items, list.value.items);
-
-        return items;
+        return self.listAllGeneric(klient.types.Role, klient.resources.Roles);
     }
 
     /// List roles in a namespace
     pub fn listRoles(self: *K8sService, namespace: ?[]const u8) ![]klient.types.Role {
-        if (!self.isConnected()) return error.NotConnected;
-
-        const client = klient.resources.Roles.init(self.client.?);
-        const ns = namespace orelse self.current_namespace;
-        const list = try client.client.list(ns);
-        defer list.deinit();
-
-        const items = try self.allocator.alloc(klient.types.Role, list.value.items.len);
-        @memcpy(items, list.value.items);
-
-        return items;
+        return self.listInNsGeneric(klient.types.Role, klient.resources.Roles, namespace);
     }
 
     // ===== RoleBinding Operations =====
 
     /// List all role bindings across all namespaces
     pub fn listAllRoleBindings(self: *K8sService) ![]klient.types.RoleBinding {
-        if (!self.isConnected()) return error.NotConnected;
-
-        const client = klient.resources.RoleBindings.init(self.client.?);
-        const list = try client.client.listAll();
-        defer list.deinit();
-
-        const items = try self.allocator.alloc(klient.types.RoleBinding, list.value.items.len);
-        @memcpy(items, list.value.items);
-
-        return items;
+        return self.listAllGeneric(klient.types.RoleBinding, klient.resources.RoleBindings);
     }
 
     /// List role bindings in a namespace
     pub fn listRoleBindings(self: *K8sService, namespace: ?[]const u8) ![]klient.types.RoleBinding {
-        if (!self.isConnected()) return error.NotConnected;
-
-        const client = klient.resources.RoleBindings.init(self.client.?);
-        const ns = namespace orelse self.current_namespace;
-        const list = try client.client.list(ns);
-        defer list.deinit();
-
-        const items = try self.allocator.alloc(klient.types.RoleBinding, list.value.items.len);
-        @memcpy(items, list.value.items);
-
-        return items;
+        return self.listInNsGeneric(klient.types.RoleBinding, klient.resources.RoleBindings, namespace);
     }
 
     // ===== ClusterRole Operations =====
 
     /// List all cluster roles (cluster-scoped)
     pub fn listAllClusterRoles(self: *K8sService) ![]klient.types.ClusterRole {
-        if (!self.isConnected()) return error.NotConnected;
-
-        const client = klient.resources.ClusterRoles.init(self.client.?);
-        const list = try client.client.listAll();
-        defer list.deinit();
-
-        const items = try self.allocator.alloc(klient.types.ClusterRole, list.value.items.len);
-        @memcpy(items, list.value.items);
-
-        return items;
+        return self.listAllGeneric(klient.types.ClusterRole, klient.resources.ClusterRoles);
     }
 
     // ===== ClusterRoleBinding Operations =====
 
     /// List all cluster role bindings (cluster-scoped)
     pub fn listAllClusterRoleBindings(self: *K8sService) ![]klient.types.ClusterRoleBinding {
-        if (!self.isConnected()) return error.NotConnected;
-
-        const client = klient.resources.ClusterRoleBindings.init(self.client.?);
-        const list = try client.client.listAll();
-        defer list.deinit();
-
-        const items = try self.allocator.alloc(klient.types.ClusterRoleBinding, list.value.items.len);
-        @memcpy(items, list.value.items);
-
-        return items;
+        return self.listAllGeneric(klient.types.ClusterRoleBinding, klient.resources.ClusterRoleBindings);
     }
 
     // ===== Event Operations =====
 
     /// List all events across all namespaces
     pub fn listAllEvents(self: *K8sService) ![]klient.types.Event {
-        if (!self.isConnected()) return error.NotConnected;
-
-        const client = klient.resources.Events.init(self.client.?);
-        const list = try client.client.listAll();
-        defer list.deinit();
-
-        const items = try self.allocator.alloc(klient.types.Event, list.value.items.len);
-        @memcpy(items, list.value.items);
-
-        return items;
+        return self.listAllGeneric(klient.types.Event, klient.resources.Events);
     }
 
     /// List events in a namespace
     pub fn listEvents(self: *K8sService, namespace: ?[]const u8) ![]klient.types.Event {
-        if (!self.isConnected()) return error.NotConnected;
-
-        const client = klient.resources.Events.init(self.client.?);
-        const ns = namespace orelse self.current_namespace;
-        const list = try client.client.list(ns);
-        defer list.deinit();
-
-        const items = try self.allocator.alloc(klient.types.Event, list.value.items.len);
-        @memcpy(items, list.value.items);
-
-        return items;
+        return self.listInNsGeneric(klient.types.Event, klient.resources.Events, namespace);
     }
 
     // ===== ResourceQuota Operations =====
 
     /// List all resource quotas across all namespaces
     pub fn listAllResourceQuotas(self: *K8sService) ![]klient.types.ResourceQuota {
-        if (!self.isConnected()) return error.NotConnected;
-
-        const client = klient.resources.ResourceQuotas.init(self.client.?);
-        const list = try client.client.listAll();
-        defer list.deinit();
-
-        const items = try self.allocator.alloc(klient.types.ResourceQuota, list.value.items.len);
-        @memcpy(items, list.value.items);
-
-        return items;
+        return self.listAllGeneric(klient.types.ResourceQuota, klient.resources.ResourceQuotas);
     }
 
     /// List resource quotas in a namespace
     pub fn listResourceQuotas(self: *K8sService, namespace: ?[]const u8) ![]klient.types.ResourceQuota {
-        if (!self.isConnected()) return error.NotConnected;
-
-        const client = klient.resources.ResourceQuotas.init(self.client.?);
-        const ns = namespace orelse self.current_namespace;
-        const list = try client.client.list(ns);
-        defer list.deinit();
-
-        const items = try self.allocator.alloc(klient.types.ResourceQuota, list.value.items.len);
-        @memcpy(items, list.value.items);
-
-        return items;
+        return self.listInNsGeneric(klient.types.ResourceQuota, klient.resources.ResourceQuotas, namespace);
     }
 
     // ===== LimitRange Operations =====
 
     /// List all limit ranges across all namespaces
     pub fn listAllLimitRanges(self: *K8sService) ![]klient.types.LimitRange {
-        if (!self.isConnected()) return error.NotConnected;
-
-        const client = klient.resources.LimitRanges.init(self.client.?);
-        const list = try client.client.listAll();
-        defer list.deinit();
-
-        const items = try self.allocator.alloc(klient.types.LimitRange, list.value.items.len);
-        @memcpy(items, list.value.items);
-
-        return items;
+        return self.listAllGeneric(klient.types.LimitRange, klient.resources.LimitRanges);
     }
 
     /// List limit ranges in a namespace
     pub fn listLimitRanges(self: *K8sService, namespace: ?[]const u8) ![]klient.types.LimitRange {
-        if (!self.isConnected()) return error.NotConnected;
-
-        const client = klient.resources.LimitRanges.init(self.client.?);
-        const ns = namespace orelse self.current_namespace;
-        const list = try client.client.list(ns);
-        defer list.deinit();
-
-        const items = try self.allocator.alloc(klient.types.LimitRange, list.value.items.len);
-        @memcpy(items, list.value.items);
-
-        return items;
+        return self.listInNsGeneric(klient.types.LimitRange, klient.resources.LimitRanges, namespace);
     }
 
     // ===== PodDisruptionBudget Operations =====
 
     /// List all pod disruption budgets across all namespaces
     pub fn listAllPodDisruptionBudgets(self: *K8sService) ![]klient.types.PodDisruptionBudget {
-        if (!self.isConnected()) return error.NotConnected;
-
-        const client = klient.resources.PodDisruptionBudgets.init(self.client.?);
-        const list = try client.client.listAll();
-        defer list.deinit();
-
-        const items = try self.allocator.alloc(klient.types.PodDisruptionBudget, list.value.items.len);
-        @memcpy(items, list.value.items);
-
-        return items;
+        return self.listAllGeneric(klient.types.PodDisruptionBudget, klient.resources.PodDisruptionBudgets);
     }
 
     /// List pod disruption budgets in a namespace
     pub fn listPodDisruptionBudgets(self: *K8sService, namespace: ?[]const u8) ![]klient.types.PodDisruptionBudget {
-        if (!self.isConnected()) return error.NotConnected;
-
-        const client = klient.resources.PodDisruptionBudgets.init(self.client.?);
-        const ns = namespace orelse self.current_namespace;
-        const list = try client.client.list(ns);
-        defer list.deinit();
-
-        const items = try self.allocator.alloc(klient.types.PodDisruptionBudget, list.value.items.len);
-        @memcpy(items, list.value.items);
-
-        return items;
+        return self.listInNsGeneric(klient.types.PodDisruptionBudget, klient.resources.PodDisruptionBudgets, namespace);
     }
     // ===== HorizontalPodAutoscaler Operations =====
 
     /// List all horizontal pod autoscalers across all namespaces
     pub fn listAllHPAs(self: *K8sService) ![]klient.types.HorizontalPodAutoscaler {
-        if (!self.isConnected()) return error.NotConnected;
-
-        const client = klient.resources.HorizontalPodAutoscalers.init(self.client.?);
-        const list = try client.client.listAll();
-        defer list.deinit();
-
-        const items = try self.allocator.alloc(klient.types.HorizontalPodAutoscaler, list.value.items.len);
-        @memcpy(items, list.value.items);
-
-        return items;
+        return self.listAllGeneric(klient.types.HorizontalPodAutoscaler, klient.resources.HorizontalPodAutoscalers);
     }
 
     /// List horizontal pod autoscalers in a namespace
     pub fn listHPAs(self: *K8sService, namespace: ?[]const u8) ![]klient.types.HorizontalPodAutoscaler {
-        if (!self.isConnected()) return error.NotConnected;
-
-        const client = klient.resources.HorizontalPodAutoscalers.init(self.client.?);
-        const ns = namespace orelse self.current_namespace;
-        const list = try client.client.list(ns);
-        defer list.deinit();
-
-        const items = try self.allocator.alloc(klient.types.HorizontalPodAutoscaler, list.value.items.len);
-        @memcpy(items, list.value.items);
-
-        return items;
+        return self.listInNsGeneric(klient.types.HorizontalPodAutoscaler, klient.resources.HorizontalPodAutoscalers, namespace);
     }
 
     // ===== Pod Metrics Operations =====

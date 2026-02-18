@@ -4,6 +4,9 @@
 ///   Tab 1 (Access Review): Permission matrix for current user
 ///   Tab 2 (Policy Browser): Aggregated RBAC + Cedar policies
 ///   Tab 3 (Condition Inspector): CEL condition chain details (KEP 5681)
+///
+/// This is the coordinator that owns 3 tab structs and dispatches
+/// rendering, key handling, and filtering to the active tab.
 const std = @import("std");
 const Terminal = @import("../core/terminal.zig").Terminal;
 const Theme = theme_loader;
@@ -16,7 +19,20 @@ const Logger = @import("../core/logger.zig");
 const k8s_service_mod = @import("../services/k8s_service.zig");
 const K8sService = k8s_service_mod.K8sService;
 const hints_model = @import("../model/hints.zig");
-const universal_filter = @import("../viewmodel/filter.zig");
+
+// Tab modules
+const auth_access_tab = @import("auth_access_tab.zig");
+const auth_policy_tab = @import("auth_policy_tab.zig");
+const auth_condition_tab = @import("auth_condition_tab.zig");
+
+// Re-export types for backward compatibility (used by tests)
+pub const AccessStatus = auth_access_tab.AccessStatus;
+pub const AccessRow = auth_access_tab.AccessRow;
+pub const AccessReviewTab = auth_access_tab.AccessReviewTab;
+pub const PolicyRow = auth_policy_tab.PolicyRow;
+pub const PolicyBrowserTab = auth_policy_tab.PolicyBrowserTab;
+pub const ConditionRow = auth_condition_tab.ConditionRow;
+pub const ConditionInspectorTab = auth_condition_tab.ConditionInspectorTab;
 
 pub const AuthorizationView = struct {
     allocator: std.mem.Allocator,
@@ -26,25 +42,10 @@ pub const AuthorizationView = struct {
     // Tab state
     active_tab: Tab = .access_review,
 
-    // Tab 1: Access Review state
-    access_rows: std.ArrayListUnmanaged(AccessRow),
-    access_filtered: std.ArrayListUnmanaged(usize),
-    access_selected: u32 = 0,
-    access_scroll: u32 = 0,
-    conditional_auth_available: ?bool = null, // null = not yet detected
-
-    // Tab 2: Policy Browser state
-    policy_rows: std.ArrayListUnmanaged(PolicyRow),
-    policy_filtered: std.ArrayListUnmanaged(usize),
-    policy_selected: u32 = 0,
-    policy_scroll: u32 = 0,
-    cedar_available: ?bool = null,
-
-    // Tab 3: Condition Inspector state
-    condition_rows: std.ArrayListUnmanaged(ConditionRow),
-    condition_resource: ?[]const u8 = null, // e.g. "pods/delete"
-    condition_selected: u32 = 0,
-    condition_scroll: u32 = 0,
+    // The three tabs
+    access_tab: AccessReviewTab,
+    policy_tab: PolicyBrowserTab,
+    condition_tab: ConditionInspectorTab,
 
     // Common state
     visible_rows: u32 = 0,
@@ -58,104 +59,35 @@ pub const AuthorizationView = struct {
         condition_inspector = 3,
     };
 
-    /// Access status for a single verb on a resource
-    pub const AccessStatus = enum {
-        allowed,
-        denied,
-        conditional,
+    // ===== Compatibility accessors =====
+    // These expose the internal tab state so existing tests keep working
+    // without changing their field access patterns.
 
-        pub fn symbol(self: AccessStatus) []const u8 {
-            return switch (self) {
-                .allowed => "\xe2\x9c\x93", // ✓
-                .denied => "\xe2\x9c\x97", // ✗
-                .conditional => "~",
-            };
-        }
-    };
+    /// Proxy for access_tab.table.items
+    pub fn getAccessRows(self: *AuthorizationView) *std.ArrayListUnmanaged(AccessRow) {
+        return &self.access_tab.table.items;
+    }
+    /// Proxy for access_tab.table.filtered_indices
+    pub fn getAccessFiltered(self: *AuthorizationView) *std.ArrayListUnmanaged(usize) {
+        return &self.access_tab.table.filtered_indices;
+    }
 
-    pub const AccessRow = struct {
-        resource: []const u8,
-        group: []const u8,
-        get: AccessStatus = .denied,
-        list: AccessStatus = .denied,
-        create: AccessStatus = .denied,
-        update: AccessStatus = .denied,
-        delete: AccessStatus = .denied,
-        watch: AccessStatus = .denied,
-        condition_count: ?u32 = null, // null if conditional auth not available
-        allocator: std.mem.Allocator,
+    /// Proxy for policy_tab.table.items
+    pub fn getPolicyRows(self: *AuthorizationView) *std.ArrayListUnmanaged(PolicyRow) {
+        return &self.policy_tab.table.items;
+    }
+    /// Proxy for policy_tab.table.filtered_indices
+    pub fn getPolicyFiltered(self: *AuthorizationView) *std.ArrayListUnmanaged(usize) {
+        return &self.policy_tab.table.filtered_indices;
+    }
 
-        pub fn deinit(self: *AccessRow) void {
-            self.allocator.free(self.resource);
-            self.allocator.free(self.group);
-        }
+    /// Proxy for condition_tab.table.items
+    pub fn getConditionRows(self: *AuthorizationView) *std.ArrayListUnmanaged(ConditionRow) {
+        return &self.condition_tab.table.items;
+    }
 
-        fn getResource(self: *const AccessRow) []const u8 {
-            return self.resource;
-        }
-    };
-
-    pub const PolicyRow = struct {
-        source: []const u8, // role name or cedar policy name
-        policy_type: PolicyType,
-        resource: []const u8,
-        verbs: []const u8,
-        subjects: []const u8,
-        allocator: std.mem.Allocator,
-
-        pub const PolicyType = enum {
-            rbac,
-            cedar,
-
-            pub fn label(self: PolicyType) []const u8 {
-                return switch (self) {
-                    .rbac => "RBAC",
-                    .cedar => "Cedar",
-                };
-            }
-        };
-
-        pub fn deinit(self: *PolicyRow) void {
-            self.allocator.free(self.source);
-            self.allocator.free(self.resource);
-            self.allocator.free(self.verbs);
-            self.allocator.free(self.subjects);
-        }
-
-        fn getSource(self: *const PolicyRow) []const u8 {
-            return self.source;
-        }
-    };
-
-    pub const ConditionRow = struct {
-        index: u32,
-        effect: []const u8, // "Allow" or "Deny"
-        authorizer: []const u8,
-        expression: []const u8,
-        description: []const u8,
-        allocator: std.mem.Allocator,
-
-        pub fn deinit(self: *ConditionRow) void {
-            self.allocator.free(self.effect);
-            self.allocator.free(self.authorizer);
-            self.allocator.free(self.expression);
-            self.allocator.free(self.description);
-        }
-    };
-
-    // Core resource types to check access for
-    const core_resources = [_]struct { resource: []const u8, group: []const u8 }{
-        .{ .resource = "pods", .group = "" },
-        .{ .resource = "deployments", .group = "apps" },
-        .{ .resource = "services", .group = "" },
-        .{ .resource = "configmaps", .group = "" },
-        .{ .resource = "secrets", .group = "" },
-        .{ .resource = "namespaces", .group = "" },
-        .{ .resource = "nodes", .group = "" },
-        .{ .resource = "ingresses", .group = "networking.k8s.io" },
-    };
-
-    const core_verbs = [_][]const u8{ "get", "list", "create", "update", "delete", "watch" };
+    // Provide public field-like access via direct struct fields that mirror
+    // the old layout. We use wrapper functions called from tests.
 
     pub fn init(
         allocator: std.mem.Allocator,
@@ -166,43 +98,31 @@ pub const AuthorizationView = struct {
             .allocator = allocator,
             .theme = theme,
             .k8s_service = k8s_service,
-            .access_rows = std.ArrayListUnmanaged(AccessRow){},
-            .access_filtered = std.ArrayListUnmanaged(usize){},
-            .policy_rows = std.ArrayListUnmanaged(PolicyRow){},
-            .policy_filtered = std.ArrayListUnmanaged(usize){},
-            .condition_rows = std.ArrayListUnmanaged(ConditionRow){},
+            .access_tab = AccessReviewTab.init(allocator, k8s_service),
+            .policy_tab = PolicyBrowserTab.init(allocator, k8s_service),
+            .condition_tab = ConditionInspectorTab.init(allocator, k8s_service),
         };
     }
 
     pub fn deinit(self: *AuthorizationView) void {
-        self.clearAccessRows();
-        self.access_rows.deinit(self.allocator);
-        self.access_filtered.deinit(self.allocator);
-
-        self.clearPolicyRows();
-        self.policy_rows.deinit(self.allocator);
-        self.policy_filtered.deinit(self.allocator);
-
-        self.clearConditionRows();
-        self.condition_rows.deinit(self.allocator);
-
-        if (self.condition_resource) |r| self.allocator.free(r);
+        self.access_tab.deinit();
+        self.policy_tab.deinit();
+        self.condition_tab.deinit();
         if (self.error_message) |msg| self.allocator.free(msg);
     }
 
+    // ===== Compatibility methods for tests =====
+
     pub fn clearAccessRows(self: *AuthorizationView) void {
-        for (self.access_rows.items) |*row| row.deinit();
-        self.access_rows.clearRetainingCapacity();
+        self.access_tab.table.clearItems();
     }
 
     pub fn clearPolicyRows(self: *AuthorizationView) void {
-        for (self.policy_rows.items) |*row| row.deinit();
-        self.policy_rows.clearRetainingCapacity();
+        self.policy_tab.table.clearItems();
     }
 
     pub fn clearConditionRows(self: *AuthorizationView) void {
-        for (self.condition_rows.items) |*row| row.deinit();
-        self.condition_rows.clearRetainingCapacity();
+        self.condition_tab.table.clearItems();
     }
 
     // ===== Data fetching =====
@@ -212,69 +132,18 @@ pub const AuthorizationView = struct {
         self.loading = true;
         defer self.loading = false;
 
-        self.clearAccessRows();
-
+        // Sync error state: clear coordinator error before refresh
         if (self.error_message) |msg| {
             self.allocator.free(msg);
             self.error_message = null;
         }
 
-        if (!self.k8s_service.isConnected()) {
-            self.error_message = try self.allocator.dupe(u8, "Not connected to Kubernetes cluster");
-            return;
+        try self.access_tab.refresh();
+
+        // Propagate error from tab to coordinator for backward compat
+        if (self.access_tab.table.error_message) |msg| {
+            self.error_message = try self.allocator.dupe(u8, msg);
         }
-
-        // Detect conditional auth support on first run
-        if (self.conditional_auth_available == null) {
-            self.conditional_auth_available = self.k8s_service.detectConditionalAuth() catch false;
-        }
-
-        const namespace = self.k8s_service.getCurrentNamespace();
-
-        // Check access for each resource × verb combination
-        for (core_resources) |res| {
-            var row = AccessRow{
-                .resource = try self.allocator.dupe(u8, res.resource),
-                .group = try self.allocator.dupe(u8, res.group),
-                .allocator = self.allocator,
-            };
-
-            // Check each verb
-            const verbs_to_check = [_][]const u8{ "get", "list", "create", "update", "delete", "watch" };
-            for (verbs_to_check, 0..) |verb, i| {
-                const result = self.k8s_service.checkAccess(verb, res.group, res.resource, namespace) catch {
-                    continue;
-                };
-                const status: AccessStatus = if (result.conditional)
-                    .conditional
-                else if (result.allowed)
-                    .allowed
-                else
-                    .denied;
-
-                switch (i) {
-                    0 => row.get = status,
-                    1 => row.list = status,
-                    2 => row.create = status,
-                    3 => row.update = status,
-                    4 => row.delete = status,
-                    5 => row.watch = status,
-                    else => {},
-                }
-
-                if (result.condition_count > 0) {
-                    row.condition_count = (row.condition_count orelse 0) + result.condition_count;
-                }
-            }
-
-            if (self.conditional_auth_available != null and !self.conditional_auth_available.?) {
-                row.condition_count = null; // Mark as n/a
-            }
-
-            try self.access_rows.append(self.allocator, row);
-        }
-
-        try self.rebuildAccessFilter();
     }
 
     /// Refresh Tab 2: Policy Browser data
@@ -282,73 +151,17 @@ pub const AuthorizationView = struct {
         self.loading = true;
         defer self.loading = false;
 
-        self.clearPolicyRows();
-
         if (self.error_message) |msg| {
             self.allocator.free(msg);
             self.error_message = null;
         }
 
-        if (!self.k8s_service.isConnected()) {
-            self.error_message = try self.allocator.dupe(u8, "Not connected to Kubernetes cluster");
-            return;
+        try self.policy_tab.refresh();
+
+        // Propagate error from tab to coordinator
+        if (self.policy_tab.table.error_message) |msg| {
+            self.error_message = try self.allocator.dupe(u8, msg);
         }
-
-        // Fetch RBAC roles and bindings
-        const rbac_policies = self.k8s_service.listRBACPolicies() catch |err| {
-            self.error_message = try std.fmt.allocPrint(self.allocator, "Failed to list RBAC policies: {}", .{err});
-            return;
-        };
-        defer {
-            for (rbac_policies) |*p| {
-                var mp = p.*;
-                mp.deinit();
-            }
-            self.allocator.free(rbac_policies);
-        }
-
-        for (rbac_policies) |p| {
-            try self.policy_rows.append(self.allocator, PolicyRow{
-                .source = try self.allocator.dupe(u8, p.source),
-                .policy_type = .rbac,
-                .resource = try self.allocator.dupe(u8, p.resource),
-                .verbs = try self.allocator.dupe(u8, p.verbs),
-                .subjects = try self.allocator.dupe(u8, p.subjects),
-                .allocator = self.allocator,
-            });
-        }
-
-        // Detect Cedar and fetch policies
-        if (self.cedar_available == null) {
-            self.cedar_available = self.k8s_service.detectCedarAuth() catch false;
-        }
-
-        if (self.cedar_available.?) {
-            const cedar_policies = self.k8s_service.listCedarPolicies() catch |err| {
-                Logger.warn("Failed to list Cedar policies: {}", .{err});
-                return;
-            };
-            defer {
-                for (cedar_policies) |*p| {
-                    var mp = p.*;
-                    mp.deinit();
-                }
-                self.allocator.free(cedar_policies);
-            }
-
-            for (cedar_policies) |p| {
-                try self.policy_rows.append(self.allocator, PolicyRow{
-                    .source = try self.allocator.dupe(u8, p.source),
-                    .policy_type = .cedar,
-                    .resource = try self.allocator.dupe(u8, p.resource),
-                    .verbs = try self.allocator.dupe(u8, p.verbs),
-                    .subjects = try self.allocator.dupe(u8, p.subjects),
-                    .allocator = self.allocator,
-                });
-            }
-        }
-
-        try self.rebuildPolicyFilter();
     }
 
     /// Refresh Tab 3: Condition Inspector for a specific resource
@@ -356,48 +169,16 @@ pub const AuthorizationView = struct {
         self.loading = true;
         defer self.loading = false;
 
-        self.clearConditionRows();
-
-        if (self.condition_resource) |r| self.allocator.free(r);
-        self.condition_resource = try self.allocator.dupe(u8, resource);
-
         if (self.error_message) |msg| {
             self.allocator.free(msg);
             self.error_message = null;
         }
 
-        if (!self.k8s_service.isConnected()) {
-            self.error_message = try self.allocator.dupe(u8, "Not connected to Kubernetes cluster");
-            return;
-        }
+        try self.condition_tab.refresh(resource, group, self.access_tab.conditional_auth_available);
 
-        if (self.conditional_auth_available != null and !self.conditional_auth_available.?) {
-            self.error_message = try self.allocator.dupe(u8, "Conditional Authorization (KEP 5681) not available on this cluster. Requires K8s v1.36+ with ConditionalAuthorization feature gate enabled.");
-            return;
-        }
-
-        const namespace = self.k8s_service.getCurrentNamespace();
-        const conditions = self.k8s_service.getAuthorizationConditions(resource, group, namespace) catch |err| {
-            self.error_message = try std.fmt.allocPrint(self.allocator, "Failed to get conditions: {}", .{err});
-            return;
-        };
-        defer {
-            for (conditions) |*c| {
-                var mc = c.*;
-                mc.deinit();
-            }
-            self.allocator.free(conditions);
-        }
-
-        for (conditions, 0..) |c, i| {
-            try self.condition_rows.append(self.allocator, ConditionRow{
-                .index = @intCast(i + 1),
-                .effect = try self.allocator.dupe(u8, c.effect),
-                .authorizer = try self.allocator.dupe(u8, c.authorizer),
-                .expression = try self.allocator.dupe(u8, c.expression),
-                .description = try self.allocator.dupe(u8, c.description),
-                .allocator = self.allocator,
-            });
+        // Propagate error from tab to coordinator
+        if (self.condition_tab.table.error_message) |msg| {
+            self.error_message = try self.allocator.dupe(u8, msg);
         }
     }
 
@@ -406,112 +187,47 @@ pub const AuthorizationView = struct {
     pub fn applyFilter(self: *AuthorizationView, filter: []const u8) !void {
         self.filter_text = filter;
         switch (self.active_tab) {
-            .access_review => try self.rebuildAccessFilter(),
-            .policy_browser => try self.rebuildPolicyFilter(),
+            .access_review => try self.access_tab.applyFilter(filter),
+            .policy_browser => try self.policy_tab.applyFilter(filter),
             .condition_inspector => {},
         }
     }
 
     pub fn rebuildAccessFilter(self: *AuthorizationView) !void {
-        try universal_filter.applyFilter(
-            AccessRow,
-            self.allocator,
-            self.access_rows.items,
-            &self.access_filtered,
-            self.filter_text,
-            &self.access_selected,
-            &self.access_scroll,
-            self.visible_rows,
-            accessMatchFn,
-        );
-    }
-
-    fn rebuildPolicyFilter(self: *AuthorizationView) !void {
-        try universal_filter.applyFilter(
-            PolicyRow,
-            self.allocator,
-            self.policy_rows.items,
-            &self.policy_filtered,
-            self.filter_text,
-            &self.policy_selected,
-            &self.policy_scroll,
-            self.visible_rows,
-            policyMatchFn,
-        );
-    }
-
-    fn accessMatchFn(item: *const AccessRow, filter: []const u8) bool {
-        return std.mem.indexOf(u8, item.resource, filter) != null;
-    }
-
-    fn policyMatchFn(item: *const PolicyRow, filter: []const u8) bool {
-        return std.mem.indexOf(u8, item.source, filter) != null or
-            std.mem.indexOf(u8, item.resource, filter) != null or
-            std.mem.indexOf(u8, item.subjects, filter) != null;
+        try self.access_tab.applyFilter(self.access_tab.table.filter_text);
     }
 
     // ===== Navigation =====
 
-    fn selectedRow(self: *AuthorizationView) *u32 {
-        return switch (self.active_tab) {
-            .access_review => &self.access_selected,
-            .policy_browser => &self.policy_selected,
-            .condition_inspector => &self.condition_selected,
-        };
-    }
-
-    fn scrollOffset(self: *AuthorizationView) *u32 {
-        return switch (self.active_tab) {
-            .access_review => &self.access_scroll,
-            .policy_browser => &self.policy_scroll,
-            .condition_inspector => &self.condition_scroll,
-        };
-    }
-
-    fn currentListLen(self: *AuthorizationView) usize {
-        return switch (self.active_tab) {
-            .access_review => self.access_filtered.items.len,
-            .policy_browser => self.policy_filtered.items.len,
-            .condition_inspector => self.condition_rows.items.len,
-        };
-    }
-
-    fn moveDown(self: *AuthorizationView) void {
-        const sel = self.selectedRow();
-        const scroll = self.scrollOffset();
-        const len = self.currentListLen();
-        if (sel.* + 1 < len) {
-            sel.* += 1;
-            if (sel.* >= scroll.* + self.visible_rows) {
-                scroll.* += 1;
-            }
+    pub fn moveDown(self: *AuthorizationView) void {
+        switch (self.active_tab) {
+            .access_review => self.access_tab.moveDown(),
+            .policy_browser => self.policy_tab.moveDown(),
+            .condition_inspector => self.condition_tab.moveDown(),
         }
     }
 
-    fn moveUp(self: *AuthorizationView) void {
-        const sel = self.selectedRow();
-        const scroll = self.scrollOffset();
-        if (sel.* > 0) {
-            sel.* -= 1;
-            if (sel.* < scroll.*) {
-                scroll.* = sel.*;
-            }
+    pub fn moveUp(self: *AuthorizationView) void {
+        switch (self.active_tab) {
+            .access_review => self.access_tab.moveUp(),
+            .policy_browser => self.policy_tab.moveUp(),
+            .condition_inspector => self.condition_tab.moveUp(),
         }
     }
 
-    fn moveTop(self: *AuthorizationView) void {
-        self.selectedRow().* = 0;
-        self.scrollOffset().* = 0;
+    pub fn moveTop(self: *AuthorizationView) void {
+        switch (self.active_tab) {
+            .access_review => self.access_tab.moveTop(),
+            .policy_browser => self.policy_tab.moveTop(),
+            .condition_inspector => self.condition_tab.moveTop(),
+        }
     }
 
-    fn moveBottom(self: *AuthorizationView) void {
-        const len = self.currentListLen();
-        if (len > 0) {
-            const sel = self.selectedRow();
-            sel.* = @intCast(len - 1);
-            if (sel.* >= self.visible_rows) {
-                self.scrollOffset().* = sel.* - self.visible_rows + 1;
-            }
+    pub fn moveBottom(self: *AuthorizationView) void {
+        switch (self.active_tab) {
+            .access_review => self.access_tab.moveBottom(),
+            .policy_browser => self.policy_tab.moveBottom(),
+            .condition_inspector => self.condition_tab.moveBottom(),
         }
     }
 
@@ -558,7 +274,13 @@ pub const AuthorizationView = struct {
 
     fn render(ptr: *anyopaque, term: *Terminal, x: u16, y: u16, width: u16, height: u16) !void {
         const self: *AuthorizationView = @ptrCast(@alignCast(ptr));
-        self.visible_rows = if (height > 3) height - 3 else 0;
+
+        // Update visible_rows on all tabs
+        const content_vis = if (height > 3) height - 3 else 0;
+        self.visible_rows = content_vis;
+        self.access_tab.table.visible_rows = content_vis;
+        self.policy_tab.table.visible_rows = content_vis;
+        // condition tab sets its own visible_rows in its render
 
         // Tab bar
         const tab_y = y;
@@ -587,9 +309,9 @@ pub const AuthorizationView = struct {
         const content_y = tab_y + 1;
         const content_h = if (height > 1) height - 1 else 0;
         switch (self.active_tab) {
-            .access_review => try self.renderAccessReview(term, x, content_y, width, content_h),
-            .policy_browser => try self.renderPolicyBrowser(term, x, content_y, width, content_h),
-            .condition_inspector => try self.renderConditionInspector(term, x, content_y, width, content_h),
+            .access_review => try self.access_tab.render(term, x, content_y, width, content_h, self.theme),
+            .policy_browser => try self.policy_tab.render(term, x, content_y, width, content_h, self.theme),
+            .condition_inspector => try self.condition_tab.render(term, x, content_y, width, content_h, self.theme),
         }
     }
 
@@ -611,190 +333,6 @@ pub const AuthorizationView = struct {
         }
     }
 
-    fn renderAccessReview(self: *AuthorizationView, term: *Terminal, x: u16, y: u16, width: u16, height: u16) !void {
-        if (height == 0) return;
-
-        // Header
-        const hdr_y = y;
-        const col_resource: u16 = x;
-        const col_get: u16 = x + 19;
-        const col_list: u16 = col_get + 6;
-        const col_create: u16 = col_list + 6;
-        const col_update: u16 = col_create + 8;
-        const col_delete: u16 = col_update + 8;
-        const col_watch: u16 = col_delete + 8;
-        const col_cond: u16 = col_watch + 7;
-
-        try Theme.writeStringWithTheme(term, col_resource, hdr_y, "RESOURCE", self.theme.title, self.theme.main_bg);
-        try Theme.writeStringWithTheme(term, col_get, hdr_y, "GET", self.theme.title, self.theme.main_bg);
-        try Theme.writeStringWithTheme(term, col_list, hdr_y, "LIST", self.theme.title, self.theme.main_bg);
-        try Theme.writeStringWithTheme(term, col_create, hdr_y, "CREATE", self.theme.title, self.theme.main_bg);
-        try Theme.writeStringWithTheme(term, col_update, hdr_y, "UPDATE", self.theme.title, self.theme.main_bg);
-        try Theme.writeStringWithTheme(term, col_delete, hdr_y, "DELETE", self.theme.title, self.theme.main_bg);
-        try Theme.writeStringWithTheme(term, col_watch, hdr_y, "WATCH", self.theme.title, self.theme.main_bg);
-
-        // Only show CONDITIONS header if width permits
-        if (col_cond + 10 < x + width) {
-            try Theme.writeStringWithTheme(term, col_cond, hdr_y, "CONDITIONS", self.theme.title, self.theme.main_bg);
-        }
-
-        // Rows
-        const vis = if (height > 1) height - 1 else 0;
-        const end_idx = @min(
-            self.access_scroll + vis,
-            @as(u32, @intCast(self.access_filtered.items.len)),
-        );
-
-        var row_y = y + 1;
-        for (self.access_filtered.items[self.access_scroll..end_idx], 0..) |idx, i| {
-            const row = self.access_rows.items[idx];
-            const is_sel = (self.access_scroll + i) == self.access_selected;
-            const fg = if (is_sel) self.theme.selected_fg else self.theme.main_fg;
-            const bg = if (is_sel) self.theme.selected_bg else self.theme.main_bg;
-
-            try Theme.writeStringWithTheme(term, col_resource, row_y, row.resource[0..@min(18, row.resource.len)], fg, bg);
-
-            // Render each verb with color
-            try self.renderAccessCell(term, col_get, row_y, row.get, is_sel);
-            try self.renderAccessCell(term, col_list, row_y, row.list, is_sel);
-            try self.renderAccessCell(term, col_create, row_y, row.create, is_sel);
-            try self.renderAccessCell(term, col_update, row_y, row.update, is_sel);
-            try self.renderAccessCell(term, col_delete, row_y, row.delete, is_sel);
-            try self.renderAccessCell(term, col_watch, row_y, row.watch, is_sel);
-
-            // Conditions column
-            if (col_cond + 10 < x + width) {
-                var cond_buf: [16]u8 = undefined;
-                const cond_str = if (row.condition_count) |c|
-                    if (c > 0)
-                        std.fmt.bufPrint(&cond_buf, "CEL: {d}", .{c}) catch "-"
-                    else
-                        "-"
-                else
-                    "(n/a)";
-                const cond_fg = if (is_sel) self.theme.selected_fg else self.theme.main_fg;
-                try Theme.writeStringWithTheme(term, col_cond, row_y, cond_str, cond_fg, if (is_sel) self.theme.selected_bg else self.theme.main_bg);
-            }
-
-            row_y += 1;
-        }
-    }
-
-    fn renderAccessCell(self: *AuthorizationView, term: *Terminal, cx: u16, cy: u16, status: AccessStatus, is_sel: bool) !void {
-        const bg = if (is_sel) self.theme.selected_bg else self.theme.main_bg;
-        const fg = switch (status) {
-            .allowed => self.theme.status_running, // green
-            .denied => self.theme.status_failed, // red
-            .conditional => self.theme.status_pending, // yellow
-        };
-        try Theme.writeStringWithTheme(term, cx, cy, status.symbol(), fg, bg);
-    }
-
-    fn renderPolicyBrowser(self: *AuthorizationView, term: *Terminal, x: u16, y: u16, width: u16, height: u16) !void {
-        if (height == 0) return;
-        _ = width;
-
-        // Header
-        const hdr_y = y;
-        const col_source: u16 = x;
-        const col_type: u16 = x + 27;
-        const col_res: u16 = col_type + 8;
-        const col_verbs: u16 = col_res + 18;
-        const col_subj: u16 = col_verbs + 24;
-
-        try Theme.writeStringWithTheme(term, col_source, hdr_y, "SOURCE", self.theme.title, self.theme.main_bg);
-        try Theme.writeStringWithTheme(term, col_type, hdr_y, "TYPE", self.theme.title, self.theme.main_bg);
-        try Theme.writeStringWithTheme(term, col_res, hdr_y, "RESOURCE", self.theme.title, self.theme.main_bg);
-        try Theme.writeStringWithTheme(term, col_verbs, hdr_y, "VERBS", self.theme.title, self.theme.main_bg);
-        try Theme.writeStringWithTheme(term, col_subj, hdr_y, "SUBJECTS", self.theme.title, self.theme.main_bg);
-
-        // Rows
-        const vis = if (height > 1) height - 1 else 0;
-        const end_idx = @min(
-            self.policy_scroll + vis,
-            @as(u32, @intCast(self.policy_filtered.items.len)),
-        );
-
-        var row_y = y + 1;
-        for (self.policy_filtered.items[self.policy_scroll..end_idx], 0..) |idx, i| {
-            const row = self.policy_rows.items[idx];
-            const is_sel = (self.policy_scroll + i) == self.policy_selected;
-            const fg = if (is_sel) self.theme.selected_fg else self.theme.main_fg;
-            const bg = if (is_sel) self.theme.selected_bg else self.theme.main_bg;
-
-            try Theme.writeStringWithTheme(term, col_source, row_y, row.source[0..@min(26, row.source.len)], fg, bg);
-            try Theme.writeStringWithTheme(term, col_type, row_y, row.policy_type.label(), fg, bg);
-            try Theme.writeStringWithTheme(term, col_res, row_y, row.resource[0..@min(16, row.resource.len)], fg, bg);
-            try Theme.writeStringWithTheme(term, col_verbs, row_y, row.verbs[0..@min(22, row.verbs.len)], fg, bg);
-            try Theme.writeStringWithTheme(term, col_subj, row_y, row.subjects[0..@min(30, row.subjects.len)], fg, bg);
-
-            row_y += 1;
-        }
-    }
-
-    fn renderConditionInspector(self: *AuthorizationView, term: *Terminal, x: u16, y: u16, _: u16, height: u16) !void {
-        if (height == 0) return;
-
-        // Title
-        var title_buf: [128]u8 = undefined;
-        const title = if (self.condition_resource) |r|
-            std.fmt.bufPrint(&title_buf, "Conditions for: {s} ({d} conditions)", .{ r, self.condition_rows.items.len }) catch "Conditions"
-        else
-            "No resource selected. Press Enter on a conditional row in Tab 1.";
-
-        try Theme.writeStringWithTheme(term, x, y, title, self.theme.title, self.theme.main_bg);
-
-        if (self.condition_rows.items.len == 0 and self.condition_resource != null) {
-            try Theme.writeStringWithTheme(term, x, y + 2, "No conditions found for this resource.", self.theme.main_fg, self.theme.main_bg);
-            return;
-        }
-
-        // Header
-        const hdr_y = y + 1;
-        const col_idx: u16 = x;
-        const col_effect: u16 = col_idx + 4;
-        const col_auth: u16 = col_effect + 10;
-        const col_expr: u16 = col_auth + 18;
-        const col_desc: u16 = col_expr + 40;
-
-        try Theme.writeStringWithTheme(term, col_idx, hdr_y, "#", self.theme.title, self.theme.main_bg);
-        try Theme.writeStringWithTheme(term, col_effect, hdr_y, "EFFECT", self.theme.title, self.theme.main_bg);
-        try Theme.writeStringWithTheme(term, col_auth, hdr_y, "AUTHORIZER", self.theme.title, self.theme.main_bg);
-        try Theme.writeStringWithTheme(term, col_expr, hdr_y, "EXPRESSION", self.theme.title, self.theme.main_bg);
-        try Theme.writeStringWithTheme(term, col_desc, hdr_y, "DESCRIPTION", self.theme.title, self.theme.main_bg);
-
-        // Rows
-        const vis = if (height > 2) height - 2 else 0;
-        const end_idx = @min(
-            self.condition_scroll + vis,
-            @as(u32, @intCast(self.condition_rows.items.len)),
-        );
-
-        var row_y = hdr_y + 1;
-        for (self.condition_rows.items[self.condition_scroll..end_idx], 0..) |row, i| {
-            const is_sel = (self.condition_scroll + i) == self.condition_selected;
-            const fg = if (is_sel) self.theme.selected_fg else self.theme.main_fg;
-            const bg = if (is_sel) self.theme.selected_bg else self.theme.main_bg;
-
-            var idx_buf: [8]u8 = undefined;
-            const idx_str = std.fmt.bufPrint(&idx_buf, "{d}", .{row.index}) catch "?";
-            try Theme.writeStringWithTheme(term, col_idx, row_y, idx_str, fg, bg);
-
-            // Color the effect
-            const effect_fg = if (std.mem.eql(u8, row.effect, "Deny"))
-                self.theme.status_failed
-            else
-                self.theme.status_running;
-            try Theme.writeStringWithTheme(term, col_effect, row_y, row.effect[0..@min(8, row.effect.len)], effect_fg, bg);
-
-            try Theme.writeStringWithTheme(term, col_auth, row_y, row.authorizer[0..@min(16, row.authorizer.len)], fg, bg);
-            try Theme.writeStringWithTheme(term, col_expr, row_y, row.expression[0..@min(38, row.expression.len)], fg, bg);
-            try Theme.writeStringWithTheme(term, col_desc, row_y, row.description[0..@min(30, row.description.len)], fg, bg);
-
-            row_y += 1;
-        }
-    }
-
     fn handleKey(ptr: *anyopaque, key: Key) !KeyResult {
         const self: *AuthorizationView = @ptrCast(@alignCast(ptr));
 
@@ -807,7 +345,7 @@ pub const AuthorizationView = struct {
                     },
                     '2' => {
                         self.active_tab = .policy_browser;
-                        if (self.policy_rows.items.len == 0) {
+                        if (self.policy_tab.table.items.items.len == 0) {
                             self.refreshPolicies() catch |err| {
                                 Logger.err("Failed to refresh policies: {}", .{err});
                             };
@@ -826,7 +364,7 @@ pub const AuthorizationView = struct {
                             .condition_inspector => .access_review,
                         };
                         // Lazy-load policy data
-                        if (self.active_tab == .policy_browser and self.policy_rows.items.len == 0) {
+                        if (self.active_tab == .policy_browser and self.policy_tab.table.items.items.len == 0) {
                             self.refreshPolicies() catch |err| {
                                 Logger.err("Failed to refresh policies: {}", .{err});
                             };
@@ -859,9 +397,8 @@ pub const AuthorizationView = struct {
                                 Logger.err("Failed to refresh policies: {}", .{err});
                             },
                             .condition_inspector => {
-                                if (self.access_selected < self.access_filtered.items.len) {
-                                    const idx = self.access_filtered.items[self.access_selected];
-                                    const row = self.access_rows.items[idx];
+                                const sel = self.access_tab.getSelectedRow();
+                                if (sel) |row| {
                                     self.refreshConditions(row.resource, row.group) catch |err| {
                                         Logger.err("Failed to refresh conditions: {}", .{err});
                                     };
@@ -892,24 +429,18 @@ pub const AuthorizationView = struct {
                 return .handled;
             },
             .page_down => {
-                const len = self.currentListLen();
-                const sel = self.selectedRow();
-                const scroll = self.scrollOffset();
-                const items_len: u32 = @intCast(len);
-                const jump = @min(self.visible_rows, items_len -| sel.* -| 1);
-                sel.* += jump;
-                if (sel.* >= scroll.* + self.visible_rows) {
-                    scroll.* = sel.* -| self.visible_rows + 1;
+                switch (self.active_tab) {
+                    .access_review => self.access_tab.pageDown(),
+                    .policy_browser => self.policy_tab.pageDown(),
+                    .condition_inspector => self.condition_tab.pageDown(),
                 }
                 return .handled;
             },
             .page_up => {
-                const sel = self.selectedRow();
-                const scroll = self.scrollOffset();
-                const jump = @min(self.visible_rows, sel.*);
-                sel.* -= jump;
-                if (sel.* < scroll.*) {
-                    scroll.* = sel.*;
+                switch (self.active_tab) {
+                    .access_review => self.access_tab.pageUp(),
+                    .policy_browser => self.policy_tab.pageUp(),
+                    .condition_inspector => self.condition_tab.pageUp(),
                 }
                 return .handled;
             },
@@ -924,9 +455,7 @@ pub const AuthorizationView = struct {
             .enter => {
                 // In Tab 1, Enter on a conditional row opens Tab 3
                 if (self.active_tab == .access_review) {
-                    if (self.access_selected < self.access_filtered.items.len) {
-                        const idx = self.access_filtered.items[self.access_selected];
-                        const row = self.access_rows.items[idx];
+                    if (self.access_tab.getSelectedRow()) |row| {
                         self.refreshConditions(row.resource, row.group) catch |err| {
                             Logger.err("Failed to refresh conditions: {}", .{err});
                         };
@@ -943,7 +472,7 @@ pub const AuthorizationView = struct {
     fn onShow(ptr: *anyopaque) void {
         const self: *AuthorizationView = @ptrCast(@alignCast(ptr));
         // Refresh access review on show
-        if (self.access_rows.items.len == 0) {
+        if (self.access_tab.table.items.items.len == 0) {
             self.refreshAccessReview() catch |err| {
                 Logger.err("Failed to refresh access review on show: {}", .{err});
             };
@@ -985,6 +514,18 @@ pub const AuthorizationView = struct {
     pub fn getSelectedResourceInfo(_: *AuthorizationView) ?view_mod.ResourceInfo {
         return null;
     }
+
+    // ===== Compatibility: match functions exposed for tests =====
+
+    pub fn accessMatchFn(item: *const AccessRow, filter: []const u8) bool {
+        return std.mem.indexOf(u8, item.resource, filter) != null;
+    }
+
+    pub fn policyMatchFn(item: *const PolicyRow, filter: []const u8) bool {
+        return std.mem.indexOf(u8, item.source, filter) != null or
+            std.mem.indexOf(u8, item.resource, filter) != null or
+            std.mem.indexOf(u8, item.subjects, filter) != null;
+    }
 };
 
 // ===== Tests =====
@@ -1025,17 +566,17 @@ test "AuthorizationView init and deinit" {
 
     // Check initial state
     try testing.expectEqual(AuthorizationView.Tab.access_review, view.active_tab);
-    try testing.expectEqual(@as(usize, 0), view.access_rows.items.len);
-    try testing.expectEqual(@as(usize, 0), view.policy_rows.items.len);
-    try testing.expectEqual(@as(usize, 0), view.condition_rows.items.len);
-    try testing.expectEqual(@as(u32, 0), view.access_selected);
-    try testing.expectEqual(@as(u32, 0), view.policy_selected);
-    try testing.expectEqual(@as(u32, 0), view.condition_selected);
-    try testing.expect(view.condition_resource == null);
+    try testing.expectEqual(@as(usize, 0), view.access_tab.table.items.items.len);
+    try testing.expectEqual(@as(usize, 0), view.policy_tab.table.items.items.len);
+    try testing.expectEqual(@as(usize, 0), view.condition_tab.table.items.items.len);
+    try testing.expectEqual(@as(u32, 0), view.access_tab.table.selected_row);
+    try testing.expectEqual(@as(u32, 0), view.policy_tab.table.selected_row);
+    try testing.expectEqual(@as(u32, 0), view.condition_tab.table.selected_row);
+    try testing.expect(view.condition_tab.condition_resource == null);
     try testing.expect(view.error_message == null);
     try testing.expectEqual(false, view.loading);
-    try testing.expect(view.conditional_auth_available == null);
-    try testing.expect(view.cedar_available == null);
+    try testing.expect(view.access_tab.conditional_auth_available == null);
+    try testing.expect(view.policy_tab.cedar_available == null);
 }
 
 test "AuthorizationView multiple init/deinit cycles" {
@@ -1123,13 +664,13 @@ test "AuthorizationView navigation on empty lists" {
 
     // moveDown/moveUp on empty list shouldn't crash
     view.moveDown();
-    try testing.expectEqual(@as(u32, 0), view.access_selected);
+    try testing.expectEqual(@as(u32, 0), view.access_tab.table.selected_row);
     view.moveUp();
-    try testing.expectEqual(@as(u32, 0), view.access_selected);
+    try testing.expectEqual(@as(u32, 0), view.access_tab.table.selected_row);
     view.moveTop();
-    try testing.expectEqual(@as(u32, 0), view.access_selected);
+    try testing.expectEqual(@as(u32, 0), view.access_tab.table.selected_row);
     view.moveBottom();
-    try testing.expectEqual(@as(u32, 0), view.access_selected);
+    try testing.expectEqual(@as(u32, 0), view.access_tab.table.selected_row);
 }
 
 test "AuthorizationView tab switching" {
@@ -1346,19 +887,19 @@ test "AuthorizationView navigation with data" {
     defer view.deinit();
 
     // Manually add rows to test navigation
-    try view.access_rows.append(allocator, .{
+    try view.access_tab.table.appendItem(.{
         .resource = try allocator.dupe(u8, "pods"),
         .group = try allocator.dupe(u8, ""),
         .get = .allowed,
         .allocator = allocator,
     });
-    try view.access_rows.append(allocator, .{
+    try view.access_tab.table.appendItem(.{
         .resource = try allocator.dupe(u8, "deployments"),
         .group = try allocator.dupe(u8, "apps"),
         .get = .denied,
         .allocator = allocator,
     });
-    try view.access_rows.append(allocator, .{
+    try view.access_tab.table.appendItem(.{
         .resource = try allocator.dupe(u8, "secrets"),
         .group = try allocator.dupe(u8, ""),
         .get = .conditional,
@@ -1367,34 +908,34 @@ test "AuthorizationView navigation with data" {
 
     // Rebuild filter to populate filtered_indices
     try view.rebuildAccessFilter();
-    try testing.expectEqual(@as(usize, 3), view.access_filtered.items.len);
+    try testing.expectEqual(@as(usize, 3), view.access_tab.table.filtered_indices.items.len);
 
     // Navigate down
-    view.visible_rows = 10;
+    view.access_tab.table.visible_rows = 10;
     view.moveDown();
-    try testing.expectEqual(@as(u32, 1), view.access_selected);
+    try testing.expectEqual(@as(u32, 1), view.access_tab.table.selected_row);
     view.moveDown();
-    try testing.expectEqual(@as(u32, 2), view.access_selected);
+    try testing.expectEqual(@as(u32, 2), view.access_tab.table.selected_row);
     // Can't go past end
     view.moveDown();
-    try testing.expectEqual(@as(u32, 2), view.access_selected);
+    try testing.expectEqual(@as(u32, 2), view.access_tab.table.selected_row);
 
     // Navigate up
     view.moveUp();
-    try testing.expectEqual(@as(u32, 1), view.access_selected);
+    try testing.expectEqual(@as(u32, 1), view.access_tab.table.selected_row);
     view.moveUp();
-    try testing.expectEqual(@as(u32, 0), view.access_selected);
+    try testing.expectEqual(@as(u32, 0), view.access_tab.table.selected_row);
     // Can't go past start
     view.moveUp();
-    try testing.expectEqual(@as(u32, 0), view.access_selected);
+    try testing.expectEqual(@as(u32, 0), view.access_tab.table.selected_row);
 
     // Jump to bottom
     view.moveBottom();
-    try testing.expectEqual(@as(u32, 2), view.access_selected);
+    try testing.expectEqual(@as(u32, 2), view.access_tab.table.selected_row);
 
     // Jump to top
     view.moveTop();
-    try testing.expectEqual(@as(u32, 0), view.access_selected);
+    try testing.expectEqual(@as(u32, 0), view.access_tab.table.selected_row);
 }
 
 test "AuthorizationView filter with data" {
@@ -1412,17 +953,17 @@ test "AuthorizationView filter with data" {
     defer view.deinit();
 
     // Add test rows
-    try view.access_rows.append(allocator, .{
+    try view.access_tab.table.appendItem(.{
         .resource = try allocator.dupe(u8, "pods"),
         .group = try allocator.dupe(u8, ""),
         .allocator = allocator,
     });
-    try view.access_rows.append(allocator, .{
+    try view.access_tab.table.appendItem(.{
         .resource = try allocator.dupe(u8, "deployments"),
         .group = try allocator.dupe(u8, "apps"),
         .allocator = allocator,
     });
-    try view.access_rows.append(allocator, .{
+    try view.access_tab.table.appendItem(.{
         .resource = try allocator.dupe(u8, "secrets"),
         .group = try allocator.dupe(u8, ""),
         .allocator = allocator,
@@ -1430,27 +971,27 @@ test "AuthorizationView filter with data" {
 
     // No filter - all visible
     try view.applyFilter("");
-    try testing.expectEqual(@as(usize, 3), view.access_filtered.items.len);
+    try testing.expectEqual(@as(usize, 3), view.access_tab.table.filtered_indices.items.len);
 
     // Filter for "pod"
     try view.applyFilter("pod");
-    try testing.expectEqual(@as(usize, 1), view.access_filtered.items.len);
+    try testing.expectEqual(@as(usize, 1), view.access_tab.table.filtered_indices.items.len);
 
     // Filter for "s" - matches "pods", "deployments", "secrets"
     try view.applyFilter("s");
-    try testing.expectEqual(@as(usize, 3), view.access_filtered.items.len);
+    try testing.expectEqual(@as(usize, 3), view.access_tab.table.filtered_indices.items.len);
 
     // Filter for "deploy"
     try view.applyFilter("deploy");
-    try testing.expectEqual(@as(usize, 1), view.access_filtered.items.len);
+    try testing.expectEqual(@as(usize, 1), view.access_tab.table.filtered_indices.items.len);
 
     // Filter that matches nothing
     try view.applyFilter("zzzzz");
-    try testing.expectEqual(@as(usize, 0), view.access_filtered.items.len);
+    try testing.expectEqual(@as(usize, 0), view.access_tab.table.filtered_indices.items.len);
 
     // Clear filter
     try view.applyFilter("");
-    try testing.expectEqual(@as(usize, 3), view.access_filtered.items.len);
+    try testing.expectEqual(@as(usize, 3), view.access_tab.table.filtered_indices.items.len);
 }
 
 test "AuthorizationView refreshAccessReview without connection" {
@@ -1471,7 +1012,7 @@ test "AuthorizationView refreshAccessReview without connection" {
     try view.refreshAccessReview();
     try testing.expect(view.error_message != null);
     try testing.expectEqualStrings("Not connected to Kubernetes cluster", view.error_message.?);
-    try testing.expectEqual(@as(usize, 0), view.access_rows.items.len);
+    try testing.expectEqual(@as(usize, 0), view.access_tab.table.items.items.len);
 }
 
 test "AuthorizationView refreshPolicies without connection" {
@@ -1491,7 +1032,7 @@ test "AuthorizationView refreshPolicies without connection" {
     try view.refreshPolicies();
     try testing.expect(view.error_message != null);
     try testing.expectEqualStrings("Not connected to Kubernetes cluster", view.error_message.?);
-    try testing.expectEqual(@as(usize, 0), view.policy_rows.items.len);
+    try testing.expectEqual(@as(usize, 0), view.policy_tab.table.items.items.len);
 }
 
 test "AuthorizationView refreshConditions without connection" {
@@ -1511,8 +1052,8 @@ test "AuthorizationView refreshConditions without connection" {
     try view.refreshConditions("pods", "");
     try testing.expect(view.error_message != null);
     try testing.expectEqualStrings("Not connected to Kubernetes cluster", view.error_message.?);
-    try testing.expect(view.condition_resource != null);
-    try testing.expectEqualStrings("pods", view.condition_resource.?);
+    try testing.expect(view.condition_tab.condition_resource != null);
+    try testing.expectEqualStrings("pods", view.condition_tab.condition_resource.?);
 }
 
 test "AuthorizationView refreshConditions when conditional auth unavailable" {
@@ -1530,14 +1071,8 @@ test "AuthorizationView refreshConditions when conditional auth unavailable" {
     defer view.deinit();
 
     // Simulate detected but unavailable
-    view.conditional_auth_available = false;
-    // Even though not connected, the conditional check triggers first
-    // Actually since connected check is first, let me test differently:
-    // The check order is: connected -> conditional_auth_available
-    // Since not connected, it'll hit that error. Let me test the
-    // conditional_auth message when we manually set connected.
-    // We can't easily fake a connection, so just verify the field is set.
-    try testing.expectEqual(false, view.conditional_auth_available.?);
+    view.access_tab.conditional_auth_available = false;
+    try testing.expectEqual(false, view.access_tab.conditional_auth_available.?);
 }
 
 test "AuthorizationView AccessRow deinit frees memory" {
@@ -1605,29 +1140,29 @@ test "AuthorizationView navigation across tabs" {
     defer view.deinit();
 
     // Add data to access tab
-    try view.access_rows.append(allocator, .{
+    try view.access_tab.table.appendItem(.{
         .resource = try allocator.dupe(u8, "pods"),
         .group = try allocator.dupe(u8, ""),
         .allocator = allocator,
     });
     try view.rebuildAccessFilter();
-    view.visible_rows = 10;
+    view.access_tab.table.visible_rows = 10;
 
     // Navigate in access tab
-    try testing.expectEqual(@as(u32, 0), view.access_selected);
+    try testing.expectEqual(@as(u32, 0), view.access_tab.table.selected_row);
 
     // Switch to policy tab
     view.active_tab = .policy_browser;
     // Policy tab has its own selection state
-    try testing.expectEqual(@as(u32, 0), view.policy_selected);
+    try testing.expectEqual(@as(u32, 0), view.policy_tab.table.selected_row);
 
     // Switch to condition tab
     view.active_tab = .condition_inspector;
-    try testing.expectEqual(@as(u32, 0), view.condition_selected);
+    try testing.expectEqual(@as(u32, 0), view.condition_tab.table.selected_row);
 
     // Switch back - access selection should be preserved
     view.active_tab = .access_review;
-    try testing.expectEqual(@as(u32, 0), view.access_selected);
+    try testing.expectEqual(@as(u32, 0), view.access_tab.table.selected_row);
 }
 
 test "AuthorizationView policy filter with data" {
@@ -1645,7 +1180,7 @@ test "AuthorizationView policy filter with data" {
     defer view.deinit();
 
     // Add policy rows
-    try view.policy_rows.append(allocator, .{
+    try view.policy_tab.table.appendItem(.{
         .source = try allocator.dupe(u8, "admin"),
         .policy_type = .rbac,
         .resource = try allocator.dupe(u8, "*.* "),
@@ -1653,7 +1188,7 @@ test "AuthorizationView policy filter with data" {
         .subjects = try allocator.dupe(u8, "system:masters"),
         .allocator = allocator,
     });
-    try view.policy_rows.append(allocator, .{
+    try view.policy_tab.table.appendItem(.{
         .source = try allocator.dupe(u8, "pod-reader"),
         .policy_type = .rbac,
         .resource = try allocator.dupe(u8, "pods"),
@@ -1665,14 +1200,14 @@ test "AuthorizationView policy filter with data" {
     // Switch to policy tab and apply filter
     view.active_tab = .policy_browser;
     try view.applyFilter("admin");
-    try testing.expectEqual(@as(usize, 1), view.policy_filtered.items.len);
+    try testing.expectEqual(@as(usize, 1), view.policy_tab.table.filtered_indices.items.len);
 
     try view.applyFilter("");
-    try testing.expectEqual(@as(usize, 2), view.policy_filtered.items.len);
+    try testing.expectEqual(@as(usize, 2), view.policy_tab.table.filtered_indices.items.len);
 
     // Filter by subject
     try view.applyFilter("dev-team");
-    try testing.expectEqual(@as(usize, 1), view.policy_filtered.items.len);
+    try testing.expectEqual(@as(usize, 1), view.policy_tab.table.filtered_indices.items.len);
 }
 
 test "AuthorizationView clearAccessRows cleans up" {
@@ -1690,20 +1225,20 @@ test "AuthorizationView clearAccessRows cleans up" {
     defer view.deinit();
 
     // Add some rows
-    try view.access_rows.append(allocator, .{
+    try view.access_tab.table.appendItem(.{
         .resource = try allocator.dupe(u8, "pods"),
         .group = try allocator.dupe(u8, ""),
         .allocator = allocator,
     });
-    try view.access_rows.append(allocator, .{
+    try view.access_tab.table.appendItem(.{
         .resource = try allocator.dupe(u8, "secrets"),
         .group = try allocator.dupe(u8, ""),
         .allocator = allocator,
     });
-    try testing.expectEqual(@as(usize, 2), view.access_rows.items.len);
+    try testing.expectEqual(@as(usize, 2), view.access_tab.table.items.items.len);
 
     view.clearAccessRows();
-    try testing.expectEqual(@as(usize, 0), view.access_rows.items.len);
+    try testing.expectEqual(@as(usize, 0), view.access_tab.table.items.items.len);
 }
 
 test "AuthorizationView clearPolicyRows cleans up" {
@@ -1720,7 +1255,7 @@ test "AuthorizationView clearPolicyRows cleans up" {
     var view = try AuthorizationView.init(allocator, &theme, &k8s);
     defer view.deinit();
 
-    try view.policy_rows.append(allocator, .{
+    try view.policy_tab.table.appendItem(.{
         .source = try allocator.dupe(u8, "admin"),
         .policy_type = .rbac,
         .resource = try allocator.dupe(u8, "*"),
@@ -1728,10 +1263,10 @@ test "AuthorizationView clearPolicyRows cleans up" {
         .subjects = try allocator.dupe(u8, "system:masters"),
         .allocator = allocator,
     });
-    try testing.expectEqual(@as(usize, 1), view.policy_rows.items.len);
+    try testing.expectEqual(@as(usize, 1), view.policy_tab.table.items.items.len);
 
     view.clearPolicyRows();
-    try testing.expectEqual(@as(usize, 0), view.policy_rows.items.len);
+    try testing.expectEqual(@as(usize, 0), view.policy_tab.table.items.items.len);
 }
 
 test "AuthorizationView clearConditionRows cleans up" {
@@ -1748,7 +1283,7 @@ test "AuthorizationView clearConditionRows cleans up" {
     var view = try AuthorizationView.init(allocator, &theme, &k8s);
     defer view.deinit();
 
-    try view.condition_rows.append(allocator, .{
+    try view.condition_tab.table.appendItem(.{
         .index = 1,
         .effect = try allocator.dupe(u8, "Deny"),
         .authorizer = try allocator.dupe(u8, "webhook"),
@@ -1756,8 +1291,8 @@ test "AuthorizationView clearConditionRows cleans up" {
         .description = try allocator.dupe(u8, "test"),
         .allocator = allocator,
     });
-    try testing.expectEqual(@as(usize, 1), view.condition_rows.items.len);
+    try testing.expectEqual(@as(usize, 1), view.condition_tab.table.items.items.len);
 
     view.clearConditionRows();
-    try testing.expectEqual(@as(usize, 0), view.condition_rows.items.len);
+    try testing.expectEqual(@as(usize, 0), view.condition_tab.table.items.items.len);
 }
