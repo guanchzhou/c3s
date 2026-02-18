@@ -25,16 +25,14 @@ const auth_access_tab = @import("auth_access_tab.zig");
 const auth_policy_tab = @import("auth_policy_tab.zig");
 const auth_condition_tab = @import("auth_condition_tab.zig");
 
-// Re-export types for backward compatibility (used by tests)
-pub const AccessStatus = auth_access_tab.AccessStatus;
-pub const AccessRow = auth_access_tab.AccessRow;
-pub const AccessReviewTab = auth_access_tab.AccessReviewTab;
-pub const PolicyRow = auth_policy_tab.PolicyRow;
-pub const PolicyBrowserTab = auth_policy_tab.PolicyBrowserTab;
-pub const ConditionRow = auth_condition_tab.ConditionRow;
-pub const ConditionInspectorTab = auth_condition_tab.ConditionInspectorTab;
 
 pub const AuthorizationView = struct {
+    // Re-export tab types so `AuthorizationView.AccessRow` etc. works in tests
+    pub const AccessStatus = auth_access_tab.AccessStatus;
+    pub const AccessRow = auth_access_tab.AccessRow;
+    pub const PolicyRow = auth_policy_tab.PolicyRow;
+    pub const ConditionRow = auth_condition_tab.ConditionRow;
+
     allocator: std.mem.Allocator,
     theme: *const theme_loader.ThemeColors,
     k8s_service: *K8sService,
@@ -43,9 +41,9 @@ pub const AuthorizationView = struct {
     active_tab: Tab = .access_review,
 
     // The three tabs
-    access_tab: AccessReviewTab,
-    policy_tab: PolicyBrowserTab,
-    condition_tab: ConditionInspectorTab,
+    access_tab: auth_access_tab.AccessReviewTab,
+    policy_tab: auth_policy_tab.PolicyBrowserTab,
+    condition_tab: auth_condition_tab.ConditionInspectorTab,
 
     // Common state
     visible_rows: u32 = 0,
@@ -98,9 +96,9 @@ pub const AuthorizationView = struct {
             .allocator = allocator,
             .theme = theme,
             .k8s_service = k8s_service,
-            .access_tab = AccessReviewTab.init(allocator, k8s_service),
-            .policy_tab = PolicyBrowserTab.init(allocator, k8s_service),
-            .condition_tab = ConditionInspectorTab.init(allocator, k8s_service),
+            .access_tab = auth_access_tab.AccessReviewTab.init(allocator, k8s_service),
+            .policy_tab = auth_policy_tab.PolicyBrowserTab.init(allocator, k8s_service),
+            .condition_tab = auth_condition_tab.ConditionInspectorTab.init(allocator, k8s_service),
         };
     }
 
