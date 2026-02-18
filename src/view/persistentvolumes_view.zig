@@ -226,7 +226,9 @@ pub const PersistentVolumesView = struct {
         self.refresh() catch |err| {
             Logger.err("Failed to refresh PVs: {any}", .{err});
             if (self.table.error_message == null) {
-                self.table.setError("Unexpected error during refresh") catch {};
+                self.table.setError("Unexpected error during refresh") catch {
+                    Logger.err("Failed to allocate error message", .{});
+                };
             }
         };
     }

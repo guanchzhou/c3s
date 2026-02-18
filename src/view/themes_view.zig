@@ -53,7 +53,7 @@ pub const ThemesView = struct {
         return view;
     }
     
-    pub fn cleanup(self: *ThemesView) void {
+    pub fn deinit(self: *ThemesView) void {
         for (self.themes.items) |theme_info| {
             self.allocator.free(theme_info.name);
             self.allocator.free(theme_info.path);
@@ -316,7 +316,7 @@ pub const ThemesView = struct {
         .onHide = onHide,
         .getName = getName,
         .getHints = getHints,
-        .deinit = deinit,
+        .deinit = deinitView,
         .applyFilter = vtableApplyFilter,
         .clearFilter = vtableClearFilter,
     };
@@ -442,8 +442,8 @@ pub const ThemesView = struct {
         return hints_model.themesHints();
     }
     
-    fn deinit(ptr: *anyopaque) void {
+    fn deinitView(ptr: *anyopaque) void {
         const self: *ThemesView = @ptrCast(@alignCast(ptr));
-        self.cleanup();
+        self.deinit();
     }
 };

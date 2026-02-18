@@ -212,7 +212,9 @@ pub const HPAView = struct {
         self.refresh() catch |err| {
             Logger.err("Failed to refresh HPAs: {}", .{err});
             if (self.table.error_message == null) {
-                self.table.setError("Unexpected error during refresh") catch {};
+                self.table.setError("Unexpected error during refresh") catch {
+                    Logger.err("Failed to allocate error message", .{});
+                };
             }
         };
     }

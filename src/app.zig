@@ -167,54 +167,59 @@ pub const App = struct {
         const view_manager = try ViewManager.init(allocator);
         const command_registry = try CommandRegistry.init(allocator);
 
-        // Allocate view pointers (will initialize after App struct is created)
-        const deployments_view = try allocator.create(DeploymentsView);
-        const services_view = try allocator.create(ServicesView);
-        const namespaces_view = try allocator.create(NamespacesView);
-        const nodes_view = try allocator.create(NodesView);
-        const statefulsets_view = try allocator.create(StatefulSetsView);
-        const daemonsets_view = try allocator.create(DaemonSetsView);
-        const replicasets_view = try allocator.create(ReplicaSetsView);
-        const jobs_view = try allocator.create(JobsView);
-        const cronjobs_view = try allocator.create(CronJobsView);
-        const configmaps_view = try allocator.create(ConfigMapsView);
-        const secrets_view = try allocator.create(SecretsView);
-        const persistentvolumes_view = try allocator.create(PersistentVolumesView);
-        const persistentvolumeclaims_view = try allocator.create(PersistentVolumeClaimsView);
-        const ingresses_view = try allocator.create(IngressesView);
-        const networkpolicies_view = try allocator.create(NetworkPoliciesView);
-        const serviceaccounts_view = try allocator.create(ServiceAccountsView);
-        const roles_view = try allocator.create(RolesView);
-        const rolebindings_view = try allocator.create(RoleBindingsView);
-        const clusterroles_view = try allocator.create(ClusterRolesView);
-        const clusterrolebindings_view = try allocator.create(ClusterRoleBindingsView);
-        const events_view = try allocator.create(EventsView);
-        const resourcequotas_view = try allocator.create(ResourceQuotasView);
-        const limitranges_view = try allocator.create(LimitRangesView);
-        const poddisruptionbudgets_view = try allocator.create(PodDisruptionBudgetsView);
-        const hpa_view = try allocator.create(HPAView);
-        const contexts_view = try allocator.create(ContextsView);
+        // Allocate all view pointers (comptime-generated)
+        var app_views: struct {
+            pods_view: *PodsView = undefined,
+            deployments_view: *DeploymentsView = undefined,
+            services_view: *ServicesView = undefined,
+            namespaces_view: *NamespacesView = undefined,
+            nodes_view: *NodesView = undefined,
+            statefulsets_view: *StatefulSetsView = undefined,
+            daemonsets_view: *DaemonSetsView = undefined,
+            replicasets_view: *ReplicaSetsView = undefined,
+            jobs_view: *JobsView = undefined,
+            cronjobs_view: *CronJobsView = undefined,
+            configmaps_view: *ConfigMapsView = undefined,
+            secrets_view: *SecretsView = undefined,
+            persistentvolumes_view: *PersistentVolumesView = undefined,
+            persistentvolumeclaims_view: *PersistentVolumeClaimsView = undefined,
+            ingresses_view: *IngressesView = undefined,
+            networkpolicies_view: *NetworkPoliciesView = undefined,
+            serviceaccounts_view: *ServiceAccountsView = undefined,
+            roles_view: *RolesView = undefined,
+            rolebindings_view: *RoleBindingsView = undefined,
+            clusterroles_view: *ClusterRolesView = undefined,
+            clusterrolebindings_view: *ClusterRoleBindingsView = undefined,
+            events_view: *EventsView = undefined,
+            resourcequotas_view: *ResourceQuotasView = undefined,
+            limitranges_view: *LimitRangesView = undefined,
+            poddisruptionbudgets_view: *PodDisruptionBudgetsView = undefined,
+            hpa_view: *HPAView = undefined,
+            contexts_view: *ContextsView = undefined,
+            authorization_view: *AuthorizationView = undefined,
+        } = .{};
+        inline for (k8s_view_types) |entry| {
+            @field(app_views, entry[0]) = try allocator.create(entry[1]);
+        }
         const pods_view = try allocator.create(PodsView);
 
         // Initialize UI views (these don't need k8s_service)
 
         const themes_view = try allocator.create(ThemesView);
         themes_view.* = try ThemesView.init(allocator, ui_config.ui.theme, theme);
-        errdefer themes_view.cleanup();
+        errdefer themes_view.deinit();
 
         const help_view = try allocator.create(HelpView);
         help_view.* = try HelpView.init(allocator, theme);
-        errdefer help_view.cleanup();
+        errdefer help_view.deinit();
 
         const detail_view = try allocator.create(DetailView);
         detail_view.* = try DetailView.init(allocator, theme);
-        errdefer detail_view.cleanup();
+        errdefer detail_view.deinit();
 
         const logs_view = try allocator.create(LogsView);
         logs_view.* = try LogsView.init(allocator, theme);
-        errdefer logs_view.cleanup();
-
-        const authorization_view = try allocator.create(AuthorizationView);
+        errdefer logs_view.deinit();
 
         // Initialize header with cluster info
         const cluster_info = k8s_service.getClusterInfo();
@@ -264,124 +269,45 @@ pub const App = struct {
             .theme = theme,
             .k8s_service = k8s_service,
             .pods_view = pods_view,
-            .deployments_view = deployments_view,
-            .services_view = services_view,
-            .namespaces_view = namespaces_view,
-            .nodes_view = nodes_view,
-            .statefulsets_view = statefulsets_view,
-            .daemonsets_view = daemonsets_view,
-            .replicasets_view = replicasets_view,
-            .jobs_view = jobs_view,
-            .cronjobs_view = cronjobs_view,
-            .configmaps_view = configmaps_view,
-            .secrets_view = secrets_view,
-            .persistentvolumes_view = persistentvolumes_view,
-            .persistentvolumeclaims_view = persistentvolumeclaims_view,
-            .ingresses_view = ingresses_view,
-            .networkpolicies_view = networkpolicies_view,
-            .serviceaccounts_view = serviceaccounts_view,
-            .roles_view = roles_view,
-            .rolebindings_view = rolebindings_view,
-            .clusterroles_view = clusterroles_view,
-            .clusterrolebindings_view = clusterrolebindings_view,
-            .events_view = events_view,
-            .resourcequotas_view = resourcequotas_view,
-            .limitranges_view = limitranges_view,
-            .poddisruptionbudgets_view = poddisruptionbudgets_view,
-            .hpa_view = hpa_view,
-            .contexts_view = contexts_view,
+            .deployments_view = app_views.deployments_view,
+            .services_view = app_views.services_view,
+            .namespaces_view = app_views.namespaces_view,
+            .nodes_view = app_views.nodes_view,
+            .statefulsets_view = app_views.statefulsets_view,
+            .daemonsets_view = app_views.daemonsets_view,
+            .replicasets_view = app_views.replicasets_view,
+            .jobs_view = app_views.jobs_view,
+            .cronjobs_view = app_views.cronjobs_view,
+            .configmaps_view = app_views.configmaps_view,
+            .secrets_view = app_views.secrets_view,
+            .persistentvolumes_view = app_views.persistentvolumes_view,
+            .persistentvolumeclaims_view = app_views.persistentvolumeclaims_view,
+            .ingresses_view = app_views.ingresses_view,
+            .networkpolicies_view = app_views.networkpolicies_view,
+            .serviceaccounts_view = app_views.serviceaccounts_view,
+            .roles_view = app_views.roles_view,
+            .rolebindings_view = app_views.rolebindings_view,
+            .clusterroles_view = app_views.clusterroles_view,
+            .clusterrolebindings_view = app_views.clusterrolebindings_view,
+            .events_view = app_views.events_view,
+            .resourcequotas_view = app_views.resourcequotas_view,
+            .limitranges_view = app_views.limitranges_view,
+            .poddisruptionbudgets_view = app_views.poddisruptionbudgets_view,
+            .hpa_view = app_views.hpa_view,
+            .contexts_view = app_views.contexts_view,
             .themes_view = themes_view,
             .help_view = help_view,
             .detail_view = detail_view,
             .logs_view = logs_view,
-            .authorization_view = authorization_view,
+            .authorization_view = app_views.authorization_view,
         };
 
-        // NOW initialize resource views with stable pointer to app.k8s_service
-        // (This must happen AFTER k8s_service is moved into the App struct)
+        // Initialize all K8s resource views (comptime-generated loop)
+        // Must happen AFTER k8s_service is moved into the App struct for stable pointer
         pods_view.* = try PodsView.init(allocator, theme, app.k8s_service);
-        errdefer pods_view.cleanup();
-
-        deployments_view.* = try DeploymentsView.init(allocator, theme, app.k8s_service);
-        errdefer deployments_view.deinit();
-
-        services_view.* = try ServicesView.init(allocator, theme, app.k8s_service);
-        errdefer services_view.deinit();
-
-        namespaces_view.* = try NamespacesView.init(allocator, theme, app.k8s_service);
-        errdefer namespaces_view.deinit();
-
-        nodes_view.* = try NodesView.init(allocator, theme, app.k8s_service);
-        errdefer nodes_view.deinit();
-
-        statefulsets_view.* = try StatefulSetsView.init(allocator, theme, app.k8s_service);
-        errdefer statefulsets_view.deinit();
-
-        daemonsets_view.* = try DaemonSetsView.init(allocator, theme, app.k8s_service);
-        errdefer daemonsets_view.deinit();
-
-        replicasets_view.* = try ReplicaSetsView.init(allocator, theme, app.k8s_service);
-        errdefer replicasets_view.deinit();
-
-        jobs_view.* = try JobsView.init(allocator, theme, app.k8s_service);
-        errdefer jobs_view.deinit();
-
-        cronjobs_view.* = try CronJobsView.init(allocator, theme, app.k8s_service);
-        errdefer cronjobs_view.deinit();
-
-        configmaps_view.* = try ConfigMapsView.init(allocator, theme, app.k8s_service);
-        errdefer configmaps_view.deinit();
-
-        secrets_view.* = try SecretsView.init(allocator, theme, app.k8s_service);
-        errdefer secrets_view.deinit();
-
-        persistentvolumes_view.* = try PersistentVolumesView.init(allocator, theme, app.k8s_service);
-        errdefer persistentvolumes_view.deinit();
-
-        persistentvolumeclaims_view.* = try PersistentVolumeClaimsView.init(allocator, theme, app.k8s_service);
-        errdefer persistentvolumeclaims_view.deinit();
-
-        ingresses_view.* = try IngressesView.init(allocator, theme, app.k8s_service);
-        errdefer ingresses_view.deinit();
-
-        networkpolicies_view.* = try NetworkPoliciesView.init(allocator, theme, app.k8s_service);
-        errdefer networkpolicies_view.deinit();
-
-        serviceaccounts_view.* = try ServiceAccountsView.init(allocator, theme, app.k8s_service);
-        errdefer serviceaccounts_view.deinit();
-
-        roles_view.* = try RolesView.init(allocator, theme, app.k8s_service);
-        errdefer roles_view.deinit();
-
-        rolebindings_view.* = try RoleBindingsView.init(allocator, theme, app.k8s_service);
-        errdefer rolebindings_view.deinit();
-
-        clusterroles_view.* = try ClusterRolesView.init(allocator, theme, app.k8s_service);
-        errdefer clusterroles_view.deinit();
-
-        clusterrolebindings_view.* = try ClusterRoleBindingsView.init(allocator, theme, app.k8s_service);
-        errdefer clusterrolebindings_view.deinit();
-
-        events_view.* = try EventsView.init(allocator, theme, app.k8s_service);
-        errdefer events_view.deinit();
-
-        resourcequotas_view.* = try ResourceQuotasView.init(allocator, theme, app.k8s_service);
-        errdefer resourcequotas_view.deinit();
-
-        limitranges_view.* = try LimitRangesView.init(allocator, theme, app.k8s_service);
-        errdefer limitranges_view.deinit();
-
-        poddisruptionbudgets_view.* = try PodDisruptionBudgetsView.init(allocator, theme, app.k8s_service);
-        errdefer poddisruptionbudgets_view.deinit();
-
-        hpa_view.* = try HPAView.init(allocator, theme, app.k8s_service);
-        errdefer hpa_view.deinit();
-
-        contexts_view.* = try ContextsView.init(allocator, theme, app.k8s_service);
-        errdefer contexts_view.deinit();
-
-        authorization_view.* = try AuthorizationView.init(allocator, theme, app.k8s_service);
-        errdefer authorization_view.deinit();
+        inline for (k8s_view_types) |entry| {
+            @field(app, entry[0]).* = try entry[1].init(allocator, theme, app.k8s_service);
+        }
 
         // Register commands
         try app.registerCommands();
@@ -393,100 +319,22 @@ pub const App = struct {
     }
 
     pub fn deinit(self: *App) void {
-        // Clean up resource views
-        self.poddisruptionbudgets_view.deinit();
-        self.allocator.destroy(self.poddisruptionbudgets_view);
-        self.hpa_view.deinit();
-        self.allocator.destroy(self.hpa_view);
-        self.authorization_view.deinit();
-        self.allocator.destroy(self.authorization_view);
+        // Clean up all K8s views (comptime-generated loop)
+        inline for (k8s_view_types) |entry| {
+            @field(self, entry[0]).deinit();
+            self.allocator.destroy(@field(self, entry[0]));
+        }
 
-        self.contexts_view.deinit();
-        self.allocator.destroy(self.contexts_view);
-
-        self.limitranges_view.deinit();
-        self.allocator.destroy(self.limitranges_view);
-
-        self.resourcequotas_view.deinit();
-        self.allocator.destroy(self.resourcequotas_view);
-
-        self.events_view.deinit();
-        self.allocator.destroy(self.events_view);
-
-        self.clusterrolebindings_view.deinit();
-        self.allocator.destroy(self.clusterrolebindings_view);
-
-        self.clusterroles_view.deinit();
-        self.allocator.destroy(self.clusterroles_view);
-
-        self.rolebindings_view.deinit();
-        self.allocator.destroy(self.rolebindings_view);
-
-        self.roles_view.deinit();
-        self.allocator.destroy(self.roles_view);
-
-        self.serviceaccounts_view.deinit();
-        self.allocator.destroy(self.serviceaccounts_view);
-
-        self.networkpolicies_view.deinit();
-        self.allocator.destroy(self.networkpolicies_view);
-
-        self.ingresses_view.deinit();
-        self.allocator.destroy(self.ingresses_view);
-
-        self.persistentvolumeclaims_view.deinit();
-        self.allocator.destroy(self.persistentvolumeclaims_view);
-
-        self.persistentvolumes_view.deinit();
-        self.allocator.destroy(self.persistentvolumes_view);
-
-        self.secrets_view.deinit();
-        self.allocator.destroy(self.secrets_view);
-
-        self.configmaps_view.deinit();
-        self.allocator.destroy(self.configmaps_view);
-
-        self.cronjobs_view.deinit();
-        self.allocator.destroy(self.cronjobs_view);
-
-        self.jobs_view.deinit();
-        self.allocator.destroy(self.jobs_view);
-
-        self.replicasets_view.deinit();
-        self.allocator.destroy(self.replicasets_view);
-
-        self.daemonsets_view.deinit();
-        self.allocator.destroy(self.daemonsets_view);
-
-        self.statefulsets_view.deinit();
-        self.allocator.destroy(self.statefulsets_view);
-
-        self.nodes_view.deinit();
-        self.allocator.destroy(self.nodes_view);
-
-        self.namespaces_view.deinit();
-        self.allocator.destroy(self.namespaces_view);
-
-        self.services_view.deinit();
-        self.allocator.destroy(self.services_view);
-
-        self.deployments_view.deinit();
-        self.allocator.destroy(self.deployments_view);
-
-        // Clean up UI views
-        self.pods_view.cleanup();
+        // Clean up special views
+        self.pods_view.deinit();
         self.allocator.destroy(self.pods_view);
-
-        self.themes_view.cleanup();
+        self.themes_view.deinit();
         self.allocator.destroy(self.themes_view);
-
-        self.help_view.cleanup();
+        self.help_view.deinit();
         self.allocator.destroy(self.help_view);
-
-        self.detail_view.cleanup();
+        self.detail_view.deinit();
         self.allocator.destroy(self.detail_view);
-
-        self.logs_view.cleanup();
+        self.logs_view.deinit();
         self.allocator.destroy(self.logs_view);
 
         // Clean up delete state
@@ -1449,6 +1297,39 @@ test "viewNameToPrimaryView - rejects old capitalized names" {
 
 /// Declarative view command registry. Each entry maps a struct field to
 /// its primary view enum value and command aliases.
+/// Comptime table mapping App field names to view types.
+/// Used by init/deinit loops and command generation.
+/// All views in this table take (allocator, theme, k8s_service) for init.
+const k8s_view_types = .{
+    .{ "deployments_view", DeploymentsView },
+    .{ "services_view", ServicesView },
+    .{ "namespaces_view", NamespacesView },
+    .{ "nodes_view", NodesView },
+    .{ "statefulsets_view", StatefulSetsView },
+    .{ "daemonsets_view", DaemonSetsView },
+    .{ "replicasets_view", ReplicaSetsView },
+    .{ "jobs_view", JobsView },
+    .{ "cronjobs_view", CronJobsView },
+    .{ "configmaps_view", ConfigMapsView },
+    .{ "secrets_view", SecretsView },
+    .{ "persistentvolumes_view", PersistentVolumesView },
+    .{ "persistentvolumeclaims_view", PersistentVolumeClaimsView },
+    .{ "ingresses_view", IngressesView },
+    .{ "networkpolicies_view", NetworkPoliciesView },
+    .{ "serviceaccounts_view", ServiceAccountsView },
+    .{ "roles_view", RolesView },
+    .{ "rolebindings_view", RoleBindingsView },
+    .{ "clusterroles_view", ClusterRolesView },
+    .{ "clusterrolebindings_view", ClusterRoleBindingsView },
+    .{ "events_view", EventsView },
+    .{ "resourcequotas_view", ResourceQuotasView },
+    .{ "limitranges_view", LimitRangesView },
+    .{ "poddisruptionbudgets_view", PodDisruptionBudgetsView },
+    .{ "hpa_view", HPAView },
+    .{ "contexts_view", ContextsView },
+    .{ "authorization_view", AuthorizationView },
+};
+
 const ViewCommandEntry = struct {
     field: []const u8,
     primary: @TypeOf(@as(App, undefined).current_primary_view),

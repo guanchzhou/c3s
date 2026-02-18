@@ -56,7 +56,7 @@ pub const HelpView = struct {
         self.scroll_offset = 0;
     }
 
-    pub fn cleanup(self: *HelpView) void {
+    pub fn deinit(self: *HelpView) void {
         for (self.help_lines.items) |line| {
             self.allocator.free(line);
         }
@@ -140,7 +140,7 @@ pub const HelpView = struct {
         .onHide = onHide,
         .getName = getName,
         .getHints = getHints,
-        .deinit = deinit,
+        .deinit = deinitView,
     };
     
     fn render(ptr: *anyopaque, terminal: *Terminal, x: u16, y: u16, _: u16, height: u16) !void {
@@ -205,8 +205,8 @@ pub const HelpView = struct {
         return hints_model.helpHints();
     }
     
-    fn deinit(ptr: *anyopaque) void {
+    fn deinitView(ptr: *anyopaque) void {
         const self: *HelpView = @ptrCast(@alignCast(ptr));
-        self.cleanup();
+        self.deinit();
     }
 };

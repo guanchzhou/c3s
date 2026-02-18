@@ -29,7 +29,7 @@ pub const LogsView = struct {
         };
     }
 
-    pub fn cleanup(self: *LogsView) void {
+    pub fn deinit(self: *LogsView) void {
         self.clearContent();
         self.filtered_indices.deinit(self.allocator);
     }
@@ -347,6 +347,6 @@ pub const LogsView = struct {
 
     fn deinitView(ptr: *anyopaque) void {
         const self: *LogsView = @ptrCast(@alignCast(ptr));
-        self.cleanup();
+        self.deinit();
     }
 };

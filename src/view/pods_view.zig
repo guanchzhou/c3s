@@ -187,7 +187,7 @@ pub const PodsView = struct {
         try self.applyFilter(self.filter_text);
     }
 
-    pub fn cleanup(self: *PodsView) void {
+    pub fn deinit(self: *PodsView) void {
         // Deallocate individual strings in pods
         // All strings are allocated via dupe in loadSampleData() and loadPodsFromK8s()
         for (self.pods.items) |pod| {
@@ -370,7 +370,7 @@ pub const PodsView = struct {
         .onHide = onHide,
         .getName = getName,
         .getHints = getHints,
-        .deinit = deinit,
+        .deinit = deinitView,
         .applyFilter = vtableApplyFilter,
         .clearFilter = vtableClearFilter,
         .refresh = vtableRefresh,
@@ -706,8 +706,8 @@ pub const PodsView = struct {
         return hints_model.podsHints();
     }
 
-    fn deinit(ptr: *anyopaque) void {
+    fn deinitView(ptr: *anyopaque) void {
         const self: *PodsView = @ptrCast(@alignCast(ptr));
-        self.cleanup();
+        self.deinit();
     }
 };

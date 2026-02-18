@@ -26,7 +26,7 @@ pub const DetailView = struct {
         };
     }
 
-    pub fn cleanup(self: *DetailView) void {
+    pub fn deinit(self: *DetailView) void {
         self.clearContent();
     }
 
@@ -394,6 +394,6 @@ pub const DetailView = struct {
 
     fn deinitView(ptr: *anyopaque) void {
         const self: *DetailView = @ptrCast(@alignCast(ptr));
-        self.cleanup();
+        self.deinit();
     }
 };
