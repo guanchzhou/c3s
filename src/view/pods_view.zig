@@ -2,9 +2,10 @@ const std = @import("std");
 const View = @import("../viewmodel/view.zig").View;
 const Terminal = @import("../core/terminal.zig").Terminal;
 const Key = @import("../core/terminal.zig").Key;
+const KeyResult = View.KeyResult;
 const Logger = @import("../core/logger.zig");
 const theme_loader = @import("../model/theme_loader.zig");
-const universal_filter = @import("../viewmodel/filter.zig");
+const Theme = theme_loader;
 const hints_model = @import("../model/hints.zig");
 const table_layout = @import("../ui/table_layout.zig");
 const sort_util = @import("../viewmodel/sort.zig");
@@ -13,24 +14,17 @@ const k8s_service_mod = @import("../services/k8s_service.zig");
 const K8sService = k8s_service_mod.K8sService;
 const view_mod = @import("../viewmodel/view.zig");
 const ResourceInfo = view_mod.ResourceInfo;
+const TableState = @import("../ui/table_state.zig").TableState;
 
 /// PodsView - displays Kubernetes pods with filtering and navigation
 pub const PodsView = struct {
-    allocator: std.mem.Allocator,
     theme: *theme_loader.ThemeColors,
     k8s_service: *K8sService,
-    pods: std.ArrayListUnmanaged(Pod),
-    filtered_indices: std.ArrayListUnmanaged(usize),
-    selected_row: u32 = 0,
-    scroll_offset: u32 = 0,
-    filter_text: []const u8 = "",
-    visible_rows: u32 = 0,
+    table: TableState(Pod),
+
+    // Pod-specific extra state
     allocated_title: ?[]u8 = null,
     horizontal_scroll: table_layout.TableScroll = .{ .scroll_offset = 0, .visible_width = 0, .total_width = 0 },
-    error_message: ?[]u8 = null,
-    show_all_namespaces: bool = false,
-    sort_column: ?u8 = null,
-    sort_ascending: bool = true,
     // Cache for column widths to avoid recalculation on every render
     cached_col_widths: ?table_layout.ColumnWidths = null,
     cached_terminal_width: u16 = 0,
@@ -51,6 +45,19 @@ pub const PodsView = struct {
         ip: []const u8,
         node: []const u8,
         age: []const u8,
+        allocator: std.mem.Allocator,
+
+        pub fn deinit(self: *Pod) void {
+            self.allocator.free(self.namespace);
+            self.allocator.free(self.name);
+            self.allocator.free(self.ready);
+            self.allocator.free(self.status);
+            self.allocator.free(self.cpu_l);
+            self.allocator.free(self.mem_l);
+            self.allocator.free(self.ip);
+            self.allocator.free(self.node);
+            self.allocator.free(self.age);
+        }
 
         fn getName(self: *const Pod) []const u8 { return self.name; }
         fn getStatus(self: *const Pod) []const u8 { return self.status; }
@@ -60,11 +67,9 @@ pub const PodsView = struct {
 
     pub fn init(allocator: std.mem.Allocator, theme: *theme_loader.ThemeColors, k8s_service: *K8sService) !PodsView {
         var view = PodsView{
-            .allocator = allocator,
             .theme = theme,
             .k8s_service = k8s_service,
-            .pods = std.ArrayListUnmanaged(Pod){},
-            .filtered_indices = std.ArrayListUnmanaged(usize){},
+            .table = TableState(Pod).init(allocator),
         };
 
         // Real data will be loaded in onShow() to avoid blocking initialization
@@ -73,58 +78,55 @@ pub const PodsView = struct {
         return view;
     }
 
+    pub fn deinit(self: *PodsView) void {
+        self.table.deinit();
+        if (self.allocated_title) |allocated| {
+            self.table.allocator.free(allocated);
+        }
+        // Clean up cached column widths
+        if (self.cached_col_widths) |*widths| {
+            widths.deinit();
+        }
+    }
+
     /// Refresh pod list from Kubernetes API
     pub fn refresh(self: *PodsView) !void {
-        // Clear previous error
-        if (self.error_message) |msg| {
-            self.allocator.free(msg);
-            self.error_message = null;
-        }
+        self.table.loading = true;
+        defer self.table.loading = false;
+        self.table.clearItems();
 
         // Safety check
         if (!self.k8s_service.isConnected()) {
-            self.error_message = try self.allocator.dupe(u8, "Not connected to Kubernetes cluster");
+            try self.table.setError("Not connected to Kubernetes cluster");
             Logger.warn("PodsView: Cannot refresh - not connected to k8s", .{});
             return;
         }
 
-        // Clear existing pods
-        for (self.pods.items) |pod| {
-            self.allocator.free(pod.namespace);
-            self.allocator.free(pod.name);
-            self.allocator.free(pod.ready);
-            self.allocator.free(pod.status);
-            self.allocator.free(pod.cpu_l);
-            self.allocator.free(pod.mem_l);
-            self.allocator.free(pod.ip);
-            self.allocator.free(pod.node);
-            self.allocator.free(pod.age);
-        }
-        self.pods.clearRetainingCapacity();
-
         // Fetch pods from k8s
-        var k8s_pod_list = if (self.show_all_namespaces)
+        var k8s_pod_list = if (self.table.show_all_namespaces)
             self.k8s_service.listAllPods() catch |err| {
                 Logger.err("Failed to list all pods: {any}", .{err});
-                self.error_message = try std.fmt.allocPrint(self.allocator, "Failed to fetch pods: {any}", .{err});
+                try self.table.setErrorFmt("Failed to fetch pods: {any}", .{err});
                 return;
             }
         else
             self.k8s_service.listPods(null) catch |err| {
                 Logger.err("Failed to list pods in namespace: {any}", .{err});
-                self.error_message = try std.fmt.allocPrint(self.allocator, "Failed to fetch pods: {any}", .{err});
+                try self.table.setErrorFmt("Failed to fetch pods: {any}", .{err});
                 return;
             };
         defer k8s_pod_list.deinit();
 
         const k8s_pods = k8s_pod_list.value.items;
 
-        // Fetch pod metrics (gracefully — metrics server may not be installed)
-        var metrics_map = self.k8s_service.getPodMetrics(self.show_all_namespaces) catch |err| blk: {
+        // Fetch pod metrics (gracefully -- metrics server may not be installed)
+        var metrics_map = self.k8s_service.getPodMetrics(self.table.show_all_namespaces) catch |err| blk: {
             Logger.warn("Failed to fetch pod metrics: {any}", .{err});
             break :blk null;
         };
         defer if (metrics_map) |*m| self.k8s_service.freePodMetrics(m);
+
+        const allocator = self.table.allocator;
 
         // Convert to view pods
         for (k8s_pods) |k8s_pod| {
@@ -158,8 +160,8 @@ pub const PodsView = struct {
             // Look up metrics for this pod
             const pod_ns = k8s_pod.metadata.namespace orelse "default";
             const pod_name = k8s_pod.metadata.name;
-            const metric_key = std.fmt.allocPrint(self.allocator, "{s}/{s}", .{ pod_ns, pod_name }) catch null;
-            defer if (metric_key) |k| self.allocator.free(k);
+            const metric_key = std.fmt.allocPrint(allocator, "{s}/{s}", .{ pod_ns, pod_name }) catch null;
+            defer if (metric_key) |k| allocator.free(k);
 
             const cpu_val = if (metric_key) |k|
                 if (metrics_map) |m| (if (m.get(k)) |pm| pm.cpu else null) else null
@@ -170,64 +172,35 @@ pub const PodsView = struct {
             else
                 null;
 
-            try self.pods.append(self.allocator, .{
-                .namespace = try self.allocator.dupe(u8, pod_ns),
-                .name = try self.allocator.dupe(u8, pod_name),
-                .ready = try std.fmt.allocPrint(self.allocator, "{d}/{d}", .{ ready_count, total_count }),
-                .status = try self.allocator.dupe(u8, phase),
-                .cpu_l = try self.allocator.dupe(u8, cpu_val orelse "n/a"),
-                .mem_l = try self.allocator.dupe(u8, mem_val orelse "n/a"),
-                .ip = try self.allocator.dupe(u8, pod_ip),
-                .node = try self.allocator.dupe(u8, if (k8s_pod.spec) |spec| spec.nodeName orelse "-" else "-"),
-                .age = try age_util.calculateAge(self.allocator, k8s_pod.metadata.creationTimestamp),
+            try self.table.appendItem(.{
+                .namespace = try allocator.dupe(u8, pod_ns),
+                .name = try allocator.dupe(u8, pod_name),
+                .ready = try std.fmt.allocPrint(allocator, "{d}/{d}", .{ ready_count, total_count }),
+                .status = try allocator.dupe(u8, phase),
+                .cpu_l = try allocator.dupe(u8, cpu_val orelse "n/a"),
+                .mem_l = try allocator.dupe(u8, mem_val orelse "n/a"),
+                .ip = try allocator.dupe(u8, pod_ip),
+                .node = try allocator.dupe(u8, if (k8s_pod.spec) |spec| spec.nodeName orelse "-" else "-"),
+                .age = try age_util.calculateAge(allocator, k8s_pod.metadata.creationTimestamp),
+                .allocator = allocator,
             });
         }
 
         // Reapply filter
-        try self.applyFilter(self.filter_text);
-    }
-
-    pub fn deinit(self: *PodsView) void {
-        // Deallocate individual strings in pods
-        // All strings are allocated via dupe in loadSampleData() and loadPodsFromK8s()
-        for (self.pods.items) |pod| {
-            self.allocator.free(pod.namespace);
-            self.allocator.free(pod.name);
-            self.allocator.free(pod.ready);
-            self.allocator.free(pod.status);
-            self.allocator.free(pod.cpu_l);
-            self.allocator.free(pod.mem_l);
-            self.allocator.free(pod.ip);
-            self.allocator.free(pod.node);
-            self.allocator.free(pod.age);
-        }
-        self.pods.deinit(self.allocator);
-        self.filtered_indices.deinit(self.allocator);
-        if (self.allocated_title) |allocated| {
-            self.allocator.free(allocated);
-        }
-        if (self.error_message) |msg| {
-            self.allocator.free(msg);
-        }
-        // Clean up cached column widths
-        if (self.cached_col_widths) |*widths| {
-            widths.deinit();
-        }
+        try self.applyFilter(self.table.filter_text);
     }
 
     /// Get the name and namespace of the currently selected pod
     pub fn getSelectedResourceInfo(self: *PodsView) ?ResourceInfo {
-        if (self.filtered_indices.items.len == 0) return null;
-        if (self.selected_row >= self.filtered_indices.items.len) return null;
-        const pod_idx = self.filtered_indices.items[self.selected_row];
-        const pod = self.pods.items[pod_idx];
+        const item = self.table.getSelectedItem() orelse return null;
         return ResourceInfo{
-            .name = pod.name,
-            .namespace = pod.namespace,
+            .name = item.name,
+            .namespace = item.namespace,
         };
     }
 
     fn loadSampleData(self: *PodsView) !void {
+        const allocator = self.table.allocator;
         const sample_pods = [_]struct { []const u8, []const u8, []const u8, []const u8, []const u8, []const u8, []const u8, []const u8, []const u8 }{
             .{ "default", "nginx-deployment-7d4b4b8c9c-abc123", "1/1", "Running", "2m", "45Mi", "10.244.1.5", "worker-1", "2d" },
             .{ "kube-system", "coredns-558bd4d5db-xyz789", "1/1", "Running", "1m", "32Mi", "10.244.0.2", "master-1", "5d" },
@@ -237,28 +210,29 @@ pub const PodsView = struct {
         };
 
         for (sample_pods) |pod_data| {
-            try self.pods.append(self.allocator, .{
-                .namespace = try self.allocator.dupe(u8, pod_data[0]),
-                .name = try self.allocator.dupe(u8, pod_data[1]),
-                .ready = try self.allocator.dupe(u8, pod_data[2]),
-                .status = try self.allocator.dupe(u8, pod_data[3]),
-                .cpu_l = try self.allocator.dupe(u8, pod_data[4]),
-                .mem_l = try self.allocator.dupe(u8, pod_data[5]),
-                .ip = try self.allocator.dupe(u8, pod_data[6]),
-                .node = try self.allocator.dupe(u8, pod_data[7]),
-                .age = try self.allocator.dupe(u8, pod_data[8]),
+            try self.table.appendItem(.{
+                .namespace = try allocator.dupe(u8, pod_data[0]),
+                .name = try allocator.dupe(u8, pod_data[1]),
+                .ready = try allocator.dupe(u8, pod_data[2]),
+                .status = try allocator.dupe(u8, pod_data[3]),
+                .cpu_l = try allocator.dupe(u8, pod_data[4]),
+                .mem_l = try allocator.dupe(u8, pod_data[5]),
+                .ip = try allocator.dupe(u8, pod_data[6]),
+                .node = try allocator.dupe(u8, pod_data[7]),
+                .age = try allocator.dupe(u8, pod_data[8]),
+                .allocator = allocator,
             });
         }
     }
 
     pub fn applyFilter(self: *PodsView, filter: []const u8) !void {
+        const allocator = self.table.allocator;
+
         // Free old allocated title
         if (self.allocated_title) |allocated| {
-            self.allocator.free(allocated);
+            allocator.free(allocated);
             self.allocated_title = null;
         }
-
-        self.filter_text = filter;
 
         // Invalidate cache when filter changes (data set changes)
         if (self.cached_col_widths) |*widths| {
@@ -266,30 +240,20 @@ pub const PodsView = struct {
             self.cached_col_widths = null;
         }
 
-        // Use universal filter
-        try universal_filter.applyFilter(
-            Pod,
-            self.allocator,
-            self.pods.items,
-            &self.filtered_indices,
-            filter,
-            &self.selected_row,
-            &self.scroll_offset,
-            self.visible_rows,
-            podMatchFn,
-        );
+        // Use TableState filter
+        try self.table.applyFilter(filter, podMatchFn);
 
         // Re-apply sorting after filter
         self.applySorting();
     }
 
     fn applySorting(self: *PodsView) void {
-        if (self.sort_column) |col| {
+        if (self.table.sort_column) |col| {
             switch (col) {
-                COL_NAME => sort_util.sortFilteredIndices(Pod, self.pods.items, &self.filtered_indices, Pod.getName, self.sort_ascending),
-                COL_STATUS => sort_util.sortFilteredIndices(Pod, self.pods.items, &self.filtered_indices, Pod.getStatus, self.sort_ascending),
-                COL_AGE => sort_util.sortFilteredIndices(Pod, self.pods.items, &self.filtered_indices, Pod.getAge, self.sort_ascending),
-                COL_READY => sort_util.sortFilteredIndices(Pod, self.pods.items, &self.filtered_indices, Pod.getReady, self.sort_ascending),
+                COL_NAME => self.table.sortBy(Pod.getName),
+                COL_STATUS => self.table.sortBy(Pod.getStatus),
+                COL_AGE => self.table.sortBy(Pod.getAge),
+                COL_READY => self.table.sortBy(Pod.getReady),
                 else => {},
             }
         }
@@ -298,64 +262,6 @@ pub const PodsView = struct {
     fn podMatchFn(pod: *const Pod, filter: []const u8) bool {
         return std.mem.indexOf(u8, pod.name, filter) != null or
             std.mem.indexOf(u8, pod.namespace, filter) != null;
-    }
-
-    fn navigateUp(self: *PodsView) !void {
-        if (self.selected_row > 0) {
-            self.selected_row -= 1;
-            // Adjust scroll if needed
-            if (self.selected_row < self.scroll_offset) {
-                self.scroll_offset = self.selected_row;
-            }
-        }
-    }
-
-    fn navigateDown(self: *PodsView) !void {
-        if (self.selected_row + 1 < self.filtered_indices.items.len) {
-            self.selected_row += 1;
-            // Adjust scroll if needed
-            if (self.selected_row >= self.scroll_offset + self.visible_rows) {
-                self.scroll_offset = self.selected_row - self.visible_rows + 1;
-            }
-        }
-    }
-
-    fn gotoTop(self: *PodsView) !void {
-        self.selected_row = 0;
-        self.scroll_offset = 0;
-    }
-
-    fn gotoBottom(self: *PodsView) !void {
-        if (self.filtered_indices.items.len > 0) {
-            self.selected_row = @intCast(self.filtered_indices.items.len - 1);
-            if (self.selected_row >= self.visible_rows) {
-                self.scroll_offset = self.selected_row - self.visible_rows + 1;
-            }
-        }
-    }
-
-    fn pageUp(self: *PodsView) !void {
-        const page_size = self.visible_rows;
-        if (self.selected_row >= page_size) {
-            self.selected_row -= page_size;
-            if (self.selected_row < self.scroll_offset) {
-                self.scroll_offset = self.selected_row;
-            }
-        } else {
-            try self.gotoTop();
-        }
-    }
-
-    fn pageDown(self: *PodsView) !void {
-        const page_size = self.visible_rows;
-        if (self.selected_row + page_size < self.filtered_indices.items.len) {
-            self.selected_row += page_size;
-            if (self.selected_row >= self.scroll_offset + self.visible_rows) {
-                self.scroll_offset = self.selected_row - self.visible_rows + 1;
-            }
-        } else {
-            try self.gotoBottom();
-        }
     }
 
     // View trait implementation
@@ -384,7 +290,7 @@ pub const PodsView = struct {
 
     fn vtableClearFilter(ptr: *anyopaque) anyerror!bool {
         const self: *PodsView = @ptrCast(@alignCast(ptr));
-        if (self.filter_text.len > 0) {
+        if (self.table.filter_text.len > 0) {
             try self.applyFilter("");
             return true;
         }
@@ -403,15 +309,12 @@ pub const PodsView = struct {
 
     fn render(ptr: *anyopaque, terminal: *Terminal, x: u16, y: u16, width: u16, height: u16) !void {
         const self: *PodsView = @ptrCast(@alignCast(ptr));
+        const allocator = self.table.allocator;
 
-        self.visible_rows = if (height > 1) height - 1 else 0;
+        self.table.visible_rows = if (height > 1) height - 1 else 0;
 
-        // Show error message if present
-        if (self.error_message) |msg| {
-            const Theme = theme_loader;
-            try Theme.writeStringWithTheme(terminal, x, y, msg, self.theme.status_failed, self.theme.main_bg);
-            return;
-        }
+        // Show loading/error states
+        if (try self.table.renderStatus(terminal, x, y, self.theme)) return;
 
         // Define column configuration with priorities
         const columns = [_]table_layout.ColumnInfo{
@@ -438,13 +341,13 @@ pub const PodsView = struct {
         } else blk: {
             // Recalculate widths - terminal size changed or first render
             // Prepare data for width calculation
-            var rows_data = try std.ArrayList([]const []const u8).initCapacity(self.allocator, self.filtered_indices.items.len);
-            defer rows_data.deinit(self.allocator);
+            var rows_data = try std.ArrayList([]const []const u8).initCapacity(allocator, self.table.filtered_indices.items.len);
+            defer rows_data.deinit(allocator);
 
-            for (self.filtered_indices.items) |pod_idx| {
-                const pod = self.pods.items[pod_idx];
+            for (self.table.filtered_indices.items) |pod_idx| {
+                const pod = self.table.items.items[pod_idx];
                 const row = [_][]const u8{ pod.namespace, pod.name, pod.ready, pod.status, pod.cpu_l, pod.mem_l, pod.ip, pod.node, pod.age };
-                try rows_data.append(self.allocator, &row);
+                try rows_data.append(allocator, &row);
             }
 
             // Free old cache if exists
@@ -454,7 +357,7 @@ pub const PodsView = struct {
 
             // Calculate and cache new widths
             self.cached_col_widths = try table_layout.calculateColumnWidths(
-                self.allocator,
+                allocator,
                 &col_names,
                 rows_data.items,
                 &columns,
@@ -483,22 +386,22 @@ pub const PodsView = struct {
             // Add sort indicator if this column is sorted
             const indicator = if (col_i < col_sort_ids.len)
                 if (col_sort_ids[col_i]) |sid|
-                    sort_util.sortIndicator(self.sort_column, self.sort_ascending, sid)
+                    sort_util.sortIndicator(self.table.sort_column, self.table.sort_ascending, sid)
                 else
                     ""
             else
                 "";
 
-            const header_with_indicator = try std.fmt.allocPrint(self.allocator, "{s}{s}", .{ name, indicator });
-            defer self.allocator.free(header_with_indicator);
+            const header_with_indicator = try std.fmt.allocPrint(allocator, "{s}{s}", .{ name, indicator });
+            defer allocator.free(header_with_indicator);
 
             // Truncate header if needed
             const header_text = if (header_with_indicator.len > w)
-                try table_layout.truncateText(self.allocator, header_with_indicator, w, false)
+                try table_layout.truncateText(allocator, header_with_indicator, w, false)
             else
                 header_with_indicator;
             // Only free if truncateText allocated a new string
-            defer if (header_text.ptr != header_with_indicator.ptr) self.allocator.free(header_text);
+            defer if (header_text.ptr != header_with_indicator.ptr) allocator.free(header_text);
 
             try terminal.writeAll(header_text);
             try terminal.writeAll("\x1b[0m");
@@ -506,22 +409,19 @@ pub const PodsView = struct {
         }
 
         // Show empty message if no pods
-        if (self.filtered_indices.items.len == 0) {
-            const Theme = theme_loader;
+        if (self.table.filtered_indices.items.len == 0) {
             const empty_msg = "No pods found";
             try Theme.writeStringWithTheme(terminal, x, y, empty_msg, self.theme.inactive_fg, self.theme.main_bg);
             return;
         }
 
         // Draw pod rows
-        const start_row = self.scroll_offset;
-        const end_row = @min(start_row + self.visible_rows, self.filtered_indices.items.len);
+        const range = self.table.getVisibleRange();
 
-        for (start_row..end_row, 0..) |filter_idx, display_idx| {
-            const pod_idx = self.filtered_indices.items[filter_idx];
-            const pod = self.pods.items[pod_idx];
+        for (self.table.filtered_indices.items[range.start..range.end], 0..) |pod_idx, display_idx| {
+            const pod = self.table.items.items[pod_idx];
             const row_y = header_y + @as(u16, @intCast(display_idx)) + 1;
-            const is_selected = filter_idx == self.selected_row;
+            const is_selected = self.table.isSelected(display_idx);
 
             // Highlight selected row
             if (is_selected) {
@@ -555,10 +455,10 @@ pub const PodsView = struct {
 
                 // Truncate cell data if needed
                 const cell_text = if (data.len > w)
-                    try table_layout.truncateText(self.allocator, data, w, true)
+                    try table_layout.truncateText(allocator, data, w, true)
                 else
-                    try self.allocator.dupe(u8, data);
-                defer self.allocator.free(cell_text);
+                    try allocator.dupe(u8, data);
+                defer allocator.free(cell_text);
 
                 try terminal.writeAll(cell_text);
                 try terminal.writeAll("\x1b[0m");
@@ -567,30 +467,20 @@ pub const PodsView = struct {
         }
     }
 
-    fn handleKey(ptr: *anyopaque, key: Key) !View.KeyResult {
+    fn handleKey(ptr: *anyopaque, key: Key) !KeyResult {
         const self: *PodsView = @ptrCast(@alignCast(ptr));
 
+        // Common navigation keys (j/k/g/G/d/y/:/  and arrow keys)
+        if (self.table.handleNavigationKey(key)) |result| return result;
+
+        // View-specific keys
         switch (key) {
             .char => |c| switch (c) {
-                'j' => {
-                    try self.navigateDown();
-                    return .handled;
-                },
-                'k' => {
-                    try self.navigateUp();
-                    return .handled;
-                },
-                'g' => {
-                    try self.gotoTop();
-                    return .handled;
-                },
                 'h' => {
                     self.horizontal_scroll.scrollLeft(5);
                     return .handled;
                 },
                 'l' => return .request_logs,
-                'd' => return .request_describe,
-                'y' => return .request_yaml,
                 'r' => {
                     self.refresh() catch |err| {
                         Logger.err("Failed to refresh pods: {any}", .{err});
@@ -599,73 +489,32 @@ pub const PodsView = struct {
                 },
                 '0' => {
                     // Toggle all namespaces
-                    self.show_all_namespaces = !self.show_all_namespaces;
-                    Logger.info("PodsView: toggled show_all_namespaces={}, refreshing...", .{self.show_all_namespaces});
+                    self.table.show_all_namespaces = !self.table.show_all_namespaces;
+                    Logger.info("PodsView: toggled show_all_namespaces={}, refreshing...", .{self.table.show_all_namespaces});
+                    self.table.gotoTop();
                     self.refresh() catch |err| {
                         Logger.err("Failed to refresh pods after toggling namespaces: {any}", .{err});
                     };
-                    Logger.info("PodsView: refresh complete, pods={}, filtered={}", .{ self.pods.items.len, self.filtered_indices.items.len });
+                    Logger.info("PodsView: refresh complete, pods={}, filtered={}", .{ self.table.items.items.len, self.table.filtered_indices.items.len });
                     return .handled;
                 },
                 '$' => {
                     self.horizontal_scroll.scrollToEnd();
                     return .handled;
                 },
-                'N' => {
-                    sort_util.toggleSort(&self.sort_column, &self.sort_ascending, COL_NAME);
-                    self.applySorting();
-                    return .handled;
-                },
-                'S' => {
-                    sort_util.toggleSort(&self.sort_column, &self.sort_ascending, COL_STATUS);
-                    self.applySorting();
-                    return .handled;
-                },
-                'A' => {
-                    sort_util.toggleSort(&self.sort_column, &self.sort_ascending, COL_AGE);
-                    self.applySorting();
-                    return .handled;
-                },
-                'R' => {
-                    sort_util.toggleSort(&self.sort_column, &self.sort_ascending, COL_READY);
-                    self.applySorting();
-                    return .handled;
-                },
-                '/' => return .request_filter,
-                ':' => return .request_command_palette,
-                '?' => return .request_command_palette, // Help
+                'N' => { self.table.toggleSort(COL_NAME); self.applySorting(); return .handled; },
+                'S' => { self.table.toggleSort(COL_STATUS); self.applySorting(); return .handled; },
+                'A' => { self.table.toggleSort(COL_AGE); self.applySorting(); return .handled; },
+                'R' => { self.table.toggleSort(COL_READY); self.applySorting(); return .handled; },
+                '?' => return .request_command_palette,
                 else => return .not_handled,
             },
-            .up => {
-                try self.navigateUp();
-                return .handled;
-            },
-            .down => {
-                try self.navigateDown();
-                return .handled;
-            },
-            .home => {
-                try self.gotoTop();
-                return .handled;
-            },
-            .end => {
-                try self.gotoBottom();
-                return .handled;
-            },
             .shift_g => {
-                try self.gotoBottom();
-                return .handled;
-            },
-            .page_up => {
-                try self.pageUp();
-                return .handled;
-            },
-            .page_down => {
-                try self.pageDown();
+                self.table.gotoBottom();
                 return .handled;
             },
             .escape => {
-                if (self.filter_text.len > 0) {
+                if (self.table.filter_text.len > 0) {
                     try self.applyFilter("");
                     return .handled;
                 }
@@ -682,8 +531,8 @@ pub const PodsView = struct {
         self.refresh() catch |err| {
             Logger.err("Failed to refresh pods: {any}", .{err});
             // Set a fallback error message if one wasn't already set
-            if (self.error_message == null) {
-                self.error_message = self.allocator.dupe(u8, "Unexpected error during refresh") catch {
+            if (self.table.error_message == null) {
+                self.table.setError("Unexpected error during refresh") catch {
                     Logger.err("Failed to allocate error message", .{});
                     return;
                 };

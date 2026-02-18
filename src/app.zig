@@ -131,8 +131,8 @@ pub const App = struct {
     delete_resource_namespace: ?[]u8 = null,
     delete_resource_type: ?ResourceType = null,
 
-    // Track which primary view is active (for view switching, not pushing)
-    current_primary_view: enum { pods, deployments, services, namespaces, nodes, statefulsets, daemonsets, replicasets, jobs, cronjobs, configmaps, secrets, persistentvolumes, persistentvolumeclaims, ingresses, networkpolicies, serviceaccounts, roles, rolebindings, clusterroles, clusterrolebindings, events, resourcequotas, limitranges, poddisruptionbudgets, hpa, contexts, themes, authorization } = .pods,
+    // Track which primary view is active (matches view getName() return value)
+    current_view_name: []const u8 = "pods",
 
     pub fn init(allocator: std.mem.Allocator, config: Cli.Config) !App {
         // Initialize terminal
@@ -371,7 +371,7 @@ pub const App = struct {
 
         // Comptime-generated view switch commands from declarative table
         inline for (view_commands) |vc| {
-            const cmd_fn = comptime makeViewCommand(vc.field, vc.primary);
+            const cmd_fn = comptime makeViewCommand(vc.field, vc.view_name);
             for (vc.aliases) |alias| {
                 try self.command_registry.register(alias, Command{ .name = alias, .execute = cmd_fn });
             }
@@ -786,9 +786,9 @@ pub const App = struct {
                 // Only pop if we're in a pushed sub-view (depth > 1, like help/detail/logs view)
                 if (self.view_manager.getDepth() > 1) {
                     _ = self.view_manager.popView();
-                    // Restore current_primary_view based on what's now on top
+                    // Restore current view name based on what's now on top
                     if (self.view_manager.getCurrentView()) |v| {
-                        self.current_primary_view = viewNameToPrimaryView(v.getName());
+                        self.current_view_name = v.getName();
                     }
                     self.dirty = true;
                 }
@@ -854,9 +854,9 @@ pub const App = struct {
 
                     // After selecting a namespace, push pods view on top
                     // Esc will pop back to namespaces view
-                    if (result == .handled and self.current_primary_view == .namespaces) {
+                    if (result == .handled and std.mem.eql(u8, self.current_view_name, "namespaces")) {
                         try self.view_manager.pushView(self.pods_view.createView());
-                        self.current_primary_view = .pods;
+                        self.current_view_name = "pods";
                         self.dirty = true;
                     }
                 }
@@ -915,66 +915,14 @@ pub const App = struct {
         }
     }
 
-    /// Map current_primary_view to ViewType for context-aware help
+    /// Map current view name to ViewType for context-aware help
     fn currentViewType(self: *App) ViewType {
-        return switch (self.current_primary_view) {
-            .pods => .pods,
-            .deployments => .deployments,
-            .services => .services,
-            .namespaces => .namespaces,
-            .nodes => .nodes,
-            .statefulsets => .statefulsets,
-            .daemonsets => .daemonsets,
-            .replicasets => .replicasets,
-            .jobs => .jobs,
-            .cronjobs => .cronjobs,
-            .configmaps => .configmaps,
-            .secrets => .secrets,
-            .persistentvolumeclaims => .persistentvolumeclaims,
-            .serviceaccounts => .serviceaccounts,
-            .roles => .roles,
-            .rolebindings => .rolebindings,
-            .clusterroles => .clusterroles,
-            .clusterrolebindings => .clusterrolebindings,
-            .events => .events,
-            .contexts => .contexts,
-            else => .pods, // fallback
-        };
+        return std.meta.stringToEnum(ViewType, self.current_view_name) orelse .pods;
     }
 
-    /// Map current_primary_view to ResourceType
+    /// Map current view name to ResourceType for describe/delete
     fn currentResourceType(self: *App) ?ResourceType {
-        return switch (self.current_primary_view) {
-            .pods => .pods,
-            .deployments => .deployments,
-            .services => .services,
-            .namespaces => .namespaces,
-            .nodes => .nodes,
-            .statefulsets => .statefulsets,
-            .daemonsets => .daemonsets,
-            .replicasets => .replicasets,
-            .jobs => .jobs,
-            .cronjobs => .cronjobs,
-            .configmaps => .configmaps,
-            .secrets => .secrets,
-            .persistentvolumes => .persistentvolumes,
-            .persistentvolumeclaims => .persistentvolumeclaims,
-            .ingresses => .ingresses,
-            .networkpolicies => .networkpolicies,
-            .serviceaccounts => .serviceaccounts,
-            .roles => .roles,
-            .rolebindings => .rolebindings,
-            .clusterroles => .clusterroles,
-            .clusterrolebindings => .clusterrolebindings,
-            .events => .events,
-            .resourcequotas => .resourcequotas,
-            .limitranges => .limitranges,
-            .poddisruptionbudgets => .poddisruptionbudgets,
-            .hpa => .hpa,
-            .contexts => .contexts,
-            .themes => null,
-            .authorization => null,
-        };
+        return std.meta.stringToEnum(ResourceType, self.current_view_name);
     }
 
     /// Get selected resource info from the current primary view
@@ -1017,7 +965,7 @@ pub const App = struct {
 
     /// Show logs view for selected pod
     fn showLogsView(self: *App) !void {
-        if (self.current_primary_view != .pods) return;
+        if (!std.mem.eql(u8, self.current_view_name, "pods")) return;
 
         const info = self.pods_view.getSelectedResourceInfo() orelse return;
 
@@ -1201,102 +1149,9 @@ pub const App = struct {
     }
 };
 
-/// Map a view name string back to the PrimaryView enum value
-pub fn viewNameToPrimaryView(name: []const u8) @TypeOf(@as(App, undefined).current_primary_view) {
-    const map = .{
-        .{ "pods", .pods },
-        .{ "deployments", .deployments },
-        .{ "services", .services },
-        .{ "namespaces", .namespaces },
-        .{ "nodes", .nodes },
-        .{ "statefulsets", .statefulsets },
-        .{ "daemonsets", .daemonsets },
-        .{ "replicasets", .replicasets },
-        .{ "jobs", .jobs },
-        .{ "cronjobs", .cronjobs },
-        .{ "configmaps", .configmaps },
-        .{ "secrets", .secrets },
-        .{ "persistentvolumes", .persistentvolumes },
-        .{ "persistentvolumeclaims", .persistentvolumeclaims },
-        .{ "ingresses", .ingresses },
-        .{ "networkpolicies", .networkpolicies },
-        .{ "serviceaccounts", .serviceaccounts },
-        .{ "roles", .roles },
-        .{ "rolebindings", .rolebindings },
-        .{ "clusterroles", .clusterroles },
-        .{ "clusterrolebindings", .clusterrolebindings },
-        .{ "events", .events },
-        .{ "resourcequotas", .resourcequotas },
-        .{ "limitranges", .limitranges },
-        .{ "poddisruptionbudgets", .poddisruptionbudgets },
-        .{ "hpa", .hpa },
-        .{ "contexts", .contexts },
-        .{ "themes", .themes },
-        .{ "authorization", .authorization },
-    };
-    inline for (map) |entry| {
-        if (std.mem.eql(u8, name, entry[0])) return entry[1];
-    }
-    return .pods; // fallback
-}
-
-test "viewNameToPrimaryView - maps all view names correctly" {
-    // Views that previously had capitalized names (the bug)
-    try std.testing.expectEqual(.namespaces, viewNameToPrimaryView("namespaces"));
-    try std.testing.expectEqual(.deployments, viewNameToPrimaryView("deployments"));
-    try std.testing.expectEqual(.services, viewNameToPrimaryView("services"));
-    try std.testing.expectEqual(.nodes, viewNameToPrimaryView("nodes"));
-    try std.testing.expectEqual(.contexts, viewNameToPrimaryView("contexts"));
-    try std.testing.expectEqual(.hpa, viewNameToPrimaryView("hpa"));
-
-    // Other views
-    try std.testing.expectEqual(.pods, viewNameToPrimaryView("pods"));
-    try std.testing.expectEqual(.statefulsets, viewNameToPrimaryView("statefulsets"));
-    try std.testing.expectEqual(.daemonsets, viewNameToPrimaryView("daemonsets"));
-    try std.testing.expectEqual(.replicasets, viewNameToPrimaryView("replicasets"));
-    try std.testing.expectEqual(.jobs, viewNameToPrimaryView("jobs"));
-    try std.testing.expectEqual(.cronjobs, viewNameToPrimaryView("cronjobs"));
-    try std.testing.expectEqual(.configmaps, viewNameToPrimaryView("configmaps"));
-    try std.testing.expectEqual(.secrets, viewNameToPrimaryView("secrets"));
-    try std.testing.expectEqual(.persistentvolumes, viewNameToPrimaryView("persistentvolumes"));
-    try std.testing.expectEqual(.persistentvolumeclaims, viewNameToPrimaryView("persistentvolumeclaims"));
-    try std.testing.expectEqual(.ingresses, viewNameToPrimaryView("ingresses"));
-    try std.testing.expectEqual(.networkpolicies, viewNameToPrimaryView("networkpolicies"));
-    try std.testing.expectEqual(.serviceaccounts, viewNameToPrimaryView("serviceaccounts"));
-    try std.testing.expectEqual(.roles, viewNameToPrimaryView("roles"));
-    try std.testing.expectEqual(.rolebindings, viewNameToPrimaryView("rolebindings"));
-    try std.testing.expectEqual(.clusterroles, viewNameToPrimaryView("clusterroles"));
-    try std.testing.expectEqual(.clusterrolebindings, viewNameToPrimaryView("clusterrolebindings"));
-    try std.testing.expectEqual(.events, viewNameToPrimaryView("events"));
-    try std.testing.expectEqual(.resourcequotas, viewNameToPrimaryView("resourcequotas"));
-    try std.testing.expectEqual(.limitranges, viewNameToPrimaryView("limitranges"));
-    try std.testing.expectEqual(.poddisruptionbudgets, viewNameToPrimaryView("poddisruptionbudgets"));
-    try std.testing.expectEqual(.themes, viewNameToPrimaryView("themes"));
-    try std.testing.expectEqual(.authorization, viewNameToPrimaryView("authorization"));
-
-    // Unknown name falls back to pods
-    try std.testing.expectEqual(.pods, viewNameToPrimaryView("unknown"));
-}
-
-test "viewNameToPrimaryView - rejects old capitalized names" {
-    // These capitalized names were the root cause of the namespace navigation bug.
-    // After Esc popped pods, the namespaces view returned "Namespaces" (capitalized),
-    // which mapped to .pods (fallback), so the second Enter check
-    // `current_primary_view == .namespaces` would fail.
-    try std.testing.expectEqual(.pods, viewNameToPrimaryView("Namespaces")); // fallback
-    try std.testing.expectEqual(.pods, viewNameToPrimaryView("Deployments")); // fallback
-    try std.testing.expectEqual(.pods, viewNameToPrimaryView("Services")); // fallback
-    try std.testing.expectEqual(.pods, viewNameToPrimaryView("Nodes")); // fallback
-    try std.testing.expectEqual(.pods, viewNameToPrimaryView("Contexts")); // fallback
-    try std.testing.expectEqual(.pods, viewNameToPrimaryView("HorizontalPodAutoscalers")); // fallback
-}
-
 // ============================================================================
 // Comptime-generated view command handlers
 // ============================================================================
-
-/// Declarative view command registry. Each entry maps a struct field to
-/// its primary view enum value and command aliases.
 /// Comptime table mapping App field names to view types.
 /// Used by init/deinit loops and command generation.
 /// All views in this table take (allocator, theme, k8s_service) for init.
@@ -1332,51 +1187,51 @@ const k8s_view_types = .{
 
 const ViewCommandEntry = struct {
     field: []const u8,
-    primary: @TypeOf(@as(App, undefined).current_primary_view),
+    view_name: []const u8,
     aliases: []const []const u8,
 };
 
 const view_commands = [_]ViewCommandEntry{
-    .{ .field = "pods_view", .primary = .pods, .aliases = &.{ "pods", "po" } },
-    .{ .field = "deployments_view", .primary = .deployments, .aliases = &.{ "deployments", "deploy", "dp" } },
-    .{ .field = "services_view", .primary = .services, .aliases = &.{ "services", "svc" } },
-    .{ .field = "namespaces_view", .primary = .namespaces, .aliases = &.{ "namespaces", "namespace", "ns" } },
-    .{ .field = "nodes_view", .primary = .nodes, .aliases = &.{ "nodes", "no" } },
-    .{ .field = "statefulsets_view", .primary = .statefulsets, .aliases = &.{ "statefulsets", "sts" } },
-    .{ .field = "daemonsets_view", .primary = .daemonsets, .aliases = &.{ "daemonsets", "ds" } },
-    .{ .field = "replicasets_view", .primary = .replicasets, .aliases = &.{ "replicasets", "rs" } },
-    .{ .field = "jobs_view", .primary = .jobs, .aliases = &.{ "jobs", "job", "jo" } },
-    .{ .field = "cronjobs_view", .primary = .cronjobs, .aliases = &.{ "cronjobs", "cj" } },
-    .{ .field = "configmaps_view", .primary = .configmaps, .aliases = &.{ "configmaps", "cm" } },
-    .{ .field = "secrets_view", .primary = .secrets, .aliases = &.{ "secrets", "secret" } },
-    .{ .field = "persistentvolumes_view", .primary = .persistentvolumes, .aliases = &.{ "persistentvolumes", "pv" } },
-    .{ .field = "persistentvolumeclaims_view", .primary = .persistentvolumeclaims, .aliases = &.{ "persistentvolumeclaims", "pvc" } },
-    .{ .field = "ingresses_view", .primary = .ingresses, .aliases = &.{ "ingresses", "ing" } },
-    .{ .field = "networkpolicies_view", .primary = .networkpolicies, .aliases = &.{ "networkpolicies", "netpol" } },
-    .{ .field = "serviceaccounts_view", .primary = .serviceaccounts, .aliases = &.{ "serviceaccounts", "sa" } },
-    .{ .field = "roles_view", .primary = .roles, .aliases = &.{"roles"} },
-    .{ .field = "rolebindings_view", .primary = .rolebindings, .aliases = &.{"rolebindings"} },
-    .{ .field = "clusterroles_view", .primary = .clusterroles, .aliases = &.{"clusterroles"} },
-    .{ .field = "clusterrolebindings_view", .primary = .clusterrolebindings, .aliases = &.{"clusterrolebindings"} },
-    .{ .field = "events_view", .primary = .events, .aliases = &.{ "events", "ev" } },
-    .{ .field = "resourcequotas_view", .primary = .resourcequotas, .aliases = &.{"resourcequotas"} },
-    .{ .field = "limitranges_view", .primary = .limitranges, .aliases = &.{"limitranges"} },
-    .{ .field = "poddisruptionbudgets_view", .primary = .poddisruptionbudgets, .aliases = &.{ "poddisruptionbudgets", "pdb" } },
-    .{ .field = "hpa_view", .primary = .hpa, .aliases = &.{ "horizontalpodautoscalers", "hpa" } },
-    .{ .field = "contexts_view", .primary = .contexts, .aliases = &.{ "contexts", "context", "ctx" } },
-    .{ .field = "themes_view", .primary = .themes, .aliases = &.{"themes"} },
-    .{ .field = "authorization_view", .primary = .authorization, .aliases = &.{ "authorization", "auth" } },
+    .{ .field = "pods_view", .view_name = "pods", .aliases = &.{ "pods", "po" } },
+    .{ .field = "deployments_view", .view_name = "deployments", .aliases = &.{ "deployments", "deploy", "dp" } },
+    .{ .field = "services_view", .view_name = "services", .aliases = &.{ "services", "svc" } },
+    .{ .field = "namespaces_view", .view_name = "namespaces", .aliases = &.{ "namespaces", "namespace", "ns" } },
+    .{ .field = "nodes_view", .view_name = "nodes", .aliases = &.{ "nodes", "no" } },
+    .{ .field = "statefulsets_view", .view_name = "statefulsets", .aliases = &.{ "statefulsets", "sts" } },
+    .{ .field = "daemonsets_view", .view_name = "daemonsets", .aliases = &.{ "daemonsets", "ds" } },
+    .{ .field = "replicasets_view", .view_name = "replicasets", .aliases = &.{ "replicasets", "rs" } },
+    .{ .field = "jobs_view", .view_name = "jobs", .aliases = &.{ "jobs", "job", "jo" } },
+    .{ .field = "cronjobs_view", .view_name = "cronjobs", .aliases = &.{ "cronjobs", "cj" } },
+    .{ .field = "configmaps_view", .view_name = "configmaps", .aliases = &.{ "configmaps", "cm" } },
+    .{ .field = "secrets_view", .view_name = "secrets", .aliases = &.{ "secrets", "secret" } },
+    .{ .field = "persistentvolumes_view", .view_name = "persistentvolumes", .aliases = &.{ "persistentvolumes", "pv" } },
+    .{ .field = "persistentvolumeclaims_view", .view_name = "persistentvolumeclaims", .aliases = &.{ "persistentvolumeclaims", "pvc" } },
+    .{ .field = "ingresses_view", .view_name = "ingresses", .aliases = &.{ "ingresses", "ing" } },
+    .{ .field = "networkpolicies_view", .view_name = "networkpolicies", .aliases = &.{ "networkpolicies", "netpol" } },
+    .{ .field = "serviceaccounts_view", .view_name = "serviceaccounts", .aliases = &.{ "serviceaccounts", "sa" } },
+    .{ .field = "roles_view", .view_name = "roles", .aliases = &.{"roles"} },
+    .{ .field = "rolebindings_view", .view_name = "rolebindings", .aliases = &.{"rolebindings"} },
+    .{ .field = "clusterroles_view", .view_name = "clusterroles", .aliases = &.{"clusterroles"} },
+    .{ .field = "clusterrolebindings_view", .view_name = "clusterrolebindings", .aliases = &.{"clusterrolebindings"} },
+    .{ .field = "events_view", .view_name = "events", .aliases = &.{ "events", "ev" } },
+    .{ .field = "resourcequotas_view", .view_name = "resourcequotas", .aliases = &.{"resourcequotas"} },
+    .{ .field = "limitranges_view", .view_name = "limitranges", .aliases = &.{"limitranges"} },
+    .{ .field = "poddisruptionbudgets_view", .view_name = "poddisruptionbudgets", .aliases = &.{ "poddisruptionbudgets", "pdb" } },
+    .{ .field = "hpa_view", .view_name = "hpa", .aliases = &.{ "horizontalpodautoscalers", "hpa" } },
+    .{ .field = "contexts_view", .view_name = "contexts", .aliases = &.{ "contexts", "context", "ctx" } },
+    .{ .field = "themes_view", .view_name = "themes", .aliases = &.{"themes"} },
+    .{ .field = "authorization_view", .view_name = "authorization", .aliases = &.{ "authorization", "auth" } },
 };
 
 /// Generate a view switch command from a field name and primary view enum.
-fn makeViewCommand(comptime field_name: []const u8, comptime primary: @TypeOf(@as(App, undefined).current_primary_view)) *const fn (*Command.CommandContext) anyerror!void {
+fn makeViewCommand(comptime field_name: []const u8, comptime view_name: []const u8) *const fn (*Command.CommandContext) anyerror!void {
     return &struct {
         fn command(ctx_arg: *Command.CommandContext) anyerror!void {
             const app: *App = @ptrCast(@alignCast(ctx_arg.data.?));
             if (ctx_arg.view_manager.getDepth() == 1) {
                 _ = ctx_arg.view_manager.popView();
                 try ctx_arg.view_manager.pushView(@field(app, field_name).createView());
-                app.current_primary_view = primary;
+                app.current_view_name = view_name;
             }
         }
     }.command;
