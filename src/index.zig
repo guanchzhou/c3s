@@ -48,6 +48,7 @@ pub const fixtures = @import("fixtures/index.zig");
 // Services
 pub const K8sService = @import("services/k8s_service.zig").K8sService;
 pub const ClusterInfo = @import("services/k8s_service.zig").ClusterInfo;
+pub const k8s_service_types = @import("services/k8s_types.zig");
 
 // K8s module exports (from zig-klient library)
 pub const klient = @import("klient");

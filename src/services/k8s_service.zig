@@ -5,6 +5,12 @@
 const std = @import("std");
 const klient = @import("klient");
 const Logger = @import("../core/logger.zig");
+const k8s_types = @import("k8s_types.zig");
+
+// Re-export shared types so existing `@import("services/k8s_service.zig").ClusterInfo` etc. keep working.
+pub const ClusterInfo = k8s_types.ClusterInfo;
+pub const ResourceType = k8s_types.ResourceType;
+pub const ResourceInfo = k8s_types.ResourceInfo;
 
 /// Kubernetes service for managing cluster connections and resource operations
 pub const K8sService = struct {
@@ -1240,11 +1246,7 @@ pub const K8sService = struct {
 
     // ===== Pod Metrics Operations =====
 
-    /// Aggregated CPU + memory usage for a single pod (sum of all containers)
-    pub const PodMetric = struct {
-        cpu: []const u8, // e.g. "100m", "2", "n/a"
-        mem: []const u8, // e.g. "45Mi", "1Gi", "n/a"
-    };
+    pub const PodMetric = k8s_types.PodMetric;
 
     /// Fetch pod metrics from the Kubernetes Metrics Server.
     /// Returns a map of "namespace/name" -> PodMetric.
@@ -1345,14 +1347,7 @@ pub const K8sService = struct {
 
     // ===== Context Operations =====
 
-    /// Context information structure
-    pub const ContextInfo = struct {
-        name: []const u8,
-        cluster: []const u8,
-        user: []const u8,
-        namespace: ?[]const u8,
-        is_current: bool,
-    };
+    pub const ContextInfo = k8s_types.ContextInfo;
 
     /// List all available contexts from kubeconfig
     pub fn listContexts(self: *K8sService) ![]ContextInfo {
@@ -1417,44 +1412,9 @@ pub const K8sService = struct {
 
     // ===== Authorization Methods =====
 
-    /// Result of an access check (SelfSubjectAccessReview)
-    pub const AccessCheckResult = struct {
-        allowed: bool,
-        conditional: bool,
-        condition_count: u32,
-    };
-
-    /// Policy info from RBAC aggregation
-    pub const PolicyInfo = struct {
-        source: []const u8,
-        resource: []const u8,
-        verbs: []const u8,
-        subjects: []const u8,
-        allocator: std.mem.Allocator,
-
-        pub fn deinit(self: *PolicyInfo) void {
-            self.allocator.free(self.source);
-            self.allocator.free(self.resource);
-            self.allocator.free(self.verbs);
-            self.allocator.free(self.subjects);
-        }
-    };
-
-    /// Condition info from AuthorizationConditionsReview
-    pub const ConditionInfo = struct {
-        effect: []const u8,
-        authorizer: []const u8,
-        expression: []const u8,
-        description: []const u8,
-        allocator: std.mem.Allocator,
-
-        pub fn deinit(self: *ConditionInfo) void {
-            self.allocator.free(self.effect);
-            self.allocator.free(self.authorizer);
-            self.allocator.free(self.expression);
-            self.allocator.free(self.description);
-        }
-    };
+    pub const AccessCheckResult = k8s_types.AccessCheckResult;
+    pub const PolicyInfo = k8s_types.PolicyInfo;
+    pub const ConditionInfo = k8s_types.ConditionInfo;
 
     /// Check access for a specific verb on a resource (SelfSubjectAccessReview)
     pub fn checkAccess(self: *K8sService, verb: []const u8, group: []const u8, resource: []const u8, namespace: []const u8) !AccessCheckResult {
@@ -1848,253 +1808,3 @@ pub const K8sService = struct {
     }
 };
 
-/// Cluster information structure
-pub const ClusterInfo = struct {
-    context: []const u8,
-    cluster: []const u8,
-    user: []const u8,
-    namespace: []const u8,
-    connected: bool,
-};
-
-/// Resource type enum for generic operations (describe, delete, etc.)
-pub const ResourceType = enum {
-    pods,
-    deployments,
-    services,
-    namespaces,
-    nodes,
-    statefulsets,
-    daemonsets,
-    replicasets,
-    jobs,
-    cronjobs,
-    configmaps,
-    secrets,
-    persistentvolumes,
-    persistentvolumeclaims,
-    ingresses,
-    networkpolicies,
-    serviceaccounts,
-    roles,
-    rolebindings,
-    clusterroles,
-    clusterrolebindings,
-    events,
-    resourcequotas,
-    limitranges,
-    poddisruptionbudgets,
-    hpa,
-    contexts,
-
-    pub fn apiPath(self: ResourceType) []const u8 {
-        return switch (self) {
-            .pods, .services, .namespaces, .nodes, .configmaps, .secrets,
-            .persistentvolumes, .persistentvolumeclaims, .serviceaccounts,
-            .events, .resourcequotas, .limitranges,
-            => "/api/v1",
-            .deployments, .statefulsets, .daemonsets, .replicasets => "/apis/apps/v1",
-            .jobs, .cronjobs => "/apis/batch/v1",
-            .ingresses, .networkpolicies => "/apis/networking.k8s.io/v1",
-            .roles, .rolebindings, .clusterroles, .clusterrolebindings => "/apis/rbac.authorization.k8s.io/v1",
-            .poddisruptionbudgets => "/apis/policy/v1",
-            .hpa => "/apis/autoscaling/v2",
-            .contexts => "/api/v1", // not a real K8s resource
-        };
-    }
-
-    pub fn resourceName(self: ResourceType) []const u8 {
-        return switch (self) {
-            .pods => "pods",
-            .deployments => "deployments",
-            .services => "services",
-            .namespaces => "namespaces",
-            .nodes => "nodes",
-            .statefulsets => "statefulsets",
-            .daemonsets => "daemonsets",
-            .replicasets => "replicasets",
-            .jobs => "jobs",
-            .cronjobs => "cronjobs",
-            .configmaps => "configmaps",
-            .secrets => "secrets",
-            .persistentvolumes => "persistentvolumes",
-            .persistentvolumeclaims => "persistentvolumeclaims",
-            .ingresses => "ingresses",
-            .networkpolicies => "networkpolicies",
-            .serviceaccounts => "serviceaccounts",
-            .roles => "roles",
-            .rolebindings => "rolebindings",
-            .clusterroles => "clusterroles",
-            .clusterrolebindings => "clusterrolebindings",
-            .events => "events",
-            .resourcequotas => "resourcequotas",
-            .limitranges => "limitranges",
-            .poddisruptionbudgets => "poddisruptionbudgets",
-            .hpa => "horizontalpodautoscalers",
-            .contexts => "contexts",
-        };
-    }
-
-    pub fn isClusterScoped(self: ResourceType) bool {
-        return switch (self) {
-            .namespaces, .nodes, .persistentvolumes, .clusterroles, .clusterrolebindings => true,
-            else => false,
-        };
-    }
-};
-
-/// Resource info returned by views for generic operations
-pub const ResourceInfo = struct {
-    name: []const u8,
-    namespace: []const u8,
-};
-
-// ===== Authorization type tests =====
-
-test "AccessCheckResult struct fields" {
-    const result = K8sService.AccessCheckResult{
-        .allowed = true,
-        .conditional = false,
-        .condition_count = 0,
-    };
-    try std.testing.expectEqual(true, result.allowed);
-    try std.testing.expectEqual(false, result.conditional);
-    try std.testing.expectEqual(@as(u32, 0), result.condition_count);
-}
-
-test "AccessCheckResult conditional" {
-    const result = K8sService.AccessCheckResult{
-        .allowed = true,
-        .conditional = true,
-        .condition_count = 3,
-    };
-    try std.testing.expectEqual(true, result.allowed);
-    try std.testing.expectEqual(true, result.conditional);
-    try std.testing.expectEqual(@as(u32, 3), result.condition_count);
-}
-
-test "PolicyInfo init and deinit" {
-    const allocator = std.testing.allocator;
-
-    var policy = K8sService.PolicyInfo{
-        .source = try allocator.dupe(u8, "admin-role"),
-        .resource = try allocator.dupe(u8, "*.*"),
-        .verbs = try allocator.dupe(u8, "get,list,watch"),
-        .subjects = try allocator.dupe(u8, "system:masters"),
-        .allocator = allocator,
-    };
-
-    try std.testing.expectEqualStrings("admin-role", policy.source);
-    try std.testing.expectEqualStrings("*.*", policy.resource);
-    try std.testing.expectEqualStrings("get,list,watch", policy.verbs);
-    try std.testing.expectEqualStrings("system:masters", policy.subjects);
-
-    policy.deinit();
-}
-
-test "ConditionInfo init and deinit" {
-    const allocator = std.testing.allocator;
-
-    var cond = K8sService.ConditionInfo{
-        .effect = try allocator.dupe(u8, "Deny"),
-        .authorizer = try allocator.dupe(u8, "cedar-webhook"),
-        .expression = try allocator.dupe(u8, "resource.metadata.labels[\"protected\"]"),
-        .description = try allocator.dupe(u8, "Block protected pods from deletion"),
-        .allocator = allocator,
-    };
-
-    try std.testing.expectEqualStrings("Deny", cond.effect);
-    try std.testing.expectEqualStrings("cedar-webhook", cond.authorizer);
-
-    cond.deinit();
-}
-
-test "checkAccess requires connection" {
-    const allocator = std.testing.allocator;
-
-    var service = try K8sService.init(allocator);
-    defer service.deinit();
-
-    const result = service.checkAccess("get", "", "pods", "default");
-    try std.testing.expectError(error.NotConnected, result);
-}
-
-test "detectConditionalAuth returns false when not connected" {
-    const allocator = std.testing.allocator;
-
-    var service = try K8sService.init(allocator);
-    defer service.deinit();
-
-    const result = try service.detectConditionalAuth();
-    try std.testing.expectEqual(false, result);
-}
-
-test "detectCedarAuth returns false when not connected" {
-    const allocator = std.testing.allocator;
-
-    var service = try K8sService.init(allocator);
-    defer service.deinit();
-
-    const result = try service.detectCedarAuth();
-    try std.testing.expectEqual(false, result);
-}
-
-test "getAuthorizationConditions requires connection" {
-    const allocator = std.testing.allocator;
-
-    var service = try K8sService.init(allocator);
-    defer service.deinit();
-
-    const result = service.getAuthorizationConditions("pods", "", "default");
-    try std.testing.expectError(error.NotConnected, result);
-}
-
-test "listCedarPolicies requires connection" {
-    const allocator = std.testing.allocator;
-
-    var service = try K8sService.init(allocator);
-    defer service.deinit();
-
-    const result = service.listCedarPolicies();
-    try std.testing.expectError(error.NotConnected, result);
-}
-
-test "listRBACPolicies requires connection" {
-    const allocator = std.testing.allocator;
-
-    var service = try K8sService.init(allocator);
-    defer service.deinit();
-
-    const result = service.listRBACPolicies();
-    try std.testing.expectError(error.NotConnected, result);
-}
-
-test "PolicyInfo multiple init/deinit cycles" {
-    const allocator = std.testing.allocator;
-
-    for (0..10) |_| {
-        var policy = K8sService.PolicyInfo{
-            .source = try allocator.dupe(u8, "test-role"),
-            .resource = try allocator.dupe(u8, "pods"),
-            .verbs = try allocator.dupe(u8, "get"),
-            .subjects = try allocator.dupe(u8, "user1"),
-            .allocator = allocator,
-        };
-        policy.deinit();
-    }
-}
-
-test "ConditionInfo multiple init/deinit cycles" {
-    const allocator = std.testing.allocator;
-
-    for (0..10) |_| {
-        var cond = K8sService.ConditionInfo{
-            .effect = try allocator.dupe(u8, "Allow"),
-            .authorizer = try allocator.dupe(u8, "builtin"),
-            .expression = try allocator.dupe(u8, "true"),
-            .description = try allocator.dupe(u8, "always allow"),
-            .allocator = allocator,
-        };
-        cond.deinit();
-    }
-}
