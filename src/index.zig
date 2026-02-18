@@ -1,5 +1,6 @@
 // Main module exports for testing
 pub const Terminal = @import("core/terminal.zig").Terminal;
+pub const Key = @import("core/terminal.zig").Key;
 pub const Color = @import("core/terminal.zig").Color;
 pub const Header = @import("ui/header.zig").Header;
 pub const Footer = @import("ui/footer.zig").Footer;
@@ -35,7 +36,10 @@ pub const HelpView = @import("view/help_view.zig").HelpView;
 pub const DetailView = @import("view/detail_view.zig").DetailView;
 pub const LogsView = @import("view/logs_view.zig").LogsView;
 pub const AuthorizationView = @import("view/authorization_view.zig").AuthorizationView;
+pub const TableState = @import("ui/table_state.zig").TableState;
 pub const View = @import("viewmodel/view.zig").View;
+pub const ResourceInfo = @import("viewmodel/view.zig").ResourceInfo;
+pub const sort = @import("viewmodel/sort.zig");
 pub const App = @import("app.zig").App;
 pub const viewNameToPrimaryView = @import("app.zig").viewNameToPrimaryView;
 pub const Config = @import("model/config.zig");
@@ -43,6 +47,7 @@ pub const Logger = @import("core/logger.zig");
 pub const version = @import("model/version.zig");
 pub const theme_loader = @import("model/theme_loader.zig");
 pub const color256 = @import("model/color256.zig");
+pub const hints = @import("model/hints.zig");
 pub const fixtures = @import("fixtures/index.zig");
 
 // Services

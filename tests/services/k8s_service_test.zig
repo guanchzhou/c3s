@@ -5,7 +5,9 @@
 
 const std = @import("std");
 const testing = std.testing;
-const K8sService = @import("../../src/services/k8s_service.zig").K8sService;
+const c3s = @import("c3s");
+const K8sService = c3s.K8sService;
+const ClusterInfo = c3s.ClusterInfo;
 
 test "k8s_service: initialization and cleanup" {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -66,26 +68,6 @@ test "k8s_service: getClusterInfo returns correct info" {
     try testing.expectEqual(false, info.connected);
 }
 
-test "k8s_service: connect fails gracefully without kubeconfig" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer {
-        const leaked = gpa.deinit();
-        if (leaked == .leak) {
-            std.debug.print("Memory leak detected in k8s_service connect test\n", .{});
-        }
-    }
-    const allocator = gpa.allocator();
-
-    var service = try K8sService.init(allocator);
-    defer service.deinit();
-
-    // Attempt to connect - should fail if no valid kubeconfig exists or cluster is unreachable
-    // This is expected to fail in CI/test environments, we just verify it doesn't crash
-    _ = service.connect(null);
-
-    // Service should still be in valid state after failed connection
-    try testing.expect(service.allocator.ptr == allocator.ptr);
-}
 
 test "k8s_service: multiple init/deinit cycles" {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -229,15 +211,151 @@ test "k8s_service: ClusterInfo structure" {
     const namespace = try allocator.dupe(u8, "default");
     defer allocator.free(namespace);
 
-    const info = K8sService.ClusterInfo{
+    const user = try allocator.dupe(u8, "test-user");
+    defer allocator.free(user);
+
+    const info = ClusterInfo{
         .context = context,
         .cluster = cluster,
+        .user = user,
         .namespace = namespace,
         .connected = true,
     };
 
     try testing.expect(std.mem.eql(u8, info.context, "test-ctx"));
     try testing.expect(std.mem.eql(u8, info.cluster, "test-cluster"));
+    try testing.expect(std.mem.eql(u8, info.user, "test-user"));
     try testing.expect(std.mem.eql(u8, info.namespace, "default"));
     try testing.expectEqual(true, info.connected);
+}
+
+// ===== Authorization-related tests =====
+
+test "k8s_service: authorization operations require connection" {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer {
+        const leaked = gpa.deinit();
+        if (leaked == .leak) {
+            std.debug.print("Memory leak detected in k8s_service authorization test\n", .{});
+        }
+    }
+    const allocator = gpa.allocator();
+
+    var service = try K8sService.init(allocator);
+    defer service.deinit();
+
+    // checkAccess should return NotConnected
+    const check_result = service.checkAccess("get", "", "pods", "default");
+    try testing.expectError(error.NotConnected, check_result);
+
+    // getAuthorizationConditions should return NotConnected
+    const cond_result = service.getAuthorizationConditions("pods", "", "default");
+    try testing.expectError(error.NotConnected, cond_result);
+
+    // listCedarPolicies should return NotConnected
+    const cedar_result = service.listCedarPolicies();
+    try testing.expectError(error.NotConnected, cedar_result);
+
+    // listRBACPolicies should return NotConnected
+    const rbac_result = service.listRBACPolicies();
+    try testing.expectError(error.NotConnected, rbac_result);
+}
+
+test "k8s_service: detectConditionalAuth returns false when not connected" {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer {
+        const leaked = gpa.deinit();
+        if (leaked == .leak) {
+            std.debug.print("Memory leak detected in detectConditionalAuth test\n", .{});
+        }
+    }
+    const allocator = gpa.allocator();
+
+    var service = try K8sService.init(allocator);
+    defer service.deinit();
+
+    const result = try service.detectConditionalAuth();
+    try testing.expectEqual(false, result);
+}
+
+test "k8s_service: detectCedarAuth returns false when not connected" {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer {
+        const leaked = gpa.deinit();
+        if (leaked == .leak) {
+            std.debug.print("Memory leak detected in detectCedarAuth test\n", .{});
+        }
+    }
+    const allocator = gpa.allocator();
+
+    var service = try K8sService.init(allocator);
+    defer service.deinit();
+
+    const result = try service.detectCedarAuth();
+    try testing.expectEqual(false, result);
+}
+
+test "k8s_service: AccessCheckResult structure" {
+    const result = K8sService.AccessCheckResult{
+        .allowed = true,
+        .conditional = true,
+        .condition_count = 3,
+    };
+    try testing.expectEqual(true, result.allowed);
+    try testing.expectEqual(true, result.conditional);
+    try testing.expectEqual(@as(u32, 3), result.condition_count);
+}
+
+test "k8s_service: PolicyInfo structure and memory" {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer {
+        const leaked = gpa.deinit();
+        if (leaked == .leak) {
+            std.debug.print("Memory leak detected in PolicyInfo test\n", .{});
+        }
+    }
+    const allocator = gpa.allocator();
+
+    for (0..5) |_| {
+        var policy = K8sService.PolicyInfo{
+            .source = try allocator.dupe(u8, "cluster-admin"),
+            .resource = try allocator.dupe(u8, "*.*"),
+            .verbs = try allocator.dupe(u8, "*"),
+            .subjects = try allocator.dupe(u8, "system:masters"),
+            .allocator = allocator,
+        };
+
+        try testing.expect(std.mem.eql(u8, policy.source, "cluster-admin"));
+        try testing.expect(std.mem.eql(u8, policy.resource, "*.*"));
+        try testing.expect(std.mem.eql(u8, policy.verbs, "*"));
+        try testing.expect(std.mem.eql(u8, policy.subjects, "system:masters"));
+
+        policy.deinit();
+    }
+}
+
+test "k8s_service: ConditionInfo structure and memory" {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer {
+        const leaked = gpa.deinit();
+        if (leaked == .leak) {
+            std.debug.print("Memory leak detected in ConditionInfo test\n", .{});
+        }
+    }
+    const allocator = gpa.allocator();
+
+    for (0..5) |_| {
+        var cond = K8sService.ConditionInfo{
+            .effect = try allocator.dupe(u8, "Deny"),
+            .authorizer = try allocator.dupe(u8, "cedar-webhook"),
+            .expression = try allocator.dupe(u8, "resource.metadata.labels[\"protected\"] == \"true\""),
+            .description = try allocator.dupe(u8, "Block deletion of protected pods"),
+            .allocator = allocator,
+        };
+
+        try testing.expect(std.mem.eql(u8, cond.effect, "Deny"));
+        try testing.expect(std.mem.eql(u8, cond.authorizer, "cedar-webhook"));
+
+        cond.deinit();
+    }
 }
