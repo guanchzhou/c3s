@@ -34,6 +34,8 @@ pub const PodsView = struct {
     const COL_STATUS: u8 = 1;
     const COL_AGE: u8 = 2;
     const COL_READY: u8 = 3;
+    const COL_CPU: u8 = 4;
+    const COL_MEM: u8 = 5;
 
     const Pod = struct {
         namespace: []const u8,
@@ -63,6 +65,8 @@ pub const PodsView = struct {
         fn getStatus(self: *const Pod) []const u8 { return self.status; }
         fn getAge(self: *const Pod) []const u8 { return self.age; }
         fn getReady(self: *const Pod) []const u8 { return self.ready; }
+        fn getCpu(self: *const Pod) []const u8 { return self.cpu_l; }
+        fn getMem(self: *const Pod) []const u8 { return self.mem_l; }
     };
 
     pub fn init(allocator: std.mem.Allocator, theme: *theme_loader.ThemeColors, k8s_service: *K8sService) !PodsView {
@@ -168,14 +172,16 @@ pub const PodsView = struct {
             const metric_key = std.fmt.allocPrint(allocator, "{s}/{s}", .{ pod_ns, pod_name }) catch null;
             defer if (metric_key) |k| allocator.free(k);
 
-            const cpu_val = if (metric_key) |k|
-                if (metrics_map) |m| (if (m.get(k)) |pm| pm.cpu else null) else null
-            else
-                null;
-            const mem_val = if (metric_key) |k|
-                if (metrics_map) |m| (if (m.get(k)) |pm| pm.mem else null) else null
-            else
-                null;
+            var cpu_val: ?[]const u8 = null;
+            var mem_val: ?[]const u8 = null;
+            if (metric_key) |k| {
+                if (metrics_map) |*m| {
+                    if (m.get(k)) |pm| {
+                        cpu_val = pm.cpu;
+                        mem_val = pm.mem;
+                    }
+                }
+            }
 
             try self.table.appendItem(.{
                 .namespace = try allocator.dupe(u8, pod_ns),
@@ -259,6 +265,8 @@ pub const PodsView = struct {
                 COL_STATUS => self.table.sortBy(Pod.getStatus),
                 COL_AGE => self.table.sortBy(Pod.getAge),
                 COL_READY => self.table.sortBy(Pod.getReady),
+                COL_CPU => self.table.sortBy(Pod.getCpu),
+                COL_MEM => self.table.sortBy(Pod.getMem),
                 else => {},
             }
         }
@@ -511,6 +519,8 @@ pub const PodsView = struct {
                 'S' => { self.table.toggleSort(COL_STATUS); self.applySorting(); return .handled; },
                 'A' => { self.table.toggleSort(COL_AGE); self.applySorting(); return .handled; },
                 'R' => { self.table.toggleSort(COL_READY); self.applySorting(); return .handled; },
+                'C' => { self.table.toggleSort(COL_CPU); self.applySorting(); return .handled; },
+                'M' => { self.table.toggleSort(COL_MEM); self.applySorting(); return .handled; },
                 '?' => return .request_command_palette,
                 else => return .not_handled,
             },

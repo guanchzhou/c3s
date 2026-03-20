@@ -51,14 +51,11 @@ fn populateTable(ts: *TableState(TestItem), allocator: std.mem.Allocator, count:
 }
 
 // =========================================================================
-// Navigation tests (1-10)
+// Navigation tests
 // =========================================================================
 
-// 1. navigateDown from first item moves to second
 test "navigation: navigateDown from first item moves to second" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+    const allocator = testing.allocator;
 
     var ts = TableState(TestItem).init(allocator);
     defer ts.deinit();
@@ -66,21 +63,13 @@ test "navigation: navigateDown from first item moves to second" {
 
     try populateTable(&ts, allocator, 5);
 
-    // Arrange: selected_row starts at 0
     try testing.expectEqual(@as(u32, 0), ts.selected_row);
-
-    // Act
     ts.navigateDown();
-
-    // Assert
     try testing.expectEqual(@as(u32, 1), ts.selected_row);
 }
 
-// 2. navigateDown at last item stays at last
 test "navigation: navigateDown at last item stays at last" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+    const allocator = testing.allocator;
 
     var ts = TableState(TestItem).init(allocator);
     defer ts.deinit();
@@ -88,22 +77,14 @@ test "navigation: navigateDown at last item stays at last" {
 
     try populateTable(&ts, allocator, 5);
 
-    // Arrange: go to last item
     ts.gotoBottom();
     try testing.expectEqual(@as(u32, 4), ts.selected_row);
-
-    // Act
     ts.navigateDown();
-
-    // Assert: should stay at 4
     try testing.expectEqual(@as(u32, 4), ts.selected_row);
 }
 
-// 3. navigateUp from second item moves to first
 test "navigation: navigateUp from second item moves to first" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+    const allocator = testing.allocator;
 
     var ts = TableState(TestItem).init(allocator);
     defer ts.deinit();
@@ -111,22 +92,14 @@ test "navigation: navigateUp from second item moves to first" {
 
     try populateTable(&ts, allocator, 5);
 
-    // Arrange: move to second item
     ts.navigateDown();
     try testing.expectEqual(@as(u32, 1), ts.selected_row);
-
-    // Act
     ts.navigateUp();
-
-    // Assert
     try testing.expectEqual(@as(u32, 0), ts.selected_row);
 }
 
-// 4. navigateUp at first item stays at first
 test "navigation: navigateUp at first item stays at first" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+    const allocator = testing.allocator;
 
     var ts = TableState(TestItem).init(allocator);
     defer ts.deinit();
@@ -134,21 +107,13 @@ test "navigation: navigateUp at first item stays at first" {
 
     try populateTable(&ts, allocator, 5);
 
-    // Arrange: already at row 0
     try testing.expectEqual(@as(u32, 0), ts.selected_row);
-
-    // Act
     ts.navigateUp();
-
-    // Assert
     try testing.expectEqual(@as(u32, 0), ts.selected_row);
 }
 
-// 5. gotoTop resets to 0
 test "navigation: gotoTop resets to 0" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+    const allocator = testing.allocator;
 
     var ts = TableState(TestItem).init(allocator);
     defer ts.deinit();
@@ -156,24 +121,17 @@ test "navigation: gotoTop resets to 0" {
 
     try populateTable(&ts, allocator, 20);
 
-    // Arrange: navigate somewhere in the middle
     ts.gotoBottom();
     try testing.expect(ts.selected_row > 0);
     try testing.expect(ts.scroll_offset > 0);
 
-    // Act
     ts.gotoTop();
-
-    // Assert
     try testing.expectEqual(@as(u32, 0), ts.selected_row);
     try testing.expectEqual(@as(u32, 0), ts.scroll_offset);
 }
 
-// 6. gotoBottom goes to last item
 test "navigation: gotoBottom goes to last item" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+    const allocator = testing.allocator;
 
     var ts = TableState(TestItem).init(allocator);
     defer ts.deinit();
@@ -181,21 +139,26 @@ test "navigation: gotoBottom goes to last item" {
 
     try populateTable(&ts, allocator, 20);
 
-    // Act
     ts.gotoBottom();
-
-    // Assert
     try testing.expectEqual(@as(u32, 19), ts.selected_row);
-    // Scroll offset should ensure the last item is visible
-    // selected_row (19) >= visible_rows (5), so offset = 19 - 5 + 1 = 15
     try testing.expectEqual(@as(u32, 15), ts.scroll_offset);
 }
 
-// 7. pageDown jumps by visible_rows count
+test "navigation: gotoBottom with empty list does nothing" {
+    const allocator = testing.allocator;
+
+    var ts = TableState(TestItem).init(allocator);
+    defer ts.deinit();
+    ts.visible_rows = 5;
+
+    // No items added
+    ts.gotoBottom();
+    try testing.expectEqual(@as(u32, 0), ts.selected_row);
+    try testing.expectEqual(@as(u32, 0), ts.scroll_offset);
+}
+
 test "navigation: pageDown jumps by visible_rows count" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+    const allocator = testing.allocator;
 
     var ts = TableState(TestItem).init(allocator);
     defer ts.deinit();
@@ -203,21 +166,13 @@ test "navigation: pageDown jumps by visible_rows count" {
 
     try populateTable(&ts, allocator, 20);
 
-    // Arrange: at row 0
     try testing.expectEqual(@as(u32, 0), ts.selected_row);
-
-    // Act
     ts.pageDown();
-
-    // Assert: should jump by visible_rows (5)
     try testing.expectEqual(@as(u32, 5), ts.selected_row);
 }
 
-// 8. pageUp jumps back by visible_rows count
 test "navigation: pageUp jumps back by visible_rows count" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+    const allocator = testing.allocator;
 
     var ts = TableState(TestItem).init(allocator);
     defer ts.deinit();
@@ -225,22 +180,29 @@ test "navigation: pageUp jumps back by visible_rows count" {
 
     try populateTable(&ts, allocator, 20);
 
-    // Arrange: go to row 10
     ts.selected_row = 10;
     ts.scroll_offset = 6;
-
-    // Act
     ts.pageUp();
-
-    // Assert: should jump back by visible_rows (5)
     try testing.expectEqual(@as(u32, 5), ts.selected_row);
 }
 
-// 9. navigateDown adjusts scroll_offset when past visible area
+test "navigation: pageUp from near top clamps to zero" {
+    const allocator = testing.allocator;
+
+    var ts = TableState(TestItem).init(allocator);
+    defer ts.deinit();
+    ts.visible_rows = 10;
+
+    try populateTable(&ts, allocator, 20);
+
+    ts.selected_row = 3;
+    ts.scroll_offset = 0;
+    ts.pageUp();
+    try testing.expectEqual(@as(u32, 0), ts.selected_row);
+}
+
 test "navigation: navigateDown adjusts scroll_offset when past visible area" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+    const allocator = testing.allocator;
 
     var ts = TableState(TestItem).init(allocator);
     defer ts.deinit();
@@ -248,23 +210,15 @@ test "navigation: navigateDown adjusts scroll_offset when past visible area" {
 
     try populateTable(&ts, allocator, 10);
 
-    // Arrange: position at last visible row (row 2 with offset 0, visible_rows 3)
     ts.selected_row = 2;
     ts.scroll_offset = 0;
-
-    // Act: navigate down past visible area
     ts.navigateDown();
-
-    // Assert: scroll_offset should have incremented
     try testing.expectEqual(@as(u32, 3), ts.selected_row);
     try testing.expectEqual(@as(u32, 1), ts.scroll_offset);
 }
 
-// 10. navigateUp adjusts scroll_offset when above visible area
 test "navigation: navigateUp adjusts scroll_offset when above visible area" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+    const allocator = testing.allocator;
 
     var ts = TableState(TestItem).init(allocator);
     defer ts.deinit();
@@ -272,128 +226,128 @@ test "navigation: navigateUp adjusts scroll_offset when above visible area" {
 
     try populateTable(&ts, allocator, 10);
 
-    // Arrange: scroll_offset is 5, selected_row is 5 (at top of visible area)
     ts.selected_row = 5;
     ts.scroll_offset = 5;
-
-    // Act: navigate up above visible area
     ts.navigateUp();
-
-    // Assert: scroll_offset should follow selected_row
     try testing.expectEqual(@as(u32, 4), ts.selected_row);
     try testing.expectEqual(@as(u32, 4), ts.scroll_offset);
 }
 
 // =========================================================================
-// Filtering tests (11-15)
+// Filtering tests
 // =========================================================================
 
-// 11. applyFilter with empty string shows all items
 test "filter: applyFilter with empty string shows all items" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+    const allocator = testing.allocator;
 
     var ts = TableState(TestItem).init(allocator);
     defer ts.deinit();
     ts.visible_rows = 10;
 
-    // Arrange: add 5 items
     try ts.appendItem(try createTestItem(allocator, "alpha", 1));
     try ts.appendItem(try createTestItem(allocator, "beta", 2));
     try ts.appendItem(try createTestItem(allocator, "gamma", 3));
     try ts.appendItem(try createTestItem(allocator, "delta", 4));
     try ts.appendItem(try createTestItem(allocator, "epsilon", 5));
 
-    // Act
     try ts.applyFilter("", testMatchFn);
-
-    // Assert
     try testing.expectEqual(@as(usize, 5), ts.filtered_indices.items.len);
 }
 
-// 12. applyFilter matches subset of items
 test "filter: applyFilter matches subset of items" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+    const allocator = testing.allocator;
 
     var ts = TableState(TestItem).init(allocator);
     defer ts.deinit();
     ts.visible_rows = 10;
 
-    // Arrange
     try ts.appendItem(try createTestItem(allocator, "apple", 1));
     try ts.appendItem(try createTestItem(allocator, "banana", 2));
     try ts.appendItem(try createTestItem(allocator, "apricot", 3));
     try ts.appendItem(try createTestItem(allocator, "cherry", 4));
 
-    // Act: filter for "ap"
     try ts.applyFilter("ap", testMatchFn);
-
-    // Assert: should match "apple" and "apricot"
     try testing.expectEqual(@as(usize, 2), ts.filtered_indices.items.len);
     try testing.expectEqual(@as(usize, 0), ts.filtered_indices.items[0]); // apple
     try testing.expectEqual(@as(usize, 2), ts.filtered_indices.items[1]); // apricot
 }
 
-// 13. applyFilter with no matches produces empty filtered list
 test "filter: applyFilter with no matches produces empty filtered list" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+    const allocator = testing.allocator;
 
     var ts = TableState(TestItem).init(allocator);
     defer ts.deinit();
     ts.visible_rows = 10;
 
-    // Arrange
     try ts.appendItem(try createTestItem(allocator, "apple", 1));
     try ts.appendItem(try createTestItem(allocator, "banana", 2));
     try ts.appendItem(try createTestItem(allocator, "cherry", 3));
 
-    // Act
     try ts.applyFilter("xyz", testMatchFn);
-
-    // Assert
     try testing.expectEqual(@as(usize, 0), ts.filtered_indices.items.len);
 }
 
-// 14. applyFilter resets selected_row and scroll_offset
 test "filter: applyFilter resets selected_row and scroll_offset" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+    const allocator = testing.allocator;
 
     var ts = TableState(TestItem).init(allocator);
     defer ts.deinit();
     ts.visible_rows = 10;
 
-    // Arrange: add items and navigate away from top
     try populateTable(&ts, allocator, 20);
     ts.selected_row = 15;
     ts.scroll_offset = 10;
 
-    // Act: apply a filter that won't include the previously selected item's original index
     try ts.applyFilter("item-0", testMatchFn);
-
-    // Assert: selected_row and scroll_offset should be reset to 0
-    // (because the previously selected item "item-15" is no longer in the filtered list)
     try testing.expectEqual(@as(u32, 0), ts.selected_row);
     try testing.expectEqual(@as(u32, 0), ts.scroll_offset);
 }
 
-// 15. clearItems removes all items and resets error
-test "filter: clearItems removes all items and resets error" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+test "filter: filter_text is tracked" {
+    const allocator = testing.allocator;
 
     var ts = TableState(TestItem).init(allocator);
     defer ts.deinit();
     ts.visible_rows = 10;
 
-    // Arrange
+    try ts.appendItem(try createTestItem(allocator, "alpha", 1));
+
+    try testing.expectEqualStrings("", ts.filter_text);
+
+    try ts.applyFilter("alph", testMatchFn);
+    try testing.expectEqualStrings("alph", ts.filter_text);
+
+    try ts.applyFilter("", testMatchFn);
+    try testing.expectEqualStrings("", ts.filter_text);
+}
+
+// =========================================================================
+// appendItem / clearItems
+// =========================================================================
+
+test "appendItem adds items correctly" {
+    const allocator = testing.allocator;
+
+    var ts = TableState(TestItem).init(allocator);
+    defer ts.deinit();
+
+    try ts.appendItem(try createTestItem(allocator, "first", 1));
+    try ts.appendItem(try createTestItem(allocator, "second", 2));
+    try ts.appendItem(try createTestItem(allocator, "third", 3));
+
+    try testing.expectEqual(@as(usize, 3), ts.items.items.len);
+    try testing.expectEqualStrings("first", ts.items.items[0].name);
+    try testing.expectEqualStrings("second", ts.items.items[1].name);
+    try testing.expectEqualStrings("third", ts.items.items[2].name);
+}
+
+test "clearItems removes all items and resets error" {
+    const allocator = testing.allocator;
+
+    var ts = TableState(TestItem).init(allocator);
+    defer ts.deinit();
+    ts.visible_rows = 10;
+
     try ts.appendItem(try createTestItem(allocator, "alpha", 1));
     try ts.appendItem(try createTestItem(allocator, "beta", 2));
     try ts.setError("something went wrong");
@@ -401,90 +355,191 @@ test "filter: clearItems removes all items and resets error" {
     try testing.expectEqual(@as(usize, 2), ts.items.items.len);
     try testing.expect(ts.error_message != null);
 
-    // Act
     ts.clearItems();
 
-    // Assert
     try testing.expectEqual(@as(usize, 0), ts.items.items.len);
     try testing.expect(ts.error_message == null);
 }
 
 // =========================================================================
-// Sorting tests (16-18)
+// Error messages
 // =========================================================================
 
-// 16. toggleSort sets sort column and ascending=true
-test "sort: toggleSort sets sort column and ascending true" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+test "setError stores error message" {
+    const allocator = testing.allocator;
 
     var ts = TableState(TestItem).init(allocator);
     defer ts.deinit();
 
-    // Arrange: no sort column set
+    try ts.setError("connection refused");
+
+    try testing.expect(ts.error_message != null);
+    try testing.expectEqualStrings("connection refused", ts.error_message.?);
+}
+
+test "setError replaces previous error" {
+    const allocator = testing.allocator;
+
+    var ts = TableState(TestItem).init(allocator);
+    defer ts.deinit();
+
+    try ts.setError("first error");
+    try testing.expectEqualStrings("first error", ts.error_message.?);
+
+    try ts.setError("second error");
+    try testing.expectEqualStrings("second error", ts.error_message.?);
+}
+
+test "setErrorFmt formats error message" {
+    const allocator = testing.allocator;
+
+    var ts = TableState(TestItem).init(allocator);
+    defer ts.deinit();
+
+    try ts.setErrorFmt("error {d}: {s}", .{ 404, "not found" });
+
+    try testing.expect(ts.error_message != null);
+    try testing.expectEqualStrings("error 404: not found", ts.error_message.?);
+}
+
+test "setConnectionError maps TlsInitializationFailed" {
+    const allocator = testing.allocator;
+
+    var ts = TableState(TestItem).init(allocator);
+    defer ts.deinit();
+
+    try ts.setConnectionError("pods", error.TlsInitializationFailed);
+    try testing.expect(ts.error_message != null);
+    try testing.expectEqualStrings("TLS connection failed. Try: C3S_FORCE_PROXY=1 c3s", ts.error_message.?);
+}
+
+test "setConnectionError maps ConnectionRefused" {
+    const allocator = testing.allocator;
+
+    var ts = TableState(TestItem).init(allocator);
+    defer ts.deinit();
+
+    try ts.setConnectionError("pods", error.ConnectionRefused);
+    try testing.expect(ts.error_message != null);
+    try testing.expectEqualStrings("Connection refused. Is the cluster reachable?", ts.error_message.?);
+}
+
+test "setConnectionError maps ConnectionResetByPeer" {
+    const allocator = testing.allocator;
+
+    var ts = TableState(TestItem).init(allocator);
+    defer ts.deinit();
+
+    try ts.setConnectionError("pods", error.ConnectionResetByPeer);
+    try testing.expect(ts.error_message != null);
+    try testing.expectEqualStrings("Connection reset. Check cluster status.", ts.error_message.?);
+}
+
+test "setConnectionError formats unknown error with resource name" {
+    const allocator = testing.allocator;
+
+    var ts = TableState(TestItem).init(allocator);
+    defer ts.deinit();
+
+    try ts.setConnectionError("deployments", error.OutOfMemory);
+    try testing.expect(ts.error_message != null);
+    try testing.expectEqualStrings("Failed to list deployments: error.OutOfMemory", ts.error_message.?);
+}
+
+// =========================================================================
+// Sorting tests
+// =========================================================================
+
+test "toggleSort sets sort column and ascending true" {
+    const allocator = testing.allocator;
+
+    var ts = TableState(TestItem).init(allocator);
+    defer ts.deinit();
+
     try testing.expect(ts.sort_column == null);
-
-    // Act
     ts.toggleSort(3);
-
-    // Assert
     try testing.expectEqual(@as(?u8, 3), ts.sort_column);
     try testing.expect(ts.sort_ascending);
 }
 
-// 17. toggleSort on same column flips ascending
-test "sort: toggleSort on same column flips ascending" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+test "toggleSort on same column flips ascending" {
+    const allocator = testing.allocator;
 
     var ts = TableState(TestItem).init(allocator);
     defer ts.deinit();
 
-    // Arrange: set sort on column 2
     ts.toggleSort(2);
     try testing.expect(ts.sort_ascending);
-
-    // Act: toggle same column
     ts.toggleSort(2);
-
-    // Assert: should flip to descending
     try testing.expectEqual(@as(?u8, 2), ts.sort_column);
     try testing.expect(!ts.sort_ascending);
 }
 
-// 18. toggleSort on different column resets to ascending
-test "sort: toggleSort on different column resets to ascending" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+test "toggleSort on different column resets to ascending" {
+    const allocator = testing.allocator;
 
     var ts = TableState(TestItem).init(allocator);
     defer ts.deinit();
 
-    // Arrange: set sort on column 1 and flip to descending
     ts.toggleSort(1);
     ts.toggleSort(1);
     try testing.expect(!ts.sort_ascending);
 
-    // Act: switch to column 5
     ts.toggleSort(5);
-
-    // Assert: new column, ascending reset
     try testing.expectEqual(@as(?u8, 5), ts.sort_column);
     try testing.expect(ts.sort_ascending);
 }
 
+test "sortBy sorts filtered indices by name ascending" {
+    const allocator = testing.allocator;
+
+    var ts = TableState(TestItem).init(allocator);
+    defer ts.deinit();
+    ts.visible_rows = 10;
+
+    try ts.appendItem(try createTestItem(allocator, "cherry", 1));
+    try ts.appendItem(try createTestItem(allocator, "apple", 2));
+    try ts.appendItem(try createTestItem(allocator, "banana", 3));
+
+    try ts.applyFilter("", testMatchFn);
+
+    ts.sort_ascending = true;
+    ts.sortBy(TestItem.getName);
+
+    // After ascending sort: apple(1), banana(2), cherry(0)
+    try testing.expectEqual(@as(usize, 1), ts.filtered_indices.items[0]);
+    try testing.expectEqual(@as(usize, 2), ts.filtered_indices.items[1]);
+    try testing.expectEqual(@as(usize, 0), ts.filtered_indices.items[2]);
+}
+
+test "sortBy sorts filtered indices by name descending" {
+    const allocator = testing.allocator;
+
+    var ts = TableState(TestItem).init(allocator);
+    defer ts.deinit();
+    ts.visible_rows = 10;
+
+    try ts.appendItem(try createTestItem(allocator, "cherry", 1));
+    try ts.appendItem(try createTestItem(allocator, "apple", 2));
+    try ts.appendItem(try createTestItem(allocator, "banana", 3));
+
+    try ts.applyFilter("", testMatchFn);
+
+    ts.sort_ascending = false;
+    ts.sortBy(TestItem.getName);
+
+    // After descending sort: cherry(0), banana(2), apple(1)
+    try testing.expectEqual(@as(usize, 0), ts.filtered_indices.items[0]);
+    try testing.expectEqual(@as(usize, 2), ts.filtered_indices.items[1]);
+    try testing.expectEqual(@as(usize, 1), ts.filtered_indices.items[2]);
+}
+
 // =========================================================================
-// Selection tests (19-22)
+// Selection tests
 // =========================================================================
 
-// 19. getSelectedItem returns correct item
-test "selection: getSelectedItem returns correct item" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+test "getSelectedItem returns correct item" {
+    const allocator = testing.allocator;
 
     var ts = TableState(TestItem).init(allocator);
     defer ts.deinit();
@@ -492,40 +547,42 @@ test "selection: getSelectedItem returns correct item" {
 
     try populateTable(&ts, allocator, 5);
 
-    // Arrange: navigate to third item
     ts.navigateDown();
     ts.navigateDown();
     try testing.expectEqual(@as(u32, 2), ts.selected_row);
 
-    // Act
     const selected = ts.getSelectedItem();
-
-    // Assert
     try testing.expect(selected != null);
     try testing.expectEqualStrings("item-2", selected.?.name);
 }
 
-// 20. getSelectedItem returns null when empty
-test "selection: getSelectedItem returns null when empty" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+test "getSelectedItem returns null when empty" {
+    const allocator = testing.allocator;
 
     var ts = TableState(TestItem).init(allocator);
     defer ts.deinit();
 
-    // Act: no items at all
     const selected = ts.getSelectedItem();
-
-    // Assert
     try testing.expect(selected == null);
 }
 
-// 21. getVisibleRange returns correct start/end
-test "selection: getVisibleRange returns correct start and end" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+test "getSelectedItem returns null when selected_row out of range" {
+    const allocator = testing.allocator;
+
+    var ts = TableState(TestItem).init(allocator);
+    defer ts.deinit();
+    ts.visible_rows = 10;
+
+    try ts.appendItem(try createTestItem(allocator, "only", 1));
+    try ts.applyFilter("", testMatchFn);
+
+    ts.selected_row = 99; // out of bounds
+    const selected = ts.getSelectedItem();
+    try testing.expect(selected == null);
+}
+
+test "getVisibleRange returns correct start and end" {
+    const allocator = testing.allocator;
 
     var ts = TableState(TestItem).init(allocator);
     defer ts.deinit();
@@ -533,22 +590,29 @@ test "selection: getVisibleRange returns correct start and end" {
 
     try populateTable(&ts, allocator, 20);
 
-    // Arrange: set scroll_offset to 3
     ts.scroll_offset = 3;
-
-    // Act
     const range = ts.getVisibleRange();
-
-    // Assert: start=3, end=min(3+5, 20) = 8
     try testing.expectEqual(@as(u32, 3), range.start);
     try testing.expectEqual(@as(u32, 8), range.end);
 }
 
-// 22. isSelected returns true for selected row offset
-test "selection: isSelected returns true for selected row offset" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+test "getVisibleRange clamps end to item count" {
+    const allocator = testing.allocator;
+
+    var ts = TableState(TestItem).init(allocator);
+    defer ts.deinit();
+    ts.visible_rows = 100;
+
+    try populateTable(&ts, allocator, 5);
+
+    ts.scroll_offset = 0;
+    const range = ts.getVisibleRange();
+    try testing.expectEqual(@as(u32, 0), range.start);
+    try testing.expectEqual(@as(u32, 5), range.end);
+}
+
+test "isSelected returns true for selected row offset" {
+    const allocator = testing.allocator;
 
     var ts = TableState(TestItem).init(allocator);
     defer ts.deinit();
@@ -556,86 +620,45 @@ test "selection: isSelected returns true for selected row offset" {
 
     try populateTable(&ts, allocator, 10);
 
-    // Arrange: selected_row = 3, scroll_offset = 1
     ts.selected_row = 3;
     ts.scroll_offset = 1;
 
-    // Act / Assert
-    // display_offset 2 means scroll_offset(1) + 2 = 3 == selected_row
-    try testing.expect(ts.isSelected(2));
-    // display_offset 0 means scroll_offset(1) + 0 = 1 != 3
-    try testing.expect(!ts.isSelected(0));
-    // display_offset 3 means scroll_offset(1) + 3 = 4 != 3
-    try testing.expect(!ts.isSelected(3));
+    try testing.expect(ts.isSelected(2)); // 1 + 2 = 3
+    try testing.expect(!ts.isSelected(0)); // 1 + 0 = 1 != 3
+    try testing.expect(!ts.isSelected(3)); // 1 + 3 = 4 != 3
 }
 
 // =========================================================================
-// Status tests (23-25)
+// show_all_namespaces toggle
 // =========================================================================
 
-// 23. setError stores error message
-test "status: setError stores error message" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+test "show_all_namespaces defaults to false" {
+    const allocator = testing.allocator;
 
     var ts = TableState(TestItem).init(allocator);
     defer ts.deinit();
 
-    // Act
-    try ts.setError("connection refused");
-
-    // Assert
-    try testing.expect(ts.error_message != null);
-    try testing.expectEqualStrings("connection refused", ts.error_message.?);
+    try testing.expect(!ts.show_all_namespaces);
 }
 
-// 24. setErrorFmt formats error message
-test "status: setErrorFmt formats error message" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+test "show_all_namespaces can be toggled" {
+    const allocator = testing.allocator;
 
     var ts = TableState(TestItem).init(allocator);
     defer ts.deinit();
 
-    // Act
-    try ts.setErrorFmt("error {d}: {s}", .{ 404, "not found" });
-
-    // Assert
-    try testing.expect(ts.error_message != null);
-    try testing.expectEqualStrings("error 404: not found", ts.error_message.?);
-}
-
-// 25. clearItems clears error message
-test "status: clearItems clears error message" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
-
-    var ts = TableState(TestItem).init(allocator);
-    defer ts.deinit();
-
-    // Arrange
-    try ts.setError("something bad");
-    try testing.expect(ts.error_message != null);
-
-    // Act
-    ts.clearItems();
-
-    // Assert
-    try testing.expect(ts.error_message == null);
+    ts.show_all_namespaces = true;
+    try testing.expect(ts.show_all_namespaces);
+    ts.show_all_namespaces = false;
+    try testing.expect(!ts.show_all_namespaces);
 }
 
 // =========================================================================
-// Row colors tests (26-27)
+// Row colors tests
 // =========================================================================
 
-// 26. rowColors returns selected colors for selected row
-test "row_colors: returns selected colors for selected row" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+test "rowColors returns selected colors for selected row" {
+    const allocator = testing.allocator;
 
     var ts = TableState(TestItem).init(allocator);
     defer ts.deinit();
@@ -643,8 +666,6 @@ test "row_colors: returns selected colors for selected row" {
 
     try populateTable(&ts, allocator, 5);
 
-    // Arrange: selected_row = 0, scroll_offset = 0
-    // display_offset 0 => scroll_offset(0) + 0 = 0 == selected_row(0)
     const colors = theme_loader.ThemeColors{
         .main_bg = "bg",
         .main_fg = "fg",
@@ -667,19 +688,13 @@ test "row_colors: returns selected colors for selected row" {
         .allocator = allocator,
     };
 
-    // Act
     const rc = ts.rowColors(0, &colors);
-
-    // Assert
     try testing.expectEqualStrings("sel_fg", rc.fg);
     try testing.expectEqualStrings("sel_bg", rc.bg);
 }
 
-// 27. rowColors returns normal colors for non-selected row
-test "row_colors: returns normal colors for non-selected row" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+test "rowColors returns normal colors for non-selected row" {
+    const allocator = testing.allocator;
 
     var ts = TableState(TestItem).init(allocator);
     defer ts.deinit();
@@ -687,8 +702,6 @@ test "row_colors: returns normal colors for non-selected row" {
 
     try populateTable(&ts, allocator, 5);
 
-    // Arrange: selected_row = 0, scroll_offset = 0
-    // display_offset 1 => scroll_offset(0) + 1 = 1 != selected_row(0)
     const colors = theme_loader.ThemeColors{
         .main_bg = "bg",
         .main_fg = "fg",
@@ -711,19 +724,15 @@ test "row_colors: returns normal colors for non-selected row" {
         .allocator = allocator,
     };
 
-    // Act
     const rc = ts.rowColors(1, &colors);
-
-    // Assert
     try testing.expectEqualStrings("fg", rc.fg);
     try testing.expectEqualStrings("bg", rc.bg);
 }
 
 // =========================================================================
-// Memory tests (28-29)
+// Memory tests
 // =========================================================================
 
-// 28. init/deinit with items doesn't leak
 test "memory: init and deinit with items does not leak" {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer {
@@ -737,20 +746,15 @@ test "memory: init and deinit with items does not leak" {
     var ts = TableState(TestItem).init(allocator);
     ts.visible_rows = 10;
 
-    // Add items (each allocates a name string)
     try ts.appendItem(try createTestItem(allocator, "one", 1));
     try ts.appendItem(try createTestItem(allocator, "two", 2));
     try ts.appendItem(try createTestItem(allocator, "three", 3));
     try ts.applyFilter("", testMatchFn);
-
-    // Also set an error to exercise that path
     try ts.setError("test error");
 
-    // deinit should free everything: items, filtered_indices, error_message
     ts.deinit();
 }
 
-// 29. multiple clearItems cycles don't leak
 test "memory: multiple clearItems cycles do not leak" {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer {
@@ -784,6 +788,179 @@ test "memory: multiple clearItems cycles do not leak" {
     try testing.expectEqual(@as(usize, 0), ts.items.items.len);
     try testing.expect(ts.error_message == null);
 
-    // Cycle 3: add items without error, ensure deinit handles empty error_message
+    // Cycle 3
     try ts.appendItem(try createTestItem(allocator, "f", 6));
+}
+
+// =========================================================================
+// handleNavigationKey tests
+// =========================================================================
+
+test "handleNavigationKey: j navigates down" {
+    const allocator = testing.allocator;
+
+    var ts = TableState(TestItem).init(allocator);
+    defer ts.deinit();
+    ts.visible_rows = 10;
+
+    try populateTable(&ts, allocator, 5);
+
+    const result = ts.handleNavigationKey(.{ .char = 'j' });
+    try testing.expect(result != null);
+    try testing.expectEqual(@as(u32, 1), ts.selected_row);
+}
+
+test "handleNavigationKey: k navigates up" {
+    const allocator = testing.allocator;
+
+    var ts = TableState(TestItem).init(allocator);
+    defer ts.deinit();
+    ts.visible_rows = 10;
+
+    try populateTable(&ts, allocator, 5);
+    ts.navigateDown();
+
+    const result = ts.handleNavigationKey(.{ .char = 'k' });
+    try testing.expect(result != null);
+    try testing.expectEqual(@as(u32, 0), ts.selected_row);
+}
+
+test "handleNavigationKey: g goes to top" {
+    const allocator = testing.allocator;
+
+    var ts = TableState(TestItem).init(allocator);
+    defer ts.deinit();
+    ts.visible_rows = 10;
+
+    try populateTable(&ts, allocator, 20);
+    ts.gotoBottom();
+
+    const result = ts.handleNavigationKey(.{ .char = 'g' });
+    try testing.expect(result != null);
+    try testing.expectEqual(@as(u32, 0), ts.selected_row);
+}
+
+test "handleNavigationKey: G goes to bottom" {
+    const allocator = testing.allocator;
+
+    var ts = TableState(TestItem).init(allocator);
+    defer ts.deinit();
+    ts.visible_rows = 5;
+
+    try populateTable(&ts, allocator, 20);
+
+    const result = ts.handleNavigationKey(.{ .char = 'G' });
+    try testing.expect(result != null);
+    try testing.expectEqual(@as(u32, 19), ts.selected_row);
+}
+
+test "handleNavigationKey: unhandled key returns null" {
+    const allocator = testing.allocator;
+
+    var ts = TableState(TestItem).init(allocator);
+    defer ts.deinit();
+    ts.visible_rows = 10;
+
+    try populateTable(&ts, allocator, 5);
+
+    const result = ts.handleNavigationKey(.{ .char = 'z' });
+    try testing.expect(result == null);
+}
+
+test "handleNavigationKey: d returns request_describe" {
+    const allocator = testing.allocator;
+
+    var ts = TableState(TestItem).init(allocator);
+    defer ts.deinit();
+
+    const result = ts.handleNavigationKey(.{ .char = 'd' });
+    try testing.expect(result != null);
+    try testing.expectEqual(c3s.View.KeyResult.request_describe, result.?);
+}
+
+test "handleNavigationKey: y returns request_yaml" {
+    const allocator = testing.allocator;
+
+    var ts = TableState(TestItem).init(allocator);
+    defer ts.deinit();
+
+    const result = ts.handleNavigationKey(.{ .char = 'y' });
+    try testing.expect(result != null);
+    try testing.expectEqual(c3s.View.KeyResult.request_yaml, result.?);
+}
+
+test "handleNavigationKey: colon returns request_command_palette" {
+    const allocator = testing.allocator;
+
+    var ts = TableState(TestItem).init(allocator);
+    defer ts.deinit();
+
+    const result = ts.handleNavigationKey(.{ .char = ':' });
+    try testing.expect(result != null);
+    try testing.expectEqual(c3s.View.KeyResult.request_command_palette, result.?);
+}
+
+test "handleNavigationKey: slash returns request_filter" {
+    const allocator = testing.allocator;
+
+    var ts = TableState(TestItem).init(allocator);
+    defer ts.deinit();
+
+    const result = ts.handleNavigationKey(.{ .char = '/' });
+    try testing.expect(result != null);
+    try testing.expectEqual(c3s.View.KeyResult.request_filter, result.?);
+}
+
+test "handleNavigationKey: arrow down navigates down" {
+    const allocator = testing.allocator;
+
+    var ts = TableState(TestItem).init(allocator);
+    defer ts.deinit();
+    ts.visible_rows = 10;
+
+    try populateTable(&ts, allocator, 5);
+
+    const result = ts.handleNavigationKey(.down);
+    try testing.expect(result != null);
+    try testing.expectEqual(@as(u32, 1), ts.selected_row);
+}
+
+test "handleNavigationKey: arrow up navigates up" {
+    const allocator = testing.allocator;
+
+    var ts = TableState(TestItem).init(allocator);
+    defer ts.deinit();
+    ts.visible_rows = 10;
+
+    try populateTable(&ts, allocator, 5);
+    ts.navigateDown();
+
+    const result = ts.handleNavigationKey(.up);
+    try testing.expect(result != null);
+    try testing.expectEqual(@as(u32, 0), ts.selected_row);
+}
+
+// =========================================================================
+// Loading state
+// =========================================================================
+
+test "loading defaults to false" {
+    const allocator = testing.allocator;
+
+    var ts = TableState(TestItem).init(allocator);
+    defer ts.deinit();
+
+    try testing.expect(!ts.loading);
+}
+
+test "loading can be set" {
+    const allocator = testing.allocator;
+
+    var ts = TableState(TestItem).init(allocator);
+    defer ts.deinit();
+
+    ts.loading = true;
+    try testing.expect(ts.loading);
+    ts.loading = false;
+    try testing.expect(!ts.loading);
 }

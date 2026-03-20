@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Authors of C3S
 //
-// Tests for K8sService
+// Comprehensive tests for K8sService: init/deinit, connection state,
+// namespace management, version caching, kubectl mode, authorization,
+// and type structure verification.
 
 const std = @import("std");
 const testing = std.testing;
@@ -9,100 +11,377 @@ const c3s = @import("c3s");
 const K8sService = c3s.K8sService;
 const ClusterInfo = c3s.ClusterInfo;
 
+// =========================================================================
+// Initialization and cleanup
+// =========================================================================
+
 test "k8s_service: initialization and cleanup" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer {
-        const leaked = gpa.deinit();
-        if (leaked == .leak) {
-            std.debug.print("Memory leak detected in k8s_service init test\n", .{});
-        }
-    }
-    const allocator = gpa.allocator();
+    const allocator = testing.allocator;
 
     var service = try K8sService.init(allocator);
     defer service.deinit();
 
-    // Verify initial state
     try testing.expect(service.client == null);
     try testing.expectEqual(false, service.connected);
-    try testing.expect(std.mem.eql(u8, service.current_namespace, "default"));
-    try testing.expect(std.mem.eql(u8, service.context_name, "unknown"));
+    try testing.expectEqualStrings("default", service.current_namespace);
+    try testing.expectEqualStrings("unknown", service.context_name);
+    try testing.expectEqualStrings("unknown", service.cluster_name);
+    try testing.expectEqualStrings("unknown", service.user_name);
 }
 
-test "k8s_service: isConnected returns correct state" {
+test "k8s_service: multiple init/deinit cycles do not leak" {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer {
         const leaked = gpa.deinit();
-        if (leaked == .leak) {
-            std.debug.print("Memory leak detected in k8s_service isConnected test\n", .{});
-        }
+        if (leaked == .leak) @panic("Memory leak in k8s_service init/deinit cycle");
     }
     const allocator = gpa.allocator();
 
-    var service = try K8sService.init(allocator);
-    defer service.deinit();
-
-    // Initially not connected
-    try testing.expectEqual(false, service.isConnected());
-}
-
-test "k8s_service: getClusterInfo returns correct info" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer {
-        const leaked = gpa.deinit();
-        if (leaked == .leak) {
-            std.debug.print("Memory leak detected in k8s_service getClusterInfo test\n", .{});
-        }
-    }
-    const allocator = gpa.allocator();
-
-    var service = try K8sService.init(allocator);
-    defer service.deinit();
-
-    const info = service.getClusterInfo();
-
-    // Verify cluster info structure
-    try testing.expect(info.context.len > 0);
-    try testing.expect(info.cluster.len > 0);
-    try testing.expect(info.namespace.len > 0);
-    try testing.expectEqual(false, info.connected);
-}
-
-
-test "k8s_service: multiple init/deinit cycles" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer {
-        const leaked = gpa.deinit();
-        if (leaked == .leak) {
-            std.debug.print("Memory leak detected in k8s_service multiple cycles test\n", .{});
-        }
-    }
-    const allocator = gpa.allocator();
-
-    // Test 10 init/deinit cycles for memory leaks
     for (0..10) |_| {
         var service = try K8sService.init(allocator);
         service.deinit();
     }
 }
 
-test "k8s_service: listContexts without connection" {
+// =========================================================================
+// isConnected
+// =========================================================================
+
+test "k8s_service: isConnected returns false initially" {
+    const allocator = testing.allocator;
+
+    var service = try K8sService.init(allocator);
+    defer service.deinit();
+
+    try testing.expectEqual(false, service.isConnected());
+}
+
+test "k8s_service: isConnected returns true when connected with client" {
+    const allocator = testing.allocator;
+
+    var service = try K8sService.init(allocator);
+    defer service.deinit();
+
+    // Simulate connected state (no real client, but flags set)
+    service.connected = true;
+    // Without a client or use_kubectl, still false
+    try testing.expectEqual(false, service.isConnected());
+}
+
+test "k8s_service: isConnected returns true in kubectl mode" {
+    const allocator = testing.allocator;
+
+    var service = try K8sService.init(allocator);
+    defer service.deinit();
+
+    service.connected = true;
+    service.use_kubectl = true;
+    try testing.expectEqual(true, service.isConnected());
+}
+
+// =========================================================================
+// hasAttemptedConnect
+// =========================================================================
+
+test "k8s_service: hasAttemptedConnect initially false" {
+    const allocator = testing.allocator;
+
+    var service = try K8sService.init(allocator);
+    defer service.deinit();
+
+    try testing.expectEqual(false, service.hasAttemptedConnect());
+}
+
+test "k8s_service: connect_attempted flag tracks connect attempts" {
+    const allocator = testing.allocator;
+
+    var service = try K8sService.init(allocator);
+    defer service.deinit();
+
+    service.connect_attempted = true;
+    try testing.expectEqual(true, service.hasAttemptedConnect());
+}
+
+// =========================================================================
+// kubectl mode flag
+// =========================================================================
+
+test "k8s_service: use_kubectl defaults to false" {
+    const allocator = testing.allocator;
+
+    var service = try K8sService.init(allocator);
+    defer service.deinit();
+
+    try testing.expectEqual(false, service.use_kubectl);
+}
+
+test "k8s_service: use_kubectl can be set" {
+    const allocator = testing.allocator;
+
+    var service = try K8sService.init(allocator);
+    defer service.deinit();
+
+    service.use_kubectl = true;
+    try testing.expectEqual(true, service.use_kubectl);
+}
+
+// =========================================================================
+// version_fetch_failed flag
+// =========================================================================
+
+test "k8s_service: version_fetch_failed defaults to false" {
+    const allocator = testing.allocator;
+
+    var service = try K8sService.init(allocator);
+    defer service.deinit();
+
+    try testing.expectEqual(false, service.version_fetch_failed);
+}
+
+// =========================================================================
+// getServerVersion caching
+// =========================================================================
+
+test "k8s_service: getServerVersion returns n/a when not connected" {
+    const allocator = testing.allocator;
+
+    var service = try K8sService.init(allocator);
+    defer service.deinit();
+
+    const ver = service.getServerVersion();
+    try testing.expectEqualStrings("n/a", ver);
+}
+
+test "k8s_service: getServerVersion returns cached version" {
+    const allocator = testing.allocator;
+
+    var service = try K8sService.init(allocator);
+    defer service.deinit();
+
+    // Manually set cached version
+    service.cached_k8s_version = try allocator.dupe(u8, "v1.30.0");
+    const ver = service.getServerVersion();
+    try testing.expectEqualStrings("v1.30.0", ver);
+}
+
+test "k8s_service: getServerVersion returns unknown after fetch failure" {
+    const allocator = testing.allocator;
+
+    var service = try K8sService.init(allocator);
+    defer service.deinit();
+
+    // Simulate connected + fetch failed
+    service.connected = true;
+    service.use_kubectl = true;
+    service.version_fetch_failed = true;
+
+    const ver = service.getServerVersion();
+    try testing.expectEqualStrings("unknown", ver);
+}
+
+// =========================================================================
+// Namespace management
+// =========================================================================
+
+test "k8s_service: getCurrentNamespace returns default initially" {
+    const allocator = testing.allocator;
+
+    var service = try K8sService.init(allocator);
+    defer service.deinit();
+
+    try testing.expectEqualStrings("default", service.getCurrentNamespace());
+}
+
+test "k8s_service: setCurrentNamespace updates namespace" {
+    const allocator = testing.allocator;
+
+    var service = try K8sService.init(allocator);
+    defer service.deinit();
+
+    try service.setCurrentNamespace("kube-system");
+    try testing.expectEqualStrings("kube-system", service.getCurrentNamespace());
+}
+
+test "k8s_service: setCurrentNamespace multiple times does not leak" {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer {
         const leaked = gpa.deinit();
-        if (leaked == .leak) {
-            std.debug.print("Memory leak detected in k8s_service listContexts test\n", .{});
-        }
+        if (leaked == .leak) @panic("Memory leak in setCurrentNamespace test");
     }
     const allocator = gpa.allocator();
 
     var service = try K8sService.init(allocator);
     defer service.deinit();
 
-    // listContexts should work without active connection (reads from kubeconfig)
-    // It will fail if kubeconfig doesn't exist, which is expected in some test environments
+    try service.setCurrentNamespace("ns1");
+    try service.setCurrentNamespace("ns2");
+    try service.setCurrentNamespace("ns3");
+    try testing.expectEqualStrings("ns3", service.getCurrentNamespace());
+}
+
+// =========================================================================
+// getClusterInfo
+// =========================================================================
+
+test "k8s_service: getClusterInfo returns correct info" {
+    const allocator = testing.allocator;
+
+    var service = try K8sService.init(allocator);
+    defer service.deinit();
+
+    const info = service.getClusterInfo();
+
+    try testing.expectEqualStrings("unknown", info.context);
+    try testing.expectEqualStrings("unknown", info.cluster);
+    try testing.expectEqualStrings("unknown", info.user);
+    try testing.expectEqualStrings("default", info.namespace);
+    try testing.expectEqual(false, info.connected);
+}
+
+// =========================================================================
+// Resource operations require connection
+// =========================================================================
+
+test "k8s_service: resource operations return NotConnected" {
+    const allocator = testing.allocator;
+
+    var service = try K8sService.init(allocator);
+    defer service.deinit();
+
+    try testing.expectError(error.NotConnected, service.listAllHPAs());
+    try testing.expectError(error.NotConnected, service.listAllEvents());
+    try testing.expectError(error.NotConnected, service.listAllResourceQuotas());
+    try testing.expectError(error.NotConnected, service.listAllLimitRanges());
+    try testing.expectError(error.NotConnected, service.listAllPodDisruptionBudgets());
+    try testing.expectError(error.NotConnected, service.listAllDeployments());
+    try testing.expectError(error.NotConnected, service.listAllServices());
+    try testing.expectError(error.NotConnected, service.listNodes());
+    try testing.expectError(error.NotConnected, service.listAllConfigMaps());
+    try testing.expectError(error.NotConnected, service.listAllSecrets());
+    try testing.expectError(error.NotConnected, service.listAllStatefulSets());
+    try testing.expectError(error.NotConnected, service.listAllDaemonSets());
+    try testing.expectError(error.NotConnected, service.listAllReplicaSets());
+    try testing.expectError(error.NotConnected, service.listAllJobs());
+    try testing.expectError(error.NotConnected, service.listAllCronJobs());
+    try testing.expectError(error.NotConnected, service.listAllRoles());
+    try testing.expectError(error.NotConnected, service.listAllRoleBindings());
+    try testing.expectError(error.NotConnected, service.listAllClusterRoles());
+    try testing.expectError(error.NotConnected, service.listAllClusterRoleBindings());
+    try testing.expectError(error.NotConnected, service.listAllPersistentVolumes());
+    try testing.expectError(error.NotConnected, service.listAllPersistentVolumeClaims());
+    try testing.expectError(error.NotConnected, service.listAllIngresses());
+    try testing.expectError(error.NotConnected, service.listAllNetworkPolicies());
+    try testing.expectError(error.NotConnected, service.listAllServiceAccounts());
+    try testing.expectError(error.NotConnected, service.listAllEndpoints());
+    try testing.expectError(error.NotConnected, service.listAllStorageClasses());
+}
+
+test "k8s_service: namespaced list operations return NotConnected" {
+    const allocator = testing.allocator;
+
+    var service = try K8sService.init(allocator);
+    defer service.deinit();
+
+    try testing.expectError(error.NotConnected, service.listDeployments(null));
+    try testing.expectError(error.NotConnected, service.listServices(null));
+    try testing.expectError(error.NotConnected, service.listConfigMaps(null));
+    try testing.expectError(error.NotConnected, service.listSecrets(null));
+    try testing.expectError(error.NotConnected, service.listPods(null));
+}
+
+// =========================================================================
+// Authorization tests
+// =========================================================================
+
+test "k8s_service: authorization operations require connection" {
+    const allocator = testing.allocator;
+
+    var service = try K8sService.init(allocator);
+    defer service.deinit();
+
+    try testing.expectError(error.NotConnected, service.checkAccess("get", "", "pods", "default"));
+    try testing.expectError(error.NotConnected, service.getAuthorizationConditions("pods", "", "default"));
+    try testing.expectError(error.NotConnected, service.listCedarPolicies());
+    try testing.expectError(error.NotConnected, service.listRBACPolicies());
+}
+
+test "k8s_service: detectConditionalAuth returns false when not connected" {
+    const allocator = testing.allocator;
+
+    var service = try K8sService.init(allocator);
+    defer service.deinit();
+
+    const result = try service.detectConditionalAuth();
+    try testing.expectEqual(false, result);
+}
+
+test "k8s_service: detectCedarAuth returns false when not connected" {
+    const allocator = testing.allocator;
+
+    var service = try K8sService.init(allocator);
+    defer service.deinit();
+
+    const result = try service.detectCedarAuth();
+    try testing.expectEqual(false, result);
+}
+
+// =========================================================================
+// Pod metrics (disconnected)
+// =========================================================================
+
+test "k8s_service: getPodMetrics returns null when not connected" {
+    const allocator = testing.allocator;
+
+    var service = try K8sService.init(allocator);
+    defer service.deinit();
+
+    const metrics = try service.getPodMetrics(true);
+    try testing.expect(metrics == null);
+}
+
+// =========================================================================
+// Raw JSON / delete / logs require connection
+// =========================================================================
+
+test "k8s_service: getRawJson returns NotConnected" {
+    const allocator = testing.allocator;
+
+    var service = try K8sService.init(allocator);
+    defer service.deinit();
+
+    try testing.expectError(error.NotConnected, service.getRawJson(.pods, "test", "default"));
+}
+
+test "k8s_service: deleteResource returns NotConnected" {
+    const allocator = testing.allocator;
+
+    var service = try K8sService.init(allocator);
+    defer service.deinit();
+
+    try testing.expectError(error.NotConnected, service.deleteResource(.pods, "test", "default"));
+}
+
+test "k8s_service: getPodLogs returns NotConnected" {
+    const allocator = testing.allocator;
+
+    var service = try K8sService.init(allocator);
+    defer service.deinit();
+
+    try testing.expectError(error.NotConnected, service.getPodLogs("test", null));
+}
+
+// =========================================================================
+// listContexts (reads kubeconfig, may fail in CI)
+// =========================================================================
+
+test "k8s_service: listContexts without connection" {
+    const allocator = testing.allocator;
+
+    var service = try K8sService.init(allocator);
+    defer service.deinit();
+
     const contexts = service.listContexts() catch |err| {
-        // Expected errors: HomeNotFound, FileNotFound, etc.
+        // Expected errors when kubeconfig doesn't exist
         try testing.expect(err == error.HomeNotFound or
             err == error.FileNotFound or
             err == error.NoDocuments or
@@ -119,7 +398,6 @@ test "k8s_service: listContexts without connection" {
         allocator.free(contexts);
     }
 
-    // If we got here, kubeconfig exists and was parsed successfully
     try testing.expect(contexts.len > 0);
     for (contexts) |ctx| {
         try testing.expect(ctx.name.len > 0);
@@ -128,17 +406,40 @@ test "k8s_service: listContexts without connection" {
     }
 }
 
-test "k8s_service: ContextInfo structure" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer {
-        const leaked = gpa.deinit();
-        if (leaked == .leak) {
-            std.debug.print("Memory leak detected in k8s_service ContextInfo test\n", .{});
-        }
-    }
-    const allocator = gpa.allocator();
+// =========================================================================
+// Type structure tests
+// =========================================================================
 
-    // Test ContextInfo structure
+test "k8s_service: ClusterInfo structure" {
+    const allocator = testing.allocator;
+
+    const context = try allocator.dupe(u8, "test-ctx");
+    defer allocator.free(context);
+    const cluster = try allocator.dupe(u8, "test-cluster");
+    defer allocator.free(cluster);
+    const namespace = try allocator.dupe(u8, "default");
+    defer allocator.free(namespace);
+    const user = try allocator.dupe(u8, "test-user");
+    defer allocator.free(user);
+
+    const info = ClusterInfo{
+        .context = context,
+        .cluster = cluster,
+        .user = user,
+        .namespace = namespace,
+        .connected = true,
+    };
+
+    try testing.expectEqualStrings("test-ctx", info.context);
+    try testing.expectEqualStrings("test-cluster", info.cluster);
+    try testing.expectEqualStrings("test-user", info.user);
+    try testing.expectEqualStrings("default", info.namespace);
+    try testing.expectEqual(true, info.connected);
+}
+
+test "k8s_service: ContextInfo structure" {
+    const allocator = testing.allocator;
+
     const name = try allocator.dupe(u8, "test-context");
     defer allocator.free(name);
     const cluster = try allocator.dupe(u8, "test-cluster");
@@ -156,143 +457,12 @@ test "k8s_service: ContextInfo structure" {
         .is_current = true,
     };
 
-    try testing.expect(std.mem.eql(u8, ctx_info.name, "test-context"));
-    try testing.expect(std.mem.eql(u8, ctx_info.cluster, "test-cluster"));
-    try testing.expect(std.mem.eql(u8, ctx_info.user, "test-user"));
+    try testing.expectEqualStrings("test-context", ctx_info.name);
+    try testing.expectEqualStrings("test-cluster", ctx_info.cluster);
+    try testing.expectEqualStrings("test-user", ctx_info.user);
     try testing.expect(ctx_info.namespace != null);
-    try testing.expect(std.mem.eql(u8, ctx_info.namespace.?, "default"));
+    try testing.expectEqualStrings("default", ctx_info.namespace.?);
     try testing.expectEqual(true, ctx_info.is_current);
-}
-
-test "k8s_service: resource operations require connection" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer {
-        const leaked = gpa.deinit();
-        if (leaked == .leak) {
-            std.debug.print("Memory leak detected in k8s_service resource operations test\n", .{});
-        }
-    }
-    const allocator = gpa.allocator();
-
-    var service = try K8sService.init(allocator);
-    defer service.deinit();
-
-    // All resource operations should return NotConnected error when not connected
-    const hpas_result = service.listAllHPAs();
-    try testing.expectError(error.NotConnected, hpas_result);
-
-    const events_result = service.listAllEvents();
-    try testing.expectError(error.NotConnected, events_result);
-
-    const quotas_result = service.listAllResourceQuotas();
-    try testing.expectError(error.NotConnected, quotas_result);
-
-    const limits_result = service.listAllLimitRanges();
-    try testing.expectError(error.NotConnected, limits_result);
-
-    const pdbs_result = service.listAllPodDisruptionBudgets();
-    try testing.expectError(error.NotConnected, pdbs_result);
-}
-
-test "k8s_service: ClusterInfo structure" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer {
-        const leaked = gpa.deinit();
-        if (leaked == .leak) {
-            std.debug.print("Memory leak detected in k8s_service ClusterInfo test\n", .{});
-        }
-    }
-    const allocator = gpa.allocator();
-
-    const context = try allocator.dupe(u8, "test-ctx");
-    defer allocator.free(context);
-    const cluster = try allocator.dupe(u8, "test-cluster");
-    defer allocator.free(cluster);
-    const namespace = try allocator.dupe(u8, "default");
-    defer allocator.free(namespace);
-
-    const user = try allocator.dupe(u8, "test-user");
-    defer allocator.free(user);
-
-    const info = ClusterInfo{
-        .context = context,
-        .cluster = cluster,
-        .user = user,
-        .namespace = namespace,
-        .connected = true,
-    };
-
-    try testing.expect(std.mem.eql(u8, info.context, "test-ctx"));
-    try testing.expect(std.mem.eql(u8, info.cluster, "test-cluster"));
-    try testing.expect(std.mem.eql(u8, info.user, "test-user"));
-    try testing.expect(std.mem.eql(u8, info.namespace, "default"));
-    try testing.expectEqual(true, info.connected);
-}
-
-// ===== Authorization-related tests =====
-
-test "k8s_service: authorization operations require connection" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer {
-        const leaked = gpa.deinit();
-        if (leaked == .leak) {
-            std.debug.print("Memory leak detected in k8s_service authorization test\n", .{});
-        }
-    }
-    const allocator = gpa.allocator();
-
-    var service = try K8sService.init(allocator);
-    defer service.deinit();
-
-    // checkAccess should return NotConnected
-    const check_result = service.checkAccess("get", "", "pods", "default");
-    try testing.expectError(error.NotConnected, check_result);
-
-    // getAuthorizationConditions should return NotConnected
-    const cond_result = service.getAuthorizationConditions("pods", "", "default");
-    try testing.expectError(error.NotConnected, cond_result);
-
-    // listCedarPolicies should return NotConnected
-    const cedar_result = service.listCedarPolicies();
-    try testing.expectError(error.NotConnected, cedar_result);
-
-    // listRBACPolicies should return NotConnected
-    const rbac_result = service.listRBACPolicies();
-    try testing.expectError(error.NotConnected, rbac_result);
-}
-
-test "k8s_service: detectConditionalAuth returns false when not connected" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer {
-        const leaked = gpa.deinit();
-        if (leaked == .leak) {
-            std.debug.print("Memory leak detected in detectConditionalAuth test\n", .{});
-        }
-    }
-    const allocator = gpa.allocator();
-
-    var service = try K8sService.init(allocator);
-    defer service.deinit();
-
-    const result = try service.detectConditionalAuth();
-    try testing.expectEqual(false, result);
-}
-
-test "k8s_service: detectCedarAuth returns false when not connected" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer {
-        const leaked = gpa.deinit();
-        if (leaked == .leak) {
-            std.debug.print("Memory leak detected in detectCedarAuth test\n", .{});
-        }
-    }
-    const allocator = gpa.allocator();
-
-    var service = try K8sService.init(allocator);
-    defer service.deinit();
-
-    const result = try service.detectCedarAuth();
-    try testing.expectEqual(false, result);
 }
 
 test "k8s_service: AccessCheckResult structure" {
@@ -310,9 +480,7 @@ test "k8s_service: PolicyInfo structure and memory" {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer {
         const leaked = gpa.deinit();
-        if (leaked == .leak) {
-            std.debug.print("Memory leak detected in PolicyInfo test\n", .{});
-        }
+        if (leaked == .leak) @panic("Memory leak in PolicyInfo test");
     }
     const allocator = gpa.allocator();
 
@@ -325,10 +493,10 @@ test "k8s_service: PolicyInfo structure and memory" {
             .allocator = allocator,
         };
 
-        try testing.expect(std.mem.eql(u8, policy.source, "cluster-admin"));
-        try testing.expect(std.mem.eql(u8, policy.resource, "*.*"));
-        try testing.expect(std.mem.eql(u8, policy.verbs, "*"));
-        try testing.expect(std.mem.eql(u8, policy.subjects, "system:masters"));
+        try testing.expectEqualStrings("cluster-admin", policy.source);
+        try testing.expectEqualStrings("*.*", policy.resource);
+        try testing.expectEqualStrings("*", policy.verbs);
+        try testing.expectEqualStrings("system:masters", policy.subjects);
 
         policy.deinit();
     }
@@ -338,9 +506,7 @@ test "k8s_service: ConditionInfo structure and memory" {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer {
         const leaked = gpa.deinit();
-        if (leaked == .leak) {
-            std.debug.print("Memory leak detected in ConditionInfo test\n", .{});
-        }
+        if (leaked == .leak) @panic("Memory leak in ConditionInfo test");
     }
     const allocator = gpa.allocator();
 
@@ -353,9 +519,56 @@ test "k8s_service: ConditionInfo structure and memory" {
             .allocator = allocator,
         };
 
-        try testing.expect(std.mem.eql(u8, cond.effect, "Deny"));
-        try testing.expect(std.mem.eql(u8, cond.authorizer, "cedar-webhook"));
+        try testing.expectEqualStrings("Deny", cond.effect);
+        try testing.expectEqualStrings("cedar-webhook", cond.authorizer);
 
         cond.deinit();
     }
+}
+
+// =========================================================================
+// ParsedList type verification
+// =========================================================================
+
+test "k8s_service: ParsedList type can be referenced" {
+    // Verify the type exists and its methods are accessible at comptime
+    const PL = K8sService.ParsedList(c3s.k8s_types.Pod);
+    _ = PL;
+    // If this compiles, the type is valid
+}
+
+// =========================================================================
+// PodMetric type
+// =========================================================================
+
+test "k8s_service: PodMetric structure" {
+    const allocator = testing.allocator;
+
+    const cpu = try allocator.dupe(u8, "100m");
+    defer allocator.free(cpu);
+    const mem = try allocator.dupe(u8, "256Mi");
+    defer allocator.free(mem);
+
+    const metric = K8sService.PodMetric{
+        .cpu = cpu,
+        .mem = mem,
+    };
+
+    try testing.expectEqualStrings("100m", metric.cpu);
+    try testing.expectEqualStrings("256Mi", metric.mem);
+}
+
+// =========================================================================
+// TLS data defaults
+// =========================================================================
+
+test "k8s_service: TLS data defaults to null" {
+    const allocator = testing.allocator;
+
+    var service = try K8sService.init(allocator);
+    defer service.deinit();
+
+    try testing.expect(service.tls_ca_data == null);
+    try testing.expect(service.tls_cert_data == null);
+    try testing.expect(service.tls_key_data == null);
 }

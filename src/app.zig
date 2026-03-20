@@ -58,6 +58,7 @@ const LogsView = @import("view/logs_view.zig").LogsView;
 const AuthorizationView = @import("view/authorization_view.zig").AuthorizationView;
 
 // Service imports
+const klient = @import("klient");
 const k8s_service_mod = @import("services/k8s_service.zig");
 const K8sService = k8s_service_mod.K8sService;
 const ResourceType = k8s_service_mod.ResourceType;
@@ -416,6 +417,8 @@ pub const App = struct {
                 const cluster_info = self.k8s_service.getClusterInfo();
                 self.header.updateClusterInfo(cluster_info.context, cluster_info.cluster, cluster_info.user) catch {};
                 self.header.updateK8sVersion(self.k8s_service.getServerVersion()) catch {};
+                // Fetch node metrics for header CPU/MEM
+                self.updateHeaderMetrics();
                 // Refresh the active view to load data
                 if (self.view_manager.getCurrentView()) |current_view| {
                     current_view.refresh() catch {};
@@ -598,6 +601,63 @@ pub const App = struct {
         self.prev_width = size.width;
         self.prev_height = size.height;
         self.dirty = false;
+    }
+
+    fn updateHeaderMetrics(self: *App) void {
+        if (!self.k8s_service.isConnected()) return;
+
+        // Fetch node metrics via /apis/metrics.k8s.io/v1beta1/nodes
+        const body = self.k8s_service.kubectlRequest("/apis/metrics.k8s.io/v1beta1/nodes") catch return;
+        defer self.allocator.free(body);
+
+        const parsed = std.json.parseFromSlice(std.json.Value, self.allocator, body, .{
+            .ignore_unknown_fields = true,
+        }) catch return;
+        defer parsed.deinit();
+
+        const items = if (parsed.value == .object)
+            if (parsed.value.object.get("items")) |it| if (it == .array) it.array.items else null else null
+        else
+            null;
+        if (items == null) return;
+
+        var total_cpu_millicores: u64 = 0;
+        var total_mem_bytes: u64 = 0;
+
+        for (items.?) |node| {
+            if (node != .object) continue;
+            const usage = node.object.get("usage") orelse continue;
+            if (usage != .object) continue;
+
+            if (usage.object.get("cpu")) |cpu_val| {
+                if (cpu_val == .string) {
+                    if (klient.MetricsClient.parseCpuMillicores(cpu_val.string)) |mc| {
+                        total_cpu_millicores += mc;
+                    }
+                }
+            }
+            if (usage.object.get("memory")) |mem_val| {
+                if (mem_val == .string) {
+                    if (klient.MetricsClient.parseMemoryBytes(mem_val.string)) |bytes| {
+                        total_mem_bytes += bytes;
+                    }
+                }
+            }
+        }
+
+        // Convert to approximate percentages (rough estimate based on typical node capacity)
+        // A more accurate approach would fetch node capacity and compute actual usage %
+        const node_count = items.?.len;
+        if (node_count == 0) return;
+
+        // Rough heuristic: assume ~4 cores and ~16GB per node on average
+        const est_total_cpu = node_count * 4000; // millicores
+        const est_total_mem = node_count * 16 * 1024 * 1024 * 1024; // bytes
+
+        const cpu_pct: u8 = if (est_total_cpu > 0) @intCast(@min(total_cpu_millicores * 100 / est_total_cpu, 100)) else 0;
+        const mem_pct: u8 = if (est_total_mem > 0) @intCast(@min(total_mem_bytes * 100 / est_total_mem, 100)) else 0;
+
+        self.header.updateCpuMem(cpu_pct, mem_pct) catch {};
     }
 
     fn renderDisconnectedDialog(self: *App, x: u16, y: u16, w: u16, h: u16) !void {

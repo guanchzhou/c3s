@@ -301,6 +301,34 @@ pub fn build(b: *std.Build) void {
     const view_trait_test_step = b.step("test-view-trait", "Run view trait tests");
     view_trait_test_step.dependOn(&run_view_trait_tests.step);
 
+    // Create table layout tests
+    const table_layout_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/ui/table_layout_test.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    table_layout_tests.root_module.addImport("c3s", c3s_module);
+
+    const run_table_layout_tests = b.addRunArtifact(table_layout_tests);
+    const table_layout_test_step = b.step("test-table-layout", "Run table layout unit tests");
+    table_layout_test_step.dependOn(&run_table_layout_tests.step);
+
+    // Create resource view tests
+    const resource_view_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/view/resource_view_test.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    resource_view_tests.root_module.addImport("c3s", c3s_module);
+
+    const run_resource_view_tests = b.addRunArtifact(resource_view_tests);
+    const resource_view_test_step = b.step("test-resource-view", "Run resource view tests");
+    resource_view_test_step.dependOn(&run_resource_view_tests.step);
+
     // Create a step to run all tests
     const all_tests_step = b.step("test-all", "Run all tests");
     all_tests_step.dependOn(&run_unit_tests.step);
@@ -316,4 +344,6 @@ pub fn build(b: *std.Build) void {
     all_tests_step.dependOn(&run_table_state_tests.step);
     all_tests_step.dependOn(&run_sort_tests.step);
     all_tests_step.dependOn(&run_view_trait_tests.step);
+    all_tests_step.dependOn(&run_table_layout_tests.step);
+    all_tests_step.dependOn(&run_resource_view_tests.step);
 }

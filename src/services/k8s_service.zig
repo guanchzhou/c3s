@@ -419,7 +419,7 @@ pub const K8sService = struct {
         const result = std.process.Child.run(.{
             .allocator = self.allocator,
             .argv = &.{ "kubectl", "get", "--raw", path },
-            .max_output_bytes = 16 * 1024 * 1024, // 16MB max
+            .max_output_bytes = 128 * 1024 * 1024, // 128MB max
         });
 
         const output = result catch |err| {

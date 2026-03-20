@@ -454,6 +454,11 @@ pub const Header = struct {
         self.k8s_version = try self.allocator.dupe(u8, k8s_version);
     }
 
+    pub fn updateCpuMem(self: *Header, cpu_pct: u8, mem_pct: u8) !void {
+        self.cpu_usage = cpu_pct;
+        self.mem_usage = mem_pct;
+    }
+
     pub fn deinit(self: *Header) void {
         // Free allocated strings (from initWithData)
         self.allocator.free(self.context);
