@@ -56,6 +56,9 @@ src/
 # Build
 zig build
 
+# Clean build (required after patching Zig stdlib or updating deps)
+zig build clean && zig build
+
 # Run tests
 zig build test
 

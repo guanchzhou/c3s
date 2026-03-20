@@ -346,4 +346,9 @@ pub fn build(b: *std.Build) void {
     all_tests_step.dependOn(&run_view_trait_tests.step);
     all_tests_step.dependOn(&run_table_layout_tests.step);
     all_tests_step.dependOn(&run_resource_view_tests.step);
+
+    // Clean step — removes .zig-cache to force fresh build
+    // Use after patching Zig stdlib or updating dependencies
+    const clean_step = b.step("clean", "Remove .zig-cache for fresh build");
+    clean_step.dependOn(&b.addRemoveDirTree(.{ .cwd_relative = ".zig-cache" }).step);
 }
