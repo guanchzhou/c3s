@@ -16,6 +16,24 @@ pub const Terminal = struct {
     original_termios: ?c.termios = null,
     write_buffer: std.ArrayList(u8),
 
+    /// Viewport offset — all rendering coordinates are translated by these values.
+    /// Set by the app before rendering a view so views use local (0,0) coordinates.
+    viewport_x: u16 = 0,
+    viewport_y: u16 = 0,
+
+    /// Set the viewport offset for view rendering. Views render at (0,0) relative
+    /// coordinates; the terminal translates to screen coordinates.
+    pub fn setViewport(self: *Terminal, x: u16, y: u16) void {
+        self.viewport_x = x;
+        self.viewport_y = y;
+    }
+
+    /// Reset viewport to no offset.
+    pub fn resetViewport(self: *Terminal) void {
+        self.viewport_x = 0;
+        self.viewport_y = 0;
+    }
+
     pub fn init(allocator: std.mem.Allocator) !Terminal {
         const stdin = std.fs.File.stdin();
         const stdout = std.fs.File.stdout();
