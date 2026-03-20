@@ -550,13 +550,9 @@ pub const App = struct {
                         std.mem.eql(u8, view_name, "help");
 
                     if (!self.k8s_service.isConnected() and !offline_ok and self.k8s_service.hasAttemptedConnect()) {
-                        // Dialog uses absolute coordinates (no viewport)
                         try self.renderDisconnectedDialog(inner_x, inner_y, inner_w, inner_h);
                     } else {
-                        // Set viewport so views render at local (0,0) coordinates
-                        self.terminal.setViewport(inner_x, inner_y);
-                        try current_view.render(&self.terminal, 0, 0, inner_w, inner_h);
-                        self.terminal.resetViewport();
+                        try current_view.render(&self.terminal, inner_x, inner_y, inner_w, inner_h);
                     }
                 }
             } else {

@@ -601,10 +601,6 @@ pub const bold = "\x1b[1m";
 pub fn writeStringWithTheme(terminal: *Terminal, x: u16, y: u16, text: []const u8, fg_color: []const u8, bg_color: []const u8) !void {
     if (text.len == 0) return;
 
-    // Apply viewport offset — views render at local (0,0), terminal translates
-    const screen_x = x + terminal.viewport_x;
-    const screen_y = y + terminal.viewport_y;
-
     var buffer: [1024]u8 = undefined;
     const total_len = fg_color.len + bg_color.len + text.len + reset.len;
     if (total_len > buffer.len) {
@@ -612,11 +608,11 @@ pub fn writeStringWithTheme(terminal: *Terminal, x: u16, y: u16, text: []const u
         if (available < 1) return;
         const safe_text = text[0..@min(text.len, available)];
         const formatted = try std.fmt.bufPrint(&buffer, "{s}{s}{s}{s}", .{ fg_color, bg_color, safe_text, reset });
-        try terminal.setCursor(screen_x, screen_y);
+        try terminal.setCursor(x, y);
         try terminal.writeAll(formatted);
     } else {
         const formatted = try std.fmt.bufPrint(&buffer, "{s}{s}{s}{s}", .{ fg_color, bg_color, text, reset });
-        try terminal.setCursor(screen_x, screen_y);
+        try terminal.setCursor(x, y);
         try terminal.writeAll(formatted);
     }
 }
@@ -630,7 +626,7 @@ pub fn writeText(terminal: *Terminal, x: u16, y: u16, text: []const u8, color: [
 pub fn writeStringWithBold(terminal: *Terminal, x: u16, y: u16, text: []const u8, fg_color: []const u8, bg_color: []const u8) !void {
     var buffer: [512]u8 = undefined;
     const formatted = try std.fmt.bufPrint(&buffer, "{s}{s}{s}{s}{s}", .{ bold, fg_color, bg_color, text, reset });
-    try terminal.setCursor(x + terminal.viewport_x, y + terminal.viewport_y);
+    try terminal.setCursor(x, y);
     try terminal.writeAll(formatted);
 }
 
