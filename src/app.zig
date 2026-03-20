@@ -538,16 +538,19 @@ pub const App = struct {
                 self.footer.current_resource = view_name;
                 try BoxDrawing.Box.createBox(&self.terminal, 0, body_start, size.width, body_height, effective_theme.proc_box, effective_theme.main_bg, view_name, .rounded, effective_theme.main_fg, effective_theme.title_highlight);
                 // Render view inside the box (inner coordinates)
-                if (body_height > 2 and size.width > 2) {
-                    const inner_x: u16 = 1;
+                if (body_height > 2 and size.width > 4) {
+                    const inner_x: u16 = 2; // 1 for border + 1 padding
                     const inner_y = body_start + 1;
-                    const inner_w = size.width - 2;
+                    const inner_w = size.width - 4; // 2 for borders + 2 padding
                     const inner_h = body_height - 2;
 
                     // Views that work without a cluster connection
                     const offline_ok = std.mem.eql(u8, view_name, "contexts") or
                         std.mem.eql(u8, view_name, "themes") or
                         std.mem.eql(u8, view_name, "help");
+
+                    // Clear full box interior (including padding) to prevent artifacts
+                    try self.terminal.clearRegion(1, inner_y, size.width - 2, inner_h);
 
                     if (!self.k8s_service.isConnected() and !offline_ok and self.k8s_service.hasAttemptedConnect()) {
                         try self.renderDisconnectedDialog(inner_x, inner_y, inner_w, inner_h);

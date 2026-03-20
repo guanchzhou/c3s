@@ -178,6 +178,18 @@ pub const Terminal = struct {
         try self.bufferWrite("\x1b[H");
     }
 
+    /// Clear a rectangular region by writing spaces
+    pub fn clearRegion(self: *Terminal, x: u16, y: u16, w: u16, h: u16) !void {
+        var spaces: [256]u8 = undefined;
+        const fill_len = @min(w, 256);
+        @memset(spaces[0..fill_len], ' ');
+        var row: u16 = 0;
+        while (row < h) : (row += 1) {
+            try self.setCursor(x, y + row);
+            try self.bufferWrite(spaces[0..fill_len]);
+        }
+    }
+
     pub fn hideCursor(self: *Terminal) !void {
         try self.bufferWrite("\x1b[?25l");
     }
