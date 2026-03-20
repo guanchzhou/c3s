@@ -202,11 +202,19 @@ fn distributeWidth(
         for (max_widths, visible, 0..) |max, vis, i| {
             final_widths[i] = if (vis) max else 0;
         }
+        // Distribute leftover only to unbounded columns (max_width = null).
+        // Bounded columns (READY, STATUS, AGE, etc.) stay at content width.
         const leftover = available_width - total_max;
-        if (leftover > 0 and visible_count > 0) {
-            const per_col = leftover / @as(u16, @intCast(visible_count));
-            for (final_widths, visible) |*w, vis| {
-                if (vis and w.* > 0) w.* += per_col;
+        if (leftover > 0) {
+            var unbounded_count: u16 = 0;
+            for (columns, visible) |col, vis| {
+                if (vis and col.max_width == null) unbounded_count += 1;
+            }
+            if (unbounded_count > 0) {
+                const per_col = leftover / unbounded_count;
+                for (final_widths, visible, columns) |*w, vis, col| {
+                    if (vis and w.* > 0 and col.max_width == null) w.* += per_col;
+                }
             }
         }
         return final_widths;

@@ -279,8 +279,13 @@ pub fn ResourceView(
                 };
 
                 var col_x = x;
+                const hdr_max_x = x + width;
                 for (col_defs, col_widths.widths) |cd, w| {
                     if (w == 0) continue;
+                    if (col_x >= hdr_max_x) break;
+                    const hdr_avail = hdr_max_x - col_x;
+                    const hdr_w = @min(w, hdr_avail);
+                    _ = hdr_w;
                     if (cd.has_sort) {
                         const indicator = sort_util.sortIndicator(self.table.sort_column, self.table.sort_ascending, cd.sort_col);
                         var hdr_buf: [64]u8 = undefined;
@@ -301,9 +306,13 @@ pub fn ResourceView(
                 const row_y = y + 1 + @as(u16, @intCast(i));
 
                 var rx = x;
+                const max_x = x + width;
                 for (&item.columns, col_widths.widths) |cell, w| {
                     if (w == 0) continue;
-                    const display_len = @min(cell.len, w -| 1);
+                    if (rx >= max_x) break;
+                    const avail = max_x - rx;
+                    const col_w = @min(w, avail);
+                    const display_len = @min(cell.len, col_w -| 1);
                     try Theme.writeStringWithTheme(terminal, rx, row_y, cell[0..display_len], colors.fg, colors.bg);
                     rx += w;
                 }

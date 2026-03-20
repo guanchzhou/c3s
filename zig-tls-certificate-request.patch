@@ -1,0 +1,99 @@
+diff --git a/lib/std/crypto/tls/Client.zig b/lib/std/crypto/tls/Client.zig
+index eeeb7d05..8b9a1bc0 100644
+--- a/lib/std/crypto/tls/Client.zig
++++ b/lib/std/crypto/tls/Client.zig
+@@ -324,6 +324,7 @@ pub fn init(input: *Reader, output: *Writer, options: Options) InitError!Client
+         finished,
+     };
+     var handshake_state: HandshakeState = .hello;
++    var client_cert_requested: bool = false;
+     var handshake_cipher: tls.HandshakeCipher = undefined;
+     var main_cert_pub_key: CertificatePublicKey = undefined;
+     var tls12_negotiated_group: ?tls.NamedGroup = null;
+@@ -594,6 +595,16 @@ pub fn init(input: *Reader, output: *Writer, options: Options) InitError!Client
+                         }
+                         handshake_state = .certificate;
+                     },
++                    .certificate_request => {
++                        // TLS 1.3 CertificateRequest: server requests client certificate.
++                        // This client does not support client certificate authentication,
++                        // so we note the request and will send an empty Certificate message
++                        // before the Finished message during the handshake completion.
++                        switch (handshake_cipher) {
++                            inline else => |*p| p.transcript_hash.update(wrapped_handshake),
++                        }
++                        client_cert_requested = true;
++                    },
+                     .certificate => cert: {
+                         if (cipher_state == .application) return error.TlsUnexpectedMessage;
+                         switch (handshake_state) {
+@@ -826,6 +837,69 @@ pub fn init(input: *Reader, output: *Writer, options: Options) InitError!Client
+                                     p.transcript_hash.update(wrapped_handshake);
+                                     const expected_server_verify_data = tls.hmac(P.Hmac, &finished_digest, pv.server_finished_key);
+                                     if (!std.crypto.timing_safe.eql([P.Hmac.mac_length]u8, expected_server_verify_data, hsd.array(P.Hmac.mac_length).*)) return error.TlsDecryptError;
++                                    if (client_cert_requested) {
++                                        // Server requested client certificate (TLS 1.3 §4.4.2).
++                                        // Derive traffic secrets from transcript up to server Finished
++                                        // (before client Certificate/Finished per RFC 8446 §4.4.4).
++                                        const traffic_hash = p.transcript_hash.peek();
++
++                                        // Add empty Certificate to transcript for verify_data computation.
++                                        // Per RFC 8446 §4.4.4, client Finished verify_data covers
++                                        // the entire handshake including the client's Certificate.
++                                        const empty_cert_hs: [8]u8 = .{@intFromEnum(tls.HandshakeType.certificate)} ++
++                                            int(u24, 4) ++ .{0} ++ int(u24, 0);
++                                        p.transcript_hash.update(&empty_cert_hs);
++
++                                        const vd_hash = p.transcript_hash.finalResult();
++                                        const vd = tls.hmac(P.Hmac, &vd_hash, pv.client_finished_key);
++
++                                        // Encrypt empty Certificate record (handshake seq=0)
++                                        const cert_ct: [9]u8 = empty_cert_hs ++ .{@intFromEnum(tls.ContentType.handshake)};
++                                        const cert_enc = cert_ct.len + P.AEAD.tag_length;
++                                        var cert_rec = .{@intFromEnum(tls.ContentType.application_data)} ++
++                                            int(u16, @intFromEnum(tls.ProtocolVersion.tls_1_2)) ++
++                                            array(u16, u8, @as([cert_enc]u8, undefined));
++                                        P.AEAD.encrypt(cert_rec[5..][0..cert_ct.len], cert_rec[cert_rec.len - P.AEAD.tag_length ..],
++                                            &cert_ct, cert_rec[0..5], pv.client_handshake_iv, pv.client_handshake_key);
++
++                                        // Encrypt Finished record (handshake seq=1, nonce = IV XOR 1)
++                                        const fin_ct = .{@intFromEnum(tls.HandshakeType.finished)} ++ array(u24, u8, vd) ++
++                                            .{@intFromEnum(tls.ContentType.handshake)};
++                                        const fin_enc = fin_ct.len + P.AEAD.tag_length;
++                                        var fin_rec = .{@intFromEnum(tls.ContentType.application_data)} ++
++                                            int(u16, @intFromEnum(tls.ProtocolVersion.tls_1_2)) ++
++                                            array(u16, u8, @as([fin_enc]u8, undefined));
++                                        var fn_nonce = pv.client_handshake_iv;
++                                        fn_nonce[fn_nonce.len - 1] ^= 1;
++                                        P.AEAD.encrypt(fin_rec[5..][0..fin_ct.len], fin_rec[fin_rec.len - P.AEAD.tag_length ..],
++                                            &fin_ct, fin_rec[0..5], fn_nonce, pv.client_handshake_key);
++
++                                        var vec: [3][]const u8 = .{ &client_change_cipher_spec_msg, &cert_rec, &fin_rec };
++                                        try output.writeVecAll(&vec);
++                                        try output.flush();
++                                        write_seq = 2;
++
++                                        const client_secret = hkdfExpandLabel(P.Hkdf, pv.master_secret, "c ap traffic", &traffic_hash, P.Hash.digest_length);
++                                        const server_secret = hkdfExpandLabel(P.Hkdf, pv.master_secret, "s ap traffic", &traffic_hash, P.Hash.digest_length);
++                                        if (options.ssl_key_log) |key_log| logSecrets(key_log.writer, .{
++                                            .counter = key_seq,
++                                            .client_random = &client_hello_rand,
++                                        }, .{
++                                            .SERVER_TRAFFIC_SECRET = &server_secret,
++                                            .CLIENT_TRAFFIC_SECRET = &client_secret,
++                                        });
++                                        key_seq += 1;
++                                        break :app_cipher @unionInit(tls.ApplicationCipher, @tagName(tag), .{ .tls_1_3 = .{
++                                            .client_secret = client_secret,
++                                            .server_secret = server_secret,
++                                            .client_key = hkdfExpandLabel(P.Hkdf, client_secret, "key", "", P.AEAD.key_length),
++                                            .server_key = hkdfExpandLabel(P.Hkdf, server_secret, "key", "", P.AEAD.key_length),
++                                            .client_iv = hkdfExpandLabel(P.Hkdf, client_secret, "iv", "", P.AEAD.nonce_length),
++                                            .server_iv = hkdfExpandLabel(P.Hkdf, server_secret, "iv", "", P.AEAD.nonce_length),
++                                        } });
++                                    }
++
++                                    // Standard path (no CertificateRequest)
+                                     const handshake_hash = p.transcript_hash.finalResult();
+                                     const verify_data = tls.hmac(P.Hmac, &handshake_hash, pv.client_finished_key);
+                                     const out_cleartext = .{@intFromEnum(tls.HandshakeType.finished)} ++
