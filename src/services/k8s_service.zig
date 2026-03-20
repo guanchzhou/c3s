@@ -164,8 +164,10 @@ pub const K8sService = struct {
         if (!is_localhost and !force_proxy) {
             // Handle CA certificate (for server verification)
             if (cluster.certificate_authority_data) |base64_ca| {
+                Logger.debug("Found certificate-authority-data ({d} bytes base64)", .{base64_ca.len});
                 // Decode base64 CA certificate and store for cleanup
                 self.tls_ca_data = try klient.tls.decodeBase64Cert(self.allocator, base64_ca);
+                Logger.debug("Decoded CA cert: {d} bytes PEM", .{self.tls_ca_data.?.len});
             } else if (cluster.certificate_authority) |ca_path| {
                 // Load CA from file and store for cleanup
                 const ca_file = try std.fs.cwd().openFile(ca_path, .{});
@@ -306,11 +308,15 @@ pub const K8sService = struct {
                 Logger.info("Got token from exec credential plugin", .{});
 
                 if (self.tls_ca_data) |ca| {
+                    Logger.debug("Setting TLS config with CA cert ({d} bytes)", .{ca.len});
                     tls_config = klient.tls.TlsConfig{
                         .ca_cert_data = ca,
                     };
+                } else {
+                    Logger.debug("No CA cert data available - TLS config is null", .{});
                 }
 
+                Logger.debug("Creating K8sClient with tls_config={}", .{tls_config != null});
                 const direct_or_fb = klient.K8sClient.init(self.allocator, .{
                     .server = cluster.server,
                     .token = token,
