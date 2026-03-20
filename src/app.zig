@@ -19,33 +19,36 @@ const ViewManager = @import("viewmodel/view_manager.zig").ViewManager;
 const Command = @import("viewmodel/command.zig").Command;
 const CommandRegistry = @import("viewmodel/command.zig").CommandRegistry;
 
-// View imports
+// View imports - generic resource views from single config file
+const rc = @import("view/resource_configs.zig");
 const PodsView = @import("view/pods_view.zig").PodsView;
-const DeploymentsView = @import("view/deployments_view.zig").DeploymentsView;
-const ServicesView = @import("view/services_view.zig").ServicesView;
+const DeploymentsView = rc.DeploymentsView;
+const ServicesView = rc.ServicesView;
 const NamespacesView = @import("view/namespaces_view.zig").NamespacesView;
-const NodesView = @import("view/nodes_view.zig").NodesView;
-const StatefulSetsView = @import("view/statefulsets_view.zig").StatefulSetsView;
-const DaemonSetsView = @import("view/daemonsets_view.zig").DaemonSetsView;
-const ReplicaSetsView = @import("view/replicasets_view.zig").ReplicaSetsView;
-const JobsView = @import("view/jobs_view.zig").JobsView;
-const CronJobsView = @import("view/cronjobs_view.zig").CronJobsView;
-const ConfigMapsView = @import("view/configmaps_view.zig").ConfigMapsView;
-const SecretsView = @import("view/secrets_view.zig").SecretsView;
-const PersistentVolumesView = @import("view/persistentvolumes_view.zig").PersistentVolumesView;
-const PersistentVolumeClaimsView = @import("view/persistentvolumeclaims_view.zig").PersistentVolumeClaimsView;
-const IngressesView = @import("view/ingresses_view.zig").IngressesView;
-const NetworkPoliciesView = @import("view/networkpolicies_view.zig").NetworkPoliciesView;
-const ServiceAccountsView = @import("view/serviceaccounts_view.zig").ServiceAccountsView;
-const RolesView = @import("view/roles_view.zig").RolesView;
-const RoleBindingsView = @import("view/rolebindings_view.zig").RoleBindingsView;
-const ClusterRolesView = @import("view/clusterroles_view.zig").ClusterRolesView;
-const ClusterRoleBindingsView = @import("view/clusterrolebindings_view.zig").ClusterRoleBindingsView;
-const EventsView = @import("view/events_view.zig").EventsView;
-const ResourceQuotasView = @import("view/resourcequotas_view.zig").ResourceQuotasView;
-const LimitRangesView = @import("view/limitranges_view.zig").LimitRangesView;
-const PodDisruptionBudgetsView = @import("view/poddisruptionbudgets_view.zig").PodDisruptionBudgetsView;
-const HPAView = @import("view/hpa_view.zig").HPAView;
+const NodesView = rc.NodesView;
+const StatefulSetsView = rc.StatefulSetsView;
+const DaemonSetsView = rc.DaemonSetsView;
+const ReplicaSetsView = rc.ReplicaSetsView;
+const JobsView = rc.JobsView;
+const CronJobsView = rc.CronJobsView;
+const ConfigMapsView = rc.ConfigMapsView;
+const SecretsView = rc.SecretsView;
+const PersistentVolumesView = rc.PersistentVolumesView;
+const PersistentVolumeClaimsView = rc.PersistentVolumeClaimsView;
+const IngressesView = rc.IngressesView;
+const NetworkPoliciesView = rc.NetworkPoliciesView;
+const ServiceAccountsView = rc.ServiceAccountsView;
+const RolesView = rc.RolesView;
+const RoleBindingsView = rc.RoleBindingsView;
+const ClusterRolesView = rc.ClusterRolesView;
+const ClusterRoleBindingsView = rc.ClusterRoleBindingsView;
+const EventsView = rc.EventsView;
+const ResourceQuotasView = rc.ResourceQuotasView;
+const LimitRangesView = rc.LimitRangesView;
+const PodDisruptionBudgetsView = rc.PodDisruptionBudgetsView;
+const HPAView = rc.HPAView;
+const EndpointsView = rc.EndpointsView;
+const StorageClassesView = rc.StorageClassesView;
 const ContextsView = @import("view/contexts_view.zig").ContextsView;
 const ThemesView = @import("view/themes_view.zig").ThemesView;
 const HelpView = @import("view/help_view.zig").HelpView;
@@ -77,6 +80,7 @@ pub const App = struct {
     header_height: u16 = 8,
     footer_visible: bool = true,
     dirty: bool = true,
+    needs_connect: bool = true, // deferred K8s connection on first render
     last_render_time: i128 = 0,
     min_frame_time_ns: i128 = 16_666_667, // ~60 FPS (16.67ms)
     current_theme_name: []const u8,
@@ -116,6 +120,8 @@ pub const App = struct {
     limitranges_view: *LimitRangesView,
     poddisruptionbudgets_view: *PodDisruptionBudgetsView,
     hpa_view: *HPAView,
+    endpoints_view: *EndpointsView,
+    storageclasses_view: *StorageClassesView,
     contexts_view: *ContextsView,
 
     // UI views
@@ -158,10 +164,7 @@ pub const App = struct {
             allocator.destroy(k8s_service);
         }
 
-        // Try to connect to K8s cluster (non-fatal if it fails)
-        k8s_service.connect(config.context) catch |err| {
-            Logger.warn("Failed to connect to Kubernetes: {}. Continuing without cluster connection.", .{err});
-        };
+        // K8s connection is deferred to first render — app starts instantly
 
         // Initialize MVVM components
         const view_manager = try ViewManager.init(allocator);
@@ -195,6 +198,8 @@ pub const App = struct {
             limitranges_view: *LimitRangesView = undefined,
             poddisruptionbudgets_view: *PodDisruptionBudgetsView = undefined,
             hpa_view: *HPAView = undefined,
+            endpoints_view: *EndpointsView = undefined,
+            storageclasses_view: *StorageClassesView = undefined,
             contexts_view: *ContextsView = undefined,
             authorization_view: *AuthorizationView = undefined,
         } = .{};
@@ -221,31 +226,15 @@ pub const App = struct {
         logs_view.* = try LogsView.init(allocator, theme);
         errdefer logs_view.deinit();
 
-        // Initialize header with cluster info
-        const cluster_info = k8s_service.getClusterInfo();
-        var header = if (cluster_info.connected) blk: {
-            // Use real cluster data
-            const real_data = struct {
-                context: []const u8,
-                cluster: []const u8,
-                user: []const u8,
-                k8s_version: []const u8,
-                cpu_usage: u8,
-                mem_usage: u8,
-            }{
-                .context = cluster_info.context,
-                .cluster = cluster_info.cluster,
-                .user = cluster_info.user,
-                .k8s_version = k8s_service.getServerVersion(),
-                .cpu_usage = 0,
-                .mem_usage = 0,
-            };
-            Logger.info("Connected to cluster: {s}, context: {s}", .{ cluster_info.cluster, cluster_info.context });
-            break :blk try Header.initWithData(allocator, theme, real_data);
-        } else blk: {
-            // Use fixtures when not connected
-            break :blk try Header.init(allocator, theme, config.debug);
-        };
+        // Initialize header — connection is deferred, so start with placeholder
+        var header = try Header.initWithData(allocator, theme, .{
+            .context = "connecting...",
+            .cluster = "...",
+            .user = "...",
+            .k8s_version = "...",
+            .cpu_usage = 0,
+            .mem_usage = 0,
+        });
 
         const footer = try Footer.init(allocator, theme);
         const command_input = try CommandInput.init(allocator, theme);
@@ -294,6 +283,8 @@ pub const App = struct {
             .limitranges_view = app_views.limitranges_view,
             .poddisruptionbudgets_view = app_views.poddisruptionbudgets_view,
             .hpa_view = app_views.hpa_view,
+            .endpoints_view = app_views.endpoints_view,
+            .storageclasses_view = app_views.storageclasses_view,
             .contexts_view = app_views.contexts_view,
             .themes_view = themes_view,
             .help_view = help_view,
@@ -415,6 +406,23 @@ pub const App = struct {
                 Logger.err("Render error: {any}", .{err});
             };
 
+            // Deferred K8s connection — runs after first render so UI appears instantly
+            if (self.needs_connect) {
+                self.needs_connect = false;
+                self.k8s_service.connect(self.config.context) catch |err| {
+                    Logger.warn("Failed to connect to Kubernetes: {}. Continuing without cluster connection.", .{err});
+                };
+                // Update header with connection info
+                const cluster_info = self.k8s_service.getClusterInfo();
+                self.header.updateClusterInfo(cluster_info.context, cluster_info.cluster, cluster_info.user) catch {};
+                self.header.updateK8sVersion(self.k8s_service.getServerVersion()) catch {};
+                // Refresh the active view to load data
+                if (self.view_manager.getCurrentView()) |current_view| {
+                    current_view.refresh() catch {};
+                }
+                self.dirty = true;
+            }
+
             // Check if terminal was resized
             if (terminal_resized.load(.acquire)) {
                 terminal_resized.store(false, .release);
@@ -487,9 +495,12 @@ pub const App = struct {
         self.footer.setTheme(effective_theme);
 
         // Update header with current cluster info and server version
-        const cluster_info = self.k8s_service.getClusterInfo();
-        self.header.updateClusterInfo(cluster_info.context, cluster_info.cluster, cluster_info.user) catch {};
-        self.header.updateK8sVersion(self.k8s_service.getServerVersion()) catch {};
+        // Only update header with cluster info after connection has been attempted
+        if (self.k8s_service.hasAttemptedConnect()) {
+            const cluster_info = self.k8s_service.getClusterInfo();
+            self.header.updateClusterInfo(cluster_info.context, cluster_info.cluster, cluster_info.user) catch {};
+            self.header.updateK8sVersion(self.k8s_service.getServerVersion()) catch {};
+        }
 
         // Render header with hints from current view
         if (size.height >= self.header_height) {
@@ -535,8 +546,8 @@ pub const App = struct {
                         std.mem.eql(u8, view_name, "themes") or
                         std.mem.eql(u8, view_name, "help");
 
-                    if (!self.k8s_service.isConnected() and !offline_ok) {
-                        // Show centered disconnected dialog
+                    if (!self.k8s_service.isConnected() and !offline_ok and self.k8s_service.hasAttemptedConnect()) {
+                        // Show centered disconnected dialog (only after connection attempt failed)
                         try self.renderDisconnectedDialog(inner_x, inner_y, inner_w, inner_h);
                     } else {
                         try current_view.render(&self.terminal, inner_x, inner_y, inner_w, inner_h);
@@ -567,6 +578,8 @@ pub const App = struct {
                 }
                 if (self.k8s_service.isConnected()) {
                     self.footer.setStatus(null);
+                } else if (!self.k8s_service.hasAttemptedConnect()) {
+                    self.footer.setStatus("Connecting...");
                 } else {
                     self.footer.setStatus("Not connected to Kubernetes cluster");
                 }
@@ -1181,6 +1194,8 @@ const k8s_view_types = .{
     .{ "limitranges_view", LimitRangesView },
     .{ "poddisruptionbudgets_view", PodDisruptionBudgetsView },
     .{ "hpa_view", HPAView },
+    .{ "endpoints_view", EndpointsView },
+    .{ "storageclasses_view", StorageClassesView },
     .{ "contexts_view", ContextsView },
     .{ "authorization_view", AuthorizationView },
 };
@@ -1218,6 +1233,8 @@ const view_commands = [_]ViewCommandEntry{
     .{ .field = "limitranges_view", .view_name = "limitranges", .aliases = &.{"limitranges"} },
     .{ .field = "poddisruptionbudgets_view", .view_name = "poddisruptionbudgets", .aliases = &.{ "poddisruptionbudgets", "pdb" } },
     .{ .field = "hpa_view", .view_name = "hpa", .aliases = &.{ "horizontalpodautoscalers", "hpa" } },
+    .{ .field = "endpoints_view", .view_name = "endpoints", .aliases = &.{ "endpoints", "ep" } },
+    .{ .field = "storageclasses_view", .view_name = "storageclasses", .aliases = &.{ "storageclasses", "sc" } },
     .{ .field = "contexts_view", .view_name = "contexts", .aliases = &.{ "contexts", "context", "ctx" } },
     .{ .field = "themes_view", .view_name = "themes", .aliases = &.{"themes"} },
     .{ .field = "authorization_view", .view_name = "authorization", .aliases = &.{ "authorization", "auth" } },

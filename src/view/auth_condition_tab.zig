@@ -70,7 +70,7 @@ pub const ConditionInspectorTab = struct {
 
         const namespace = self.k8s_service.getCurrentNamespace();
         const conditions = self.k8s_service.getAuthorizationConditions(resource, group, namespace) catch |err| {
-            try self.table.setErrorFmt("Failed to get conditions: {}", .{err});
+            try self.table.setConnectionError("conditions", err);
             return;
         };
         defer {

@@ -76,6 +76,23 @@ pub fn TableState(comptime ItemType: type) type {
             self.error_message = try std.fmt.allocPrint(self.allocator, fmt, args);
         }
 
+        /// Set a user-friendly error message for common connection/API errors.
+        /// Maps raw Zig errors to actionable messages instead of showing internal error names.
+        pub fn setConnectionError(self: *Self, comptime resource: []const u8, err: anyerror) !void {
+            const friendly: ?[]const u8 = switch (err) {
+                error.TlsInitializationFailed => "TLS connection failed. Try: C3S_FORCE_PROXY=1 c3s",
+                error.ConnectionRefused => "Connection refused. Is the cluster reachable?",
+                error.ConnectionResetByPeer => "Connection reset. Check cluster status.",
+                error.UnexpectedReadFailure => "Connection lost. Check cluster connectivity.",
+                else => null,
+            };
+            if (friendly) |msg| {
+                try self.setError(msg);
+            } else {
+                try self.setErrorFmt("Failed to list " ++ resource ++ ": {}", .{err});
+            }
+        }
+
         // ====================================================================
         // Navigation
         // ====================================================================

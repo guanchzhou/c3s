@@ -196,10 +196,18 @@ fn distributeWidth(
         return final_widths;
     }
 
-    // If all visible columns fit at max width, use max widths
+    // If all visible columns fit at max content width, use those widths
+    // and spread leftover space evenly so the table fills the terminal.
     if (total_max <= available_width) {
         for (max_widths, visible, 0..) |max, vis, i| {
             final_widths[i] = if (vis) max else 0;
+        }
+        const leftover = available_width - total_max;
+        if (leftover > 0 and visible_count > 0) {
+            const per_col = leftover / @as(u16, @intCast(visible_count));
+            for (final_widths, visible) |*w, vis| {
+                if (vis and w.* > 0) w.* += per_col;
+            }
         }
         return final_widths;
     }
@@ -233,6 +241,62 @@ fn distributeWidth(
                     @as(f32, @floatFromInt(extra_space)) * scale,
                 );
                 final_widths[i] = col.min_width + allocated_extra;
+                // Cap at max_width if defined
+                if (col.max_width) |mw| {
+                    if (final_widths[i] > mw) final_widths[i] = mw;
+                }
+            }
+        }
+
+        // Third pass: give remaining space to unbounded columns by priority.
+        // Higher-priority columns (lower number) get space first, up to their
+        // max content width. This ensures NAME fills before NODE/IP.
+        var used: u16 = 0;
+        for (final_widths, visible) |w, vis| {
+            if (vis) used += w;
+        }
+
+        if (used < available_width) {
+            var leftover = available_width - used;
+
+            // Sort unbounded column indices by priority (highest priority first)
+            var unbounded: [32]usize = undefined;
+            var unbounded_count: usize = 0;
+            for (columns, visible, 0..) |col, vis, i| {
+                if (vis and col.max_width == null and final_widths[i] > 0) {
+                    if (unbounded_count < 32) {
+                        unbounded[unbounded_count] = i;
+                        unbounded_count += 1;
+                    }
+                }
+            }
+
+            // Sort by priority ascending (CRITICAL=0 first)
+            const ub_slice = unbounded[0..unbounded_count];
+            std.mem.sort(usize, ub_slice, columns, struct {
+                fn lessThan(cols: []const ColumnInfo, a: usize, b: usize) bool {
+                    return cols[a].priority < cols[b].priority;
+                }
+            }.lessThan);
+
+            // Give each unbounded column space up to its content width, by priority
+            for (ub_slice) |idx| {
+                if (leftover == 0) break;
+                const need = if (max_widths[idx] > final_widths[idx])
+                    max_widths[idx] - final_widths[idx]
+                else
+                    0;
+                const give = @min(need, leftover);
+                final_widths[idx] += give;
+                leftover -= give;
+            }
+
+            // If still leftover, distribute evenly among unbounded
+            if (leftover > 0 and unbounded_count > 0) {
+                const per_col: u16 = leftover / @as(u16, @intCast(unbounded_count));
+                for (ub_slice) |idx| {
+                    final_widths[idx] += per_col;
+                }
             }
         }
     }

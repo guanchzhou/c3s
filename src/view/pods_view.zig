@@ -91,11 +91,16 @@ pub const PodsView = struct {
 
     /// Refresh pod list from Kubernetes API
     pub fn refresh(self: *PodsView) !void {
+        // If connection not yet attempted, stay in loading state
+        if (!self.k8s_service.isConnected() and !self.k8s_service.hasAttemptedConnect()) {
+            self.table.loading = true;
+            return;
+        }
+
         self.table.loading = true;
         defer self.table.loading = false;
         self.table.clearItems();
 
-        // Safety check
         if (!self.k8s_service.isConnected()) {
             try self.table.setError("Not connected to Kubernetes cluster");
             Logger.warn("PodsView: Cannot refresh - not connected to k8s", .{});
@@ -106,13 +111,13 @@ pub const PodsView = struct {
         var k8s_pod_list = if (self.table.show_all_namespaces)
             self.k8s_service.listAllPods() catch |err| {
                 Logger.err("Failed to list all pods: {any}", .{err});
-                try self.table.setErrorFmt("Failed to fetch pods: {any}", .{err});
+                try self.table.setConnectionError("pods", err);
                 return;
             }
         else
             self.k8s_service.listPods(null) catch |err| {
                 Logger.err("Failed to list pods in namespace: {any}", .{err});
-                try self.table.setErrorFmt("Failed to fetch pods: {any}", .{err});
+                try self.table.setConnectionError("pods", err);
                 return;
             };
         defer k8s_pod_list.deinit();

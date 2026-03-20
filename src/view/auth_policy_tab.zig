@@ -75,7 +75,7 @@ pub const PolicyBrowserTab = struct {
 
         // Fetch RBAC roles and bindings
         const rbac_policies = self.k8s_service.listRBACPolicies() catch |err| {
-            try self.table.setErrorFmt("Failed to list RBAC policies: {}", .{err});
+            try self.table.setConnectionError("RBAC policies", err);
             return;
         };
         defer {

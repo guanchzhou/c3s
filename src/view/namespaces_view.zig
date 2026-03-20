@@ -80,7 +80,7 @@ pub const NamespacesView = struct {
 
         // Fetch namespaces
         const k8s_namespaces = self.k8s_service.listNamespaces() catch |err| {
-            try self.table.setErrorFmt("Failed to list namespaces: {}", .{err});
+            try self.table.setConnectionError("namespaces", err);
             return;
         };
 

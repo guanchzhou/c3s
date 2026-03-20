@@ -24,6 +24,12 @@ pub const K8sService = struct {
 
     // Cached server version (fetched once from /version endpoint)
     cached_k8s_version: ?[]const u8 = null,
+    // Set to true after first version fetch failure to avoid repeated attempts that may panic
+    version_fetch_failed: bool = false,
+    // Set to true after connect() has been called at least once
+    connect_attempted: bool = false,
+    // When true, use `kubectl get --raw` for API calls instead of klient's HTTP client
+    use_kubectl: bool = false,
 
     // TLS certificate data (decoded from base64) - needs cleanup
     tls_ca_data: ?[]const u8 = null,
@@ -69,7 +75,12 @@ pub const K8sService = struct {
     }
 
     /// Connect to Kubernetes cluster using kubeconfig
+    pub fn hasAttemptedConnect(self: *const K8sService) bool {
+        return self.connect_attempted;
+    }
+
     pub fn connect(self: *K8sService, context_override: ?[]const u8) !void {
+        self.connect_attempted = true;
         Logger.info("Connecting to Kubernetes cluster...", .{});
 
         // Parse kubeconfig using klient's YAML parser
@@ -148,7 +159,7 @@ pub const K8sService = struct {
         const is_localhost = std.mem.indexOf(u8, cluster.server, "127.0.0.1") != null or
             std.mem.indexOf(u8, cluster.server, "localhost") != null;
 
-        Logger.info("DEBUG: cluster.server={s}, is_localhost={}", .{ cluster.server, is_localhost });
+        Logger.debug("cluster.server={s}, is_localhost={}", .{ cluster.server, is_localhost });
 
         if (!is_localhost and !force_proxy) {
             // Handle CA certificate (for server verification)
@@ -164,9 +175,9 @@ pub const K8sService = struct {
         }
 
         // Initialize client with appropriate authentication
-        Logger.info("DEBUG: user.token exists: {}", .{user.token != null});
+        Logger.debug("user.token exists: {}", .{user.token != null});
         if (user.token) |token| {
-            Logger.info("DEBUG: Entered token auth branch", .{});
+            Logger.debug("Using token auth branch", .{});
             // Use connectWithFallback for localhost to handle TLS issues
             if (is_localhost or force_proxy) {
                 Logger.info("Using connectWithFallback for localhost", .{});
@@ -204,9 +215,11 @@ pub const K8sService = struct {
                     break :blk fb;
                 };
                 client.* = direct_or_fb;
+                // Verify connection works (TLS handshake is lazy, init may succeed but requests fail)
+                try self.verifyOrFallback(client, cluster.server, token);
             }
         } else if (user.client_certificate_data != null or user.client_certificate != null) {
-            Logger.info("DEBUG: Entered mTLS auth branch", .{});
+            Logger.debug("Using mTLS auth branch", .{});
 
             // For localhost, use connectWithFallback (falls back to kubectl proxy)
             if (is_localhost or force_proxy) {
@@ -261,6 +274,8 @@ pub const K8sService = struct {
                     break :blk fb;
                 };
                 client.* = direct_or_fb;
+                // Verify connection works (TLS handshake is lazy, init may succeed but requests fail)
+                try self.verifyOrFallback(client, cluster.server, null);
             }
         } else if (user.exec) |exec_cfg| {
             // Exec credential plugin authentication
@@ -314,6 +329,8 @@ pub const K8sService = struct {
                     break :blk fb;
                 };
                 client.* = direct_or_fb;
+                // Verify connection works (TLS handshake is lazy, init may succeed but requests fail)
+                try self.verifyOrFallback(client, cluster.server, token);
             } else {
                 Logger.warn("Exec credential plugin returned no token, falling back via kubectl proxy", .{});
                 client.* = try klient.connectWithFallback(
@@ -363,6 +380,8 @@ pub const K8sService = struct {
                     break :blk fb;
                 };
                 client.* = direct_or_fb;
+                // Verify connection works (TLS handshake is lazy, init may succeed but requests fail)
+                try self.verifyOrFallback(client, cluster.server, null);
             }
         }
 
@@ -375,9 +394,121 @@ pub const K8sService = struct {
         });
     }
 
+    /// Verify that a client can actually reach the cluster by making a lightweight
+    /// request (forces TLS handshake). If verification fails, fall back to using
+    /// `kubectl get --raw` for API calls (handles TLS via Go's net/http).
+    fn verifyOrFallback(self: *K8sService, client: *klient.K8sClient, _: []const u8, _: ?[]const u8) !void {
+        const response = client.request(.GET, "/version", null) catch |err| {
+            Logger.warn("Direct connection failed: {any}. Will use kubectl transport.", .{err});
+            // Switch to kubectl mode immediately — no verification needed.
+            // The first actual API call will validate kubectl works.
+            self.use_kubectl = true;
+            return;
+        };
+
+        self.cacheVersionFromResponse(response);
+        self.allocator.free(response);
+    }
+
+    /// Execute a raw kubectl request and return the JSON response.
+    /// Uses `kubectl get --raw <path> --context <context>` which handles
+    /// TLS, auth, and exec credentials via Go's standard library.
+    pub fn kubectlRequest(self: *K8sService, path: []const u8) ![]u8 {
+        // Don't pass --context; let kubectl use its own current context.
+        // This ensures consistency with the user's kubectl configuration.
+        const result = std.process.Child.run(.{
+            .allocator = self.allocator,
+            .argv = &.{ "kubectl", "get", "--raw", path },
+            .max_output_bytes = 16 * 1024 * 1024, // 16MB max
+        });
+
+        const output = result catch |err| {
+            Logger.warn("kubectl request failed for path '{s}': {}", .{ path, err });
+            return error.KubectlFailed;
+        };
+        defer self.allocator.free(output.stderr);
+
+        if (output.term.Exited != 0) {
+            defer self.allocator.free(output.stdout);
+            Logger.warn("kubectl exited with code {} for path '{s}'", .{ output.term.Exited, path });
+            return error.KubectlFailed;
+        }
+
+        return output.stdout;
+    }
+
+    /// Update context/cluster/user names from kubectl config when in kubectl mode.
+    /// This ensures the header displays the correct context info.
+    fn updateNamesFromKubectl(self: *K8sService) void {
+        // Get current context name
+        const ctx_result = std.process.Child.run(.{
+            .allocator = self.allocator,
+            .argv = &.{ "kubectl", "config", "current-context" },
+            .max_output_bytes = 4096,
+        }) catch return;
+        defer self.allocator.free(ctx_result.stderr);
+        defer self.allocator.free(ctx_result.stdout);
+
+        if (ctx_result.term.Exited != 0) return;
+
+        // Trim trailing newline
+        const ctx_name = std.mem.trimRight(u8, ctx_result.stdout, "\n\r ");
+        if (ctx_name.len == 0) return;
+
+        self.allocator.free(self.context_name);
+        self.context_name = self.allocator.dupe(u8, ctx_name) catch return;
+
+        // Get cluster and user from context
+        const view_result = std.process.Child.run(.{
+            .allocator = self.allocator,
+            .argv = &.{ "kubectl", "config", "view", "--minify", "-o", "jsonpath={.contexts[0].context.cluster},{.contexts[0].context.user},{.contexts[0].context.namespace}" },
+            .max_output_bytes = 4096,
+        }) catch return;
+        defer self.allocator.free(view_result.stderr);
+        defer self.allocator.free(view_result.stdout);
+
+        if (view_result.term.Exited != 0) return;
+
+        // Parse "cluster,user,namespace"
+        var it = std.mem.splitScalar(u8, view_result.stdout, ',');
+        if (it.next()) |cluster| {
+            if (cluster.len > 0) {
+                self.allocator.free(self.cluster_name);
+                self.cluster_name = self.allocator.dupe(u8, cluster) catch return;
+            }
+        }
+        if (it.next()) |user| {
+            if (user.len > 0) {
+                self.allocator.free(self.user_name);
+                self.user_name = self.allocator.dupe(u8, user) catch return;
+            }
+        }
+        if (it.next()) |ns| {
+            if (ns.len > 0) {
+                self.allocator.free(self.current_namespace);
+                self.current_namespace = self.allocator.dupe(u8, ns) catch return;
+            }
+        }
+    }
+
+    /// Parse /version JSON response and cache the gitVersion string.
+    fn cacheVersionFromResponse(self: *K8sService, response: []const u8) void {
+        const parsed = std.json.parseFromSlice(std.json.Value, self.allocator, response, .{}) catch return;
+        defer parsed.deinit();
+
+        const git_version = if (parsed.value.object.get("gitVersion")) |v|
+            if (v == .string) v.string else null
+        else
+            null;
+
+        const version_str = git_version orelse return;
+        if (self.cached_k8s_version) |old| self.allocator.free(old);
+        self.cached_k8s_version = self.allocator.dupe(u8, version_str) catch null;
+    }
+
     /// Check if connected to a cluster
     pub fn isConnected(self: *const K8sService) bool {
-        return self.connected and self.client != null;
+        return self.connected and (self.client != null or self.use_kubectl);
     }
 
     /// Get the current namespace
@@ -418,10 +549,21 @@ pub const K8sService = struct {
 
         if (!self.isConnected()) return "n/a";
 
-        const response = self.client.?.request(.GET, "/version", null) catch |err| {
-            Logger.warn("Failed to fetch /version: {}", .{err});
-            return "unknown";
-        };
+        // Don't retry after failure — repeated attempts can trigger std lib panics
+        if (self.version_fetch_failed) return "unknown";
+
+        const response = if (self.use_kubectl)
+            self.kubectlRequest("/version") catch |err| {
+                Logger.warn("Failed to fetch /version via kubectl: {}", .{err});
+                self.version_fetch_failed = true;
+                return "unknown";
+            }
+        else
+            self.client.?.request(.GET, "/version", null) catch |err| {
+                Logger.warn("Failed to fetch /version: {}", .{err});
+                self.version_fetch_failed = true;
+                return "unknown";
+            };
         defer self.allocator.free(response);
 
         const parsed = std.json.parseFromSlice(std.json.Value, self.allocator, response, .{}) catch |err| {
@@ -446,26 +588,85 @@ pub const K8sService = struct {
 
     // ===== Generic Resource Helpers =====
 
-    /// List all instances of a resource across all namespaces
-    fn listAllGeneric(self: *K8sService, comptime T: type, comptime ClientType: type) ![]T {
+    /// Parse a kubectl JSON response into a typed list and return copied items.
+    /// Wrapper that owns parsed K8s list data. Items are valid until deinit().
+    pub fn ParsedList(comptime T: type) type {
+        return struct {
+            _parsed: std.json.Parsed(klient.types.List(T)),
+
+            pub fn items(self: @This()) []T {
+                return self._parsed.value.items;
+            }
+
+            pub fn deinit(self: *@This()) void {
+                self._parsed.deinit();
+            }
+        };
+    }
+
+    /// List all instances of a resource across all namespaces.
+    /// Caller must call .deinit() on the result when done with .items().
+    pub fn listAllGenericPub(self: *K8sService, comptime T: type, comptime ClientType: type) !ParsedList(T) {
         if (!self.isConnected()) return error.NotConnected;
+
+        if (self.use_kubectl) {
+            const dummy = ClientType.init(self.client orelse return error.NotConnected);
+            const path = try std.fmt.allocPrint(self.allocator, "{s}/{s}", .{ dummy.client.api_path, dummy.client.resource });
+            defer self.allocator.free(path);
+
+            const body = try self.kubectlRequest(path);
+            defer self.allocator.free(body);
+            return .{ ._parsed = try std.json.parseFromSlice(
+                klient.types.List(T),
+                self.allocator,
+                body,
+                .{ .ignore_unknown_fields = true, .allocate = .alloc_always },
+            ) };
+        }
+
         const client = ClientType.init(self.client.?);
-        const list = try client.client.listAll();
-        defer list.deinit();
-        const items = try self.allocator.alloc(T, list.value.items.len);
-        @memcpy(items, list.value.items);
+        return .{ ._parsed = try client.client.listAll() };
+    }
+
+    /// List instances of a resource in a specific namespace.
+    /// Caller must call .deinit() on the result when done with .items().
+    pub fn listInNsGenericPub(self: *K8sService, comptime T: type, comptime ClientType: type, namespace: ?[]const u8) !ParsedList(T) {
+        if (!self.isConnected()) return error.NotConnected;
+        const ns = namespace orelse self.current_namespace;
+
+        if (self.use_kubectl) {
+            const dummy = ClientType.init(self.client orelse return error.NotConnected);
+            const path = try std.fmt.allocPrint(self.allocator, "{s}/namespaces/{s}/{s}", .{ dummy.client.api_path, ns, dummy.client.resource });
+            defer self.allocator.free(path);
+
+            const body = try self.kubectlRequest(path);
+            defer self.allocator.free(body);
+            return .{ ._parsed = try std.json.parseFromSlice(
+                klient.types.List(T),
+                self.allocator,
+                body,
+                .{ .ignore_unknown_fields = true, .allocate = .alloc_always },
+            ) };
+        }
+
+        const client = ClientType.init(self.client.?);
+        return .{ ._parsed = try client.client.list(ns) };
+    }
+
+    /// Legacy list methods for backward compatibility (shallow copy, OK for simple types)
+    fn listAllGeneric(self: *K8sService, comptime T: type, comptime ClientType: type) ![]T {
+        var parsed = try self.listAllGenericPub(T, ClientType);
+        defer parsed.deinit();
+        const items = try self.allocator.alloc(T, parsed.items().len);
+        @memcpy(items, parsed.items());
         return items;
     }
 
-    /// List instances of a resource in a specific namespace
     fn listInNsGeneric(self: *K8sService, comptime T: type, comptime ClientType: type, namespace: ?[]const u8) ![]T {
-        if (!self.isConnected()) return error.NotConnected;
-        const client = ClientType.init(self.client.?);
-        const ns = namespace orelse self.current_namespace;
-        const list = try client.client.list(ns);
-        defer list.deinit();
-        const items = try self.allocator.alloc(T, list.value.items.len);
-        @memcpy(items, list.value.items);
+        var parsed = try self.listInNsGenericPub(T, ClientType, namespace);
+        defer parsed.deinit();
+        const items = try self.allocator.alloc(T, parsed.items().len);
+        @memcpy(items, parsed.items());
         return items;
     }
 
@@ -475,6 +676,17 @@ pub const K8sService = struct {
     pub fn listAllPods(self: *K8sService) !PodList {
         if (!self.isConnected()) return error.NotConnected;
 
+        if (self.use_kubectl) {
+            const body = try self.kubectlRequest("/api/v1/pods");
+            defer self.allocator.free(body);
+            return std.json.parseFromSlice(
+                klient.types.List(klient.types.Pod),
+                self.allocator,
+                body,
+                .{ .ignore_unknown_fields = true, .allocate = .alloc_always },
+            );
+        }
+
         const pods_client = klient.resources.Pods.init(self.client.?);
         return try pods_client.client.listAll();
     }
@@ -482,9 +694,22 @@ pub const K8sService = struct {
     /// List pods in a specific namespace
     pub fn listPods(self: *K8sService, namespace: ?[]const u8) !PodList {
         if (!self.isConnected()) return error.NotConnected;
+        const ns = namespace orelse self.current_namespace;
+
+        if (self.use_kubectl) {
+            const path = try std.fmt.allocPrint(self.allocator, "/api/v1/namespaces/{s}/pods", .{ns});
+            defer self.allocator.free(path);
+            const body = try self.kubectlRequest(path);
+            defer self.allocator.free(body);
+            return std.json.parseFromSlice(
+                klient.types.List(klient.types.Pod),
+                self.allocator,
+                body,
+                .{ .ignore_unknown_fields = true, .allocate = .alloc_always },
+            );
+        }
 
         const pods_client = klient.resources.Pods.init(self.client.?);
-        const ns = namespace orelse self.current_namespace;
         return try pods_client.client.list(ns);
     }
 
@@ -816,6 +1041,25 @@ pub const K8sService = struct {
         return self.listInNsGeneric(klient.types.HorizontalPodAutoscaler, klient.resources.HorizontalPodAutoscalers, namespace);
     }
 
+    // ===== Endpoints Operations =====
+
+    /// List all endpoints across all namespaces
+    pub fn listAllEndpoints(self: *K8sService) ![]klient.types.Endpoints {
+        return self.listAllGeneric(klient.types.Endpoints, klient.resources.EndpointsClient);
+    }
+
+    /// List endpoints in a namespace
+    pub fn listEndpoints(self: *K8sService, namespace: ?[]const u8) ![]klient.types.Endpoints {
+        return self.listInNsGeneric(klient.types.Endpoints, klient.resources.EndpointsClient, namespace);
+    }
+
+    // ===== StorageClass Operations =====
+
+    /// List all storage classes (cluster-scoped)
+    pub fn listAllStorageClasses(self: *K8sService) ![]klient.types.StorageClass {
+        return self.listAllGeneric(klient.types.StorageClass, klient.resources.StorageClasses);
+    }
+
     // ===== Pod Metrics Operations =====
 
     pub const PodMetric = k8s_types.PodMetric;
@@ -826,9 +1070,33 @@ pub const K8sService = struct {
     pub fn getPodMetrics(self: *K8sService, all_namespaces: bool) !?std.StringHashMap(PodMetric) {
         if (!self.isConnected()) return null;
 
-        const metrics_client = klient.MetricsClient.init(self.client.?);
+        if (self.use_kubectl) {
+            // Use kubectl to fetch metrics API
+            const path = if (all_namespaces)
+                "/apis/metrics.k8s.io/v1beta1/pods"
+            else
+                try std.fmt.allocPrint(self.allocator, "/apis/metrics.k8s.io/v1beta1/namespaces/{s}/pods", .{self.current_namespace});
+            defer if (!all_namespaces) self.allocator.free(path);
 
-        // Fetch metrics (all namespaces or current namespace)
+            const body = self.kubectlRequest(path) catch |err| {
+                Logger.warn("Metrics server unavailable via kubectl: {any}", .{err});
+                return null;
+            };
+            defer self.allocator.free(body);
+
+            const KubectlMetricsList = struct { items: []klient.PodMetrics };
+            var parsed = std.json.parseFromSlice(KubectlMetricsList, self.allocator, body, .{
+                .ignore_unknown_fields = true,
+                .allocate = .alloc_always,
+            }) catch |err| {
+                Logger.warn("Failed to parse metrics response: {any}", .{err});
+                return null;
+            };
+            defer parsed.deinit();
+            return try self.buildMetricsMap(parsed.value.items);
+        }
+
+        const metrics_client = klient.MetricsClient.init(self.client.?);
         var parsed = if (all_namespaces)
             metrics_client.getAllPodMetrics() catch |err| {
                 Logger.warn("Metrics server unavailable (all namespaces): {any}", .{err});
@@ -841,7 +1109,11 @@ pub const K8sService = struct {
             };
         };
         defer parsed.deinit();
+        return try self.buildMetricsMap(parsed.value.items);
+    }
 
+    /// Build a metrics map from a slice of PodMetrics items.
+    fn buildMetricsMap(self: *K8sService, items: []klient.PodMetrics) !std.StringHashMap(PodMetric) {
         var result = std.StringHashMap(PodMetric).init(self.allocator);
         errdefer {
             var it = result.iterator();
@@ -853,8 +1125,7 @@ pub const K8sService = struct {
             result.deinit();
         }
 
-        for (parsed.value.items) |pod_metric| {
-            // Sum CPU (millicores) and memory (bytes) across all containers
+        for (items) |pod_metric| {
             var total_cpu_millicores: u64 = 0;
             var total_mem_bytes: u64 = 0;
 
@@ -873,14 +1144,12 @@ pub const K8sService = struct {
                 }
             }
 
-            // Format CPU: show as millicores (e.g. "100m") or whole cores (e.g. "2")
             const cpu_display = if (total_cpu_millicores >= 1000 and total_cpu_millicores % 1000 == 0)
                 try std.fmt.allocPrint(self.allocator, "{d}", .{total_cpu_millicores / 1000})
             else
                 try std.fmt.allocPrint(self.allocator, "{d}m", .{total_cpu_millicores});
             errdefer self.allocator.free(cpu_display);
 
-            // Format memory: show in appropriate unit
             const mem_display = if (total_mem_bytes >= 1024 * 1024 * 1024 and total_mem_bytes % (1024 * 1024 * 1024) == 0)
                 try std.fmt.allocPrint(self.allocator, "{d}Gi", .{total_mem_bytes / (1024 * 1024 * 1024)})
             else if (total_mem_bytes >= 1024 * 1024)
@@ -891,15 +1160,11 @@ pub const K8sService = struct {
                 try std.fmt.allocPrint(self.allocator, "{d}", .{total_mem_bytes});
             errdefer self.allocator.free(mem_display);
 
-            // Build key: "namespace/name"
             const ns = pod_metric.metadata.namespace orelse "default";
             const key = try std.fmt.allocPrint(self.allocator, "{s}/{s}", .{ ns, pod_metric.metadata.name });
             errdefer self.allocator.free(key);
 
-            try result.put(key, PodMetric{
-                .cpu = cpu_display,
-                .mem = mem_display,
-            });
+            try result.put(key, PodMetric{ .cpu = cpu_display, .mem = mem_display });
         }
 
         Logger.info("Fetched metrics for {d} pods", .{result.count()});
@@ -953,8 +1218,8 @@ pub const K8sService = struct {
             try std.fmt.allocPrint(self.allocator, "{s}/namespaces/{s}/{s}/{s}", .{ resource_type.apiPath(), namespace, resource_type.resourceName(), name });
         defer self.allocator.free(path);
 
-        const body = try self.client.?.request(.GET, path, null);
-        return body;
+        if (self.use_kubectl) return try self.kubectlRequest(path);
+        return try self.client.?.request(.GET, path, null);
     }
 
     /// Delete any resource by type, name, namespace
@@ -966,6 +1231,21 @@ pub const K8sService = struct {
         else
             try std.fmt.allocPrint(self.allocator, "{s}/namespaces/{s}/{s}/{s}", .{ resource_type.apiPath(), namespace, resource_type.resourceName(), name });
         defer self.allocator.free(path);
+
+        if (self.use_kubectl) {
+            // Use kubectl delete for kubectl mode
+            var child = std.process.Child.init(
+                &.{ "kubectl", "delete", resource_type.resourceName(), name, "-n", namespace },
+                self.allocator,
+            );
+            child.stdin_behavior = .Ignore;
+            child.stdout_behavior = .Ignore;
+            child.stderr_behavior = .Ignore;
+            try child.spawn();
+            const term = try child.wait();
+            if (term.Exited != 0) return error.KubectlFailed;
+            return;
+        }
 
         const body = try self.client.?.request(.DELETE, path, null);
         self.allocator.free(body);
@@ -979,6 +1259,7 @@ pub const K8sService = struct {
         const path = try std.fmt.allocPrint(self.allocator, "/api/v1/namespaces/{s}/pods/{s}/log?tailLines=1000", .{ ns, name });
         defer self.allocator.free(path);
 
+        if (self.use_kubectl) return try self.kubectlRequest(path);
         return try self.client.?.request(.GET, path, null);
     }
 
