@@ -83,9 +83,9 @@ pub fn generateHelpContent(allocator: std.mem.Allocator, bindings: []const KeyBi
     var header_buf = try std.ArrayList(u8).initCapacity(allocator, 100);
     defer header_buf.deinit(allocator);
     try header_buf.appendSlice(allocator, "RESOURCE");
-    try header_buf.appendNTimes(allocator, ' ', col1_width - 8);  // "RESOURCE" = 8 chars
+    try header_buf.appendNTimes(allocator, ' ', col1_width -| 8);  // "RESOURCE" = 8 chars; saturating: col may be < 8 when the category is empty
     try header_buf.appendSlice(allocator, "GENERAL");
-    try header_buf.appendNTimes(allocator, ' ', col2_width - 7);  // "GENERAL" = 7 chars
+    try header_buf.appendNTimes(allocator, ' ', col2_width -| 7);  // "GENERAL" = 7 chars; saturating
     try header_buf.appendSlice(allocator, "NAVIGATION");
     try lines.append(allocator, try allocator.dupe(u8, header_buf.items));
     
