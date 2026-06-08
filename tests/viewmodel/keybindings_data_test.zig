@@ -5,11 +5,11 @@
 
 const std = @import("std");
 const testing = std.testing;
-const bindings_data = @import("../../src/viewmodel/keybindings_data.zig");
-const KeyBinding = @import("../../src/model/keybindings.zig").KeyBinding;
+const bindings_data = @import("src").keybindings_data;
+const KeyBinding = @import("src").keybindings.KeyBinding;
 
 test "keybindings_data: all load functions return valid bindings" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
@@ -61,7 +61,7 @@ test "keybindings_data: all load functions return valid bindings" {
 }
 
 test "keybindings_data: namespaces has switch binding" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
@@ -77,7 +77,7 @@ test "keybindings_data: namespaces has switch binding" {
 }
 
 test "keybindings_data: secrets has decode binding" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
@@ -93,7 +93,7 @@ test "keybindings_data: secrets has decode binding" {
 }
 
 test "keybindings_data: cronjobs has trigger and suspend" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
@@ -113,7 +113,7 @@ test "keybindings_data: cronjobs has trigger and suspend" {
 }
 
 test "keybindings_data: containers has shell and attach" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
@@ -133,7 +133,7 @@ test "keybindings_data: containers has shell and attach" {
 }
 
 test "keybindings_data: all bindings are UTF-8 valid" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
@@ -156,7 +156,7 @@ test "keybindings_data: all bindings are UTF-8 valid" {
 }
 
 test "keybindings_data: portforwards has start and stop" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
@@ -176,7 +176,7 @@ test "keybindings_data: portforwards has start and stop" {
 }
 
 test "keybindings_data: helmcharts has uninstall binding" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
@@ -193,7 +193,7 @@ test "keybindings_data: helmcharts has uninstall binding" {
 }
 
 test "keybindings_data: pvcs has capacity sorting" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 

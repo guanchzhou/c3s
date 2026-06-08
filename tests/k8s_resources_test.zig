@@ -10,9 +10,13 @@ const KubeconfigParser = src.KubeconfigParser;
 
 test "Pods Resource - list operations" {
     const allocator = std.testing.allocator;
-    
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
     // Try to get kubeconfig
-    var parser = KubeconfigParser.init(allocator);
+    var parser = KubeconfigParser.init(allocator, io);
     var kubeconfig = parser.load() catch |err| {
         std.debug.print("⚠️  kubectl not available: {}\n", .{err});
         return error.SkipZigTest;
@@ -24,12 +28,12 @@ test "Pods Resource - list operations" {
         return error.SkipZigTest;
     };
     
-    const cluster = kubeconfig.getCluster(current_ctx.cluster) orelse {
+    const cluster = kubeconfig.getClusterByName(current_ctx.cluster) orelse {
         std.debug.print("⚠️  Cluster not found\n", .{});
         return error.SkipZigTest;
     };
     
-    var client = try K8sClient.init(allocator, .{
+    var client = try K8sClient.init(allocator, io, .{
         .server = cluster.server,
         .token = null,
         .namespace = current_ctx.namespace,
@@ -39,19 +43,24 @@ test "Pods Resource - list operations" {
     const pods_client = resources.Pods.init(&client);
     
     // Test listAll
-    const pod_list = pods_client.client.listAll() catch |err| {
+    var pod_list = pods_client.client.listAll() catch |err| {
         std.debug.print("⚠️  Could not list pods: {}\n", .{err});
         return error.SkipZigTest;
     };
-    
-    std.debug.print("✅ Listed {d} pods across all namespaces\n", .{pod_list.items.len});
+    defer pod_list.deinit();
+
+    std.debug.print("✅ Listed {d} pods across all namespaces\n", .{pod_list.value.items.len});
 }
 
 test "Deployments Resource - operations" {
     const allocator = std.testing.allocator;
-    
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
     // Try to get kubeconfig
-    var parser = KubeconfigParser.init(allocator);
+    var parser = KubeconfigParser.init(allocator, io);
     var kubeconfig = parser.load() catch |err| {
         std.debug.print("⚠️  kubectl not available: {}\n", .{err});
         return error.SkipZigTest;
@@ -63,12 +72,12 @@ test "Deployments Resource - operations" {
         return error.SkipZigTest;
     };
     
-    const cluster = kubeconfig.getCluster(current_ctx.cluster) orelse {
+    const cluster = kubeconfig.getClusterByName(current_ctx.cluster) orelse {
         std.debug.print("⚠️  Cluster not found\n", .{});
         return error.SkipZigTest;
     };
     
-    var client = try K8sClient.init(allocator, .{
+    var client = try K8sClient.init(allocator, io, .{
         .server = cluster.server,
         .token = null,
         .namespace = current_ctx.namespace,
@@ -78,19 +87,24 @@ test "Deployments Resource - operations" {
     const deployments = resources.Deployments.init(&client);
     
     // Test listAll deployments
-    const deploy_list = deployments.client.listAll() catch |err| {
+    var deploy_list = deployments.client.listAll() catch |err| {
         std.debug.print("⚠️  Could not list deployments: {}\n", .{err});
         return error.SkipZigTest;
     };
-    
-    std.debug.print("✅ Listed {d} deployments\n", .{deploy_list.items.len});
+    defer deploy_list.deinit();
+
+    std.debug.print("✅ Listed {d} deployments\n", .{deploy_list.value.items.len});
 }
 
 test "Services Resource - list operations" {
     const allocator = std.testing.allocator;
-    
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
     // Try to get kubeconfig
-    var parser = KubeconfigParser.init(allocator);
+    var parser = KubeconfigParser.init(allocator, io);
     var kubeconfig = parser.load() catch |err| {
         std.debug.print("⚠️  kubectl not available: {}\n", .{err});
         return error.SkipZigTest;
@@ -102,12 +116,12 @@ test "Services Resource - list operations" {
         return error.SkipZigTest;
     };
     
-    const cluster = kubeconfig.getCluster(current_ctx.cluster) orelse {
+    const cluster = kubeconfig.getClusterByName(current_ctx.cluster) orelse {
         std.debug.print("⚠️  Cluster not found\n", .{});
         return error.SkipZigTest;
     };
     
-    var client = try K8sClient.init(allocator, .{
+    var client = try K8sClient.init(allocator, io, .{
         .server = cluster.server,
         .token = null,
         .namespace = current_ctx.namespace,
@@ -117,19 +131,24 @@ test "Services Resource - list operations" {
     const services = resources.Services.init(&client);
     
     // Test listAll services
-    const svc_list = services.client.listAll() catch |err| {
+    var svc_list = services.client.listAll() catch |err| {
         std.debug.print("⚠️  Could not list services: {}\n", .{err});
         return error.SkipZigTest;
     };
-    
-    std.debug.print("✅ Listed {d} services\n", .{svc_list.items.len});
+    defer svc_list.deinit();
+
+    std.debug.print("✅ Listed {d} services\n", .{svc_list.value.items.len});
 }
 
 test "ConfigMaps Resource - operations" {
     const allocator = std.testing.allocator;
-    
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
     // Try to get kubeconfig
-    var parser = KubeconfigParser.init(allocator);
+    var parser = KubeconfigParser.init(allocator, io);
     var kubeconfig = parser.load() catch |err| {
         std.debug.print("⚠️  kubectl not available: {}\n", .{err});
         return error.SkipZigTest;
@@ -141,12 +160,12 @@ test "ConfigMaps Resource - operations" {
         return error.SkipZigTest;
     };
     
-    const cluster = kubeconfig.getCluster(current_ctx.cluster) orelse {
+    const cluster = kubeconfig.getClusterByName(current_ctx.cluster) orelse {
         std.debug.print("⚠️  Cluster not found\n", .{});
         return error.SkipZigTest;
     };
     
-    var client = try K8sClient.init(allocator, .{
+    var client = try K8sClient.init(allocator, io, .{
         .server = cluster.server,
         .token = null,
         .namespace = current_ctx.namespace,
@@ -156,19 +175,24 @@ test "ConfigMaps Resource - operations" {
     const configmaps = resources.ConfigMaps.init(&client);
     
     // Test listAll configmaps
-    const cm_list = configmaps.client.listAll() catch |err| {
+    var cm_list = configmaps.client.listAll() catch |err| {
         std.debug.print("⚠️  Could not list configmaps: {}\n", .{err});
         return error.SkipZigTest;
     };
-    
-    std.debug.print("✅ Listed {d} configmaps\n", .{cm_list.items.len});
+    defer cm_list.deinit();
+
+    std.debug.print("✅ Listed {d} configmaps\n", .{cm_list.value.items.len});
 }
 
 test "Namespaces Resource - list operations" {
     const allocator = std.testing.allocator;
-    
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
     // Try to get kubeconfig
-    var parser = KubeconfigParser.init(allocator);
+    var parser = KubeconfigParser.init(allocator, io);
     var kubeconfig = parser.load() catch |err| {
         std.debug.print("⚠️  kubectl not available: {}\n", .{err});
         return error.SkipZigTest;
@@ -180,12 +204,12 @@ test "Namespaces Resource - list operations" {
         return error.SkipZigTest;
     };
     
-    const cluster = kubeconfig.getCluster(current_ctx.cluster) orelse {
+    const cluster = kubeconfig.getClusterByName(current_ctx.cluster) orelse {
         std.debug.print("⚠️  Cluster not found\n", .{});
         return error.SkipZigTest;
     };
     
-    var client = try K8sClient.init(allocator, .{
+    var client = try K8sClient.init(allocator, io, .{
         .server = cluster.server,
         .token = null,
         .namespace = current_ctx.namespace,
@@ -195,22 +219,27 @@ test "Namespaces Resource - list operations" {
     const namespaces = resources.Namespaces.init(&client);
     
     // Test list namespaces (cluster-scoped)
-    const ns_list = namespaces.list() catch |err| {
+    var ns_list = namespaces.client.listAll() catch |err| {
         std.debug.print("⚠️  Could not list namespaces: {}\n", .{err});
         return error.SkipZigTest;
     };
-    
-    std.debug.print("✅ Listed {d} namespaces\n", .{ns_list.items.len});
-    if (ns_list.items.len > 0) {
-        std.debug.print("   First namespace: {s}\n", .{ns_list.items[0].metadata.name});
+    defer ns_list.deinit();
+
+    std.debug.print("✅ Listed {d} namespaces\n", .{ns_list.value.items.len});
+    if (ns_list.value.items.len > 0) {
+        std.debug.print("   First namespace: {s}\n", .{ns_list.value.items[0].metadata.name});
     }
 }
 
 test "Nodes Resource - list operations" {
     const allocator = std.testing.allocator;
-    
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
     // Try to get kubeconfig
-    var parser = KubeconfigParser.init(allocator);
+    var parser = KubeconfigParser.init(allocator, io);
     var kubeconfig = parser.load() catch |err| {
         std.debug.print("⚠️  kubectl not available: {}\n", .{err});
         return error.SkipZigTest;
@@ -222,12 +251,12 @@ test "Nodes Resource - list operations" {
         return error.SkipZigTest;
     };
     
-    const cluster = kubeconfig.getCluster(current_ctx.cluster) orelse {
+    const cluster = kubeconfig.getClusterByName(current_ctx.cluster) orelse {
         std.debug.print("⚠️  Cluster not found\n", .{});
         return error.SkipZigTest;
     };
     
-    var client = try K8sClient.init(allocator, .{
+    var client = try K8sClient.init(allocator, io, .{
         .server = cluster.server,
         .token = null,
         .namespace = current_ctx.namespace,
@@ -237,13 +266,14 @@ test "Nodes Resource - list operations" {
     const nodes = resources.Nodes.init(&client);
     
     // Test list nodes (cluster-scoped)
-    const node_list = nodes.list() catch |err| {
+    var node_list = nodes.client.listAll() catch |err| {
         std.debug.print("⚠️  Could not list nodes: {}\n", .{err});
         return error.SkipZigTest;
     };
-    
-    std.debug.print("✅ Listed {d} nodes\n", .{node_list.items.len});
-    if (node_list.items.len > 0) {
-        std.debug.print("   First node: {s}\n", .{node_list.items[0].metadata.name});
+    defer node_list.deinit();
+
+    std.debug.print("✅ Listed {d} nodes\n", .{node_list.value.items.len});
+    if (node_list.value.items.len > 0) {
+        std.debug.print("   First node: {s}\n", .{node_list.value.items[0].metadata.name});
     }
 }

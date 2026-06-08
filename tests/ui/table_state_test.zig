@@ -734,7 +734,7 @@ test "rowColors returns normal colors for non-selected row" {
 // =========================================================================
 
 test "memory: init and deinit with items does not leak" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer {
         const leaked = gpa.deinit();
         if (leaked == .leak) {
@@ -756,7 +756,7 @@ test "memory: init and deinit with items does not leak" {
 }
 
 test "memory: multiple clearItems cycles do not leak" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer {
         const leaked = gpa.deinit();
         if (leaked == .leak) {

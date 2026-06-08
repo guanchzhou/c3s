@@ -5,10 +5,10 @@
 
 const std = @import("std");
 const testing = std.testing;
-const keybindings = @import("../../src/model/keybindings.zig");
+const keybindings = @import("src").keybindings;
 
 test "keybindings: generateHelpContent with normal bindings" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
@@ -36,7 +36,7 @@ test "keybindings: generateHelpContent with normal bindings" {
 }
 
 test "keybindings: generateHelpContent with empty bindings" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
@@ -55,7 +55,7 @@ test "keybindings: generateHelpContent with empty bindings" {
 }
 
 test "keybindings: generateHelpContent with very long keys" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
@@ -82,7 +82,7 @@ test "keybindings: calculateMaxWidths with various lengths" {
     };
 
     // This is an internal function, but we can verify the help content accommodates it
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
@@ -98,7 +98,7 @@ test "keybindings: calculateMaxWidths with various lengths" {
 }
 
 test "keybindings: all categories are handled" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 

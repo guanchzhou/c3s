@@ -1,8 +1,8 @@
 const std = @import("std");
 const testing = std.testing;
-const Command = @import("c3s").viewmodel.command.Command;
-const CommandRegistry = @import("c3s").viewmodel.command.CommandRegistry;
-const ViewManager = @import("c3s").viewmodel.view_manager.ViewManager;
+const Command = @import("src").command.Command;
+const CommandRegistry = @import("src").command.CommandRegistry;
+const ViewManager = @import("src").view_manager.ViewManager;
 
 // Test command that increments a counter
 fn testIncrement(ctx: *Command.CommandContext) !void {

@@ -1,8 +1,9 @@
 const std = @import("std");
 const src = @import("src");
 const tls = src.k8s_tls;
-const pool = src.k8s_connection_pool;
 const crd = src.k8s_crd;
+// Note: ConnectionPool tests removed — the pool was deleted in zig-klient
+// v0.3.0 (std.http.Client pools internally).
 
 test "TLS Config - Basic structure" {
     const config = tls.TlsConfig{
@@ -63,65 +64,6 @@ test "TLS - Base64 decoding" {
     try std.testing.expectEqualStrings("Hello World!", decoded);
     
     std.debug.print("✅ TLS Base64 decoding test passed\n", .{});
-}
-
-test "Connection Pool - Initialization" {
-    const allocator = std.testing.allocator;
-    
-    var conn_pool = try pool.ConnectionPool.init(allocator, .{
-        .server = "https://api.cluster.example.com",
-        .max_connections = 5,
-        .idle_timeout_ms = 10_000,
-    });
-    defer conn_pool.deinit();
-    
-    try std.testing.expectEqualStrings("https://api.cluster.example.com", conn_pool.server);
-    try std.testing.expectEqual(@as(usize, 5), conn_pool.max_connections);
-    try std.testing.expectEqual(@as(u64, 10_000), conn_pool.idle_timeout_ms);
-    
-    std.debug.print("✅ Connection Pool initialization test passed\n", .{});
-}
-
-test "Connection Pool - Statistics" {
-    const allocator = std.testing.allocator;
-    
-    var conn_pool = try pool.ConnectionPool.init(allocator, .{
-        .server = "https://api.cluster.example.com",
-        .max_connections = 10,
-        .idle_timeout_ms = 30_000,
-    });
-    defer conn_pool.deinit();
-    
-    const stats = conn_pool.stats();
-    try std.testing.expectEqual(@as(usize, 0), stats.total);
-    try std.testing.expectEqual(@as(usize, 0), stats.idle);
-    try std.testing.expectEqual(@as(usize, 0), stats.in_use);
-    try std.testing.expectEqual(@as(usize, 10), stats.max);
-    try std.testing.expectEqual(@as(f64, 0.0), stats.utilization());
-    
-    std.debug.print("✅ Connection Pool statistics test passed\n", .{});
-}
-
-test "Connection Pool - Utilization calculation" {
-    const stats1 = pool.PoolStats{
-        .total = 10,
-        .idle = 3,
-        .in_use = 7,
-        .max = 10,
-    };
-    
-    try std.testing.expectEqual(@as(f64, 70.0), stats1.utilization());
-    
-    const stats2 = pool.PoolStats{
-        .total = 5,
-        .idle = 5,
-        .in_use = 0,
-        .max = 10,
-    };
-    
-    try std.testing.expectEqual(@as(f64, 0.0), stats2.utilization());
-    
-    std.debug.print("✅ Pool utilization calculation test passed\n", .{});
 }
 
 test "CRD - API path construction" {

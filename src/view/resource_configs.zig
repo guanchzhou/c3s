@@ -8,6 +8,7 @@ const ColumnDef = resource_view.ColumnDef;
 const Config = resource_view.Config;
 const age_util = @import("../viewmodel/age.zig");
 const table_layout = @import("../ui/table_layout.zig");
+const clock = @import("../core/clock.zig");
 
 const P = table_layout.ColumnPriority;
 
@@ -105,7 +106,7 @@ fn transformService(svc: klient.types.Service, alloc: std.mem.Allocator) ![7][]c
         try alloc.dupe(u8, if (svc.metadata.namespace) |ns| ns else "default"),
         try alloc.dupe(u8, svc.metadata.name),
         if (svc.spec) |spec|
-            try alloc.dupe(u8, spec.type_ orelse "ClusterIP")
+            try alloc.dupe(u8, spec.@"type" orelse "ClusterIP")
         else
             try alloc.dupe(u8, "Unknown"),
         if (svc.spec) |spec|
@@ -315,7 +316,7 @@ fn transformJob(job: klient.types.Job, alloc: std.mem.Allocator) ![5][]const u8 
         const end_epoch = if (age_util.parseTimestampToEpoch(completion_time_str)) |ce|
             ce
         else
-            std.time.timestamp();
+            clock.timestamp();
 
         const diff = end_epoch - start_epoch;
         if (diff < 0) break :blk try alloc.dupe(u8, "0s");

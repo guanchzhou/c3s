@@ -1,7 +1,8 @@
 const std = @import("std");
 const testing = std.testing;
-const ViewManager = @import("c3s").viewmodel.view_manager.ViewManager;
-const View = @import("c3s").viewmodel.view.View;
+const src = @import("src");
+const ViewManager = src.view_manager.ViewManager;
+const View = src.View;
 
 // Mock view for testing
 const MockView = struct {
@@ -19,7 +20,7 @@ const MockView = struct {
         .deinit = deinit,
     };
 
-    fn render(ptr: *anyopaque, term: *@import("c3s").core.terminal.Terminal, x: u16, y: u16, w: u16, h: u16) !void {
+    fn render(ptr: *anyopaque, term: *src.Terminal, x: u16, y: u16, w: u16, h: u16) !void {
         _ = ptr;
         _ = term;
         _ = x;
@@ -28,7 +29,7 @@ const MockView = struct {
         _ = h;
     }
 
-    fn handleKey(ptr: *anyopaque, key: @import("c3s").core.terminal.Key) !View.KeyResult {
+    fn handleKey(ptr: *anyopaque, key: src.Key) !View.KeyResult {
         _ = ptr;
         _ = key;
         return .not_handled;
@@ -49,9 +50,9 @@ const MockView = struct {
         return self.name;
     }
 
-    fn getHints(ptr: *anyopaque) @import("c3s").model.hints.HintConfig {
+    fn getHints(ptr: *anyopaque) src.hints.HintConfig {
         _ = ptr;
-        return .{ .quick_commands = &[_]@import("c3s").model.hints.QuickCommand{}, .hints = &[_]@import("c3s").model.hints.Hint{} };
+        return .{ .quick_commands = &[_]src.hints.QuickCommand{}, .hints = &[_]src.hints.Hint{} };
     }
 
     fn deinit(ptr: *anyopaque) void {

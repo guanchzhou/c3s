@@ -1,4 +1,6 @@
 const std = @import("std");
+const runtime = @import("runtime.zig");
+const env = @import("env.zig");
 
 const path_allocator = std.heap.page_allocator;
 const AppName = "c3s";
@@ -30,11 +32,11 @@ pub fn ensurePaths() !*const Paths {
 }
 
 pub fn getPaths() ?*const Paths {
-    return cached;
+    return if (cached) |*p| p else null;
 }
 
 fn computePaths() !Paths {
-    const home_dir = try std.process.getEnvVarOwned(path_allocator, "HOME");
+    const home_dir = try env.getOwned(path_allocator, "HOME");
     if (home_dir.len == 0) return error.MissingHomeDirectory;
 
     const config_dir = try resolveConfigDir(home_dir);
@@ -106,8 +108,8 @@ fn resolveStateDir(home: []const u8) ![]const u8 {
     return try join(&[_][]const u8{ home, ".local", "state", AppName });
 }
 
-fn getValidEnvPath(key: []const u8) !?[]const u8 {
-    const value = std.process.getEnvVarOwned(path_allocator, key) catch |err| switch (err) {
+fn getValidEnvPath(key: [:0]const u8) !?[]const u8 {
+    const value = env.getOwned(path_allocator, key) catch |err| switch (err) {
         error.EnvironmentVariableNotFound => null,
         else => return err,
     };
@@ -131,7 +133,7 @@ fn join(parts: []const []const u8) ![]const u8 {
 }
 
 fn ensureDirExists(path: []const u8) !void {
-    std.fs.cwd().makePath(path) catch |err| switch (err) {
+    std.Io.Dir.cwd().createDirPath(runtime.io(), path) catch |err| switch (err) {
         error.PathAlreadyExists => {},
         else => return err,
     };

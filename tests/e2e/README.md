@@ -417,7 +417,7 @@ test "workflow" {
 ✅ **Good:** Always verify cleanup
 ```zig
 test "workflow" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer {
         const leaked = gpa.deinit();
         try testing.expect(leaked == .ok);

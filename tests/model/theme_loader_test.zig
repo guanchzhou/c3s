@@ -1,6 +1,6 @@
 const std = @import("std");
 const testing = std.testing;
-const theme_loader = @import("theme_loader");
+const theme_loader = @import("src").theme_loader;
 
 test "default theme loads successfully" {
     const allocator = testing.allocator;

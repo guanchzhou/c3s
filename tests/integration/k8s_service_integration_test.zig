@@ -121,14 +121,14 @@ test "K8sService - list pods" {
     // Note: Connection cleaned up in service.deinit()
 
     // List pods in default namespace
-    const pods = service.listPods(null) catch |err| {
+    var pods = service.listPods(null) catch |err| {
         std.debug.print("Failed to list pods: {}\n", .{err});
         return err;
     };
-    defer allocator.free(pods);
+    defer pods.deinit();
 
-    std.debug.print("Found {} pods in namespace: {s}\n", .{ pods.len, service.current_namespace });
-    try testing.expect(pods.len >= 0); // May be 0 if namespace is empty
+    std.debug.print("Found {} pods in namespace: {s}\n", .{ pods.value.items.len, service.current_namespace });
+    try testing.expect(pods.value.items.len >= 0); // May be 0 if namespace is empty
 }
 
 test "K8sService - list all pods" {
@@ -147,14 +147,14 @@ test "K8sService - list all pods" {
     // Note: Connection cleaned up in service.deinit()
 
     // List all pods across all namespaces
-    const pods = service.listAllPods() catch |err| {
+    var pods = service.listAllPods() catch |err| {
         std.debug.print("Failed to list all pods: {}\n", .{err});
         return err;
     };
-    defer allocator.free(pods);
+    defer pods.deinit();
 
-    std.debug.print("Found {} pods across all namespaces\n", .{pods.len});
-    try testing.expect(pods.len >= 0);
+    std.debug.print("Found {} pods across all namespaces\n", .{pods.value.items.len});
+    try testing.expect(pods.value.items.len >= 0);
 }
 
 test "K8sService - context management" {
@@ -166,7 +166,15 @@ test "K8sService - context management" {
     };
     defer service.deinit();
 
-    // List contexts (doesn't require connection)
+    // listContexts marks `is_current` relative to the *connected* context
+    // (set during connect(); defaults to "unknown" otherwise), so a live
+    // connection is required to assert that a current context is flagged.
+    service.connect(null) catch |err| {
+        std.debug.print("Skipping integration test - no cluster available: {}\n", .{err});
+        return error.SkipZigTest;
+    };
+
+    // List contexts
     const contexts = service.listContexts() catch |err| {
         std.debug.print("Failed to list contexts: {}\n", .{err});
         return err;

@@ -1,7 +1,7 @@
 const std = @import("std");
 const testing = std.testing;
-const HelpView = @import("../src/view/help_view.zig").HelpView;
-const theme_loader = @import("../src/model/theme_loader.zig");
+const HelpView = @import("src").HelpView;
+const theme_loader = @import("src").theme_loader;
 
 test "HelpView initialization" {
     const allocator = testing.allocator;
@@ -9,7 +9,7 @@ test "HelpView initialization" {
     defer theme_loader.deinitTheme(@constCast(&theme));
     
     var help_view = try HelpView.init(allocator, &theme);
-    defer help_view.cleanup();
+    defer help_view.deinit();
     
     // View should be created successfully
     const view = help_view.createView();
@@ -22,7 +22,7 @@ test "HelpView implements View interface" {
     defer theme_loader.deinitTheme(@constCast(&theme));
     
     var help_view = try HelpView.init(allocator, &theme);
-    defer help_view.cleanup();
+    defer help_view.deinit();
     
     const view = help_view.createView();
     
@@ -41,7 +41,8 @@ test "HelpView getName returns help" {
     defer theme_loader.deinitTheme(@constCast(&theme));
     
     var help_view = try HelpView.init(allocator, &theme);
-    defer help_view.cleanup();
+    defer help_view.deinit();
     
-    try testing.expect(std.mem.eql(u8, help_view.getName(), "help"));
+    const view = help_view.createView();
+    try testing.expect(std.mem.eql(u8, view.getName(), "help"));
 }

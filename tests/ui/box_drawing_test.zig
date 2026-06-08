@@ -1,6 +1,6 @@
 const std = @import("std");
 const testing = std.testing;
-const BoxDrawing = @import("../src/ui/box_drawing.zig");
+const BoxDrawing = @import("src").box_drawing;
 
 test "Symbols constants are defined" {
     try testing.expect(BoxDrawing.Symbols.h_line.len > 0);

@@ -6,6 +6,7 @@ const Logger = @import("../core/logger.zig");
 const theme_loader = @import("../model/theme_loader.zig");
 const hints_model = @import("../model/hints.zig");
 const TableState = @import("../ui/table_state.zig").TableState;
+const runtime = @import("../core/runtime.zig");
 
 /// ThemesView - displays and manages theme selection
 pub const ThemesView = struct {
@@ -73,8 +74,9 @@ pub const ThemesView = struct {
         } else |_| {}
 
         // Scan skins relative to executable directory (installed location)
-        var exe_dir_buf: [std.fs.max_path_bytes]u8 = undefined;
-        if (std.fs.selfExeDirPath(&exe_dir_buf)) |exe_dir| {
+        var exe_dir_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+        if (std.process.executableDirPath(runtime.io(), &exe_dir_buf)) |exe_dir_len| {
+            const exe_dir = exe_dir_buf[0..exe_dir_len];
             const skins_path = std.fs.path.join(self.table.allocator, &[_][]const u8{ exe_dir, "skins" }) catch null;
             if (skins_path) |path| {
                 defer self.table.allocator.free(path);
@@ -110,15 +112,15 @@ pub const ThemesView = struct {
 
     fn scanDirectory(self: *ThemesView, dir_path: []const u8) !void {
         Logger.debug("ThemesView: scanDirectory trying '{s}'", .{dir_path});
-        var dir = std.fs.cwd().openDir(dir_path, .{ .iterate = true }) catch |err| {
+        var dir = std.Io.Dir.cwd().openDir(runtime.io(), dir_path, .{ .iterate = true }) catch |err| {
             Logger.debug("ThemesView: scanDirectory failed to open '{s}': {}", .{ dir_path, err });
             return;
         };
-        defer dir.close();
+        defer dir.close(runtime.io());
 
         var count: usize = 0;
         var iterator = dir.iterate();
-        while (try iterator.next()) |e| {
+        while (try iterator.next(runtime.io())) |e| {
             if (e.kind == .file and std.mem.endsWith(u8, e.name, ".yaml")) {
                 const name = e.name[0 .. e.name.len - ".yaml".len];
                 try self.table.appendItem(.{

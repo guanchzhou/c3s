@@ -1,15 +1,18 @@
 const std = @import("std");
 const posix = std.posix;
 const Logger = @import("logger.zig");
+const runtime = @import("runtime.zig");
+const env = @import("env.zig");
+const sys = @import("sys.zig");
 const c = @cImport({
     @cInclude("termios.h");
 });
 
 pub const Terminal = struct {
     allocator: std.mem.Allocator,
-    stdin: std.fs.File,
-    stdout: std.fs.File,
-    stderr: std.fs.File,
+    stdin: std.Io.File,
+    stdout: std.Io.File,
+    stderr: std.Io.File,
     width: u16 = 80,
     height: u16 = 24,
     raw_enabled: bool = false,
@@ -35,9 +38,9 @@ pub const Terminal = struct {
     }
 
     pub fn init(allocator: std.mem.Allocator) !Terminal {
-        const stdin = std.fs.File.stdin();
-        const stdout = std.fs.File.stdout();
-        const stderr = std.fs.File.stderr();
+        const stdin = std.Io.File.stdin();
+        const stdout = std.Io.File.stdout();
+        const stderr = std.Io.File.stderr();
 
         const write_buffer = try std.ArrayList(u8).initCapacity(allocator, 32768); // Pre-allocate 32KB for smooth rendering
 
@@ -61,7 +64,7 @@ pub const Terminal = struct {
         if (self.raw_enabled) return;
 
         // Check if stdin is a TTY first
-        if (!std.posix.isatty(self.stdin.handle)) {
+        if (!sys.isatty(self.stdin.handle)) {
             Logger.warn("stdin is not a TTY, skipping raw mode", .{});
             return;
         }
@@ -102,9 +105,9 @@ pub const Terminal = struct {
         _ = self;
         // 0) ioctl path omitted to avoid platform differences
         // 1) Try environment variables (often accurate in interactive shells)
-        if (std.process.getEnvVarOwned(std.heap.page_allocator, "COLUMNS")) |cols_str| {
+        if (env.getOwned(std.heap.page_allocator, "COLUMNS")) |cols_str| {
             defer std.heap.page_allocator.free(cols_str);
-            if (std.process.getEnvVarOwned(std.heap.page_allocator, "LINES")) |lines_str| {
+            if (env.getOwned(std.heap.page_allocator, "LINES")) |lines_str| {
                 defer std.heap.page_allocator.free(lines_str);
                 const cols = std.fmt.parseInt(u16, std.mem.trim(u8, cols_str, " \n\r\t"), 10) catch 0;
                 const lines = std.fmt.parseInt(u16, std.mem.trim(u8, lines_str, " \n\r\t"), 10) catch 0;
@@ -112,52 +115,39 @@ pub const Terminal = struct {
             } else |_| {}
         } else |_| {}
 
-        // 2) Try `stty size` (rows cols)
+        // 2) Try `stty size` (rows cols). Zig 0.16: std.process.Child.init was
+        // removed; std.process.run spawns, waits, and collects output in one call.
         var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
         defer arena.deinit();
         const alloc = arena.allocator();
-        var stty = std.process.Child.init(&[_][]const u8{ "stty", "size" }, alloc);
-        stty.stdout_behavior = .Pipe;
-        stty.stderr_behavior = .Close;
-        if (stty.spawn() catch null) |_| {
-            const out = stty.stdout.?.readToEndAlloc(alloc, 64) catch null;
-            _ = stty.wait() catch {};
-            if (out) |buf| {
-                const trimmed = std.mem.trim(u8, buf, " \n\r\t");
-                if (std.mem.indexOfScalar(u8, trimmed, ' ')) |sp| {
-                    const rows_str = trimmed[0..sp];
-                    const cols_str = trimmed[sp + 1 ..];
-                    const rows = std.fmt.parseInt(u16, rows_str, 10) catch 0;
-                    const cols = std.fmt.parseInt(u16, cols_str, 10) catch 0;
-                    if (rows > 0 and cols > 0) return .{ .width = cols, .height = rows };
-                }
+        if (std.process.run(alloc, runtime.io(), .{
+            .argv = &[_][]const u8{ "stty", "size" },
+            .stdout_limit = .limited(64),
+        })) |res| {
+            const trimmed = std.mem.trim(u8, res.stdout, " \n\r\t");
+            if (std.mem.indexOfScalar(u8, trimmed, ' ')) |sp| {
+                const rows = std.fmt.parseInt(u16, trimmed[0..sp], 10) catch 0;
+                const cols = std.fmt.parseInt(u16, trimmed[sp + 1 ..], 10) catch 0;
+                if (rows > 0 and cols > 0) return .{ .width = cols, .height = rows };
             }
-        }
+        } else |_| {}
 
         // 3) Fallback to tput
-        var cols_proc = std.process.Child.init(&[_][]const u8{ "tput", "cols" }, alloc);
-        cols_proc.stdout_behavior = .Pipe;
-        cols_proc.stderr_behavior = .Close;
-        if (cols_proc.spawn() catch null) |_| {
-            const cols_out = cols_proc.stdout.?.readToEndAlloc(alloc, 64) catch null;
-            _ = cols_proc.wait() catch {};
-            var lines_proc = std.process.Child.init(&[_][]const u8{ "tput", "lines" }, alloc);
-            lines_proc.stdout_behavior = .Pipe;
-            lines_proc.stderr_behavior = .Close;
-            if (lines_proc.spawn() catch null) |_| {
-                const lines_out = lines_proc.stdout.?.readToEndAlloc(alloc, 64) catch null;
-                _ = lines_proc.wait() catch {};
-                const cols = if (cols_out) |cols_buffer|
-                    std.fmt.parseInt(u16, std.mem.trim(u8, cols_buffer, " \n\r\t"), 10) catch 0
-                else
-                    0;
-                const lines = if (lines_out) |lines_buffer|
-                    std.fmt.parseInt(u16, std.mem.trim(u8, lines_buffer, " \n\r\t"), 10) catch 0
-                else
-                    0;
-                if (cols > 0 and lines > 0) return .{ .width = cols, .height = lines };
-            }
-        }
+        const cols = blk: {
+            const res = std.process.run(alloc, runtime.io(), .{
+                .argv = &[_][]const u8{ "tput", "cols" },
+                .stdout_limit = .limited(64),
+            }) catch break :blk 0;
+            break :blk std.fmt.parseInt(u16, std.mem.trim(u8, res.stdout, " \n\r\t"), 10) catch 0;
+        };
+        const lines = blk: {
+            const res = std.process.run(alloc, runtime.io(), .{
+                .argv = &[_][]const u8{ "tput", "lines" },
+                .stdout_limit = .limited(64),
+            }) catch break :blk 0;
+            break :blk std.fmt.parseInt(u16, std.mem.trim(u8, res.stdout, " \n\r\t"), 10) catch 0;
+        };
+        if (cols > 0 and lines > 0) return .{ .width = cols, .height = lines };
 
         // 4) Hard fallback
         return .{ .width = 120, .height = 40 };
@@ -165,6 +155,13 @@ pub const Terminal = struct {
 
     fn bufferWrite(self: *Terminal, data: []const u8) !void {
         try self.write_buffer.appendSlice(self.allocator, data);
+    }
+
+    /// Write directly to stdout. Zig 0.16 routes std.Io.File writes through a
+    /// buffered io Writer; for the render path we write to the fd via posix to
+    /// stay io-free and allocation-free.
+    fn writeAllStdout(self: *Terminal, data: []const u8) !void {
+        try sys.writeAll(self.stdout.handle, data);
     }
 
     // Wrapper for components that need to write directly
@@ -178,7 +175,7 @@ pub const Terminal = struct {
         try self.bufferWrite("\x1b[H");
     }
 
-    /// Clear a rectangular region by writing spaces
+    /// Clear a rectangular region by writing spaces with reset colors
     pub fn clearRegion(self: *Terminal, x: u16, y: u16, w: u16, h: u16) !void {
         var spaces: [256]u8 = undefined;
         const fill_len = @min(w, 256);
@@ -186,6 +183,7 @@ pub const Terminal = struct {
         var row: u16 = 0;
         while (row < h) : (row += 1) {
             try self.setCursor(x, y + row);
+            try self.bufferWrite("\x1b[0m"); // reset colors
             try self.bufferWrite(spaces[0..fill_len]);
         }
     }
@@ -199,13 +197,13 @@ pub const Terminal = struct {
     }
 
     pub fn enterAlternateScreen(self: *Terminal) !void {
-        try self.stdout.writeAll("\x1b[?1049h");
-        try self.stdout.writeAll("\x1b[?25l"); // Hide cursor immediately
+        try self.writeAllStdout("\x1b[?1049h");
+        try self.writeAllStdout("\x1b[?25l"); // Hide cursor immediately
     }
 
     pub fn exitAlternateScreen(self: *Terminal) !void {
-        try self.stdout.writeAll("\x1b[?25h"); // Show cursor before exit
-        try self.stdout.writeAll("\x1b[?1049l");
+        try self.writeAllStdout("\x1b[?25h"); // Show cursor before exit
+        try self.writeAllStdout("\x1b[?1049l");
     }
 
     pub fn setCursor(self: *Terminal, x: u16, y: u16) !void {
@@ -241,18 +239,18 @@ pub const Terminal = struct {
 
     pub fn beginSyncOutput(self: *Terminal) !void {
         // DEC Synchronized Output Mode - terminal buffers until endSyncOutput
-        try self.stdout.writeAll("\x1b[?2026h");
+        try self.writeAllStdout("\x1b[?2026h");
     }
 
     pub fn endSyncOutput(self: *Terminal) !void {
         // End synchronized output - terminal displays buffered content atomically
-        try self.stdout.writeAll("\x1b[?2026l");
+        try self.writeAllStdout("\x1b[?2026l");
     }
 
     pub fn flush(self: *Terminal) !void {
         // Write entire buffer to stdout at once for flicker-free rendering
         if (self.write_buffer.items.len > 0) {
-            try self.stdout.writeAll(self.write_buffer.items);
+            try self.writeAllStdout(self.write_buffer.items);
             self.write_buffer.clearRetainingCapacity();
         }
     }

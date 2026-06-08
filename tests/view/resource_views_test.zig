@@ -5,16 +5,17 @@
 
 const std = @import("std");
 const testing = std.testing;
-const HPAView = @import("../../src/view/hpa_view.zig").HPAView;
-const ContextsView = @import("../../src/view/contexts_view.zig").ContextsView;
-const EventsView = @import("../../src/view/events_view.zig").EventsView;
-const ResourceQuotasView = @import("../../src/view/resourcequotas_view.zig").ResourceQuotasView;
-const theme_loader = @import("../../src/model/theme_loader.zig");
-const K8sService = @import("../../src/services/k8s_service.zig").K8sService;
+const src = @import("src");
+const HPAView = src.HPAView;
+const ContextsView = src.ContextsView;
+const EventsView = src.EventsView;
+const ResourceQuotasView = src.ResourceQuotasView;
+const theme_loader = src.theme_loader;
+const K8sService = src.K8sService;
 
 // Test HPAView initialization and cleanup
 test "hpa_view: init and cleanup" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer {
         const leaked = gpa.deinit();
         if (leaked == .leak) {
@@ -24,8 +25,8 @@ test "hpa_view: init and cleanup" {
     const allocator = gpa.allocator();
 
     // Load theme
-    const theme = try theme_loader.loadTheme(allocator, "dracula");
-    defer theme_loader.deinitTheme(theme, allocator);
+    var theme = try theme_loader.loadTheme(allocator, "dracula");
+    defer theme_loader.deinitTheme(&theme);
 
     // Initialize K8sService (will fail to connect, but that's ok for testing structure)
     var k8s_service = try K8sService.init(allocator);
@@ -35,17 +36,17 @@ test "hpa_view: init and cleanup" {
     var hpa_view = try HPAView.init(allocator, &theme, &k8s_service);
     defer hpa_view.deinit();
 
-    // Verify initial state
-    try testing.expectEqual(@as(usize, 0), hpa_view.items.items.len);
-    try testing.expectEqual(@as(usize, 0), hpa_view.selected_row);
-    try testing.expectEqual(@as(usize, 0), hpa_view.scroll_offset);
-    try testing.expectEqual(false, hpa_view.loading);
-    try testing.expect(hpa_view.error_message == null);
+    // Verify initial state (state lives under .table on config-generated views)
+    try testing.expectEqual(@as(usize, 0), hpa_view.table.items.items.len);
+    try testing.expectEqual(@as(u32, 0), hpa_view.table.selected_row);
+    try testing.expectEqual(@as(u32, 0), hpa_view.table.scroll_offset);
+    try testing.expectEqual(false, hpa_view.table.loading);
+    try testing.expect(hpa_view.table.error_message == null);
 }
 
 // Test ContextsView initialization and cleanup
 test "contexts_view: init and cleanup" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer {
         const leaked = gpa.deinit();
         if (leaked == .leak) {
@@ -54,8 +55,8 @@ test "contexts_view: init and cleanup" {
     }
     const allocator = gpa.allocator();
 
-    const theme = try theme_loader.loadTheme(allocator, "dracula");
-    defer theme_loader.deinitTheme(theme, allocator);
+    var theme = try theme_loader.loadTheme(allocator, "dracula");
+    defer theme_loader.deinitTheme(&theme);
 
     var k8s_service = try K8sService.init(allocator);
     defer k8s_service.deinit();
@@ -63,14 +64,15 @@ test "contexts_view: init and cleanup" {
     var contexts_view = try ContextsView.init(allocator, &theme, &k8s_service);
     defer contexts_view.deinit();
 
+    // ContextsView is a standalone view with direct state fields.
     try testing.expectEqual(@as(usize, 0), contexts_view.items.items.len);
-    try testing.expectEqual(@as(usize, 0), contexts_view.selected_row);
+    try testing.expectEqual(@as(u32, 0), contexts_view.selected_row);
     try testing.expectEqual(false, contexts_view.loading);
 }
 
 // Test EventsView initialization and cleanup
 test "events_view: init and cleanup" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer {
         const leaked = gpa.deinit();
         if (leaked == .leak) {
@@ -79,8 +81,8 @@ test "events_view: init and cleanup" {
     }
     const allocator = gpa.allocator();
 
-    const theme = try theme_loader.loadTheme(allocator, "dracula");
-    defer theme_loader.deinitTheme(theme, allocator);
+    var theme = try theme_loader.loadTheme(allocator, "dracula");
+    defer theme_loader.deinitTheme(&theme);
 
     var k8s_service = try K8sService.init(allocator);
     defer k8s_service.deinit();
@@ -88,14 +90,14 @@ test "events_view: init and cleanup" {
     var events_view = try EventsView.init(allocator, &theme, &k8s_service);
     defer events_view.deinit();
 
-    try testing.expectEqual(@as(usize, 0), events_view.items.items.len);
-    try testing.expectEqual(@as(usize, 0), events_view.selected_row);
-    try testing.expectEqual(false, events_view.loading);
+    try testing.expectEqual(@as(usize, 0), events_view.table.items.items.len);
+    try testing.expectEqual(@as(u32, 0), events_view.table.selected_row);
+    try testing.expectEqual(false, events_view.table.loading);
 }
 
 // Test ResourceQuotasView initialization and cleanup
 test "resourcequotas_view: init and cleanup" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer {
         const leaked = gpa.deinit();
         if (leaked == .leak) {
@@ -104,8 +106,8 @@ test "resourcequotas_view: init and cleanup" {
     }
     const allocator = gpa.allocator();
 
-    const theme = try theme_loader.loadTheme(allocator, "dracula");
-    defer theme_loader.deinitTheme(theme, allocator);
+    var theme = try theme_loader.loadTheme(allocator, "dracula");
+    defer theme_loader.deinitTheme(&theme);
 
     var k8s_service = try K8sService.init(allocator);
     defer k8s_service.deinit();
@@ -113,14 +115,14 @@ test "resourcequotas_view: init and cleanup" {
     var view = try ResourceQuotasView.init(allocator, &theme, &k8s_service);
     defer view.deinit();
 
-    try testing.expectEqual(@as(usize, 0), view.items.items.len);
-    try testing.expectEqual(@as(usize, 0), view.selected_row);
-    try testing.expectEqual(false, view.loading);
+    try testing.expectEqual(@as(usize, 0), view.table.items.items.len);
+    try testing.expectEqual(@as(u32, 0), view.table.selected_row);
+    try testing.expectEqual(false, view.table.loading);
 }
 
 // Test view creation (createView method)
 test "hpa_view: create view interface" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer {
         const leaked = gpa.deinit();
         if (leaked == .leak) {
@@ -129,8 +131,8 @@ test "hpa_view: create view interface" {
     }
     const allocator = gpa.allocator();
 
-    const theme = try theme_loader.loadTheme(allocator, "dracula");
-    defer theme_loader.deinitTheme(theme, allocator);
+    var theme = try theme_loader.loadTheme(allocator, "dracula");
+    defer theme_loader.deinitTheme(&theme);
 
     var k8s_service = try K8sService.init(allocator);
     defer k8s_service.deinit();
@@ -143,12 +145,12 @@ test "hpa_view: create view interface" {
 
     // Verify view interface
     const name = view.getName();
-    try testing.expect(std.mem.eql(u8, name, "HorizontalPodAutoscalers"));
+    try testing.expect(std.mem.eql(u8, name, "hpa"));
 }
 
 // Test contexts view creation
 test "contexts_view: create view interface" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer {
         const leaked = gpa.deinit();
         if (leaked == .leak) {
@@ -157,8 +159,8 @@ test "contexts_view: create view interface" {
     }
     const allocator = gpa.allocator();
 
-    const theme = try theme_loader.loadTheme(allocator, "dracula");
-    defer theme_loader.deinitTheme(theme, allocator);
+    var theme = try theme_loader.loadTheme(allocator, "dracula");
+    defer theme_loader.deinitTheme(&theme);
 
     var k8s_service = try K8sService.init(allocator);
     defer k8s_service.deinit();
@@ -168,12 +170,12 @@ test "contexts_view: create view interface" {
 
     const view = contexts_view.createView();
     const name = view.getName();
-    try testing.expect(std.mem.eql(u8, name, "Contexts"));
+    try testing.expect(std.mem.eql(u8, name, "contexts"));
 }
 
 // Test multiple init/deinit cycles for memory leaks
 test "hpa_view: multiple init/deinit cycles" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer {
         const leaked = gpa.deinit();
         if (leaked == .leak) {
@@ -182,8 +184,8 @@ test "hpa_view: multiple init/deinit cycles" {
     }
     const allocator = gpa.allocator();
 
-    const theme = try theme_loader.loadTheme(allocator, "dracula");
-    defer theme_loader.deinitTheme(theme, allocator);
+    var theme = try theme_loader.loadTheme(allocator, "dracula");
+    defer theme_loader.deinitTheme(&theme);
 
     var k8s_service = try K8sService.init(allocator);
     defer k8s_service.deinit();
@@ -197,7 +199,7 @@ test "hpa_view: multiple init/deinit cycles" {
 
 // Test contexts view multiple init/deinit cycles
 test "contexts_view: multiple init/deinit cycles" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer {
         const leaked = gpa.deinit();
         if (leaked == .leak) {
@@ -206,8 +208,8 @@ test "contexts_view: multiple init/deinit cycles" {
     }
     const allocator = gpa.allocator();
 
-    const theme = try theme_loader.loadTheme(allocator, "dracula");
-    defer theme_loader.deinitTheme(theme, allocator);
+    var theme = try theme_loader.loadTheme(allocator, "dracula");
+    defer theme_loader.deinitTheme(&theme);
 
     var k8s_service = try K8sService.init(allocator);
     defer k8s_service.deinit();
@@ -220,7 +222,7 @@ test "contexts_view: multiple init/deinit cycles" {
 
 // Test events view multiple init/deinit cycles
 test "events_view: multiple init/deinit cycles" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer {
         const leaked = gpa.deinit();
         if (leaked == .leak) {
@@ -229,8 +231,8 @@ test "events_view: multiple init/deinit cycles" {
     }
     const allocator = gpa.allocator();
 
-    const theme = try theme_loader.loadTheme(allocator, "dracula");
-    defer theme_loader.deinitTheme(theme, allocator);
+    var theme = try theme_loader.loadTheme(allocator, "dracula");
+    defer theme_loader.deinitTheme(&theme);
 
     var k8s_service = try K8sService.init(allocator);
     defer k8s_service.deinit();

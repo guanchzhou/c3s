@@ -84,7 +84,7 @@ test "sortFilteredIndices sorts items by name ascending" {
         .{ .name = "banana", .value = 2 },
     };
 
-    var filtered_indices = std.ArrayListUnmanaged(usize){};
+    var filtered_indices = std.ArrayListUnmanaged(usize).empty;
     defer filtered_indices.deinit(allocator);
 
     try filtered_indices.append(allocator, 0);
@@ -108,7 +108,7 @@ test "sortFilteredIndices sorts items by name descending" {
         .{ .name = "banana", .value = 2 },
     };
 
-    var filtered_indices = std.ArrayListUnmanaged(usize){};
+    var filtered_indices = std.ArrayListUnmanaged(usize).empty;
     defer filtered_indices.deinit(allocator);
 
     try filtered_indices.append(allocator, 0);
@@ -130,7 +130,7 @@ test "sortFilteredIndices handles empty list" {
         .{ .name = "apple", .value = 1 },
     };
 
-    var filtered_indices = std.ArrayListUnmanaged(usize){};
+    var filtered_indices = std.ArrayListUnmanaged(usize).empty;
     defer filtered_indices.deinit(allocator);
 
     // Empty filtered_indices -- should not crash

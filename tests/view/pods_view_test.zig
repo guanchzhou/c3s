@@ -1,142 +1,146 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright Authors of C3S
+//
+// Tests for PodsView.
+//
+// PodsView no longer owns sample data via a standalone `Body` type; it is a
+// TableState-backed view that needs a theme and a K8sService. Without a live
+// cluster the pod list stays empty, so these tests exercise structure,
+// navigation bounds-safety, the View interface, and memory hygiene.
+
 const std = @import("std");
 const testing = std.testing;
-const PodsView = @import("src").PodsView;
-const Terminal = @import("src").Terminal;
+const src = @import("src");
+const PodsView = src.PodsView;
+const Terminal = src.Terminal;
+const theme_loader = src.theme_loader;
+const K8sService = src.K8sService;
 
-test "body initialization and cleanup" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+test "pods_view: init and cleanup" {
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    var body = try Body.init(allocator);
-    defer body.deinit();
+    var theme = try theme_loader.defaultTheme(allocator);
+    defer theme_loader.deinitTheme(&theme);
 
-    // Test that body was initialized with sample data
-    try testing.expect(body.pods.items.len > 0);
-    try testing.expect(body.selected_row == 0);
-    try testing.expect(body.scroll_offset == 0);
+    var k8s_service = try K8sService.init(allocator);
+    defer k8s_service.deinit();
+
+    var pods_view = try PodsView.init(allocator, &theme, &k8s_service);
+    defer pods_view.deinit();
+
+    // No cluster connection in tests -> empty list, default cursor/scroll.
+    try testing.expectEqual(@as(usize, 0), pods_view.table.items.items.len);
+    try testing.expectEqual(@as(u32, 0), pods_view.table.selected_row);
+    try testing.expectEqual(@as(u32, 0), pods_view.table.scroll_offset);
 }
 
-test "body pod data validation" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+test "pods_view: getName via View interface" {
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    var body = try Body.init(allocator);
-    defer body.deinit();
+    var theme = try theme_loader.defaultTheme(allocator);
+    defer theme_loader.deinitTheme(&theme);
 
-    // Test that all pods have valid data
-    for (body.pods.items) |pod| {
-        try testing.expect(pod.namespace.len > 0);
-        try testing.expect(pod.name.len > 0);
-        try testing.expect(pod.ready.len > 0);
-        try testing.expect(pod.status.len > 0);
-        try testing.expect(pod.ip.len > 0);
-        try testing.expect(pod.node.len > 0);
-        try testing.expect(pod.age.len > 0);
-    }
+    var k8s_service = try K8sService.init(allocator);
+    defer k8s_service.deinit();
+
+    var pods_view = try PodsView.init(allocator, &theme, &k8s_service);
+    defer pods_view.deinit();
+
+    const view = pods_view.createView();
+    try testing.expect(std.mem.eql(u8, view.getName(), "pods"));
 }
 
-test "body navigation" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+test "pods_view: navigation is bounds-safe" {
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    var body = try Body.init(allocator);
-    defer body.deinit();
+    var theme = try theme_loader.defaultTheme(allocator);
+    defer theme_loader.deinitTheme(&theme);
 
-    const initial_selected = body.selected_row;
-    const initial_scroll = body.scroll_offset;
+    var k8s_service = try K8sService.init(allocator);
+    defer k8s_service.deinit();
 
-    // Test navigation down
-    try body.navigateDown();
-    if (body.pods.items.len > 1) {
-        try testing.expect(body.selected_row == initial_selected + 1);
-    }
+    var pods_view = try PodsView.init(allocator, &theme, &k8s_service);
+    defer pods_view.deinit();
 
-    // Test navigation up
-    try body.navigateUp();
-    try testing.expect(body.selected_row == initial_selected);
+    // Navigation must never crash or move out of bounds on an empty list.
+    pods_view.table.navigateDown();
+    try testing.expectEqual(@as(u32, 0), pods_view.table.selected_row);
 
-    // Test navigation left/right (currently no-op, but should not crash)
-    try body.navigateLeft();
-    try body.navigateRight();
+    pods_view.table.navigateUp();
+    try testing.expectEqual(@as(u32, 0), pods_view.table.selected_row);
+
+    pods_view.table.gotoBottom();
+    pods_view.table.gotoTop();
+    try testing.expectEqual(@as(u32, 0), pods_view.table.selected_row);
+    try testing.expect(pods_view.table.scroll_offset >= 0);
 }
 
-test "body rendering" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+test "pods_view: rendering does not crash" {
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    var body = try Body.init(allocator);
-    defer body.deinit();
+    var theme = try theme_loader.defaultTheme(allocator);
+    defer theme_loader.deinitTheme(&theme);
+
+    var k8s_service = try K8sService.init(allocator);
+    defer k8s_service.deinit();
+
+    var pods_view = try PodsView.init(allocator, &theme, &k8s_service);
+    defer pods_view.deinit();
 
     var terminal = try Terminal.init(allocator);
     defer terminal.deinit();
 
-    // Test that rendering doesn't crash
-    try body.render(&terminal, 0, 0, 80, 20);
-    
-    // Test rendering at different positions
-    try body.render(&terminal, 10, 5, 100, 25);
-    
-    // Test rendering with different sizes
-    try body.render(&terminal, 0, 0, 120, 30);
+    const view = pods_view.createView();
+
+    // Render at a few positions/sizes; each must succeed without crashing.
+    try view.render(&terminal, 0, 0, 80, 20);
+    try view.render(&terminal, 10, 5, 100, 25);
+    try view.render(&terminal, 0, 0, 120, 30);
 }
 
-test "body scroll behavior" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+test "pods_view: applyFilter is safe on empty list" {
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    var body = try Body.init(allocator);
-    defer body.deinit();
+    var theme = try theme_loader.defaultTheme(allocator);
+    defer theme_loader.deinitTheme(&theme);
 
-    const initial_scroll = body.scroll_offset;
-    const initial_selected = body.selected_row;
+    var k8s_service = try K8sService.init(allocator);
+    defer k8s_service.deinit();
 
-    // Test that scroll offset doesn't go negative
-    body.scroll_offset = 0;
-    try body.navigateUp();
-    try testing.expect(body.scroll_offset >= 0);
+    var pods_view = try PodsView.init(allocator, &theme, &k8s_service);
+    defer pods_view.deinit();
 
-    // Test that scroll offset doesn't exceed bounds
-    body.scroll_offset = body.pods.items.len;
-    try body.navigateDown();
-    try testing.expect(body.scroll_offset <= body.pods.items.len);
+    try pods_view.applyFilter("nginx");
+    try testing.expectEqual(@as(usize, 0), pods_view.table.filtered_indices.items.len);
+
+    try pods_view.applyFilter("");
+    try testing.expectEqual(@as(usize, 0), pods_view.table.filtered_indices.items.len);
 }
 
-test "body selection bounds" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+test "pods_view: memory management across cycles" {
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    var body = try Body.init(allocator);
-    defer body.deinit();
+    var theme = try theme_loader.defaultTheme(allocator);
+    defer theme_loader.deinitTheme(&theme);
 
-    // Test that selected_row doesn't go negative
-    body.selected_row = 0;
-    try body.navigateUp();
-    try testing.expect(body.selected_row >= 0);
+    var k8s_service = try K8sService.init(allocator);
+    defer k8s_service.deinit();
 
-    // Test that selected_row doesn't exceed bounds
-    body.selected_row = body.pods.items.len - 1;
-    try body.navigateDown();
-    try testing.expect(body.selected_row < body.pods.items.len);
-}
-
-test "body memory management" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
-
-    // Test multiple initialization and cleanup cycles
+    // Multiple init/deinit cycles must not leak (gpa.deinit() asserts on leak).
     for (0..10) |_| {
-        var body = try Body.init(allocator);
-        body.deinit();
+        var pods_view = try PodsView.init(allocator, &theme, &k8s_service);
+        pods_view.deinit();
     }
-    
-    // Test that no memory leaks occurred
-    const allocated = gpa.deinit();
-    try testing.expect(allocated == .ok);
 }

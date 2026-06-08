@@ -1,5 +1,6 @@
 const std = @import("std");
 const xdg = @import("../core/xdg.zig");
+const runtime = @import("../core/runtime.zig");
 
 pub const UiConfig = struct {
     compact: bool = false,
@@ -31,10 +32,11 @@ pub fn load(allocator: std.mem.Allocator) !Config {
     };
 
     // Try to read config file
-    const config_content = std.fs.cwd().readFileAlloc(
-        allocator,
+    const config_content = std.Io.Dir.cwd().readFileAlloc(
+        runtime.io(),
         paths.config_file,
-        1024 * 1024, // 1MB max
+        allocator,
+        .limited(1024 * 1024), // 1MB max
     ) catch {
         // File not found or read error - return defaults
         return Config{

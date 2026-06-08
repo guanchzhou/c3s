@@ -49,12 +49,12 @@ pub const CommandRegistry = struct {
     
     /// Get all available command names
     pub fn getCommandNames(self: *CommandRegistry) ![][]const u8 {
-        var names = std.ArrayList([]const u8).init(self.allocator);
+        var names = std.ArrayListUnmanaged([]const u8).empty;
         var iterator = self.commands.iterator();
         while (iterator.next()) |entry| {
-            try names.append(entry.key_ptr.*);
+            try names.append(self.allocator, entry.key_ptr.*);
         }
-        return names.toOwnedSlice();
+        return names.toOwnedSlice(self.allocator);
     }
 };
 

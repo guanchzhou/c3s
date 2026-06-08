@@ -3,33 +3,36 @@ const App = @import("app.zig").App;
 const Cli = @import("cli.zig");
 const Logger = @import("core/logger.zig");
 const panic_hook = @import("panic_hook.zig");
+const runtime = @import("core/runtime.zig");
+const sys = @import("core/sys.zig");
 const posix = std.posix;
 
-/// Configure global logging to suppress debug spam from zig-yaml dependency
-/// This affects ALL std.log calls in the entire program (including dependencies)
+/// Suppress debug/info spam from dependencies on stderr; c3s logs to file.
+/// This affects ALL std.log calls in the entire program (including dependencies).
 pub const std_options: std.Options = .{
     .log_level = .err,
 };
 
-pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer {
-        // Redirect stderr to /dev/null before GPA deinit so leak reports
-        // don't pollute the user's terminal. Leaks are logged in c3s.log.
-        const devnull = std.fs.openFileAbsolute("/dev/null", .{ .mode = .write_only }) catch null;
-        if (devnull) |f| {
-            posix.dup2(f.handle, posix.STDERR_FILENO) catch {};
-            f.close();
-        }
-        _ = gpa.deinit();
-    }
-    const allocator = gpa.allocator();
+// Zig 0.16: the runtime provides a std.process.Init with a managed allocator,
+// a std.Io (thread pool + leak checking in debug), and command-line args.
+// We publish the io globally via runtime.io so leaf modules can reach it.
+pub fn main(init: std.process.Init) !void {
+    const allocator = init.gpa;
+    runtime.set(init.io);
 
-    // Set up signal handlers for graceful shutdown
-    // Default system signal handling is sufficient for now.
+    defer {
+        // The runtime deinits its debug allocator AFTER main returns and prints
+        // any leak report to stderr. Redirect stderr to /dev/null on exit so it
+        // doesn't pollute the TUI (leaks are captured in c3s.log). posix-only so
+        // it stays valid after the runtime's io is torn down.
+        if (sys.openWrite("/dev/null")) |fd| {
+            sys.dup2(fd, posix.STDERR_FILENO);
+            sys.close(fd);
+        }
+    }
 
     // Parse command line arguments
-    const config = Cli.parseArgs(allocator) catch |err| {
+    const config = Cli.parseArgs(init.minimal.args, allocator) catch |err| {
         // Use std.log.err here because Logger might not be fully initialized or might be corrupted.
         std.log.err("Failed to parse arguments: {}", .{err});
         std.process.exit(1);

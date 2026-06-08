@@ -29,8 +29,8 @@ pub fn TableState(comptime ItemType: type) type {
 
         pub fn init(allocator: std.mem.Allocator) Self {
             return Self{
-                .items = std.ArrayListUnmanaged(ItemType){},
-                .filtered_indices = std.ArrayListUnmanaged(usize){},
+                .items = .empty,
+                .filtered_indices = .empty,
                 .allocator = allocator,
             };
         }
