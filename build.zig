@@ -12,31 +12,18 @@ pub fn build(b: *std.Build) void {
     // set a preferred release mode, allowing the user to decide how to optimize.
     const optimize = b.standardOptimizeOption(.{});
 
-    // Build options for embedding version/build number
-    var date_child = std.process.Child.init(&[_][]const u8{ "date", "+v0.%Y.%m.%d.%H.%M" }, b.allocator);
-    date_child.stdin_behavior = .Ignore;
-    date_child.stdout_behavior = .Pipe;
-    date_child.stderr_behavior = .Inherit;
+    // Build options for embedding version/build number.
+    // Zig 0.16: std.process.Child.init was removed; use b.runAllowFail for the
+    // build-time `date` command (preserves the graceful "v0.unknown" fallback).
     const base_version = blk: {
-        if (date_child.spawn() catch null) |_| {
-            const stdout_stream = date_child.stdout orelse {
-                _ = date_child.wait() catch null;
-                break :blk "v0.unknown";
-            };
-            const raw = stdout_stream.readToEndAlloc(b.allocator, 128) catch {
-                _ = date_child.wait() catch null;
-                break :blk "v0.unknown";
-            };
-            _ = date_child.wait() catch null;
-            break :blk std.mem.trimRight(u8, raw, "\n");
-        } else {
-            break :blk "v0.unknown";
-        }
+        var code: u8 = undefined;
+        const raw = b.runAllowFail(&[_][]const u8{ "date", "+v0.%Y.%m.%d.%H.%M" }, &code, .inherit) catch break :blk "v0.unknown";
+        break :blk std.mem.trimEnd(u8, raw, "\n");
     };
     var build_number = b.option([]const u8, "build", "Build number to append to version (e.g. 123)");
     if (build_number == null) {
-        const cwd = std.fs.cwd();
-        const file_data = cwd.readFileAlloc(b.allocator, ".build_number", 64) catch null;
+        // Zig 0.16: std.fs.cwd() removed; read via std.Io.Dir with the build graph io.
+        const file_data = std.Io.Dir.cwd().readFileAlloc(b.graph.io, ".build_number", b.allocator, .limited(64)) catch null;
         if (file_data) |bytes| {
             const trimmed = std.mem.trim(u8, bytes, " \n\r\t");
             build_number = trimmed;
@@ -60,13 +47,6 @@ pub fn build(b: *std.Build) void {
 
     // Import dependencies
     exe.root_module.addOptions("c3s_build", build_opts);
-
-    // Add zig-yaml dependency (Zig 0.15.0 compatible branch)
-    const yaml = b.dependency("yaml", .{
-        .target = target,
-        .optimize = optimize,
-    });
-    exe.root_module.addImport("yaml", yaml.module("yaml"));
 
     // Add zig-klient dependency (local)
     const klient = b.dependency("klient", .{
@@ -142,7 +122,6 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     c3s_module.addImport("klient", klient.module("klient"));
-    c3s_module.addImport("yaml", yaml.module("yaml"));
     c3s_module.addOptions("c3s_build", build_opts);
 
     const integration_tests = b.addTest(.{
@@ -154,7 +133,6 @@ pub fn build(b: *std.Build) void {
     });
     integration_tests.root_module.addImport("c3s", c3s_module);
     integration_tests.root_module.addImport("klient", klient.module("klient"));
-    integration_tests.root_module.addImport("yaml", yaml.module("yaml"));
     integration_tests.root_module.addOptions("c3s_build", build_opts);
 
     const run_integration_tests = b.addRunArtifact(integration_tests);
@@ -348,7 +326,9 @@ pub fn build(b: *std.Build) void {
     all_tests_step.dependOn(&run_resource_view_tests.step);
 
     // Clean step — removes .zig-cache to force fresh build
-    // Use after patching Zig stdlib or updating dependencies
+    // Use after patching Zig stdlib or updating dependencies.
+    // Zig 0.16: Build.addRemoveDirTree was removed; shell out to rm -rf instead.
     const clean_step = b.step("clean", "Remove .zig-cache for fresh build");
-    clean_step.dependOn(&b.addRemoveDirTree(.{ .cwd_relative = ".zig-cache" }).step);
+    const clean_cmd = b.addSystemCommand(&[_][]const u8{ "rm", "-rf", ".zig-cache" });
+    clean_step.dependOn(&clean_cmd.step);
 }

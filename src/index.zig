@@ -78,6 +78,6 @@ pub const k8s_retry = klient.retry;
 pub const k8s_watch = klient.watch;
 pub const k8s_exec_credential = klient.exec_credential;
 pub const k8s_tls = klient.tls;
-pub const k8s_connection_pool = klient.pool;
+// Note: ConnectionPool was removed in zig-klient v0.3.0 (std.http.Client pools internally).
 pub const k8s_crd = klient.crd;
 pub const KubeconfigParser = klient.KubeconfigParser;

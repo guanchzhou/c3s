@@ -3,27 +3,36 @@ const App = @import("app.zig").App;
 const Cli = @import("cli.zig");
 const Logger = @import("core/logger.zig");
 const panic_hook = @import("panic_hook.zig");
+const runtime = @import("core/runtime.zig");
 const posix = std.posix;
 
-/// Configure global logging to suppress debug spam from zig-yaml dependency
-/// This affects ALL std.log calls in the entire program (including dependencies)
+/// Suppress debug/info spam from dependencies on stderr; c3s logs to file.
+/// This affects ALL std.log calls in the entire program (including dependencies).
 pub const std_options: std.Options = .{
     .log_level = .err,
 };
 
 pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer {
         // Redirect stderr to /dev/null before GPA deinit so leak reports
         // don't pollute the user's terminal. Leaks are logged in c3s.log.
-        const devnull = std.fs.openFileAbsolute("/dev/null", .{ .mode = .write_only }) catch null;
-        if (devnull) |f| {
-            posix.dup2(f.handle, posix.STDERR_FILENO) catch {};
-            f.close();
-        }
+        // Uses posix directly (no std.Io) so it stays valid after the global
+        // io's thread pool has been torn down.
+        if (posix.open("/dev/null", .{ .ACCMODE = .WRONLY }, 0)) |fd| {
+            posix.dup2(fd, posix.STDERR_FILENO) catch {};
+            posix.close(fd);
+        } else |_| {}
         _ = gpa.deinit();
     }
     const allocator = gpa.allocator();
+
+    // Zig 0.16: own one std.Io for the whole program (file I/O, subprocess,
+    // k8s client). Published via runtime.io. Must outlive every io operation,
+    // so its deinit defer is declared before logger/app (LIFO → runs after).
+    var threaded = std.Io.Threaded.init(allocator, .{});
+    defer threaded.deinit();
+    runtime.io = threaded.io();
 
     // Set up signal handlers for graceful shutdown
     // Default system signal handling is sufficient for now.
