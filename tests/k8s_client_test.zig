@@ -17,8 +17,12 @@ test "K8sClient - HTTP Methods" {
 
 test "K8sClient - Config" {
     const allocator = std.testing.allocator;
-    
-    var client = try K8sClient.init(allocator, .{
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var client = try K8sClient.init(allocator, io, .{
         .server = "https://api.cluster.example.com",
         .token = "test-bearer-token",
         .namespace = "test-namespace",
@@ -34,8 +38,12 @@ test "K8sClient - Config" {
 
 test "K8sClient - Default namespace" {
     const allocator = std.testing.allocator;
-    
-    var client = try K8sClient.init(allocator, .{
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var client = try K8sClient.init(allocator, io, .{
         .server = "https://api.cluster.example.com",
     });
     defer client.deinit();
@@ -75,9 +83,9 @@ test "Resource Types - PodSpec" {
         .restartPolicy = "Always",
     };
     
-    try std.testing.expectEqual(1, spec.containers.len);
-    try std.testing.expectEqualStrings("nginx", spec.containers[0].name);
-    try std.testing.expectEqualStrings("nginx:latest", spec.containers[0].image);
+    try std.testing.expectEqual(1, spec.containers.?.len);
+    try std.testing.expectEqualStrings("nginx", spec.containers.?[0].name.?);
+    try std.testing.expectEqualStrings("nginx:latest", spec.containers.?[0].image.?);
     try std.testing.expectEqualStrings("Always", spec.restartPolicy.?);
     
     std.debug.print("✅ PodSpec test passed\n", .{});
@@ -88,47 +96,35 @@ test "Resource Types - ServiceSpec" {
         .{
             .name = "http",
             .protocol = "TCP",
-            .port = 80,
-            .targetPort = 8080,
+            .port = .{ .integer = 80 },
+            .targetPort = .{ .integer = 8080 },
         },
     };
-    
+
     const spec = types.ServiceSpec{
         .ports = &ports,
-        .type_ = "ClusterIP",
+        .@"type" = "ClusterIP",
     };
-    
-    try std.testing.expectEqual(1, spec.ports.len);
-    try std.testing.expectEqualStrings("http", spec.ports[0].name.?);
-    try std.testing.expectEqual(80, spec.ports[0].port);
-    try std.testing.expectEqualStrings("ClusterIP", spec.type_.?);
+
+    try std.testing.expectEqual(1, spec.ports.?.len);
+    try std.testing.expectEqualStrings("http", spec.ports.?[0].name.?);
+    try std.testing.expectEqual(80, spec.ports.?[0].port.?.integer);
+    try std.testing.expectEqualStrings("ClusterIP", spec.@"type".?);
     
     std.debug.print("✅ ServiceSpec test passed\n", .{});
 }
 
 test "Resource Types - DeploymentSpec" {
-    var containers = [_]types.Container{
-        .{
-            .name = "app",
-            .image = "app:v1",
-        },
-    };
-    
+    // selector/template are now std.json.Value in klient v0.3.2; only replicas
+    // is a typed scalar we can assert on here.
     const spec = types.DeploymentSpec{
         .replicas = 3,
-        .selector = .{
-            .matchLabels = null,
-        },
-        .template = .{
-            .spec = .{
-                .containers = &containers,
-            },
-        },
+        .selector = null,
+        .template = null,
     };
-    
+
     try std.testing.expectEqual(3, spec.replicas.?);
-    try std.testing.expectEqual(1, spec.template.spec.containers.len);
-    
+
     std.debug.print("✅ DeploymentSpec test passed\n", .{});
 }
 
@@ -153,12 +149,12 @@ test "Pod Structure" {
     };
     
     // Test structure
-    try std.testing.expectEqualStrings("v1", pod.apiVersion);
-    try std.testing.expectEqualStrings("Pod", pod.kind);
+    try std.testing.expectEqualStrings("v1", pod.apiVersion.?);
+    try std.testing.expectEqualStrings("Pod", pod.kind.?);
     try std.testing.expectEqualStrings("test-pod", pod.metadata.name);
     try std.testing.expectEqualStrings("default", pod.metadata.namespace.?);
-    try std.testing.expectEqualStrings("nginx", pod.spec.?.containers[0].name);
-    try std.testing.expectEqualStrings("nginx:1.21", pod.spec.?.containers[0].image);
+    try std.testing.expectEqualStrings("nginx", pod.spec.?.containers.?[0].name.?);
+    try std.testing.expectEqualStrings("nginx:1.21", pod.spec.?.containers.?[0].image.?);
     
     std.debug.print("✅ Pod structure test passed\n", .{});
 }
