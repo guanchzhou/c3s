@@ -21,7 +21,7 @@ pub const DetailView = struct {
         return DetailView{
             .allocator = allocator,
             .theme = theme,
-            .lines = std.ArrayListUnmanaged([]const u8){},
+            .lines = .empty,
             .title = "Detail",
         };
     }
@@ -53,7 +53,7 @@ pub const DetailView = struct {
         var indent: usize = 0;
         var in_string = false;
         var escape_next = false;
-        var line_buf = std.ArrayListUnmanaged(u8){};
+        var line_buf = std.ArrayListUnmanaged(u8).empty;
         defer line_buf.deinit(self.allocator);
 
         for (json_str) |c| {

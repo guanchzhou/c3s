@@ -12,6 +12,15 @@
 const std = @import("std");
 const math = std.math;
 const posix = std.posix;
+const clock = @import("../core/clock.zig");
+const sys = @import("../core/sys.zig");
+
+/// Write all bytes to a file descriptor. Zig 0.16 routes std.Io.File writes
+/// through a buffered io Writer; these are short OSC sequences to the terminal,
+/// so we write to the fd directly via libc (sys.zig).
+fn writeAllFd(fd: posix.fd_t, bytes: []const u8) !void {
+    try sys.writeAll(fd, bytes);
+}
 
 pub const Rgb = struct {
     r: u8,
@@ -189,7 +198,7 @@ pub fn generate256Palette(base16: [16]Rgb, bg: ?Rgb, fg: ?Rgb) [256]Rgb {
 
 /// Apply palette colors to the terminal using OSC 4.
 /// Only modifies colors in the range [start, end).
-pub fn applyPalette(stdout: std.fs.File, palette: [256]Rgb, start: u16, end: u16) !void {
+pub fn applyPalette(stdout_fd: posix.fd_t, palette: [256]Rgb, start: u16, end: u16) !void {
     if (start >= end) return;
 
     var buf: [8192]u8 = undefined;
@@ -199,7 +208,7 @@ pub fn applyPalette(stdout: std.fs.File, palette: [256]Rgb, start: u16, end: u16
     while (i < end) : (i += 1) {
         // Flush if buffer might be too small for next entry (~30 bytes max)
         if (pos + 32 > buf.len) {
-            try stdout.writeAll(buf[0..pos]);
+            try writeAllFd(stdout_fd,buf[0..pos]);
             pos = 0;
         }
         const c = palette[i];
@@ -210,12 +219,12 @@ pub fn applyPalette(stdout: std.fs.File, palette: [256]Rgb, start: u16, end: u16
     }
 
     if (pos > 0) {
-        try stdout.writeAll(buf[0..pos]);
+        try writeAllFd(stdout_fd,buf[0..pos]);
     }
 }
 
 /// Reset terminal colors to defaults using OSC 104.
-pub fn resetPalette(stdout: std.fs.File, start: u16, end: u16) !void {
+pub fn resetPalette(stdout_fd: posix.fd_t, start: u16, end: u16) !void {
     if (start >= end) return;
 
     var buf: [4096]u8 = undefined;
@@ -224,7 +233,7 @@ pub fn resetPalette(stdout: std.fs.File, start: u16, end: u16) !void {
     var i: usize = start;
     while (i < end) : (i += 1) {
         if (pos + 16 > buf.len) {
-            try stdout.writeAll(buf[0..pos]);
+            try writeAllFd(stdout_fd,buf[0..pos]);
             pos = 0;
         }
         const seq = try std.fmt.bufPrint(buf[pos..], "\x1b]104;{d}\x1b\\", .{i});
@@ -232,13 +241,13 @@ pub fn resetPalette(stdout: std.fs.File, start: u16, end: u16) !void {
     }
 
     if (pos > 0) {
-        try stdout.writeAll(buf[0..pos]);
+        try writeAllFd(stdout_fd,buf[0..pos]);
     }
 }
 
 /// Query the terminal for its current base16 colors (0-15) via OSC 4.
 /// Returns null if the terminal doesn't respond within the timeout.
-pub fn queryTerminalColors(stdin_fd: posix.fd_t, stdout: std.fs.File) ?[16]Rgb {
+pub fn queryTerminalColors(stdin_fd: posix.fd_t, stdout_fd: posix.fd_t) ?[16]Rgb {
     // Send all 16 color queries at once
     var query_buf: [256]u8 = undefined;
     var qpos: usize = 0;
@@ -246,15 +255,15 @@ pub fn queryTerminalColors(stdin_fd: posix.fd_t, stdout: std.fs.File) ?[16]Rgb {
         const s = std.fmt.bufPrint(query_buf[qpos..], "\x1b]4;{d};?\x1b\\", .{i}) catch break;
         qpos += s.len;
     }
-    stdout.writeAll(query_buf[0..qpos]) catch return null;
+    writeAllFd(stdout_fd,query_buf[0..qpos]) catch return null;
 
     // Read responses with 200ms total timeout
     var response: [4096]u8 = undefined;
     var total: usize = 0;
-    const deadline = std.time.milliTimestamp() + 200;
+    const deadline = clock.milliTimestamp() + 200;
 
     while (total < response.len) {
-        const now = std.time.milliTimestamp();
+        const now = clock.milliTimestamp();
         if (now >= deadline) break;
 
         var pollfds = [_]posix.pollfd{
@@ -380,10 +389,10 @@ fn parseHexComponent(hex: []const u8) u8 {
 
 /// Query terminal base16 colors, generate 256-color palette, and apply.
 /// Returns true if the palette was successfully applied.
-pub fn queryAndApplyPalette(stdin_fd: posix.fd_t, stdout: std.fs.File) bool {
-    const base16 = queryTerminalColors(stdin_fd, stdout) orelse return false;
+pub fn queryAndApplyPalette(stdin_fd: posix.fd_t, stdout_fd: posix.fd_t) bool {
+    const base16 = queryTerminalColors(stdin_fd, stdout_fd) orelse return false;
     const palette = generate256Palette(base16, null, null);
-    applyPalette(stdout, palette, 16, 256) catch return false;
+    applyPalette(stdout_fd, palette, 16, 256) catch return false;
     return true;
 }
 

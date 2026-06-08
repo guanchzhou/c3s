@@ -1,6 +1,8 @@
 const std = @import("std");
 const posix = std.posix;
 const terminal = @import("core/terminal.zig");
+const runtime = @import("core/runtime.zig");
+const clock = @import("core/clock.zig");
 const Terminal = terminal.Terminal;
 const Key = terminal.Key;
 const Header = @import("ui/header.zig").Header;
@@ -387,10 +389,10 @@ pub const App = struct {
         const color256 = @import("model/color256.zig");
         const palette_applied = color256.queryAndApplyPalette(
             self.terminal.stdin.handle,
-            self.terminal.stdout,
+            self.terminal.stdout.handle,
         );
         defer if (palette_applied) {
-            color256.resetPalette(self.terminal.stdout, 16, 256) catch {};
+            color256.resetPalette(self.terminal.stdout.handle, 16, 256) catch {};
         };
 
         // Setup SIGWINCH handler for terminal resize
@@ -470,7 +472,7 @@ pub const App = struct {
         if (!size_changed and !self.dirty) return;
 
         // Rate limit rendering to prevent excessive updates (60 FPS max)
-        const now = std.time.nanoTimestamp();
+        const now = clock.nanoTimestamp();
         const elapsed = now - self.last_render_time;
         if (!size_changed and elapsed < self.min_frame_time_ns) {
             return;
@@ -538,10 +540,10 @@ pub const App = struct {
                 self.footer.current_resource = view_name;
                 try BoxDrawing.Box.createBox(&self.terminal, 0, body_start, size.width, body_height, effective_theme.proc_box, effective_theme.main_bg, view_name, .rounded, effective_theme.main_fg, effective_theme.title_highlight);
                 // Render view inside the box (inner coordinates)
-                if (body_height > 2 and size.width > 4) {
-                    const inner_x: u16 = 2; // 1 for border + 1 padding
+                if (body_height > 2 and size.width > 2) {
+                    const inner_x: u16 = 1;
                     const inner_y = body_start + 1;
-                    const inner_w = size.width - 4; // 2 for borders + 2 padding
+                    const inner_w = size.width - 2;
                     const inner_h = body_height - 2;
 
                     // Views that work without a cluster connection
@@ -1143,10 +1145,11 @@ pub const App = struct {
         const paths = try xdg.ensurePaths();
 
         // Read existing config or create new one
-        const existing_content = std.fs.cwd().readFileAlloc(
-            self.allocator,
+        const existing_content = std.Io.Dir.cwd().readFileAlloc(
+            runtime.io,
             paths.config_file,
-            1024 * 1024,
+            self.allocator,
+            .limited(1024 * 1024),
         ) catch "";
         defer if (existing_content.len > 0) self.allocator.free(existing_content);
 
@@ -1209,7 +1212,7 @@ pub const App = struct {
         }
 
         // Write config file
-        try std.fs.cwd().writeFile(.{
+        try std.Io.Dir.cwd().writeFile(runtime.io, .{
             .sub_path = paths.config_file,
             .data = new_config.items,
         });
@@ -1338,8 +1341,9 @@ fn selectThemeCommand(ctx: *Command.CommandContext) !void {
     try app.themes_view.setCurrentTheme(selected_theme);
 }
 
-// SIGWINCH signal handler for terminal resize
-fn handleResize(_: c_int) callconv(.c) void {
+// SIGWINCH signal handler for terminal resize.
+// Zig 0.16: Sigaction.handler_fn takes the SIG enum, not c_int.
+fn handleResize(_: posix.SIG) callconv(.c) void {
     terminal_resized.store(true, .release);
 }
 

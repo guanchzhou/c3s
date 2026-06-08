@@ -26,7 +26,7 @@ pub const HelpView = struct {
         var view = HelpView{
             .allocator = allocator,
             .theme = theme,
-            .help_lines = std.ArrayListUnmanaged([]const u8){},
+            .help_lines = .empty,
             .bindings_vm = bindings_vm,
         };
         
@@ -48,7 +48,7 @@ pub const HelpView = struct {
 
         // Reinitialize with new view type
         self.bindings_vm = try KeyBindingsViewModel.init(self.allocator, view_type);
-        self.help_lines = std.ArrayListUnmanaged([]const u8){};
+        self.help_lines = .empty;
         try self.loadHelpContent();
 
         // Reset scroll position

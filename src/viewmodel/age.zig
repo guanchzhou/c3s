@@ -2,6 +2,7 @@
 /// Parses ISO 8601 timestamps and returns human-readable age strings (e.g. "5d", "3h", "12m").
 const std = @import("std");
 const epoch = std.time.epoch;
+const clock = @import("../core/clock.zig");
 
 /// Parse an ISO 8601 timestamp (e.g. "2024-01-15T10:30:00Z") into epoch seconds.
 /// Returns null if the timestamp is null, too short, or contains invalid values.
@@ -64,7 +65,7 @@ pub fn formatDuration(allocator: std.mem.Allocator, seconds: u64) ![]const u8 {
 /// Caller owns the returned memory.
 pub fn calculateAge(allocator: std.mem.Allocator, timestamp: ?[]const u8) ![]const u8 {
     const created_sec = parseTimestampToEpoch(timestamp) orelse return try allocator.dupe(u8, "n/a");
-    const now_sec = std.time.timestamp();
+    const now_sec = clock.timestamp();
     const diff = now_sec - created_sec;
 
     if (diff < 0) return try allocator.dupe(u8, "0s");

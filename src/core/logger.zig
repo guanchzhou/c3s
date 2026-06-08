@@ -2,8 +2,12 @@ const std = @import("std");
 const mem = std.mem;
 const build_options = @import("build_options");
 const xdg = @import("xdg.zig");
+const runtime = @import("runtime.zig");
+const clock = @import("clock.zig");
+const sys = @import("sys.zig");
+const posix = std.posix;
 
-var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+var gpa = std.heap.DebugAllocator(.{}){};
 const global_allocator = gpa.allocator();
 
 pub const LogLevel = enum {
@@ -15,7 +19,10 @@ pub const LogLevel = enum {
 
 pub const Logger = struct {
     allocator: std.mem.Allocator,
-    log_file: ?std.fs.File = null,
+    // Zig 0.16: std.fs.File writes go through a buffered io Writer. The logger
+    // owns a raw fd opened O_APPEND and writes via libc (sys.zig), keeping the
+    // per-log hot path io-free (only the one-time createDirPath uses std.Io).
+    log_fd: ?posix.fd_t = null,
     level: LogLevel = .info,
     log_dir: []const u8,
     log_file_path: []const u8,
@@ -25,29 +32,20 @@ pub const Logger = struct {
         const log_dir = paths.log_dir;
         const log_file_path = paths.log_file;
 
-        std.fs.cwd().makePath(log_dir) catch |path_err| switch (path_err) {
+        std.Io.Dir.cwd().createDirPath(runtime.io, log_dir) catch |path_err| switch (path_err) {
             error.PathAlreadyExists => {},
             else => return path_err,
         };
 
-        // Open in read-write mode with append semantics
-        const log_file = std.fs.cwd().openFile(log_file_path, .{ 
-            .mode = .read_write 
-        }) catch |file_err| switch (file_err) {
-            error.FileNotFound => blk: {
-                // Create file if it doesn't exist
-                const new_file = try std.fs.cwd().createFile(log_file_path, .{ .read = true });
-                break :blk new_file;
-            },
-            else => return file_err,
-        };
-        
-        // Seek to end for append mode
-        try log_file.seekFromEnd(0);
+        // Open (creating if needed) with append semantics; O_APPEND removes the
+        // need to seek to end before each write. Needs a null-terminated path.
+        const path_z = try global_allocator.dupeZ(u8, log_file_path);
+        defer global_allocator.free(path_z);
+        const log_fd = sys.openAppend(path_z) orelse return error.LogFileOpenFailed;
 
         return Logger{
             .allocator = global_allocator,
-            .log_file = log_file,
+            .log_fd = log_fd,
             .level = level,
             .log_dir = try global_allocator.dupe(u8, log_dir),
             .log_file_path = try global_allocator.dupe(u8, log_file_path),
@@ -55,8 +53,8 @@ pub const Logger = struct {
     }
 
     pub fn deinit(self: *Logger) void {
-        if (self.log_file) |file| {
-            file.close();
+        if (self.log_fd) |fd| {
+            sys.close(fd);
         }
         self.allocator.free(self.log_dir);
         self.allocator.free(self.log_file_path);
@@ -87,8 +85,8 @@ pub const Logger = struct {
     }
 
     fn log(self: *Logger, level: []const u8, comptime format: []const u8, args: anytype) void {
-        if (self.log_file) |file| {
-            const timestamp = std.time.timestamp();
+        if (self.log_fd) |fd| {
+            const timestamp = clock.timestamp();
             const timestamp_str = std.fmt.allocPrint(global_allocator, "{}", .{timestamp}) catch return;
             defer global_allocator.free(timestamp_str);
 
@@ -98,7 +96,8 @@ pub const Logger = struct {
             ) catch return;
             defer global_allocator.free(log_line);
 
-            _ = file.writeAll(log_line) catch {};
+            // O_APPEND fd: each write appends atomically. Best-effort.
+            sys.writeAll(fd, log_line) catch {};
         }
     }
 

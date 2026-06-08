@@ -23,8 +23,8 @@ pub const LogsView = struct {
         return LogsView{
             .allocator = allocator,
             .theme = theme,
-            .lines = std.ArrayListUnmanaged([]const u8){},
-            .filtered_indices = std.ArrayListUnmanaged(usize){},
+            .lines = .empty,
+            .filtered_indices = .empty,
             .title = "Logs",
         };
     }

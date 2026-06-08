@@ -4,6 +4,7 @@ const Cli = @import("cli.zig");
 const Logger = @import("core/logger.zig");
 const panic_hook = @import("panic_hook.zig");
 const runtime = @import("core/runtime.zig");
+const sys = @import("core/sys.zig");
 const posix = std.posix;
 
 /// Suppress debug/info spam from dependencies on stderr; c3s logs to file.
@@ -12,33 +13,26 @@ pub const std_options: std.Options = .{
     .log_level = .err,
 };
 
-pub fn main() !void {
-    var gpa = std.heap.DebugAllocator(.{}){};
+// Zig 0.16: the runtime provides a std.process.Init with a managed allocator,
+// a std.Io (thread pool + leak checking in debug), and command-line args.
+// We publish the io globally via runtime.io so leaf modules can reach it.
+pub fn main(init: std.process.Init) !void {
+    const allocator = init.gpa;
+    runtime.io = init.io;
+
     defer {
-        // Redirect stderr to /dev/null before GPA deinit so leak reports
-        // don't pollute the user's terminal. Leaks are logged in c3s.log.
-        // Uses posix directly (no std.Io) so it stays valid after the global
-        // io's thread pool has been torn down.
-        if (posix.open("/dev/null", .{ .ACCMODE = .WRONLY }, 0)) |fd| {
-            posix.dup2(fd, posix.STDERR_FILENO) catch {};
-            posix.close(fd);
-        } else |_| {}
-        _ = gpa.deinit();
+        // The runtime deinits its debug allocator AFTER main returns and prints
+        // any leak report to stderr. Redirect stderr to /dev/null on exit so it
+        // doesn't pollute the TUI (leaks are captured in c3s.log). posix-only so
+        // it stays valid after the runtime's io is torn down.
+        if (sys.openWrite("/dev/null")) |fd| {
+            sys.dup2(fd, posix.STDERR_FILENO);
+            sys.close(fd);
+        }
     }
-    const allocator = gpa.allocator();
-
-    // Zig 0.16: own one std.Io for the whole program (file I/O, subprocess,
-    // k8s client). Published via runtime.io. Must outlive every io operation,
-    // so its deinit defer is declared before logger/app (LIFO → runs after).
-    var threaded = std.Io.Threaded.init(allocator, .{});
-    defer threaded.deinit();
-    runtime.io = threaded.io();
-
-    // Set up signal handlers for graceful shutdown
-    // Default system signal handling is sufficient for now.
 
     // Parse command line arguments
-    const config = Cli.parseArgs(allocator) catch |err| {
+    const config = Cli.parseArgs(init.minimal.args, allocator) catch |err| {
         // Use std.log.err here because Logger might not be fully initialized or might be corrupted.
         std.log.err("Failed to parse arguments: {}", .{err});
         std.process.exit(1);

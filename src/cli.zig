@@ -35,13 +35,14 @@ pub const Config = struct {
     write: bool = false,
 };
 
-pub fn parseArgs(allocator: std.mem.Allocator) !Config {
+pub fn parseArgs(args_src: std.process.Args, allocator: std.mem.Allocator) !Config {
     var config = Config{};
-    var args = try std.process.argsWithAllocator(allocator);
+    // Zig 0.16: command-line args arrive via std.process.Init (no argv global).
+    var args = try args_src.iterateAllocator(allocator);
     defer args.deinit();
 
     // Skip the program name
-    _ = args.next();
+    _ = args.skip();
 
     while (args.next()) |arg| {
         if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
