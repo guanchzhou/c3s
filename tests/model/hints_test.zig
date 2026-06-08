@@ -5,7 +5,7 @@
 
 const std = @import("std");
 const testing = std.testing;
-const hints_model = @import("../../src/model/hints.zig");
+const hints_model = @import("src").hints;
 
 test "hints: pods hints are valid and accessible" {
     const hints = hints_model.podsHints();

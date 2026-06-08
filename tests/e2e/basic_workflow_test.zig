@@ -24,9 +24,6 @@ test "E2E - application initializes and cleans up" {
     
     // Verify allocation
     try testing.expect(test_data.len == 100);
-    
-    std.debug.print("\n✓ E2E test infrastructure is ready\n", .{});
-    std.debug.print("✓ Future tests will simulate complete user workflows\n", .{});
 }
 
 test "E2E - memory management in typical session" {
@@ -50,8 +47,6 @@ test "E2E - memory management in typical session" {
         const data = try allocator.alloc(u8, 100 + i * 10);
         try allocations.append(allocator, data);
     }
-    
-    std.debug.print("\n✓ Session simulation completed without memory leaks\n", .{});
 }
 
 test "E2E - simulated command execution" {
@@ -79,8 +74,7 @@ test "E2E - simulated command execution" {
         const command_name = cmd[1..];
         try testing.expect(command_name.len > 0);
     }
-    
-    std.debug.print("\n✓ Simulated {} command executions\n", .{commands.len});
+
     _ = allocator;
 }
 
@@ -105,8 +99,6 @@ test "E2E - navigation key sequence" {
     
     try testing.expect(nav_keys > 0);
     try testing.expect(command_keys > 0);
-    
-    std.debug.print("\n✓ Navigation sequence validated: {} nav keys, {} command keys\n", .{ nav_keys, command_keys });
 }
 
 // Note: Real E2E tests would:

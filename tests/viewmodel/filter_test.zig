@@ -1,6 +1,6 @@
 const std = @import("std");
 const testing = std.testing;
-const universal_filter = @import("../src/viewmodel/filter.zig");
+const universal_filter = @import("src").filter;
 
 // Test data structure
 const TestItem = struct {

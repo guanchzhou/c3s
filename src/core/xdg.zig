@@ -32,7 +32,7 @@ pub fn ensurePaths() !*const Paths {
 }
 
 pub fn getPaths() ?*const Paths {
-    return cached;
+    return if (cached) |*p| p else null;
 }
 
 fn computePaths() !Paths {

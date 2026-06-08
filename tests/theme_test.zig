@@ -5,8 +5,8 @@
 
 const std = @import("std");
 const testing = std.testing;
-const Theme = @import("../src/model/theme_loader.zig");
-const Terminal = @import("../src/core/terminal.zig").Terminal;
+const Theme = @import("src").theme_loader;
+const Terminal = @import("src").Terminal;
 
 // Test color constants
 const test_fg = "\x1b[38;2;207;201;194m";

@@ -1,6 +1,6 @@
 const std = @import("std");
 const testing = std.testing;
-const age_util = @import("../src/viewmodel/age.zig");
+const age_util = @import("src").age;
 
 // =============================================================================
 // parseTimestampToEpoch tests

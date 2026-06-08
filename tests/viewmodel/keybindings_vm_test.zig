@@ -5,8 +5,8 @@
 
 const std = @import("std");
 const testing = std.testing;
-const KeyBindingsViewModel = @import("../../src/viewmodel/keybindings_vm.zig").KeyBindingsViewModel;
-const ViewType = @import("../../src/viewmodel/keybindings_vm.zig").ViewType;
+const KeyBindingsViewModel = @import("src").keybindings_vm.KeyBindingsViewModel;
+const ViewType = @import("src").keybindings_vm.ViewType;
 
 test "keybindings_vm: init and deinit for all view types" {
     var gpa = std.heap.DebugAllocator(.{}){};

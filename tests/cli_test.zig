@@ -7,27 +7,26 @@ const testing = std.testing;
 test "logo array is correctly defined" {
     // We can't directly import logo_small as it's private, but we can verify
     // the module compiles and contains the expected structure
-    const cli = @import("cli");
+    const cli = @import("src").cli;
     _ = cli;
 }
 
 test "CLI parseArgs with help flag" {
-    const cli = @import("cli");
-    const allocator = testing.allocator;
-    
+    const cli = @import("src").cli;
+
     // Test would require mocking process.args, which is complex
     // For now, verify the module compiles
     _ = cli.parseArgs;
 }
 
 test "CLI parseArgs with version flag" {
-    const cli = @import("cli");
+    const cli = @import("src").cli;
     _ = cli.parseArgs;
     // Version handling is tested separately in version_test.zig
 }
 
 test "CLI Config default values" {
-    const cli = @import("cli");
+    const cli = @import("src").cli;
     
     const default_config = cli.Config{};
     
@@ -48,9 +47,9 @@ test "CLI Config default values" {
 }
 
 test "CLI Config flag toggles" {
-    const cli = @import("cli");
+    const cli = @import("src").cli;
     
-    var config = cli.Config{
+    const config = cli.Config{
         .all_namespaces = true,
         .debug = true,
         .readonly = true,
@@ -64,7 +63,7 @@ test "CLI Config flag toggles" {
 }
 
 test "CLI Config with custom values" {
-    const cli = @import("cli");
+    const cli = @import("src").cli;
     
     const config = cli.Config{
         .refresh_rate = 5.0,

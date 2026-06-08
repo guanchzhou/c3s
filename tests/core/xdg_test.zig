@@ -1,6 +1,6 @@
 const std = @import("std");
 const testing = std.testing;
-const xdg = @import("../src/core/xdg.zig");
+const xdg = @import("src").xdg;
 
 test "xdg Paths struct has all required fields" {
     const paths = xdg.Paths{

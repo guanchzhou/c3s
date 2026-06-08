@@ -5,19 +5,20 @@
 
 const std = @import("std");
 const testing = std.testing;
-const Header = @import("../../src/ui/header.zig").Header;
-const Terminal = @import("../../src/core/terminal.zig").Terminal;
-const theme_loader = @import("../../src/model/theme_loader.zig");
-const hints_model = @import("../../src/model/hints.zig");
+const Header = @import("src").Header;
+const Terminal = @import("src").Terminal;
+const theme_loader = @import("src").theme_loader;
+const hints_model = @import("src").hints;
 
 test "header: render with empty hints should not crash" {
     var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    const theme = theme_loader.defaultTheme();
+    const theme = try theme_loader.defaultTheme(allocator);
+    defer theme_loader.deinitTheme(@constCast(&theme));
     var header = try Header.init(allocator, &theme, true);
-    defer header.cleanup();
+    defer header.deinit();
 
     // Create terminal (won't actually write to screen in tests)
     var terminal = try Terminal.init(allocator);
@@ -38,9 +39,10 @@ test "header: render with hints that have empty text fields" {
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    const theme = theme_loader.defaultTheme();
+    const theme = try theme_loader.defaultTheme(allocator);
+    defer theme_loader.deinitTheme(@constCast(&theme));
     var header = try Header.init(allocator, &theme, true);
-    defer header.cleanup();
+    defer header.deinit();
 
     var terminal = try Terminal.init(allocator);
     defer terminal.deinit();
@@ -65,9 +67,10 @@ test "header: render with very long hint text" {
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    const theme = theme_loader.defaultTheme();
+    const theme = try theme_loader.defaultTheme(allocator);
+    defer theme_loader.deinitTheme(@constCast(&theme));
     var header = try Header.init(allocator, &theme, true);
-    defer header.cleanup();
+    defer header.deinit();
 
     var terminal = try Terminal.init(allocator);
     defer terminal.deinit();
@@ -92,9 +95,10 @@ test "header: render in very narrow terminal" {
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    const theme = theme_loader.defaultTheme();
+    const theme = try theme_loader.defaultTheme(allocator);
+    defer theme_loader.deinitTheme(@constCast(&theme));
     var header = try Header.init(allocator, &theme, true);
-    defer header.cleanup();
+    defer header.deinit();
 
     var terminal = try Terminal.init(allocator);
     defer terminal.deinit();
@@ -112,9 +116,10 @@ test "header: render with many hints in narrow terminal" {
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    const theme = theme_loader.defaultTheme();
+    const theme = try theme_loader.defaultTheme(allocator);
+    defer theme_loader.deinitTheme(@constCast(&theme));
     var header = try Header.init(allocator, &theme, true);
-    defer header.cleanup();
+    defer header.deinit();
 
     var terminal = try Terminal.init(allocator);
     defer terminal.deinit();
@@ -147,9 +152,10 @@ test "header: compact mode at various widths" {
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    const theme = theme_loader.defaultTheme();
+    const theme = try theme_loader.defaultTheme(allocator);
+    defer theme_loader.deinitTheme(@constCast(&theme));
     var header = try Header.init(allocator, &theme, true);
-    defer header.cleanup();
+    defer header.deinit();
 
     var terminal = try Terminal.init(allocator);
     defer terminal.deinit();
@@ -171,9 +177,10 @@ test "header: non-compact mode progressive hiding" {
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    const theme = theme_loader.defaultTheme();
+    const theme = try theme_loader.defaultTheme(allocator);
+    defer theme_loader.deinitTheme(@constCast(&theme));
     var header = try Header.init(allocator, &theme, true);
-    defer header.cleanup();
+    defer header.deinit();
 
     var terminal = try Terminal.init(allocator);
     defer terminal.deinit();
@@ -192,9 +199,10 @@ test "header: render with special characters in hints" {
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    const theme = theme_loader.defaultTheme();
+    const theme = try theme_loader.defaultTheme(allocator);
+    defer theme_loader.deinitTheme(@constCast(&theme));
     var header = try Header.init(allocator, &theme, true);
-    defer header.cleanup();
+    defer header.deinit();
 
     var terminal = try Terminal.init(allocator);
     defer terminal.deinit();
@@ -220,9 +228,10 @@ test "header: all hint rendering modes" {
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    const theme = theme_loader.defaultTheme();
+    const theme = try theme_loader.defaultTheme(allocator);
+    defer theme_loader.deinitTheme(@constCast(&theme));
     var header = try Header.init(allocator, &theme, true);
-    defer header.cleanup();
+    defer header.deinit();
 
     var terminal = try Terminal.init(allocator);
     defer terminal.deinit();
@@ -249,9 +258,10 @@ test "header: stress test with maximum hints" {
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    const theme = theme_loader.defaultTheme();
+    const theme = try theme_loader.defaultTheme(allocator);
+    defer theme_loader.deinitTheme(@constCast(&theme));
     var header = try Header.init(allocator, &theme, true);
-    defer header.cleanup();
+    defer header.deinit();
 
     var terminal = try Terminal.init(allocator);
     defer terminal.deinit();

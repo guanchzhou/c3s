@@ -1,7 +1,7 @@
 const std = @import("std");
 const testing = std.testing;
-const CommandInput = @import("../src/ui/command_input.zig").CommandInput;
-const theme_loader = @import("../src/model/theme_loader.zig");
+const CommandInput = @import("src").CommandInput;
+const theme_loader = @import("src").theme_loader;
 
 test "CommandInput initialization" {
     const allocator = testing.allocator;
@@ -26,7 +26,7 @@ test "CommandInput show and hide" {
     
     try testing.expect(!cmd_input.visible);
     
-    cmd_input.show(":");
+    cmd_input.showWithPrompt(":");
     try testing.expect(cmd_input.visible);
     try testing.expect(std.mem.eql(u8, cmd_input.prompt, ":"));
     
@@ -42,16 +42,16 @@ test "CommandInput insertChar adds character" {
     var cmd_input = try CommandInput.init(allocator, &theme);
     defer cmd_input.deinit();
     
-    cmd_input.show(":");
+    cmd_input.showWithPrompt(":");
     
-    try cmd_input.insertChar('t');
+    try cmd_input.addChar('t');
     try testing.expectEqual(@as(usize, 1), cmd_input.buffer.items.len);
     try testing.expectEqual(@as(u8, 't'), cmd_input.buffer.items[0]);
     try testing.expectEqual(@as(usize, 1), cmd_input.cursor_pos);
     
-    try cmd_input.insertChar('e');
-    try cmd_input.insertChar('s');
-    try cmd_input.insertChar('t');
+    try cmd_input.addChar('e');
+    try cmd_input.addChar('s');
+    try cmd_input.addChar('t');
     try testing.expectEqual(@as(usize, 4), cmd_input.buffer.items.len);
     try testing.expect(std.mem.eql(u8, cmd_input.buffer.items, "test"));
 }
@@ -64,12 +64,12 @@ test "CommandInput deleteChar removes character" {
     var cmd_input = try CommandInput.init(allocator, &theme);
     defer cmd_input.deinit();
     
-    cmd_input.show(":");
-    try cmd_input.insertChar('a');
-    try cmd_input.insertChar('b');
-    try cmd_input.insertChar('c');
+    cmd_input.showWithPrompt(":");
+    try cmd_input.addChar('a');
+    try cmd_input.addChar('b');
+    try cmd_input.addChar('c');
     
-    cmd_input.deleteChar();
+    cmd_input.backspace();
     try testing.expectEqual(@as(usize, 2), cmd_input.buffer.items.len);
     try testing.expect(std.mem.eql(u8, cmd_input.buffer.items, "ab"));
 }
@@ -82,8 +82,8 @@ test "CommandInput deleteChar on empty buffer does nothing" {
     var cmd_input = try CommandInput.init(allocator, &theme);
     defer cmd_input.deinit();
     
-    cmd_input.show(":");
-    cmd_input.deleteChar();
+    cmd_input.showWithPrompt(":");
+    cmd_input.backspace();
     
     try testing.expectEqual(@as(usize, 0), cmd_input.buffer.items.len);
 }
@@ -96,15 +96,15 @@ test "CommandInput clear resets buffer" {
     var cmd_input = try CommandInput.init(allocator, &theme);
     defer cmd_input.deinit();
     
-    cmd_input.show(":");
-    try cmd_input.insertChar('h');
-    try cmd_input.insertChar('e');
-    try cmd_input.insertChar('l');
-    try cmd_input.insertChar('l');
-    try cmd_input.insertChar('o');
+    cmd_input.showWithPrompt(":");
+    try cmd_input.addChar('h');
+    try cmd_input.addChar('e');
+    try cmd_input.addChar('l');
+    try cmd_input.addChar('l');
+    try cmd_input.addChar('o');
     
-    cmd_input.clear();
-    
+    cmd_input.hide();
+
     try testing.expectEqual(@as(usize, 0), cmd_input.buffer.items.len);
     try testing.expectEqual(@as(usize, 0), cmd_input.cursor_pos);
 }
@@ -117,13 +117,13 @@ test "CommandInput getText returns buffer content" {
     var cmd_input = try CommandInput.init(allocator, &theme);
     defer cmd_input.deinit();
     
-    cmd_input.show(":");
-    try cmd_input.insertChar('t');
-    try cmd_input.insertChar('e');
-    try cmd_input.insertChar('s');
-    try cmd_input.insertChar('t');
+    cmd_input.showWithPrompt(":");
+    try cmd_input.addChar('t');
+    try cmd_input.addChar('e');
+    try cmd_input.addChar('s');
+    try cmd_input.addChar('t');
     
-    const text = cmd_input.getText();
+    const text = cmd_input.getCommand();
     try testing.expect(std.mem.eql(u8, text, "test"));
 }
 
@@ -135,11 +135,11 @@ test "CommandInput prompt can be changed" {
     var cmd_input = try CommandInput.init(allocator, &theme);
     defer cmd_input.deinit();
     
-    cmd_input.show(":");
+    cmd_input.showWithPrompt(":");
     try testing.expect(std.mem.eql(u8, cmd_input.prompt, ":"));
     
     cmd_input.hide();
-    cmd_input.show("/");
+    cmd_input.showWithPrompt("/");
     try testing.expect(std.mem.eql(u8, cmd_input.prompt, "/"));
 }
 
@@ -151,12 +151,12 @@ test "CommandInput cursor position tracks insertions" {
     var cmd_input = try CommandInput.init(allocator, &theme);
     defer cmd_input.deinit();
     
-    cmd_input.show(":");
+    cmd_input.showWithPrompt(":");
     
     try testing.expectEqual(@as(usize, 0), cmd_input.cursor_pos);
-    try cmd_input.insertChar('a');
+    try cmd_input.addChar('a');
     try testing.expectEqual(@as(usize, 1), cmd_input.cursor_pos);
-    try cmd_input.insertChar('b');
+    try cmd_input.addChar('b');
     try testing.expectEqual(@as(usize, 2), cmd_input.cursor_pos);
 }
 
@@ -168,14 +168,14 @@ test "CommandInput cursor position tracks deletions" {
     var cmd_input = try CommandInput.init(allocator, &theme);
     defer cmd_input.deinit();
     
-    cmd_input.show(":");
-    try cmd_input.insertChar('a');
-    try cmd_input.insertChar('b');
-    try cmd_input.insertChar('c');
+    cmd_input.showWithPrompt(":");
+    try cmd_input.addChar('a');
+    try cmd_input.addChar('b');
+    try cmd_input.addChar('c');
     
     try testing.expectEqual(@as(usize, 3), cmd_input.cursor_pos);
-    cmd_input.deleteChar();
+    cmd_input.backspace();
     try testing.expectEqual(@as(usize, 2), cmd_input.cursor_pos);
-    cmd_input.deleteChar();
+    cmd_input.backspace();
     try testing.expectEqual(@as(usize, 1), cmd_input.cursor_pos);
 }

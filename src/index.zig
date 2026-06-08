@@ -64,6 +64,26 @@ pub const color256 = @import("model/color256.zig");
 pub const hints = @import("model/hints.zig");
 pub const fixtures = @import("fixtures/index.zig");
 
+// Additional module re-exports so tests reach src files through the "src"
+// module (Zig 0.16 forbids tests/ from @import("../src/..") across the module
+// boundary; named-module access via index.zig is the supported path).
+pub const xdg = @import("core/xdg.zig");
+pub const runtime = @import("core/runtime.zig");
+pub const clock = @import("core/clock.zig");
+pub const env = @import("core/env.zig");
+pub const sys = @import("core/sys.zig");
+pub const age = @import("viewmodel/age.zig");
+pub const command = @import("viewmodel/command.zig");
+pub const view_manager = @import("viewmodel/view_manager.zig");
+pub const keybindings_vm = @import("viewmodel/keybindings_vm.zig");
+pub const keybindings_data = @import("viewmodel/keybindings_data.zig");
+pub const keybindings = @import("model/keybindings.zig");
+pub const box_drawing = @import("ui/box_drawing.zig");
+pub const command_input = @import("ui/command_input.zig");
+pub const CommandInput = @import("ui/command_input.zig").CommandInput;
+pub const panic_hook = @import("panic_hook.zig");
+pub const cli = @import("cli.zig");
+
 // Services
 pub const K8sService = @import("services/k8s_service.zig").K8sService;
 pub const ClusterInfo = @import("services/k8s_service.zig").ClusterInfo;

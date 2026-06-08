@@ -112,221 +112,77 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_unit_tests.step);
 
-    // Create unit tests for app
-    const app_tests = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("tests/app_test.zig"),
-            .target = target,
-            .optimize = optimize,
-        }),
-    });
-    app_tests.root_module.addImport("src", c3s_module);
-
-    const run_app_tests = b.addRunArtifact(app_tests);
-    const app_test_step = b.step("test-app", "Run app tests");
-    app_test_step.dependOn(&run_app_tests.step);
-
-    // Create integration tests (requires real Kubernetes cluster)
-    const integration_tests = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("tests/integration/k8s_service_integration_test.zig"),
-            .target = target,
-            .optimize = optimize,
-        }),
-    });
-    integration_tests.root_module.addImport("c3s", c3s_module);
-    integration_tests.root_module.addImport("klient", klient.module("klient"));
-    integration_tests.root_module.addOptions("c3s_build", build_opts);
-
-    const run_integration_tests = b.addRunArtifact(integration_tests);
-    const integration_test_step = b.step("test-integration", "Run integration tests (requires K8s cluster)");
-    integration_test_step.dependOn(&run_integration_tests.step);
-
-    // Create K8s client unit tests
-    const k8s_client_tests = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("tests/k8s_client_test.zig"),
-            .target = target,
-            .optimize = optimize,
-        }),
-    });
-    k8s_client_tests.root_module.addImport("src", c3s_module);
-
-    const run_k8s_client_tests = b.addRunArtifact(k8s_client_tests);
-    const k8s_client_test_step = b.step("test-k8s-client", "Run K8s client tests");
-    k8s_client_test_step.dependOn(&run_k8s_client_tests.step);
-
-    // Create K8s resources integration tests
-    const k8s_resources_tests = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("tests/k8s_resources_test.zig"),
-            .target = target,
-            .optimize = optimize,
-        }),
-    });
-    k8s_resources_tests.root_module.addImport("src", c3s_module);
-
-    const run_k8s_resources_tests = b.addRunArtifact(k8s_resources_tests);
-    const k8s_resources_test_step = b.step("test-k8s-resources", "Run K8s resources integration tests");
-    k8s_resources_test_step.dependOn(&run_k8s_resources_tests.step);
-
-    // Create retry tests
-    const retry_tests = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("tests/retry_test.zig"),
-            .target = target,
-            .optimize = optimize,
-        }),
-    });
-    retry_tests.root_module.addImport("src", c3s_module);
-
-    const run_retry_tests = b.addRunArtifact(retry_tests);
-    const retry_test_step = b.step("test-retry", "Run retry logic tests");
-    retry_test_step.dependOn(&run_retry_tests.step);
-
-    // Create new resources tests
-    const new_resources_tests = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("tests/new_resources_test.zig"),
-            .target = target,
-            .optimize = optimize,
-        }),
-    });
-    new_resources_tests.root_module.addImport("src", c3s_module);
-
-    const run_new_resources_tests = b.addRunArtifact(new_resources_tests);
-    const new_resources_test_step = b.step("test-new-resources", "Run new resources structure tests");
-    new_resources_test_step.dependOn(&run_new_resources_tests.step);
-
-    // Create advanced features tests
-    const advanced_features_tests = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("tests/advanced_features_test.zig"),
-            .target = target,
-            .optimize = optimize,
-        }),
-    });
-    advanced_features_tests.root_module.addImport("src", c3s_module);
-
-    const run_advanced_features_tests = b.addRunArtifact(advanced_features_tests);
-    const advanced_features_test_step = b.step("test-advanced", "Run advanced features tests (TLS, Pool, CRD)");
-    advanced_features_test_step.dependOn(&run_advanced_features_tests.step);
-
-    // Create K8s service unit tests
-    const k8s_service_tests = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("tests/services/k8s_service_test.zig"),
-            .target = target,
-            .optimize = optimize,
-        }),
-    });
-    k8s_service_tests.root_module.addImport("c3s", c3s_module);
-
-    const run_k8s_service_tests = b.addRunArtifact(k8s_service_tests);
-    const k8s_service_test_step = b.step("test-k8s-service", "Run K8s service unit tests");
-    k8s_service_test_step.dependOn(&run_k8s_service_tests.step);
-
-    // Create authorization view tests
-    const auth_view_tests = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("tests/view/authorization_view_test.zig"),
-            .target = target,
-            .optimize = optimize,
-        }),
-    });
-    auth_view_tests.root_module.addImport("c3s", c3s_module);
-
-    const run_auth_view_tests = b.addRunArtifact(auth_view_tests);
-    const auth_view_test_step = b.step("test-auth-view", "Run authorization view tests");
-    auth_view_test_step.dependOn(&run_auth_view_tests.step);
-
-    // Create table state unit tests
-    const table_state_tests = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("tests/ui/table_state_test.zig"),
-            .target = target,
-            .optimize = optimize,
-        }),
-    });
-    table_state_tests.root_module.addImport("c3s", c3s_module);
-
-    const run_table_state_tests = b.addRunArtifact(table_state_tests);
-    const table_state_test_step = b.step("test-table-state", "Run table state unit tests");
-    table_state_test_step.dependOn(&run_table_state_tests.step);
-
-    // Create sort utility tests
-    const sort_tests = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("tests/viewmodel/sort_test.zig"),
-            .target = target,
-            .optimize = optimize,
-        }),
-    });
-    sort_tests.root_module.addImport("c3s", c3s_module);
-
-    const run_sort_tests = b.addRunArtifact(sort_tests);
-    const sort_test_step = b.step("test-sort", "Run sort utility tests");
-    sort_test_step.dependOn(&run_sort_tests.step);
-
-    // Create view trait tests
-    const view_trait_tests = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("tests/viewmodel/view_test.zig"),
-            .target = target,
-            .optimize = optimize,
-        }),
-    });
-    view_trait_tests.root_module.addImport("c3s", c3s_module);
-
-    const run_view_trait_tests = b.addRunArtifact(view_trait_tests);
-    const view_trait_test_step = b.step("test-view-trait", "Run view trait tests");
-    view_trait_test_step.dependOn(&run_view_trait_tests.step);
-
-    // Create table layout tests
-    const table_layout_tests = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("tests/ui/table_layout_test.zig"),
-            .target = target,
-            .optimize = optimize,
-        }),
-    });
-    table_layout_tests.root_module.addImport("c3s", c3s_module);
-
-    const run_table_layout_tests = b.addRunArtifact(table_layout_tests);
-    const table_layout_test_step = b.step("test-table-layout", "Run table layout unit tests");
-    table_layout_test_step.dependOn(&run_table_layout_tests.step);
-
-    // Create resource view tests
-    const resource_view_tests = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("tests/view/resource_view_test.zig"),
-            .target = target,
-            .optimize = optimize,
-        }),
-    });
-    resource_view_tests.root_module.addImport("c3s", c3s_module);
-
-    const run_resource_view_tests = b.addRunArtifact(resource_view_tests);
-    const resource_view_test_step = b.step("test-resource-view", "Run resource view tests");
-    resource_view_test_step.dependOn(&run_resource_view_tests.step);
-
-    // Create a step to run all tests
+    // Test targets — every file under tests/ gets a `test-<name>` step and
+    // feeds the aggregate `test-all`. Each test module sees the c3s source tree
+    // (as both "src" and "c3s"), klient, and build options so any import style
+    // resolves; Zig ignores module imports a given test doesn't use.
     const all_tests_step = b.step("test-all", "Run all tests");
     all_tests_step.dependOn(&run_unit_tests.step);
-    all_tests_step.dependOn(&run_app_tests.step);
-    all_tests_step.dependOn(&run_integration_tests.step);
-    all_tests_step.dependOn(&run_k8s_client_tests.step);
-    all_tests_step.dependOn(&run_k8s_resources_tests.step);
-    all_tests_step.dependOn(&run_retry_tests.step);
-    all_tests_step.dependOn(&run_new_resources_tests.step);
-    all_tests_step.dependOn(&run_advanced_features_tests.step);
-    all_tests_step.dependOn(&run_k8s_service_tests.step);
-    all_tests_step.dependOn(&run_auth_view_tests.step);
-    all_tests_step.dependOn(&run_table_state_tests.step);
-    all_tests_step.dependOn(&run_sort_tests.step);
-    all_tests_step.dependOn(&run_view_trait_tests.step);
-    all_tests_step.dependOn(&run_table_layout_tests.step);
-    all_tests_step.dependOn(&run_resource_view_tests.step);
+
+    const TestSpec = struct { step: []const u8, path: []const u8 };
+    const test_specs = [_]TestSpec{
+        .{ .step = "test-advanced", .path = "tests/advanced_features_test.zig" },
+        .{ .step = "test-app", .path = "tests/app_test.zig" },
+        .{ .step = "test-cli", .path = "tests/cli_test.zig" },
+        .{ .step = "test-logger", .path = "tests/core/logger_test.zig" },
+        .{ .step = "test-terminal-input", .path = "tests/core/terminal_input_test.zig" },
+        .{ .step = "test-terminal", .path = "tests/core/terminal_test.zig" },
+        .{ .step = "test-xdg", .path = "tests/core/xdg_test.zig" },
+        .{ .step = "test-basic-workflow", .path = "tests/e2e/basic_workflow_test.zig" },
+        .{ .step = "test-integration", .path = "tests/integration/k8s_service_integration_test.zig" },
+        .{ .step = "test-k8s-client", .path = "tests/k8s_client_test.zig" },
+        .{ .step = "test-k8s-resources", .path = "tests/k8s_resources_test.zig" },
+        .{ .step = "test-memory-leak", .path = "tests/memory_leak_test.zig" },
+        .{ .step = "test-config", .path = "tests/model/config_test.zig" },
+        .{ .step = "test-hints", .path = "tests/model/hints_test.zig" },
+        .{ .step = "test-keybindings", .path = "tests/model/keybindings_test.zig" },
+        .{ .step = "test-theme-loader", .path = "tests/model/theme_loader_test.zig" },
+        .{ .step = "test-theme-security", .path = "tests/model/theme_security_test.zig" },
+        .{ .step = "test-version", .path = "tests/model/version_test.zig" },
+        .{ .step = "test-new-resources", .path = "tests/new_resources_test.zig" },
+        .{ .step = "test-panic-hook", .path = "tests/panic_hook_test.zig" },
+        .{ .step = "test-retry", .path = "tests/retry_test.zig" },
+        .{ .step = "test-k8s-service", .path = "tests/services/k8s_service_test.zig" },
+        .{ .step = "test-theme", .path = "tests/theme_test.zig" },
+        .{ .step = "test-box-drawing", .path = "tests/ui/box_drawing_test.zig" },
+        .{ .step = "test-command-input", .path = "tests/ui/command_input_test.zig" },
+        .{ .step = "test-footer", .path = "tests/ui/footer_test.zig" },
+        .{ .step = "test-header-compact", .path = "tests/ui/header_compact_test.zig" },
+        .{ .step = "test-header-render", .path = "tests/ui/header_render_test.zig" },
+        .{ .step = "test-header", .path = "tests/ui/header_test.zig" },
+        .{ .step = "test-table-layout", .path = "tests/ui/table_layout_test.zig" },
+        .{ .step = "test-table-state", .path = "tests/ui/table_state_test.zig" },
+        .{ .step = "test-auth-view", .path = "tests/view/authorization_view_test.zig" },
+        .{ .step = "test-body-render", .path = "tests/view/body_render_test.zig" },
+        .{ .step = "test-help-view", .path = "tests/view/help_view_test.zig" },
+        .{ .step = "test-pods-view", .path = "tests/view/pods_view_test.zig" },
+        .{ .step = "test-resource-view", .path = "tests/view/resource_view_test.zig" },
+        .{ .step = "test-resource-views", .path = "tests/view/resource_views_test.zig" },
+        .{ .step = "test-themes-view", .path = "tests/view/themes_view_test.zig" },
+        .{ .step = "test-age", .path = "tests/viewmodel/age_test.zig" },
+        .{ .step = "test-command", .path = "tests/viewmodel/command_test.zig" },
+        .{ .step = "test-filter", .path = "tests/viewmodel/filter_test.zig" },
+        .{ .step = "test-keybindings-data", .path = "tests/viewmodel/keybindings_data_test.zig" },
+        .{ .step = "test-keybindings-vm", .path = "tests/viewmodel/keybindings_vm_test.zig" },
+        .{ .step = "test-sort", .path = "tests/viewmodel/sort_test.zig" },
+        .{ .step = "test-view-manager", .path = "tests/viewmodel/view_manager_test.zig" },
+        .{ .step = "test-view-trait", .path = "tests/viewmodel/view_test.zig" },
+    };
+    for (test_specs) |spec| {
+        const t = b.addTest(.{ .root_module = b.createModule(.{
+            .root_source_file = b.path(spec.path),
+            .target = target,
+            .optimize = optimize,
+        }) });
+        t.root_module.addImport("src", c3s_module);
+        t.root_module.addImport("c3s", c3s_module);
+        t.root_module.addImport("klient", klient.module("klient"));
+        t.root_module.addOptions("c3s_build", build_opts);
+        const run = b.addRunArtifact(t);
+        const step = b.step(spec.step, b.fmt("Run {s}", .{spec.path}));
+        step.dependOn(&run.step);
+        all_tests_step.dependOn(&run.step);
+    }
 
     // Clean step — removes .zig-cache to force fresh build
     // Use after patching Zig stdlib or updating dependencies.

@@ -1,6 +1,6 @@
 const std = @import("std");
 const testing = std.testing;
-const version = @import("version");
+const version = @import("src").version;
 
 test "version.string returns formatted version without build suffix when build_number is 0" {
     // The version module should return base_version when build_number is "0" or empty

@@ -2,13 +2,17 @@ const std = @import("std");
 const testing = std.testing;
 const Footer = @import("src").Footer;
 const Terminal = @import("src").Terminal;
+const theme_loader = @import("src").theme_loader;
 
 test "footer initialization and cleanup" {
     var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    var footer = try Footer.init(allocator);
+    const theme = try theme_loader.defaultTheme(allocator);
+    defer theme_loader.deinitTheme(@constCast(&theme));
+
+    var footer = try Footer.init(allocator, &theme);
     defer footer.deinit();
 
     // Test that footer was initialized with default values
@@ -20,7 +24,10 @@ test "footer rendering" {
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    var footer = try Footer.init(allocator);
+    const theme = try theme_loader.defaultTheme(allocator);
+    defer theme_loader.deinitTheme(@constCast(&theme));
+
+    var footer = try Footer.init(allocator, &theme);
     defer footer.deinit();
 
     var terminal = try Terminal.init(allocator);
@@ -41,7 +48,10 @@ test "footer data validation" {
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    var footer = try Footer.init(allocator);
+    const theme = try theme_loader.defaultTheme(allocator);
+    defer theme_loader.deinitTheme(@constCast(&theme));
+
+    var footer = try Footer.init(allocator, &theme);
     defer footer.deinit();
 
     // Test that current_resource is non-empty
@@ -53,13 +63,16 @@ test "footer memory management" {
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
+    const theme = try theme_loader.defaultTheme(allocator);
+    defer theme_loader.deinitTheme(@constCast(&theme));
+
     // Test multiple initialization and cleanup cycles
     for (0..10) |_| {
-        var footer = try Footer.init(allocator);
+        var footer = try Footer.init(allocator, &theme);
         footer.deinit();
     }
     
-    // Test that no memory leaks occurred
-    const allocated = gpa.deinit();
-    try testing.expect(allocated == .ok);
+    // No explicit gpa.deinit() here: the deferred gpa.deinit() runs after the
+    // theme's defer frees its allocation, and DebugAllocator reports any leak
+    // from the footer init/deinit cycles at that point.
 }

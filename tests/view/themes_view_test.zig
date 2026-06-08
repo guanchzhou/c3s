@@ -2,25 +2,36 @@
 // Copyright Authors of C3S
 //
 // Tests for ThemesView
+//
+// ThemesView scans the real filesystem (XDG skins dir, exe-relative skins,
+// CWD/skins) for available themes, so the exact item count is environment
+// dependent. These tests assert structure and bounds-safe behavior rather than
+// a fixed number of injected mock themes (the old mock-injection API is gone).
 
 const std = @import("std");
 const testing = std.testing;
-const ThemesView = @import("../../src/view/themes_view.zig").ThemesView;
-const theme_loader = @import("../../src/model/theme_loader.zig");
+const src = @import("src");
+const ThemesView = src.ThemesView;
+const theme_loader = src.theme_loader;
 
 test "themes_view: init and cleanup" {
     var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    const theme = try theme_loader.defaultTheme(allocator);
-    defer theme_loader.deinitTheme(theme);
+    var theme = try theme_loader.defaultTheme(allocator);
+    defer theme_loader.deinitTheme(&theme);
 
-    var themes_view = try ThemesView.init(allocator, &.{}, &theme);
-    defer themes_view.cleanup();
+    var themes_view = try ThemesView.init(allocator, "tokyo-night", &theme);
+    defer themes_view.deinit();
 
-    try testing.expect(themes_view.selected_row == 0);
-    try testing.expect(themes_view.scroll_offset == 0);
+    // selected_row stays within bounds (or 0 when no themes are discovered).
+    if (themes_view.table.items.items.len == 0) {
+        try testing.expectEqual(@as(u32, 0), themes_view.table.selected_row);
+    } else {
+        try testing.expect(themes_view.table.selected_row < themes_view.table.items.items.len);
+    }
+    try testing.expectEqual(@as(u32, 0), themes_view.table.scroll_offset);
 }
 
 test "themes_view: navigation functions" {
@@ -28,37 +39,32 @@ test "themes_view: navigation functions" {
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    const theme = try theme_loader.defaultTheme(allocator);
-    defer theme_loader.deinitTheme(theme);
+    var theme = try theme_loader.defaultTheme(allocator);
+    defer theme_loader.deinitTheme(&theme);
 
-    // Create mock theme names for testing
-    const mock_themes = [_][]const u8{ "theme1", "theme2", "theme3" };
-    
-    var themes_view = try ThemesView.init(allocator, &mock_themes, &theme);
-    defer themes_view.cleanup();
+    var themes_view = try ThemesView.init(allocator, "tokyo-night", &theme);
+    defer themes_view.deinit();
 
-    // Test navigation
-    try testing.expectEqual(@as(u32, 0), themes_view.selected_row);
-    
-    try themes_view.navigateDown();
-    try testing.expectEqual(@as(u32, 1), themes_view.selected_row);
-    
-    try themes_view.navigateDown();
-    try testing.expectEqual(@as(u32, 2), themes_view.selected_row);
-    
-    // Should not go beyond last item
-    try themes_view.navigateDown();
-    try testing.expectEqual(@as(u32, 2), themes_view.selected_row);
-    
-    try themes_view.navigateUp();
-    try testing.expectEqual(@as(u32, 1), themes_view.selected_row);
-    
-    try themes_view.navigateUp();
-    try testing.expectEqual(@as(u32, 0), themes_view.selected_row);
-    
-    // Should not go below 0
-    try themes_view.navigateUp();
-    try testing.expectEqual(@as(u32, 0), themes_view.selected_row);
+    // Navigation operates on filtered_indices via the underlying TableState and
+    // must be bounds-safe regardless of how many themes exist on disk.
+    const count = themes_view.table.filtered_indices.items.len;
+
+    themes_view.table.gotoTop();
+    try testing.expectEqual(@as(u32, 0), themes_view.table.selected_row);
+
+    // navigateDown should never exceed the last valid row.
+    themes_view.table.navigateDown();
+    if (count > 1) {
+        try testing.expectEqual(@as(u32, 1), themes_view.table.selected_row);
+    } else {
+        try testing.expectEqual(@as(u32, 0), themes_view.table.selected_row);
+    }
+
+    // navigateUp should never go below 0.
+    themes_view.table.navigateUp();
+    try testing.expectEqual(@as(u32, 0), themes_view.table.selected_row);
+    themes_view.table.navigateUp();
+    try testing.expectEqual(@as(u32, 0), themes_view.table.selected_row);
 }
 
 test "themes_view: goto functions" {
@@ -66,19 +72,23 @@ test "themes_view: goto functions" {
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    const theme = try theme_loader.defaultTheme(allocator);
-    defer theme_loader.deinitTheme(theme);
+    var theme = try theme_loader.defaultTheme(allocator);
+    defer theme_loader.deinitTheme(&theme);
 
-    const mock_themes = [_][]const u8{ "t1", "t2", "t3", "t4", "t5" };
-    
-    var themes_view = try ThemesView.init(allocator, &mock_themes, &theme);
-    defer themes_view.cleanup();
+    var themes_view = try ThemesView.init(allocator, "tokyo-night", &theme);
+    defer themes_view.deinit();
 
-    try themes_view.gotoBottom();
-    try testing.expectEqual(@as(u32, 4), themes_view.selected_row);
-    
-    try themes_view.gotoTop();
-    try testing.expectEqual(@as(u32, 0), themes_view.selected_row);
+    const count = themes_view.table.filtered_indices.items.len;
+
+    themes_view.table.gotoBottom();
+    if (count > 0) {
+        try testing.expectEqual(@as(u32, @intCast(count - 1)), themes_view.table.selected_row);
+    } else {
+        try testing.expectEqual(@as(u32, 0), themes_view.table.selected_row);
+    }
+
+    themes_view.table.gotoTop();
+    try testing.expectEqual(@as(u32, 0), themes_view.table.selected_row);
 }
 
 test "themes_view: filter functionality" {
@@ -86,25 +96,29 @@ test "themes_view: filter functionality" {
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    const theme = try theme_loader.defaultTheme(allocator);
-    defer theme_loader.deinitTheme(theme);
+    var theme = try theme_loader.defaultTheme(allocator);
+    defer theme_loader.deinitTheme(&theme);
 
-    const mock_themes = [_][]const u8{ "dracula", "monokai", "nord", "tokyo-night" };
-    
-    var themes_view = try ThemesView.init(allocator, &mock_themes, &theme);
-    defer themes_view.cleanup();
+    var themes_view = try ThemesView.init(allocator, "tokyo-night", &theme);
+    defer themes_view.deinit();
 
-    // Filter for "tokyo"
-    try themes_view.applyFilter("tokyo");
-    try testing.expectEqual(@as(usize, 1), themes_view.filtered_indices.items.len);
-    
-    // Filter for "o" (should match monokai, nord, tokyo-night)
-    try themes_view.applyFilter("o");
-    try testing.expectEqual(@as(usize, 3), themes_view.filtered_indices.items.len);
-    
-    // Clear filter
+    const total = themes_view.table.items.items.len;
+
+    // An empty filter matches every theme.
     try themes_view.applyFilter("");
-    try testing.expectEqual(@as(usize, 4), themes_view.filtered_indices.items.len);
+    try testing.expectEqual(total, themes_view.table.filtered_indices.items.len);
+
+    // A narrow filter never matches more than the total set.
+    try themes_view.applyFilter("tokyo");
+    try testing.expect(themes_view.table.filtered_indices.items.len <= total);
+
+    // A filter that cannot match anything yields zero results.
+    try themes_view.applyFilter("zzz-no-such-theme-zzz");
+    try testing.expectEqual(@as(usize, 0), themes_view.table.filtered_indices.items.len);
+
+    // Clearing the filter restores the full set.
+    try themes_view.applyFilter("");
+    try testing.expectEqual(total, themes_view.table.filtered_indices.items.len);
 }
 
 test "themes_view: page up/down" {
@@ -112,19 +126,21 @@ test "themes_view: page up/down" {
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    const theme = try theme_loader.defaultTheme(allocator);
-    defer theme_loader.deinitTheme(theme);
+    var theme = try theme_loader.defaultTheme(allocator);
+    defer theme_loader.deinitTheme(&theme);
 
-    const mock_themes = [_][]const u8{ "t1", "t2", "t3", "t4", "t5", "t6", "t7", "t8", "t9", "t10" };
-    
-    var themes_view = try ThemesView.init(allocator, &mock_themes, &theme);
-    defer themes_view.cleanup();
+    var themes_view = try ThemesView.init(allocator, "tokyo-night", &theme);
+    defer themes_view.deinit();
 
-    themes_view.visible_rows = 5; // Simulate visible rows
-    
-    try themes_view.pageDown();
-    try testing.expect(themes_view.selected_row > 0);
-    
-    try themes_view.pageUp();
-    try testing.expectEqual(@as(u32, 0), themes_view.selected_row);
+    themes_view.table.visible_rows = 5; // Simulate visible rows
+    themes_view.table.gotoTop();
+
+    // pageDown/pageUp must stay in bounds and return to the top.
+    themes_view.table.pageDown();
+    if (themes_view.table.filtered_indices.items.len > 1) {
+        try testing.expect(themes_view.table.selected_row < themes_view.table.filtered_indices.items.len);
+    }
+
+    themes_view.table.pageUp();
+    try testing.expectEqual(@as(u32, 0), themes_view.table.selected_row);
 }

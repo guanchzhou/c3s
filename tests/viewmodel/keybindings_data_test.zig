@@ -5,8 +5,8 @@
 
 const std = @import("std");
 const testing = std.testing;
-const bindings_data = @import("../../src/viewmodel/keybindings_data.zig");
-const KeyBinding = @import("../../src/model/keybindings.zig").KeyBinding;
+const bindings_data = @import("src").keybindings_data;
+const KeyBinding = @import("src").keybindings.KeyBinding;
 
 test "keybindings_data: all load functions return valid bindings" {
     var gpa = std.heap.DebugAllocator(.{}){};
