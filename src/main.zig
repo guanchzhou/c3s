@@ -18,7 +18,7 @@ pub const std_options: std.Options = .{
 // We publish the io globally via runtime.io so leaf modules can reach it.
 pub fn main(init: std.process.Init) !void {
     const allocator = init.gpa;
-    runtime.io = init.io;
+    runtime.set(init.io);
 
     defer {
         // The runtime deinits its debug allocator AFTER main returns and prints

@@ -133,7 +133,7 @@ fn join(parts: []const []const u8) ![]const u8 {
 }
 
 fn ensureDirExists(path: []const u8) !void {
-    std.Io.Dir.cwd().createDirPath(runtime.io, path) catch |err| switch (err) {
+    std.Io.Dir.cwd().createDirPath(runtime.io(), path) catch |err| switch (err) {
         error.PathAlreadyExists => {},
         else => return err,
     };

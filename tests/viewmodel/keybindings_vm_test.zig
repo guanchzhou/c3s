@@ -9,7 +9,7 @@ const KeyBindingsViewModel = @import("../../src/viewmodel/keybindings_vm.zig").K
 const ViewType = @import("../../src/viewmodel/keybindings_vm.zig").ViewType;
 
 test "keybindings_vm: init and deinit for all view types" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
@@ -44,7 +44,7 @@ test "keybindings_vm: init and deinit for all view types" {
 }
 
 test "keybindings_vm: pods view has expected bindings" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
@@ -73,7 +73,7 @@ test "keybindings_vm: pods view has expected bindings" {
 }
 
 test "keybindings_vm: nodes view has specific bindings" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
@@ -96,7 +96,7 @@ test "keybindings_vm: nodes view has specific bindings" {
 }
 
 test "keybindings_vm: deployments view has scale and restart" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
@@ -118,7 +118,7 @@ test "keybindings_vm: deployments view has scale and restart" {
 }
 
 test "keybindings_vm: all bindings have valid enum values" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
@@ -143,7 +143,7 @@ test "keybindings_vm: all bindings have valid enum values" {
 }
 
 test "keybindings_vm: multiple init calls return same data" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
@@ -161,7 +161,7 @@ test "keybindings_vm: multiple init calls return same data" {
 }
 
 test "keybindings_vm: services view has port-forward binding" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
@@ -180,7 +180,7 @@ test "keybindings_vm: services view has port-forward binding" {
 }
 
 test "keybindings_vm: cronjobs has trigger binding" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 

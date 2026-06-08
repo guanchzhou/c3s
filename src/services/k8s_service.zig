@@ -17,7 +17,7 @@ fn connectWithFallback(
     token: ?[]const u8,
     namespace: ?[]const u8,
 ) !klient.K8sClient {
-    return klient.connectWithFallback(allocator, runtime.io, server, token, namespace);
+    return klient.connectWithFallback(allocator, runtime.io(), server, token, namespace);
 }
 
 // Re-export shared types so existing `@import("services/k8s_service.zig").ClusterInfo` etc. keep working.
@@ -97,7 +97,7 @@ pub const K8sService = struct {
         Logger.info("Connecting to Kubernetes cluster...", .{});
 
         // Parse kubeconfig using klient's YAML parser
-        var parser = klient.KubeconfigParser.init(self.allocator, runtime.io);
+        var parser = klient.KubeconfigParser.init(self.allocator, runtime.io());
 
         var kubeconfig = parser.load() catch |err| {
             Logger.warn("Failed to load kubeconfig: {}", .{err});
@@ -183,7 +183,7 @@ pub const K8sService = struct {
                 Logger.debug("Decoded CA cert: {d} bytes PEM", .{self.tls_ca_data.?.len});
             } else if (cluster.certificate_authority) |ca_path| {
                 // Load CA from file and store for cleanup
-                self.tls_ca_data = try std.Io.Dir.cwd().readFileAlloc(runtime.io, ca_path, self.allocator, .limited(10 * 1024 * 1024));
+                self.tls_ca_data = try std.Io.Dir.cwd().readFileAlloc(runtime.io(), ca_path, self.allocator, .limited(10 * 1024 * 1024));
             }
         }
 
@@ -210,7 +210,7 @@ pub const K8sService = struct {
                 }
 
                 // Attempt direct TLS connection first; if it fails (e.g., TLS init), fall back via kubectl proxy
-                const direct_or_fb = klient.K8sClient.init(self.allocator, runtime.io, .{
+                const direct_or_fb = klient.K8sClient.init(self.allocator, runtime.io(), .{
                     .server = cluster.server,
                     .token = token,
                     .namespace = self.current_namespace,
@@ -249,13 +249,13 @@ pub const K8sService = struct {
                 if (user.client_certificate_data) |base64_cert| {
                     self.tls_cert_data = try klient.tls.decodeBase64Cert(self.allocator, base64_cert);
                 } else if (user.client_certificate) |cert_path| {
-                    self.tls_cert_data = try std.Io.Dir.cwd().readFileAlloc(runtime.io, cert_path, self.allocator, .limited(10 * 1024 * 1024));
+                    self.tls_cert_data = try std.Io.Dir.cwd().readFileAlloc(runtime.io(), cert_path, self.allocator, .limited(10 * 1024 * 1024));
                 }
 
                 if (user.client_key_data) |base64_key| {
                     self.tls_key_data = try klient.tls.decodeBase64Cert(self.allocator, base64_key);
                 } else if (user.client_key) |key_path| {
-                    self.tls_key_data = try std.Io.Dir.cwd().readFileAlloc(runtime.io, key_path, self.allocator, .limited(10 * 1024 * 1024));
+                    self.tls_key_data = try std.Io.Dir.cwd().readFileAlloc(runtime.io(), key_path, self.allocator, .limited(10 * 1024 * 1024));
                 }
 
                 tls_config = klient.tls.TlsConfig{
@@ -265,7 +265,7 @@ pub const K8sService = struct {
                 };
 
                 // Attempt direct TLS mTLS connection; fall back via kubectl proxy on failure
-                const direct_or_fb = klient.K8sClient.init(self.allocator, runtime.io, .{
+                const direct_or_fb = klient.K8sClient.init(self.allocator, runtime.io(), .{
                     .server = cluster.server,
                     .token = null,
                     .namespace = self.current_namespace,
@@ -296,7 +296,7 @@ pub const K8sService = struct {
                 .apiVersion = exec_cfg.api_version orelse "client.authentication.k8s.io/v1beta1",
             };
 
-            const cred = klient.exec_credential.executeCredentialPlugin(self.allocator, runtime.io, exec_config) catch |err| {
+            const cred = klient.exec_credential.executeCredentialPlugin(self.allocator, runtime.io(), exec_config) catch |err| {
                 Logger.warn("Exec credential plugin failed: {any}. Falling back via kubectl proxy", .{err});
                 client.* = try connectWithFallback(
                     self.allocator,
@@ -324,7 +324,7 @@ pub const K8sService = struct {
                 }
 
                 Logger.debug("Creating K8sClient with tls_config={}", .{tls_config != null});
-                const direct_or_fb = klient.K8sClient.init(self.allocator, runtime.io, .{
+                const direct_or_fb = klient.K8sClient.init(self.allocator, runtime.io(), .{
                     .server = cluster.server,
                     .token = token,
                     .namespace = self.current_namespace,
@@ -375,7 +375,7 @@ pub const K8sService = struct {
                 Logger.info("Connected via fallback, api_server: {s}", .{client.api_server});
             } else {
                 // Attempt unauthenticated TLS connection; fall back via kubectl proxy on failure
-                const direct_or_fb = klient.K8sClient.init(self.allocator, runtime.io, .{
+                const direct_or_fb = klient.K8sClient.init(self.allocator, runtime.io(), .{
                     .server = cluster.server,
                     .token = null,
                     .namespace = self.current_namespace,
@@ -429,7 +429,7 @@ pub const K8sService = struct {
     pub fn kubectlRequest(self: *K8sService, path: []const u8) ![]u8 {
         // Don't pass --context; let kubectl use its own current context.
         // This ensures consistency with the user's kubectl configuration.
-        const result = std.process.run(self.allocator, runtime.io, .{
+        const result = std.process.run(self.allocator, runtime.io(), .{
             .argv = &.{ "kubectl", "get", "--raw", path },
             .stdout_limit = .limited(128 * 1024 * 1024), // 128MB max
         });
@@ -453,7 +453,7 @@ pub const K8sService = struct {
     /// This ensures the header displays the correct context info.
     fn updateNamesFromKubectl(self: *K8sService) void {
         // Get current context name
-        const ctx_result = std.process.run(self.allocator, runtime.io, .{
+        const ctx_result = std.process.run(self.allocator, runtime.io(), .{
             .argv = &.{ "kubectl", "config", "current-context" },
             .stdout_limit = .limited(4096),
         }) catch return;
@@ -470,7 +470,7 @@ pub const K8sService = struct {
         self.context_name = self.allocator.dupe(u8, ctx_name) catch return;
 
         // Get cluster and user from context
-        const view_result = std.process.run(self.allocator, runtime.io, .{
+        const view_result = std.process.run(self.allocator, runtime.io(), .{
             .argv = &.{ "kubectl", "config", "view", "--minify", "-o", "jsonpath={.contexts[0].context.cluster},{.contexts[0].context.user},{.contexts[0].context.namespace}" },
             .stdout_limit = .limited(4096),
         }) catch return;
@@ -1198,7 +1198,7 @@ pub const K8sService = struct {
 
     /// List all available contexts from kubeconfig
     pub fn listContexts(self: *K8sService) ![]ContextInfo {
-        var parser = klient.KubeconfigParser.init(self.allocator, runtime.io);
+        var parser = klient.KubeconfigParser.init(self.allocator, runtime.io());
         var kubeconfig = try parser.load();
         defer kubeconfig.deinit(self.allocator);
 
@@ -1245,7 +1245,7 @@ pub const K8sService = struct {
         if (self.use_kubectl) {
             // Use kubectl delete for kubectl mode. Zig 0.16: std.process.run
             // spawns + waits + collects output in one call (output discarded).
-            const result = std.process.run(self.allocator, runtime.io, .{
+            const result = std.process.run(self.allocator, runtime.io(), .{
                 .argv = &.{ "kubectl", "delete", resource_type.resourceName(), name, "-n", namespace },
                 .stdout_limit = .limited(64 * 1024),
             }) catch return error.KubectlFailed;

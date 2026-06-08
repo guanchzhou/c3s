@@ -31,7 +31,7 @@ test "E2E - application initializes and cleans up" {
 
 test "E2E - memory management in typical session" {
     // Test that a typical user session doesn't leak memory
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     
     const allocator = gpa.allocator();

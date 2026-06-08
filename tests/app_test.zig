@@ -1,9 +1,9 @@
 const std = @import("std");
 const testing = std.testing;
-const App = @import("../src/app.zig").App;
+const App = @import("src").App;
 
 test "app initialization and cleanup" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
@@ -16,7 +16,7 @@ test "app initialization and cleanup" {
 }
 
 test "app component initialization" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
@@ -35,7 +35,7 @@ test "app component initialization" {
 }
 
 test "app memory management" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
@@ -51,7 +51,7 @@ test "app memory management" {
 }
 
 test "app state management" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
@@ -67,7 +67,7 @@ test "app state management" {
 }
 
 test "app component interaction" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 

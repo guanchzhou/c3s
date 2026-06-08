@@ -5,7 +5,7 @@ const Terminal = @import("c3s").Terminal;
 const theme_loader = @import("c3s").theme_loader;
 
 test "header initialization and cleanup with debug mode" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
@@ -29,7 +29,7 @@ test "header initialization and cleanup with debug mode" {
 }
 
 test "header initialization without debug mode" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
@@ -55,7 +55,7 @@ test "header initialization without debug mode" {
 }
 
 test "header rendering" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
@@ -83,7 +83,7 @@ test "header rendering" {
 }
 
 test "header data validation" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
@@ -110,7 +110,7 @@ test "header data validation" {
 }
 
 test "header memory management" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 

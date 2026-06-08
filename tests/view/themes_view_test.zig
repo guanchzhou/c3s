@@ -9,7 +9,7 @@ const ThemesView = @import("../../src/view/themes_view.zig").ThemesView;
 const theme_loader = @import("../../src/model/theme_loader.zig");
 
 test "themes_view: init and cleanup" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
@@ -24,7 +24,7 @@ test "themes_view: init and cleanup" {
 }
 
 test "themes_view: navigation functions" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
@@ -62,7 +62,7 @@ test "themes_view: navigation functions" {
 }
 
 test "themes_view: goto functions" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
@@ -82,7 +82,7 @@ test "themes_view: goto functions" {
 }
 
 test "themes_view: filter functionality" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
@@ -108,7 +108,7 @@ test "themes_view: filter functionality" {
 }
 
 test "themes_view: page up/down" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 

@@ -13,7 +13,7 @@ const PodsView = @import("../src/view/pods_view.zig").PodsView;
 const ThemesView = @import("../src/view/themes_view.zig").ThemesView;
 
 test "App init/deinit - no memory leaks" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer {
         const leaked = gpa.deinit();
         if (leaked == .leak) {
@@ -28,7 +28,7 @@ test "App init/deinit - no memory leaks" {
 }
 
 test "Theme loader - no memory leaks" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer {
         const leaked = gpa.deinit();
         if (leaked == .leak) {
@@ -43,7 +43,7 @@ test "Theme loader - no memory leaks" {
 }
 
 test "CommandInput - no memory leaks" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer {
         const leaked = gpa.deinit();
         if (leaked == .leak) {
@@ -70,7 +70,7 @@ test "CommandInput - no memory leaks" {
 }
 
 test "Header - no memory leaks" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer {
         const leaked = gpa.deinit();
         if (leaked == .leak) {
@@ -88,7 +88,7 @@ test "Header - no memory leaks" {
 }
 
 test "Footer - no memory leaks" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer {
         const leaked = gpa.deinit();
         if (leaked == .leak) {
@@ -106,7 +106,7 @@ test "Footer - no memory leaks" {
 }
 
 test "HelpView - no memory leaks" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer {
         const leaked = gpa.deinit();
         if (leaked == .leak) {
@@ -124,7 +124,7 @@ test "HelpView - no memory leaks" {
 }
 
 test "PodsView - no memory leaks" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer {
         const leaked = gpa.deinit();
         if (leaked == .leak) {
@@ -146,7 +146,7 @@ test "PodsView - no memory leaks" {
 }
 
 test "ThemesView - no memory leaks" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer {
         const leaked = gpa.deinit();
         if (leaked == .leak) {
@@ -164,7 +164,7 @@ test "ThemesView - no memory leaks" {
 }
 
 test "Config parsing - no memory leaks" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer {
         const leaked = gpa.deinit();
         if (leaked == .leak) {
@@ -185,7 +185,7 @@ test "Config parsing - no memory leaks" {
 }
 
 test "Multiple allocations and deallocations - no memory leaks" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer {
         const leaked = gpa.deinit();
         if (leaked == .leak) {

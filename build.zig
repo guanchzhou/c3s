@@ -55,6 +55,17 @@ pub fn build(b: *std.Build) void {
     });
     exe.root_module.addImport("klient", klient.module("klient"));
 
+    // Shared module exposing the c3s source tree (src/index.zig) to tests with
+    // klient + build options wired. Reused as both "src" and "c3s" imports so
+    // test targets get a consumable module (index.zig imports klient).
+    const c3s_module = b.createModule(.{
+        .root_source_file = b.path("src/index.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    c3s_module.addImport("klient", klient.module("klient"));
+    c3s_module.addOptions("c3s_build", build_opts);
+
     // Bump step: increments .build_number using a small Zig tool
     const bump_exe = b.addExecutable(.{
         .name = "bump_build",
@@ -109,21 +120,13 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
         }),
     });
-    app_tests.root_module.addAnonymousImport("src", .{ .root_source_file = b.path("src/index.zig") });
+    app_tests.root_module.addImport("src", c3s_module);
 
     const run_app_tests = b.addRunArtifact(app_tests);
     const app_test_step = b.step("test-app", "Run app tests");
     app_test_step.dependOn(&run_app_tests.step);
 
     // Create integration tests (requires real Kubernetes cluster)
-    const c3s_module = b.createModule(.{
-        .root_source_file = b.path("src/index.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    c3s_module.addImport("klient", klient.module("klient"));
-    c3s_module.addOptions("c3s_build", build_opts);
-
     const integration_tests = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("tests/integration/k8s_service_integration_test.zig"),
@@ -147,7 +150,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
         }),
     });
-    k8s_client_tests.root_module.addAnonymousImport("src", .{ .root_source_file = b.path("src/index.zig") });
+    k8s_client_tests.root_module.addImport("src", c3s_module);
 
     const run_k8s_client_tests = b.addRunArtifact(k8s_client_tests);
     const k8s_client_test_step = b.step("test-k8s-client", "Run K8s client tests");
@@ -161,7 +164,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
         }),
     });
-    k8s_resources_tests.root_module.addAnonymousImport("src", .{ .root_source_file = b.path("src/index.zig") });
+    k8s_resources_tests.root_module.addImport("src", c3s_module);
 
     const run_k8s_resources_tests = b.addRunArtifact(k8s_resources_tests);
     const k8s_resources_test_step = b.step("test-k8s-resources", "Run K8s resources integration tests");
@@ -175,7 +178,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
         }),
     });
-    retry_tests.root_module.addAnonymousImport("src", .{ .root_source_file = b.path("src/index.zig") });
+    retry_tests.root_module.addImport("src", c3s_module);
 
     const run_retry_tests = b.addRunArtifact(retry_tests);
     const retry_test_step = b.step("test-retry", "Run retry logic tests");
@@ -189,7 +192,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
         }),
     });
-    new_resources_tests.root_module.addAnonymousImport("src", .{ .root_source_file = b.path("src/index.zig") });
+    new_resources_tests.root_module.addImport("src", c3s_module);
 
     const run_new_resources_tests = b.addRunArtifact(new_resources_tests);
     const new_resources_test_step = b.step("test-new-resources", "Run new resources structure tests");
@@ -203,7 +206,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
         }),
     });
-    advanced_features_tests.root_module.addAnonymousImport("src", .{ .root_source_file = b.path("src/index.zig") });
+    advanced_features_tests.root_module.addImport("src", c3s_module);
 
     const run_advanced_features_tests = b.addRunArtifact(advanced_features_tests);
     const advanced_features_test_step = b.step("test-advanced", "Run advanced features tests (TLS, Pool, CRD)");

@@ -32,7 +32,7 @@ pub const Logger = struct {
         const log_dir = paths.log_dir;
         const log_file_path = paths.log_file;
 
-        std.Io.Dir.cwd().createDirPath(runtime.io, log_dir) catch |path_err| switch (path_err) {
+        std.Io.Dir.cwd().createDirPath(runtime.io(), log_dir) catch |path_err| switch (path_err) {
             error.PathAlreadyExists => {},
             else => return path_err,
         };

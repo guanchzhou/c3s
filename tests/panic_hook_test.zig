@@ -33,7 +33,7 @@ test "panic_hook: signal numbers are valid" {
 }
 
 test "panic_hook: can open log file for writing" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     
     const test_log = "test_panic.log";
@@ -62,7 +62,7 @@ test "panic_hook: timestamp format is valid" {
 }
 
 test "panic_hook: can write stack trace info" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
     
@@ -81,7 +81,7 @@ test "panic_hook: can write stack trace info" {
 }
 
 test "panic_hook: error messages are properly formatted" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
     

@@ -40,7 +40,7 @@ pub fn loadTheme(allocator: std.mem.Allocator, theme_name: []const u8) !ThemeCol
 
     // Try skins dir relative to executable
     var exe_dir_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    if (std.process.executableDirPath(runtime.io, &exe_dir_buf)) |exe_dir_len| {
+    if (std.process.executableDirPath(runtime.io(), &exe_dir_buf)) |exe_dir_len| {
         const exe_dir = exe_dir_buf[0..exe_dir_len];
         const skins_path = std.fs.path.join(allocator, &[_][]const u8{ exe_dir, "skins" }) catch null;
         if (skins_path) |path| {
@@ -56,9 +56,9 @@ pub fn loadTheme(allocator: std.mem.Allocator, theme_name: []const u8) !ThemeCol
 }
 
 fn tryLoadFromDir(allocator: std.mem.Allocator, dir_path: []const u8, file_name: []const u8) ?ThemeColors {
-    var dir = std.Io.Dir.cwd().openDir(runtime.io, dir_path, .{}) catch return null;
-    defer dir.close(runtime.io);
-    const content = dir.readFileAlloc(runtime.io, file_name, allocator, .limited(1024 * 1024)) catch return null;
+    var dir = std.Io.Dir.cwd().openDir(runtime.io(), dir_path, .{}) catch return null;
+    defer dir.close(runtime.io());
+    const content = dir.readFileAlloc(runtime.io(), file_name, allocator, .limited(1024 * 1024)) catch return null;
     defer allocator.free(content);
     return parseSkinFile(allocator, content) catch null;
 }
@@ -67,9 +67,9 @@ pub fn loadThemeFromDir(allocator: std.mem.Allocator, theme_name: []const u8, di
     const file_name = try fmt.allocPrint(allocator, "{s}.yaml", .{theme_name});
     defer allocator.free(file_name);
 
-    var dir = std.Io.Dir.cwd().openDir(runtime.io, dir_path, .{}) catch return defaultTheme(allocator);
-    defer dir.close(runtime.io);
-    const content = dir.readFileAlloc(runtime.io, file_name, allocator, .limited(1024 * 1024)) catch return defaultTheme(allocator);
+    var dir = std.Io.Dir.cwd().openDir(runtime.io(), dir_path, .{}) catch return defaultTheme(allocator);
+    defer dir.close(runtime.io());
+    const content = dir.readFileAlloc(runtime.io(), file_name, allocator, .limited(1024 * 1024)) catch return defaultTheme(allocator);
     defer allocator.free(content);
     return parseSkinFile(allocator, content);
 }

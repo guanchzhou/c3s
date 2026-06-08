@@ -33,7 +33,7 @@ pub fn load(allocator: std.mem.Allocator) !Config {
 
     // Try to read config file
     const config_content = std.Io.Dir.cwd().readFileAlloc(
-        runtime.io,
+        runtime.io(),
         paths.config_file,
         allocator,
         .limited(1024 * 1024), // 1MB max

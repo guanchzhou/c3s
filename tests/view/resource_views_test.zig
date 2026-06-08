@@ -14,7 +14,7 @@ const K8sService = @import("../../src/services/k8s_service.zig").K8sService;
 
 // Test HPAView initialization and cleanup
 test "hpa_view: init and cleanup" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer {
         const leaked = gpa.deinit();
         if (leaked == .leak) {
@@ -45,7 +45,7 @@ test "hpa_view: init and cleanup" {
 
 // Test ContextsView initialization and cleanup
 test "contexts_view: init and cleanup" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer {
         const leaked = gpa.deinit();
         if (leaked == .leak) {
@@ -70,7 +70,7 @@ test "contexts_view: init and cleanup" {
 
 // Test EventsView initialization and cleanup
 test "events_view: init and cleanup" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer {
         const leaked = gpa.deinit();
         if (leaked == .leak) {
@@ -95,7 +95,7 @@ test "events_view: init and cleanup" {
 
 // Test ResourceQuotasView initialization and cleanup
 test "resourcequotas_view: init and cleanup" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer {
         const leaked = gpa.deinit();
         if (leaked == .leak) {
@@ -120,7 +120,7 @@ test "resourcequotas_view: init and cleanup" {
 
 // Test view creation (createView method)
 test "hpa_view: create view interface" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer {
         const leaked = gpa.deinit();
         if (leaked == .leak) {
@@ -148,7 +148,7 @@ test "hpa_view: create view interface" {
 
 // Test contexts view creation
 test "contexts_view: create view interface" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer {
         const leaked = gpa.deinit();
         if (leaked == .leak) {
@@ -173,7 +173,7 @@ test "contexts_view: create view interface" {
 
 // Test multiple init/deinit cycles for memory leaks
 test "hpa_view: multiple init/deinit cycles" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer {
         const leaked = gpa.deinit();
         if (leaked == .leak) {
@@ -197,7 +197,7 @@ test "hpa_view: multiple init/deinit cycles" {
 
 // Test contexts view multiple init/deinit cycles
 test "contexts_view: multiple init/deinit cycles" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer {
         const leaked = gpa.deinit();
         if (leaked == .leak) {
@@ -220,7 +220,7 @@ test "contexts_view: multiple init/deinit cycles" {
 
 // Test events view multiple init/deinit cycles
 test "events_view: multiple init/deinit cycles" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer {
         const leaked = gpa.deinit();
         if (leaked == .leak) {

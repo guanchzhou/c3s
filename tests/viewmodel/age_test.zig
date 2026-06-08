@@ -67,7 +67,7 @@ test "parseTimestampToEpoch: non-numeric input returns null" {
 // =============================================================================
 
 test "formatDuration: seconds (< 60)" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const a = gpa.allocator();
 
@@ -77,7 +77,7 @@ test "formatDuration: seconds (< 60)" {
 }
 
 test "formatDuration: zero seconds" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const a = gpa.allocator();
 
@@ -87,7 +87,7 @@ test "formatDuration: zero seconds" {
 }
 
 test "formatDuration: minutes (60-3599)" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const a = gpa.allocator();
 
@@ -97,7 +97,7 @@ test "formatDuration: minutes (60-3599)" {
 }
 
 test "formatDuration: exactly 60 seconds is 1m" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const a = gpa.allocator();
 
@@ -107,7 +107,7 @@ test "formatDuration: exactly 60 seconds is 1m" {
 }
 
 test "formatDuration: hours (3600-86399)" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const a = gpa.allocator();
 
@@ -117,7 +117,7 @@ test "formatDuration: hours (3600-86399)" {
 }
 
 test "formatDuration: days (>= 86400)" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const a = gpa.allocator();
 
@@ -127,7 +127,7 @@ test "formatDuration: days (>= 86400)" {
 }
 
 test "formatDuration: exactly 1 day" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const a = gpa.allocator();
 
@@ -141,7 +141,7 @@ test "formatDuration: exactly 1 day" {
 // =============================================================================
 
 test "calculateAge: null timestamp returns n/a" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const a = gpa.allocator();
 
@@ -151,7 +151,7 @@ test "calculateAge: null timestamp returns n/a" {
 }
 
 test "calculateAge: invalid timestamp returns n/a" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const a = gpa.allocator();
 
@@ -161,7 +161,7 @@ test "calculateAge: invalid timestamp returns n/a" {
 }
 
 test "calculateAge: valid old timestamp returns days" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const a = gpa.allocator();
 
@@ -174,7 +174,7 @@ test "calculateAge: valid old timestamp returns days" {
 }
 
 test "calculateAge: no memory leaks across multiple calls" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer {
         const check = gpa.deinit();
         if (check == .leak) @panic("Memory leak in calculateAge test");

@@ -120,7 +120,7 @@ pub const Terminal = struct {
         var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
         defer arena.deinit();
         const alloc = arena.allocator();
-        if (std.process.run(alloc, runtime.io, .{
+        if (std.process.run(alloc, runtime.io(), .{
             .argv = &[_][]const u8{ "stty", "size" },
             .stdout_limit = .limited(64),
         })) |res| {
@@ -134,14 +134,14 @@ pub const Terminal = struct {
 
         // 3) Fallback to tput
         const cols = blk: {
-            const res = std.process.run(alloc, runtime.io, .{
+            const res = std.process.run(alloc, runtime.io(), .{
                 .argv = &[_][]const u8{ "tput", "cols" },
                 .stdout_limit = .limited(64),
             }) catch break :blk 0;
             break :blk std.fmt.parseInt(u16, std.mem.trim(u8, res.stdout, " \n\r\t"), 10) catch 0;
         };
         const lines = blk: {
-            const res = std.process.run(alloc, runtime.io, .{
+            const res = std.process.run(alloc, runtime.io(), .{
                 .argv = &[_][]const u8{ "tput", "lines" },
                 .stdout_limit = .limited(64),
             }) catch break :blk 0;

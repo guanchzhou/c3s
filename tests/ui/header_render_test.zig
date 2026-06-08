@@ -11,7 +11,7 @@ const theme_loader = @import("../../src/model/theme_loader.zig");
 const hints_model = @import("../../src/model/hints.zig");
 
 test "header: render with empty hints should not crash" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
@@ -34,7 +34,7 @@ test "header: render with empty hints should not crash" {
 }
 
 test "header: render with hints that have empty text fields" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
@@ -61,7 +61,7 @@ test "header: render with hints that have empty text fields" {
 }
 
 test "header: render with very long hint text" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
@@ -88,7 +88,7 @@ test "header: render with very long hint text" {
 }
 
 test "header: render in very narrow terminal" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
@@ -108,7 +108,7 @@ test "header: render in very narrow terminal" {
 }
 
 test "header: render with many hints in narrow terminal" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
@@ -143,7 +143,7 @@ test "header: render with many hints in narrow terminal" {
 }
 
 test "header: compact mode at various widths" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
@@ -167,7 +167,7 @@ test "header: compact mode at various widths" {
 }
 
 test "header: non-compact mode progressive hiding" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
@@ -188,7 +188,7 @@ test "header: non-compact mode progressive hiding" {
 }
 
 test "header: render with special characters in hints" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
@@ -216,7 +216,7 @@ test "header: render with special characters in hints" {
 }
 
 test "header: all hint rendering modes" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
@@ -245,7 +245,7 @@ test "header: all hint rendering modes" {
 }
 
 test "header: stress test with maximum hints" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 

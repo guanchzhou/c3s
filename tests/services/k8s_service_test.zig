@@ -30,7 +30,7 @@ test "k8s_service: initialization and cleanup" {
 }
 
 test "k8s_service: multiple init/deinit cycles do not leak" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer {
         const leaked = gpa.deinit();
         if (leaked == .leak) @panic("Memory leak in k8s_service init/deinit cycle");
@@ -203,7 +203,7 @@ test "k8s_service: setCurrentNamespace updates namespace" {
 }
 
 test "k8s_service: setCurrentNamespace multiple times does not leak" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer {
         const leaked = gpa.deinit();
         if (leaked == .leak) @panic("Memory leak in setCurrentNamespace test");
@@ -477,7 +477,7 @@ test "k8s_service: AccessCheckResult structure" {
 }
 
 test "k8s_service: PolicyInfo structure and memory" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer {
         const leaked = gpa.deinit();
         if (leaked == .leak) @panic("Memory leak in PolicyInfo test");
@@ -503,7 +503,7 @@ test "k8s_service: PolicyInfo structure and memory" {
 }
 
 test "k8s_service: ConditionInfo structure and memory" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer {
         const leaked = gpa.deinit();
         if (leaked == .leak) @panic("Memory leak in ConditionInfo test");

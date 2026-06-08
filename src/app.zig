@@ -1146,7 +1146,7 @@ pub const App = struct {
 
         // Read existing config or create new one
         const existing_content = std.Io.Dir.cwd().readFileAlloc(
-            runtime.io,
+            runtime.io(),
             paths.config_file,
             self.allocator,
             .limited(1024 * 1024),
@@ -1212,7 +1212,7 @@ pub const App = struct {
         }
 
         // Write config file
-        try std.Io.Dir.cwd().writeFile(runtime.io, .{
+        try std.Io.Dir.cwd().writeFile(runtime.io(), .{
             .sub_path = paths.config_file,
             .data = new_config.items,
         });

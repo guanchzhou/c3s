@@ -12,7 +12,7 @@ const K8sService = c3s.K8sService;
 
 // Test AuthorizationView initialization and cleanup
 test "authorization_view: init and cleanup" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer {
         const leaked = gpa.deinit();
         if (leaked == .leak) {
@@ -45,7 +45,7 @@ test "authorization_view: init and cleanup" {
 
 // Test view creation
 test "authorization_view: create view interface" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer {
         const leaked = gpa.deinit();
         if (leaked == .leak) {
@@ -70,7 +70,7 @@ test "authorization_view: create view interface" {
 
 // Test multiple init/deinit cycles for memory leaks
 test "authorization_view: multiple init/deinit cycles" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer {
         const leaked = gpa.deinit();
         if (leaked == .leak) {
@@ -94,7 +94,7 @@ test "authorization_view: multiple init/deinit cycles" {
 
 // Test tab switching
 test "authorization_view: tab switching via keys" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer {
         const leaked = gpa.deinit();
         if (leaked == .leak) {
@@ -132,7 +132,7 @@ test "authorization_view: tab switching via keys" {
 
 // Test tab cycling via Tab key
 test "authorization_view: tab cycling" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer {
         const leaked = gpa.deinit();
         if (leaked == .leak) {
@@ -163,7 +163,7 @@ test "authorization_view: tab cycling" {
 
 // Test refresh without connection sets error
 test "authorization_view: refresh without connection" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer {
         const leaked = gpa.deinit();
         if (leaked == .leak) {
@@ -197,7 +197,7 @@ test "authorization_view: refresh without connection" {
 
 // Test data row init/deinit
 test "authorization_view: AccessRow memory management" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer {
         const leaked = gpa.deinit();
         if (leaked == .leak) {
@@ -225,7 +225,7 @@ test "authorization_view: AccessRow memory management" {
 
 // Test PolicyRow memory management
 test "authorization_view: PolicyRow memory management" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer {
         const leaked = gpa.deinit();
         if (leaked == .leak) {
@@ -249,7 +249,7 @@ test "authorization_view: PolicyRow memory management" {
 
 // Test ConditionRow memory management
 test "authorization_view: ConditionRow memory management" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer {
         const leaked = gpa.deinit();
         if (leaked == .leak) {
@@ -273,7 +273,7 @@ test "authorization_view: ConditionRow memory management" {
 
 // Test filter application
 test "authorization_view: filter with data" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer {
         const leaked = gpa.deinit();
         if (leaked == .leak) {
@@ -327,7 +327,7 @@ test "authorization_view: filter with data" {
 
 // Test navigation with data
 test "authorization_view: navigation with rows" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer {
         const leaked = gpa.deinit();
         if (leaked == .leak) {
@@ -383,7 +383,7 @@ test "authorization_view: navigation with rows" {
 
 // Test getSelectedResourceInfo
 test "authorization_view: getSelectedResourceInfo returns null" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer {
         const leaked = gpa.deinit();
         if (leaked == .leak) {
@@ -438,7 +438,7 @@ test "authorization_view: PolicyType labels" {
 
 // Test clear operations
 test "authorization_view: clear operations" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer {
         const leaked = gpa.deinit();
         if (leaked == .leak) {
@@ -495,7 +495,7 @@ test "authorization_view: clear operations" {
 
 // Test describe/yaml only works on policy tab
 test "authorization_view: describe/yaml tab restriction" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer {
         const leaked = gpa.deinit();
         if (leaked == .leak) {

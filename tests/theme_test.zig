@@ -14,7 +14,7 @@ const test_bg = "\x1b[49m";
 const test_hi = "\x1b[38;2;247;118;142m";
 
 test "theme: writeStringWithTheme with empty text" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
@@ -26,7 +26,7 @@ test "theme: writeStringWithTheme with empty text" {
 }
 
 test "theme: writeStringWithTheme with very long text" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
@@ -42,7 +42,7 @@ test "theme: writeStringWithTheme with very long text" {
 }
 
 test "theme: writeStringWithTheme with normal text" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
@@ -54,7 +54,7 @@ test "theme: writeStringWithTheme with normal text" {
 }
 
 test "theme: writeStringWithTheme with special characters" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
@@ -67,7 +67,7 @@ test "theme: writeStringWithTheme with special characters" {
 }
 
 test "theme: writeShortcutWithHighlight with empty strings" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
@@ -79,7 +79,7 @@ test "theme: writeShortcutWithHighlight with empty strings" {
 }
 
 test "theme: writeShortcutWithHighlight with normal text" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
@@ -92,7 +92,7 @@ test "theme: writeShortcutWithHighlight with normal text" {
 }
 
 test "theme: buffer size limits" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
