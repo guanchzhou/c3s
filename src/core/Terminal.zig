@@ -6,6 +6,7 @@ const env = @import("env.zig");
 const sys = @import("sys.zig");
 const c = @cImport({
     @cInclude("termios.h");
+    @cInclude("sys/ioctl.h"); // TIOCGWINSZ + struct winsize for terminal size
 });
 
 pub const Terminal = struct {
@@ -102,8 +103,15 @@ pub const Terminal = struct {
     }
 
     pub fn getSize(self: *Terminal) !struct { width: u16, height: u16 } {
-        _ = self;
-        // 0) ioctl path omitted to avoid platform differences
+        // 0) ioctl(TIOCGWINSZ) on the tty fd — the canonical way to get terminal
+        // size: no subprocess, reads the real terminal directly. (stty/tput below
+        // can't be relied on: std.process.run forces child stdin=.ignore, so
+        // `stty size` has no controlling TTY and returns nothing.)
+        var ws: c.winsize = undefined;
+        if (c.ioctl(self.stdout.handle, c.TIOCGWINSZ, &ws) == 0 and ws.ws_col > 0 and ws.ws_row > 0) {
+            return .{ .width = @intCast(ws.ws_col), .height = @intCast(ws.ws_row) };
+        }
+
         // 1) Try environment variables (often accurate in interactive shells)
         if (env.getOwned(std.heap.page_allocator, "COLUMNS")) |cols_str| {
             defer std.heap.page_allocator.free(cols_str);
