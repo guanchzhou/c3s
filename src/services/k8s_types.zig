@@ -45,9 +45,18 @@ pub const ResourceType = enum {
 
     pub fn apiPath(self: ResourceType) []const u8 {
         return switch (self) {
-            .pods, .services, .namespaces, .nodes, .configmaps, .secrets,
-            .persistentvolumes, .persistentvolumeclaims, .serviceaccounts,
-            .events, .resourcequotas, .limitranges,
+            .pods,
+            .services,
+            .namespaces,
+            .nodes,
+            .configmaps,
+            .secrets,
+            .persistentvolumes,
+            .persistentvolumeclaims,
+            .serviceaccounts,
+            .events,
+            .resourcequotas,
+            .limitranges,
             => "/api/v1",
             .deployments, .statefulsets, .daemonsets, .replicasets => "/apis/apps/v1",
             .jobs, .cronjobs => "/apis/batch/v1",

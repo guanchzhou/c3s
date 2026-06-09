@@ -2,7 +2,6 @@ const std = @import("std");
 const testing = std.testing;
 const theme_loader = @import("src").theme_loader;
 
-
 // `parseSkinFile`/`isSafeColorValue` are private in src/model/theme_loader.zig.
 // The supported public entry point that exercises the same parse + safety
 // validation is `loadThemeFromDir(allocator, theme_name, dir_path)`, which reads

@@ -40,9 +40,15 @@ pub const NamespacesView = struct {
             self.allocator.free(self.age);
         }
 
-        fn getName(self: *const NamespaceInfo) []const u8 { return self.name; }
-        fn getAge(self: *const NamespaceInfo) []const u8 { return self.age; }
-        fn getStatus(self: *const NamespaceInfo) []const u8 { return self.status; }
+        fn getName(self: *const NamespaceInfo) []const u8 {
+            return self.name;
+        }
+        fn getAge(self: *const NamespaceInfo) []const u8 {
+            return self.age;
+        }
+        fn getStatus(self: *const NamespaceInfo) []const u8 {
+            return self.status;
+        }
     };
 
     pub fn init(
@@ -279,9 +285,21 @@ pub const NamespacesView = struct {
                     };
                     return .handled;
                 },
-                'N' => { self.table.toggleSort(COL_NAME); self.applySorting(); return .handled; },
-                'A' => { self.table.toggleSort(COL_AGE); self.applySorting(); return .handled; },
-                'S' => { self.table.toggleSort(COL_STATUS); self.applySorting(); return .handled; },
+                'N' => {
+                    self.table.toggleSort(COL_NAME);
+                    self.applySorting();
+                    return .handled;
+                },
+                'A' => {
+                    self.table.toggleSort(COL_AGE);
+                    self.applySorting();
+                    return .handled;
+                },
+                'S' => {
+                    self.table.toggleSort(COL_STATUS);
+                    self.applySorting();
+                    return .handled;
+                },
                 else => return .not_handled,
             },
             .enter => {

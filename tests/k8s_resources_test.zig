@@ -22,26 +22,26 @@ test "Pods Resource - list operations" {
         return error.SkipZigTest;
     };
     defer kubeconfig.deinit(allocator);
-    
+
     const current_ctx = kubeconfig.getCurrentContext() orelse {
         std.debug.print("⚠️  No current context\n", .{});
         return error.SkipZigTest;
     };
-    
+
     const cluster = kubeconfig.getClusterByName(current_ctx.cluster) orelse {
         std.debug.print("⚠️  Cluster not found\n", .{});
         return error.SkipZigTest;
     };
-    
+
     var client = try K8sClient.init(allocator, io, .{
         .server = cluster.server,
         .token = null,
         .namespace = current_ctx.namespace,
     });
     defer client.deinit();
-    
+
     const pods_client = resources.Pods.init(&client);
-    
+
     // Test listAll
     var pod_list = pods_client.client.listAll() catch |err| {
         std.debug.print("⚠️  Could not list pods: {}\n", .{err});
@@ -66,26 +66,26 @@ test "Deployments Resource - operations" {
         return error.SkipZigTest;
     };
     defer kubeconfig.deinit(allocator);
-    
+
     const current_ctx = kubeconfig.getCurrentContext() orelse {
         std.debug.print("⚠️  No current context\n", .{});
         return error.SkipZigTest;
     };
-    
+
     const cluster = kubeconfig.getClusterByName(current_ctx.cluster) orelse {
         std.debug.print("⚠️  Cluster not found\n", .{});
         return error.SkipZigTest;
     };
-    
+
     var client = try K8sClient.init(allocator, io, .{
         .server = cluster.server,
         .token = null,
         .namespace = current_ctx.namespace,
     });
     defer client.deinit();
-    
+
     const deployments = resources.Deployments.init(&client);
-    
+
     // Test listAll deployments
     var deploy_list = deployments.client.listAll() catch |err| {
         std.debug.print("⚠️  Could not list deployments: {}\n", .{err});
@@ -110,26 +110,26 @@ test "Services Resource - list operations" {
         return error.SkipZigTest;
     };
     defer kubeconfig.deinit(allocator);
-    
+
     const current_ctx = kubeconfig.getCurrentContext() orelse {
         std.debug.print("⚠️  No current context\n", .{});
         return error.SkipZigTest;
     };
-    
+
     const cluster = kubeconfig.getClusterByName(current_ctx.cluster) orelse {
         std.debug.print("⚠️  Cluster not found\n", .{});
         return error.SkipZigTest;
     };
-    
+
     var client = try K8sClient.init(allocator, io, .{
         .server = cluster.server,
         .token = null,
         .namespace = current_ctx.namespace,
     });
     defer client.deinit();
-    
+
     const services = resources.Services.init(&client);
-    
+
     // Test listAll services
     var svc_list = services.client.listAll() catch |err| {
         std.debug.print("⚠️  Could not list services: {}\n", .{err});
@@ -154,26 +154,26 @@ test "ConfigMaps Resource - operations" {
         return error.SkipZigTest;
     };
     defer kubeconfig.deinit(allocator);
-    
+
     const current_ctx = kubeconfig.getCurrentContext() orelse {
         std.debug.print("⚠️  No current context\n", .{});
         return error.SkipZigTest;
     };
-    
+
     const cluster = kubeconfig.getClusterByName(current_ctx.cluster) orelse {
         std.debug.print("⚠️  Cluster not found\n", .{});
         return error.SkipZigTest;
     };
-    
+
     var client = try K8sClient.init(allocator, io, .{
         .server = cluster.server,
         .token = null,
         .namespace = current_ctx.namespace,
     });
     defer client.deinit();
-    
+
     const configmaps = resources.ConfigMaps.init(&client);
-    
+
     // Test listAll configmaps
     var cm_list = configmaps.client.listAll() catch |err| {
         std.debug.print("⚠️  Could not list configmaps: {}\n", .{err});
@@ -198,26 +198,26 @@ test "Namespaces Resource - list operations" {
         return error.SkipZigTest;
     };
     defer kubeconfig.deinit(allocator);
-    
+
     const current_ctx = kubeconfig.getCurrentContext() orelse {
         std.debug.print("⚠️  No current context\n", .{});
         return error.SkipZigTest;
     };
-    
+
     const cluster = kubeconfig.getClusterByName(current_ctx.cluster) orelse {
         std.debug.print("⚠️  Cluster not found\n", .{});
         return error.SkipZigTest;
     };
-    
+
     var client = try K8sClient.init(allocator, io, .{
         .server = cluster.server,
         .token = null,
         .namespace = current_ctx.namespace,
     });
     defer client.deinit();
-    
+
     const namespaces = resources.Namespaces.init(&client);
-    
+
     // Test list namespaces (cluster-scoped)
     var ns_list = namespaces.client.listAll() catch |err| {
         std.debug.print("⚠️  Could not list namespaces: {}\n", .{err});
@@ -245,26 +245,26 @@ test "Nodes Resource - list operations" {
         return error.SkipZigTest;
     };
     defer kubeconfig.deinit(allocator);
-    
+
     const current_ctx = kubeconfig.getCurrentContext() orelse {
         std.debug.print("⚠️  No current context\n", .{});
         return error.SkipZigTest;
     };
-    
+
     const cluster = kubeconfig.getClusterByName(current_ctx.cluster) orelse {
         std.debug.print("⚠️  Cluster not found\n", .{});
         return error.SkipZigTest;
     };
-    
+
     var client = try K8sClient.init(allocator, io, .{
         .server = cluster.server,
         .token = null,
         .namespace = current_ctx.namespace,
     });
     defer client.deinit();
-    
+
     const nodes = resources.Nodes.init(&client);
-    
+
     // Test list nodes (cluster-scoped)
     var node_list = nodes.client.listAll() catch |err| {
         std.debug.print("⚠️  Could not list nodes: {}\n", .{err});

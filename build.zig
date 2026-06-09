@@ -190,4 +190,12 @@ pub fn build(b: *std.Build) void {
     const clean_step = b.step("clean", "Remove .zig-cache for fresh build");
     const clean_cmd = b.addSystemCommand(&[_][]const u8{ "rm", "-rf", ".zig-cache" });
     clean_step.dependOn(&clean_cmd.step);
+
+    // Formatting gate (ghostty/Zig convention: zig fmt is enforced).
+    const fmt_step = b.step("fmt", "Check formatting with zig fmt --check");
+    const fmt_check = b.addFmt(.{
+        .paths = &.{ "src", "tests", "tools", "build.zig" },
+        .check = true,
+    });
+    fmt_step.dependOn(&fmt_check.step);
 }

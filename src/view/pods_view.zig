@@ -61,12 +61,24 @@ pub const PodsView = struct {
             self.allocator.free(self.age);
         }
 
-        fn getName(self: *const Pod) []const u8 { return self.name; }
-        fn getStatus(self: *const Pod) []const u8 { return self.status; }
-        fn getAge(self: *const Pod) []const u8 { return self.age; }
-        fn getReady(self: *const Pod) []const u8 { return self.ready; }
-        fn getCpu(self: *const Pod) []const u8 { return self.cpu_l; }
-        fn getMem(self: *const Pod) []const u8 { return self.mem_l; }
+        fn getName(self: *const Pod) []const u8 {
+            return self.name;
+        }
+        fn getStatus(self: *const Pod) []const u8 {
+            return self.status;
+        }
+        fn getAge(self: *const Pod) []const u8 {
+            return self.age;
+        }
+        fn getReady(self: *const Pod) []const u8 {
+            return self.ready;
+        }
+        fn getCpu(self: *const Pod) []const u8 {
+            return self.cpu_l;
+        }
+        fn getMem(self: *const Pod) []const u8 {
+            return self.mem_l;
+        }
     };
 
     pub fn init(allocator: std.mem.Allocator, theme: *theme_loader.ThemeColors, k8s_service: *K8sService) !PodsView {
@@ -515,12 +527,36 @@ pub const PodsView = struct {
                     self.horizontal_scroll.scrollToEnd();
                     return .handled;
                 },
-                'N' => { self.table.toggleSort(COL_NAME); self.applySorting(); return .handled; },
-                'S' => { self.table.toggleSort(COL_STATUS); self.applySorting(); return .handled; },
-                'A' => { self.table.toggleSort(COL_AGE); self.applySorting(); return .handled; },
-                'R' => { self.table.toggleSort(COL_READY); self.applySorting(); return .handled; },
-                'C' => { self.table.toggleSort(COL_CPU); self.applySorting(); return .handled; },
-                'M' => { self.table.toggleSort(COL_MEM); self.applySorting(); return .handled; },
+                'N' => {
+                    self.table.toggleSort(COL_NAME);
+                    self.applySorting();
+                    return .handled;
+                },
+                'S' => {
+                    self.table.toggleSort(COL_STATUS);
+                    self.applySorting();
+                    return .handled;
+                },
+                'A' => {
+                    self.table.toggleSort(COL_AGE);
+                    self.applySorting();
+                    return .handled;
+                },
+                'R' => {
+                    self.table.toggleSort(COL_READY);
+                    self.applySorting();
+                    return .handled;
+                },
+                'C' => {
+                    self.table.toggleSort(COL_CPU);
+                    self.applySorting();
+                    return .handled;
+                },
+                'M' => {
+                    self.table.toggleSort(COL_MEM);
+                    self.applySorting();
+                    return .handled;
+                },
                 '?' => return .request_command_palette,
                 else => return .not_handled,
             },

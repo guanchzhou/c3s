@@ -35,10 +35,10 @@ test "footer rendering" {
 
     // Test that rendering doesn't crash
     try footer.render(&terminal, 0, 0, 80, 1);
-    
+
     // Test rendering at different positions
     try footer.render(&terminal, 10, 5, 100, 1);
-    
+
     // Test rendering with different sizes
     try footer.render(&terminal, 0, 0, 120, 1);
 }
@@ -71,7 +71,7 @@ test "footer memory management" {
         var footer = try Footer.init(allocator, &theme);
         footer.deinit();
     }
-    
+
     // No explicit gpa.deinit() here: the deferred gpa.deinit() runs after the
     // theme's defer frees its allocation, and DebugAllocator reports any leak
     // from the footer init/deinit cycles at that point.

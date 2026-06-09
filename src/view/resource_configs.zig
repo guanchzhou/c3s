@@ -106,7 +106,7 @@ fn transformService(svc: klient.types.Service, alloc: std.mem.Allocator) ![7][]c
         try alloc.dupe(u8, if (svc.metadata.namespace) |ns| ns else "default"),
         try alloc.dupe(u8, svc.metadata.name),
         if (svc.spec) |spec|
-            try alloc.dupe(u8, spec.@"type" orelse "ClusterIP")
+            try alloc.dupe(u8, spec.type orelse "ClusterIP")
         else
             try alloc.dupe(u8, "Unknown"),
         if (svc.spec) |spec|

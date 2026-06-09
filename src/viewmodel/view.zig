@@ -115,7 +115,11 @@ pub const View = struct {
 
     // Default no-op implementations for optional vtable methods
     fn noopApplyFilter(_: *anyopaque, _: []const u8) anyerror!void {}
-    fn noopClearFilter(_: *anyopaque) anyerror!bool { return false; }
+    fn noopClearFilter(_: *anyopaque) anyerror!bool {
+        return false;
+    }
     fn noopRefresh(_: *anyopaque) anyerror!void {}
-    fn noopGetSelectedResource(_: *anyopaque) ?ResourceInfo { return null; }
+    fn noopGetSelectedResource(_: *anyopaque) ?ResourceInfo {
+        return null;
+    }
 };

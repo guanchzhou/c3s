@@ -6,7 +6,7 @@ const Logger = @import("../core/logger.zig");
 pub const Command = struct {
     name: []const u8,
     execute: *const fn (ctx: *CommandContext) anyerror!void,
-    
+
     pub const CommandContext = struct {
         allocator: std.mem.Allocator,
         view_manager: *ViewManager,
@@ -18,24 +18,24 @@ pub const Command = struct {
 pub const CommandRegistry = struct {
     allocator: std.mem.Allocator,
     commands: std.StringHashMap(Command),
-    
+
     pub fn init(allocator: std.mem.Allocator) !CommandRegistry {
         return CommandRegistry{
             .allocator = allocator,
             .commands = std.StringHashMap(Command).init(allocator),
         };
     }
-    
+
     pub fn deinit(self: *CommandRegistry) void {
         self.commands.deinit();
     }
-    
+
     /// Register a command
     pub fn register(self: *CommandRegistry, name: []const u8, command: Command) !void {
         try self.commands.put(name, command);
         Logger.debug("CommandRegistry: Registered command '{s}'", .{name});
     }
-    
+
     /// Execute a command by name
     pub fn execute(self: *CommandRegistry, name: []const u8, ctx: *Command.CommandContext) !bool {
         if (self.commands.get(name)) |command| {
@@ -46,7 +46,7 @@ pub const CommandRegistry = struct {
         Logger.warn("CommandRegistry: Unknown command '{s}'", .{name});
         return false;
     }
-    
+
     /// Get all available command names
     pub fn getCommandNames(self: *CommandRegistry) ![][]const u8 {
         var names = std.ArrayListUnmanaged([]const u8).empty;

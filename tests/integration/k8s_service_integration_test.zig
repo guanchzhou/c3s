@@ -3,7 +3,7 @@ const testing = std.testing;
 const K8sService = @import("c3s").K8sService;
 
 // Integration tests for K8sService with real Kubernetes cluster
-// 
+//
 // Requirements:
 // - Valid kubeconfig at ~/.kube/config
 // - Accessible Kubernetes cluster

@@ -48,12 +48,12 @@ pub fn parseArgs(args_src: std.process.Args, allocator: std.mem.Allocator) !Conf
         if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
             printHelp();
             std.process.exit(0);
-            } else if (std.mem.eql(u8, arg, "--version") or std.mem.eql(u8, arg, "version")) {
-                printVersion();
-                std.process.exit(0);
-            } else if (std.mem.eql(u8, arg, "info")) {
-                printInfo();
-                std.process.exit(0);
+        } else if (std.mem.eql(u8, arg, "--version") or std.mem.eql(u8, arg, "version")) {
+            printVersion();
+            std.process.exit(0);
+        } else if (std.mem.eql(u8, arg, "info")) {
+            printInfo();
+            std.process.exit(0);
         } else if (std.mem.eql(u8, arg, "--all-namespaces") or std.mem.eql(u8, arg, "-A")) {
             config.all_namespaces = true;
         } else if (std.mem.eql(u8, arg, "--context")) {
@@ -119,7 +119,7 @@ pub fn parseArgs(args_src: std.process.Args, allocator: std.mem.Allocator) !Conf
 }
 
 fn printHelp() void {
-    const help_text = 
+    const help_text =
         \\C3S is a CLI to view and manage your Kubernetes clusters.
         \\
         \\Usage:
@@ -150,7 +150,7 @@ fn printHelp() void {
         \\      --logFile string                 Specify the log file (default "/Users/andreymaltsev/Library/Application Support/c3s/c3s.log")
         \\  -l, --logLevel string                Specify a log level (error, warn, info, debug) (default "info")
         \\      --debug                          Enable debug mode (sets log level to debug)
-            \\      --logoless                       Turn C3S logo off
+        \\      --logoless                       Turn C3S logo off
         \\  -n, --namespace string               If present, the namespace scope for this CLI request
         \\      --readonly                       Sets readOnly mode by overriding readOnly configuration setting
         \\  -r, --refresh float32                Specify the default refresh rate as a float (sec) (default 2)
@@ -206,7 +206,7 @@ fn printInfo() void {
     };
 
     const ver = formatVersion();
-    
+
     // Cyan color
     const cyan = "\x1b[36m";
 

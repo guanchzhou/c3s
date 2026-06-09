@@ -57,7 +57,7 @@ tests work without `main`); `main(init: std.process.Init)` calls `runtime.set(in
 
 ## Conventions
 
-- `snake_case` functions, `PascalCase` types. GoDoc-style comments on public fns.
+- `camelCase` functions, `PascalCase` types, `snake_case` fields/locals (Zig std / ghostty style). GoDoc-style comments on public fns. `zig fmt` enforced (`zig build fmt`).
 - Allocators explicit; `defer deinit()` always. ArenaAllocator for temporary data.
 - Tests mirror src tree (`tests/ui/header_test.zig` ↔ `src/ui/header.zig`); use `@import("c3s")`.
 - Fixtures in `src/fixtures/`: `fixtures.k8s_data.getData(debug)` picks dummy vs n/a.

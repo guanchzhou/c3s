@@ -30,7 +30,7 @@ test "keybindings: generateHelpContent with normal bindings" {
 
     // Should have title, empty line, headers, data rows, and footer
     try testing.expect(lines.items.len >= 5);
-    
+
     // First line should be title
     try testing.expect(std.mem.indexOf(u8, lines.items[0], "C3S") != null);
 }

@@ -13,12 +13,12 @@ pub const K8sData = struct {
 /// Default test data (minikube node, fred context)
 /// Source: testdata/k8s/nodes/no.json + testdata/k8s/config/kubeconfig
 pub const default_data = K8sData{
-    .context = "fred [RW]",           // from kubeconfig current-context
-    .cluster = "zorg",                // from fred context cluster
-    .user = "fred",                   // from fred context user
-    .k8s_version = "v1.15.2",         // from minikube node kubeletVersion
-    .cpu_usage = 25,                  // simulated based on 4 CPU capacity
-    .mem_usage = 35,                  // simulated based on 8GB capacity
+    .context = "fred [RW]", // from kubeconfig current-context
+    .cluster = "zorg", // from fred context cluster
+    .user = "fred", // from fred context user
+    .k8s_version = "v1.15.2", // from minikube node kubeletVersion
+    .cpu_usage = 25, // simulated based on 4 CPU capacity
+    .mem_usage = 35, // simulated based on 8GB capacity
 };
 
 /// Minimal test data - very short values for testing compression
@@ -34,10 +34,10 @@ pub const minimal_data = K8sData{
 /// Blee context test data (alternate context)
 /// Source: testdata/k8s/config/kubeconfig (blee context)
 pub const blee_data = K8sData{
-    .context = "blee [RW]",           // from kubeconfig
-    .cluster = "blee",                // from blee context cluster
-    .user = "blee",                   // from blee context user
-    .k8s_version = "v1.15.2",         // same minikube version
+    .context = "blee [RW]", // from kubeconfig
+    .cluster = "blee", // from blee context cluster
+    .user = "blee", // from blee context user
+    .k8s_version = "v1.15.2", // same minikube version
     .cpu_usage = 18,
     .mem_usage = 42,
 };
@@ -48,9 +48,9 @@ pub const minikube_data = K8sData{
     .context = "minikube [RW]",
     .cluster = "minikube",
     .user = "minikube",
-    .k8s_version = "v1.15.2",         // from no.json kubeletVersion
-    .cpu_usage = 22,                  // 4 CPU capacity
-    .mem_usage = 48,                  // 8165556Ki capacity (~8GB)
+    .k8s_version = "v1.15.2", // from no.json kubeletVersion
+    .cpu_usage = 22, // 4 CPU capacity
+    .mem_usage = 48, // 8165556Ki capacity (~8GB)
 };
 
 /// Production-like test data - longer realistic names
@@ -77,7 +77,7 @@ pub const high_load_data = K8sData{
 /// Source: testdata/k8s/config/kubeconfig (all 3 contexts)
 pub const multi_cluster_data = [_]K8sData{
     .{
-        .context = "fred [RW]",              // current-context from kubeconfig
+        .context = "fred [RW]", // current-context from kubeconfig
         .cluster = "zorg",
         .user = "fred",
         .k8s_version = "v1.15.2",
@@ -85,7 +85,7 @@ pub const multi_cluster_data = [_]K8sData{
         .mem_usage = 35,
     },
     .{
-        .context = "blee [RW]",              // alternate context (namespace: zorg)
+        .context = "blee [RW]", // alternate context (namespace: zorg)
         .cluster = "blee",
         .user = "blee",
         .k8s_version = "v1.15.2",
@@ -93,7 +93,7 @@ pub const multi_cluster_data = [_]K8sData{
         .mem_usage = 42,
     },
     .{
-        .context = "duh [RW]",               // third context from kubeconfig
+        .context = "duh [RW]", // third context from kubeconfig
         .cluster = "duh",
         .user = "duh",
         .k8s_version = "v1.15.2",

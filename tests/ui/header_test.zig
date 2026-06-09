@@ -106,7 +106,7 @@ test "header data validation" {
     try testing.expect(header.user.len > 0);
     try testing.expect(header.app_version.len > 0);
     try testing.expect(header.k8s_version.len > 0);
-    
+
     // Test that numeric values are within reasonable ranges
     try testing.expect(header.cpu_usage >= 0 and header.cpu_usage <= 100);
     try testing.expect(header.mem_usage >= 0 and header.mem_usage <= 100);
@@ -129,7 +129,7 @@ test "header memory management" {
         var header = try Header.init(allocator, theme, true);
         header.deinit();
     }
-    
+
     // No explicit gpa.deinit() here: the deferred gpa.deinit() runs after the
     // theme's defer frees its allocation, and DebugAllocator reports any leak
     // from the header init/deinit cycles at that point.

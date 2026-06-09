@@ -258,8 +258,7 @@ pub const ThemesView = struct {
 
             // Fill row background
             if (width > 0) {
-                try terminal.fillRow(x, row_y, width, active_theme.main_fg,
-                    if (is_selected) active_theme.selected_bg else active_theme.main_bg);
+                try terminal.fillRow(x, row_y, width, active_theme.main_fg, if (is_selected) active_theme.selected_bg else active_theme.main_bg);
             }
 
             // Enabled marker (small bullet, same as pods page)

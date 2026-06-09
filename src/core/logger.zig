@@ -90,7 +90,8 @@ pub const Logger = struct {
             const timestamp_str = std.fmt.allocPrint(global_allocator, "{}", .{timestamp}) catch return;
             defer global_allocator.free(timestamp_str);
 
-            const log_line = std.fmt.allocPrint(global_allocator,
+            const log_line = std.fmt.allocPrint(
+                global_allocator,
                 "[{s}] {s}: " ++ format ++ "\n",
                 .{ timestamp_str, level } ++ args,
             ) catch return;

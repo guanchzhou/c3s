@@ -163,7 +163,7 @@ test "CommandRegistry - getCommandNames" {
     defer allocator.free(names);
 
     try testing.expectEqual(@as(usize, 2), names.len);
-    
+
     // Names should include "first" and "second"
     var found_first = false;
     var found_second = false;

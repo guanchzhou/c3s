@@ -24,7 +24,7 @@ pub const ThemeColors = struct {
     app_name: []const u8,
     prompt_fg: []const u8,
     prompt_bg: []const u8,
-    
+
     allocator: std.mem.Allocator,
 };
 
@@ -93,7 +93,7 @@ pub fn defaultTheme(allocator: std.mem.Allocator) !ThemeColors {
         .key_highlight = try hexToAnsi(allocator, "#f7768e"),
         .title_highlight = try hexToAnsi(allocator, "#e0af68"),
         .app_name = try allocator.dupe(u8, "\x1b[1;97m"),
-        .prompt_fg = try hexToAnsi(allocator, "#cfc9c2"),  // Same as selected_fg
+        .prompt_fg = try hexToAnsi(allocator, "#cfc9c2"), // Same as selected_fg
         .prompt_bg = try hexToBgAnsi(allocator, "#414868"), // Same as selected_bg
     };
 }
@@ -269,7 +269,7 @@ fn countUniqueKeys() usize {
 fn isSafeColorValue(value: []const u8) bool {
     // Empty values are not safe
     if (value.len == 0) return false;
-    
+
     // Check for shell command injection patterns
     const unsafe_chars = "|&;$`<>(){}[]!~";
     for (value) |c| {
@@ -277,26 +277,26 @@ fn isSafeColorValue(value: []const u8) bool {
             if (c == unsafe) return false;
         }
     }
-    
+
     // Check for common command injection strings
     const unsafe_patterns = [_][]const u8{
-        "exec", "eval", "system", "bash", "sh", "zsh",
-        "../", "~/", "/bin", "/usr", "/etc",
-        "curl", "wget", "nc", "netcat", "rm", "chmod",
+        "exec", "eval", "system", "bash", "sh",    "zsh",
+        "../",  "~/",   "/bin",   "/usr", "/etc",  "curl",
+        "wget", "nc",   "netcat", "rm",   "chmod",
     };
     const lower_value = std.ascii.allocLowerString(std.heap.page_allocator, value) catch return false;
     defer std.heap.page_allocator.free(lower_value);
-    
+
     for (unsafe_patterns) |pattern| {
         if (mem.indexOf(u8, lower_value, pattern) != null) return false;
     }
-    
+
     // Valid values should be:
     // - Hex colors: #RGB or #RRGGBB
     // - Named colors: lowercase alphabetic
     // - Aliases: *name
     // - "default"
-    
+
     if (mem.eql(u8, value, "default")) return true;
     if (value[0] == '#' and (value.len == 4 or value.len == 7)) {
         // Validate hex characters
@@ -316,7 +316,7 @@ fn isSafeColorValue(value: []const u8) bool {
     for (value) |c| {
         if (!ascii.isLower(c) and c != '-') return false;
     }
-    
+
     return true;
 }
 
@@ -325,39 +325,51 @@ const ColorKind = enum { fg, bg };
 const ThemeMapping = struct {
     yaml_key: []const u8,
     field: enum {
-        main_fg, main_bg, title, hi_fg,
-        selected_bg, selected_fg, inactive_fg,
-        proc_box, div_line,
-        status_running, status_pending, status_failed, status_succeeded,
-        key_highlight, title_highlight, app_name,
-        prompt_fg, prompt_bg,
+        main_fg,
+        main_bg,
+        title,
+        hi_fg,
+        selected_bg,
+        selected_fg,
+        inactive_fg,
+        proc_box,
+        div_line,
+        status_running,
+        status_pending,
+        status_failed,
+        status_succeeded,
+        key_highlight,
+        title_highlight,
+        app_name,
+        prompt_fg,
+        prompt_bg,
     },
     kind: ColorKind,
 };
 
 const theme_mappings = [_]ThemeMapping{
     // Body
-    .{ .yaml_key = "k9s.body.fgColor",                    .field = .main_fg,           .kind = .fg },
-    .{ .yaml_key = "k9s.body.bgColor",                    .field = .main_bg,           .kind = .bg },
+    .{ .yaml_key = "k9s.body.fgColor", .field = .main_fg, .kind = .fg },
+    .{ .yaml_key = "k9s.body.bgColor", .field = .main_bg, .kind = .bg },
     // Frame
-    .{ .yaml_key = "k9s.frame.title.fgColor",             .field = .title,             .kind = .fg },
-    .{ .yaml_key = "k9s.frame.title.highlightColor",      .field = .title_highlight,   .kind = .fg },
-    .{ .yaml_key = "k9s.frame.menu.keyColor",             .field = .hi_fg,             .kind = .fg },
-    .{ .yaml_key = "k9s.frame.menu.keyColor",             .field = .key_highlight,     .kind = .fg },
-    .{ .yaml_key = "k9s.frame.border.fgColor",            .field = .proc_box,          .kind = .fg },
-    .{ .yaml_key = "k9s.frame.border.fgColor",            .field = .div_line,          .kind = .fg },
+    .{ .yaml_key = "k9s.frame.title.fgColor", .field = .title, .kind = .fg },
+    .{ .yaml_key = "k9s.frame.title.highlightColor", .field = .title_highlight, .kind = .fg },
+    .{ .yaml_key = "k9s.frame.menu.keyColor", .field = .hi_fg, .kind = .fg },
+    .{ .yaml_key = "k9s.frame.menu.keyColor", .field = .key_highlight, .kind = .fg },
+    .{ .yaml_key = "k9s.frame.border.fgColor", .field = .proc_box, .kind = .fg },
+    .{ .yaml_key = "k9s.frame.border.fgColor", .field = .div_line, .kind = .fg },
     // Status
-    .{ .yaml_key = "k9s.frame.status.addColor",           .field = .status_running,    .kind = .fg },
-    .{ .yaml_key = "k9s.frame.status.modifyColor",        .field = .status_pending,    .kind = .fg },
-    .{ .yaml_key = "k9s.frame.status.errorColor",         .field = .status_failed,     .kind = .fg },
-    .{ .yaml_key = "k9s.frame.status.completedColor",     .field = .status_succeeded,  .kind = .fg },
-    .{ .yaml_key = "k9s.frame.status.completedColor",     .field = .inactive_fg,       .kind = .fg },
+    .{ .yaml_key = "k9s.frame.status.addColor", .field = .status_running, .kind = .fg },
+    .{ .yaml_key = "k9s.frame.status.modifyColor", .field = .status_pending, .kind = .fg },
+    .{ .yaml_key = "k9s.frame.status.errorColor", .field = .status_failed, .kind = .fg },
+    .{ .yaml_key = "k9s.frame.status.completedColor", .field = .status_succeeded, .kind = .fg },
+    .{ .yaml_key = "k9s.frame.status.completedColor", .field = .inactive_fg, .kind = .fg },
     // Table cursor
-    .{ .yaml_key = "k9s.views.table.cursorFgColor",       .field = .selected_fg,       .kind = .fg },
-    .{ .yaml_key = "k9s.views.table.cursorBgColor",       .field = .selected_bg,       .kind = .bg },
+    .{ .yaml_key = "k9s.views.table.cursorFgColor", .field = .selected_fg, .kind = .fg },
+    .{ .yaml_key = "k9s.views.table.cursorBgColor", .field = .selected_bg, .kind = .bg },
     // Prompt
-    .{ .yaml_key = "k9s.prompt.fgColor",                  .field = .prompt_fg,         .kind = .fg },
-    .{ .yaml_key = "k9s.prompt.bgColor",                  .field = .prompt_bg,         .kind = .bg },
+    .{ .yaml_key = "k9s.prompt.fgColor", .field = .prompt_fg, .kind = .fg },
+    .{ .yaml_key = "k9s.prompt.bgColor", .field = .prompt_bg, .kind = .bg },
 };
 
 fn parseSkinFile(allocator: mem.Allocator, content: []const u8) !ThemeColors {
@@ -408,12 +420,12 @@ fn parseSkinFile(allocator: mem.Allocator, content: []const u8) !ThemeColors {
     return theme;
 }
 
-fn hexToAnsi(allocator: mem.Allocator, hex_or_name: []const u8) error{OutOfMemory, InvalidCharacter, Overflow}![]const u8 {
+fn hexToAnsi(allocator: mem.Allocator, hex_or_name: []const u8) error{ OutOfMemory, InvalidCharacter, Overflow }![]const u8 {
     if (mem.eql(u8, hex_or_name, "default")) return allocator.dupe(u8, "\x1b[39m");
-    
+
     // Check if it's an alias reference like *blue (should have been resolved by getYamlValue)
     if (mem.startsWith(u8, hex_or_name, "*")) return nameToAnsi(allocator, hex_or_name[1..]);
-    
+
     // Handle named colors like "white", "red", etc. (lowercase initial)
     if (hex_or_name.len > 0 and ascii.isLower(hex_or_name[0])) {
         return nameToAnsi(allocator, hex_or_name);
@@ -440,16 +452,16 @@ fn hexToAnsi(allocator: mem.Allocator, hex_or_name: []const u8) error{OutOfMemor
         const b = try fmt.parseInt(u8, hex_or_name[5..7], 16);
         return fmt.allocPrint(allocator, "\x1b[38;2;{d};{d};{d}m", .{ r, g, b });
     }
-    
+
     // Fallback
     return allocator.dupe(u8, "\x1b[39m");
 }
 
-fn hexToBgAnsi(allocator: mem.Allocator, hex_or_name: []const u8) error{OutOfMemory, InvalidCharacter, Overflow}![]const u8 {
+fn hexToBgAnsi(allocator: mem.Allocator, hex_or_name: []const u8) error{ OutOfMemory, InvalidCharacter, Overflow }![]const u8 {
     if (mem.eql(u8, hex_or_name, "default")) return allocator.dupe(u8, "\x1b[49m");
 
     if (mem.startsWith(u8, hex_or_name, "*")) return nameToBgAnsi(allocator, hex_or_name[1..]);
-    
+
     // Handle named colors
     if (hex_or_name.len > 0 and ascii.isLower(hex_or_name[0])) {
         return nameToBgAnsi(allocator, hex_or_name);
@@ -476,12 +488,12 @@ fn hexToBgAnsi(allocator: mem.Allocator, hex_or_name: []const u8) error{OutOfMem
         const b = try fmt.parseInt(u8, hex_or_name[5..7], 16);
         return fmt.allocPrint(allocator, "\x1b[48;2;{d};{d};{d}m", .{ r, g, b });
     }
-    
+
     return allocator.dupe(u8, "\x1b[49m");
 }
 
 // Basic named color to ANSI mapping (incomplete, expand as needed)
-fn nameToAnsi(allocator: mem.Allocator, name: []const u8) error{OutOfMemory, InvalidCharacter, Overflow}![]const u8 {
+fn nameToAnsi(allocator: mem.Allocator, name: []const u8) error{ OutOfMemory, InvalidCharacter, Overflow }![]const u8 {
     if (mem.eql(u8, name, "white")) return allocator.dupe(u8, "\x1b[37m");
     if (mem.eql(u8, name, "black")) return allocator.dupe(u8, "\x1b[30m");
     if (mem.eql(u8, name, "red")) return allocator.dupe(u8, "\x1b[31m");
@@ -491,7 +503,7 @@ fn nameToAnsi(allocator: mem.Allocator, name: []const u8) error{OutOfMemory, Inv
     if (mem.eql(u8, name, "magenta")) return allocator.dupe(u8, "\x1b[35m");
     if (mem.eql(u8, name, "cyan")) return allocator.dupe(u8, "\x1b[36m");
     // Extended named colors (approximate hex mapping for 256-color or truecolor)
-    if (mem.eql(u8, name, "orange")) return hexToAnsi(allocator, "#ff8700"); 
+    if (mem.eql(u8, name, "orange")) return hexToAnsi(allocator, "#ff8700");
     if (mem.eql(u8, name, "fuchsia")) return hexToAnsi(allocator, "#ff00ff");
     if (mem.eql(u8, name, "lime")) return hexToAnsi(allocator, "#00ff00");
     if (mem.eql(u8, name, "aqua")) return hexToAnsi(allocator, "#00ffff");
@@ -523,7 +535,7 @@ fn nameToAnsi(allocator: mem.Allocator, name: []const u8) error{OutOfMemory, Inv
     return allocator.dupe(u8, "\x1b[39m"); // Default
 }
 
-fn nameToBgAnsi(allocator: mem.Allocator, name: []const u8) error{OutOfMemory, InvalidCharacter, Overflow}![]const u8 {
+fn nameToBgAnsi(allocator: mem.Allocator, name: []const u8) error{ OutOfMemory, InvalidCharacter, Overflow }![]const u8 {
     if (mem.eql(u8, name, "white")) return allocator.dupe(u8, "\x1b[47m");
     if (mem.eql(u8, name, "black")) return allocator.dupe(u8, "\x1b[40m");
     if (mem.eql(u8, name, "red")) return allocator.dupe(u8, "\x1b[41m");

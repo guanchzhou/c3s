@@ -153,22 +153,52 @@ pub fn TableState(comptime ItemType: type) type {
         pub fn handleNavigationKey(self: *Self, key: Key) ?KeyResult {
             switch (key) {
                 .char => |c| switch (c) {
-                    'j' => { self.navigateDown(); return .handled; },
-                    'k' => { self.navigateUp(); return .handled; },
-                    'g' => { self.gotoTop(); return .handled; },
-                    'G' => { self.gotoBottom(); return .handled; },
+                    'j' => {
+                        self.navigateDown();
+                        return .handled;
+                    },
+                    'k' => {
+                        self.navigateUp();
+                        return .handled;
+                    },
+                    'g' => {
+                        self.gotoTop();
+                        return .handled;
+                    },
+                    'G' => {
+                        self.gotoBottom();
+                        return .handled;
+                    },
                     'd' => return .request_describe,
                     'y' => return .request_yaml,
                     ':' => return .request_command_palette,
                     '/' => return .request_filter,
                     else => return null,
                 },
-                .down => { self.navigateDown(); return .handled; },
-                .up => { self.navigateUp(); return .handled; },
-                .page_down => { self.pageDown(); return .handled; },
-                .page_up => { self.pageUp(); return .handled; },
-                .home => { self.gotoTop(); return .handled; },
-                .end => { self.gotoBottom(); return .handled; },
+                .down => {
+                    self.navigateDown();
+                    return .handled;
+                },
+                .up => {
+                    self.navigateUp();
+                    return .handled;
+                },
+                .page_down => {
+                    self.pageDown();
+                    return .handled;
+                },
+                .page_up => {
+                    self.pageUp();
+                    return .handled;
+                },
+                .home => {
+                    self.gotoTop();
+                    return .handled;
+                },
+                .end => {
+                    self.gotoBottom();
+                    return .handled;
+                },
                 else => return null,
             }
         }

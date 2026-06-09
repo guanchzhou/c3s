@@ -32,7 +32,9 @@ pub const ContextsView = struct {
     // Sort column indices
     const COL_NAME: u8 = 0;
 
-    fn getContextName(item: *const K8sService.ContextInfo) []const u8 { return item.name; }
+    fn getContextName(item: *const K8sService.ContextInfo) []const u8 {
+        return item.name;
+    }
 
     pub fn init(allocator: std.mem.Allocator, theme: *const theme_loader.ThemeColors, k8s_service: *K8sService) !ContextsView {
         return ContextsView{

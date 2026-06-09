@@ -16,17 +16,17 @@ pub const ViewType = enum {
     serviceaccounts,
     persistentvolumeclaims,
     priorityclasses,
-    
+
     // Apps resources
     deployments,
     replicasets,
     statefulsets,
     daemonsets,
-    
+
     // Batch resources
     cronjobs,
     jobs,
-    
+
     // RBAC resources
     clusterroles,
     clusterrolebindings,
@@ -34,10 +34,10 @@ pub const ViewType = enum {
     rolebindings,
     users,
     groups,
-    
+
     // CRD resources
     customresourcedefinitions,
-    
+
     // Misc views
     contexts,
     containers,
@@ -49,7 +49,7 @@ pub const ViewType = enum {
     references,
     screendumps,
     pulse,
-    
+
     // Helm
     helmcharts,
 };
@@ -59,7 +59,7 @@ pub const KeyBindingsViewModel = struct {
     allocator: std.mem.Allocator,
     view_type: ViewType,
     config: KeyBindingsConfig,
-    
+
     pub fn init(allocator: std.mem.Allocator, view_type: ViewType) !KeyBindingsViewModel {
         // Load bindings for the specific view type
         // In the future, this could load from:
@@ -67,7 +67,7 @@ pub const KeyBindingsViewModel = struct {
         // 2. c3s config file
         // 3. Built-in defaults (current)
         const bindings = try loadBindingsForView(allocator, view_type);
-        
+
         return KeyBindingsViewModel{
             .allocator = allocator,
             .view_type = view_type,
@@ -77,11 +77,11 @@ pub const KeyBindingsViewModel = struct {
             },
         };
     }
-    
+
     pub fn deinit(self: *KeyBindingsViewModel) void {
         self.allocator.free(self.config.bindings);
     }
-    
+
     pub fn getBindings(self: *const KeyBindingsViewModel) []const KeyBinding {
         return self.config.bindings;
     }
@@ -101,26 +101,26 @@ fn loadBindingsForView(allocator: std.mem.Allocator, view_type: ViewType) ![]con
         .serviceaccounts => try bindings_data.loadServiceAccountsBindings(allocator),
         .persistentvolumeclaims => try bindings_data.loadPVCsBindings(allocator),
         .priorityclasses => try bindings_data.loadPriorityClassesBindings(allocator),
-        
+
         // Apps resources
         .deployments => try loadDeploymentsBindings(allocator),
         .replicasets => try bindings_data.loadReplicaSetsBindings(allocator),
         .statefulsets => try bindings_data.loadStatefulSetsBindings(allocator),
         .daemonsets => try bindings_data.loadDaemonSetsBindings(allocator),
-        
+
         // Batch resources
         .cronjobs => try bindings_data.loadCronJobsBindings(allocator),
         .jobs => try bindings_data.loadJobsBindings(allocator),
-        
+
         // RBAC resources (most use generic bindings)
         .clusterroles, .roles => try bindings_data.loadRolesBindings(allocator),
         .clusterrolebindings, .rolebindings => try bindings_data.loadRoleBindingsBindings(allocator),
         .users => try bindings_data.loadUsersBindings(allocator),
         .groups => try bindings_data.loadGroupsBindings(allocator),
-        
+
         // CRD resources
         .customresourcedefinitions => try bindings_data.loadCRDBindings(allocator),
-        
+
         // Misc views (use generic or specific bindings)
         .contexts => try bindings_data.loadContextsBindings(allocator),
         .containers => try bindings_data.loadContainersBindings(allocator),
@@ -132,7 +132,7 @@ fn loadBindingsForView(allocator: std.mem.Allocator, view_type: ViewType) ![]con
         .references => try bindings_data.loadReferencesBindings(allocator),
         .screendumps => try bindings_data.loadScreenDumpsBindings(allocator),
         .pulse => try bindings_data.loadPulseBindings(allocator),
-        
+
         // Helm
         .helmcharts => try bindings_data.loadHelmChartsBindings(allocator),
     };
@@ -144,7 +144,7 @@ fn loadPodsBindings(allocator: std.mem.Allocator) ![]const KeyBinding {
     // 1. c3s hotkeys.yaml file
     // 2. c3s config file
     // 3. Built-in defaults (as fallback)
-    
+
     const bindings = [_]KeyBinding{
         // RESOURCE COMMANDS (sorted alphabetically)
         .{ .key = "0", .description = "all", .category = .resource, .action = "namespace_all" },
@@ -170,7 +170,7 @@ fn loadPodsBindings(allocator: std.mem.Allocator) ![]const KeyBinding {
         .{ .key = "v", .description = "View", .category = .resource, .action = "view" },
         .{ .key = "y", .description = "YAML", .category = .resource, .action = "yaml" },
         .{ .key = "z", .description = "Sanitize", .category = .resource, .action = "sanitize" },
-        
+
         // GENERAL COMMANDS
         .{ .key = "?", .description = "Help", .category = .general, .action = "help" },
         .{ .key = "Ctrl-a", .description = "Aliases", .category = .general, .action = "aliases" },
@@ -188,8 +188,8 @@ fn loadPodsBindings(allocator: std.mem.Allocator) ![]const KeyBinding {
         .{ .key = "Ctrl-space", .description = "Mark Range", .category = .general, .action = "mark_range" },
         .{ .key = "Ctrl-\\", .description = "Mark Clear", .category = .general, .action = "mark_clear" },
         .{ .key = "Ctrl-s", .description = "Save", .category = .general, .action = "save" },
-        
-        // NAVIGATION COMMANDS  
+
+        // NAVIGATION COMMANDS
         .{ .key = "-", .description = "Last Command", .category = .navigation, .action = "last_command" },
         .{ .key = "0", .description = "Down", .category = .navigation, .action = "down" },
         .{ .key = "[", .description = "History Back", .category = .navigation, .action = "history_back" },
@@ -202,7 +202,7 @@ fn loadPodsBindings(allocator: std.mem.Allocator) ![]const KeyBinding {
         .{ .key = "j", .description = "Down", .category = .navigation, .action = "down" },
         .{ .key = "k", .description = "Up", .category = .navigation, .action = "up" },
         .{ .key = "l", .description = "Right", .category = .navigation, .action = "right" },
-        
+
         // SORTING COMMANDS
         .{ .key = "Shift-a", .description = "Age", .category = .sorting, .action = "sort_age" },
         .{ .key = "Shift-c", .description = "CPU", .category = .sorting, .action = "sort_cpu" },
@@ -215,7 +215,7 @@ fn loadPodsBindings(allocator: std.mem.Allocator) ![]const KeyBinding {
         .{ .key = "Shift-s", .description = "Status", .category = .sorting, .action = "sort_status" },
         .{ .key = "Shift-t", .description = "Restart", .category = .sorting, .action = "sort_restart" },
     };
-    
+
     return try allocator.dupe(KeyBinding, &bindings);
 }
 
@@ -231,20 +231,20 @@ fn loadNodesBindings(allocator: std.mem.Allocator) ![]const KeyBinding {
         .{ .key = "y", .description = "YAML", .category = .resource, .action = "yaml" },
         .{ .key = "d", .description = "Describe", .category = .resource, .action = "describe" },
         .{ .key = "enter", .description = "View Pods", .category = .resource, .action = "view_pods" },
-        
+
         // Sorting
         .{ .key = "Shift-r", .description = "Sort ROLE", .category = .sorting, .action = "sort_role" },
         .{ .key = "Shift-c", .description = "Sort CPU", .category = .sorting, .action = "sort_cpu" },
         .{ .key = "Shift-m", .description = "Sort MEM", .category = .sorting, .action = "sort_mem" },
         .{ .key = "Shift-o", .description = "Sort Pods", .category = .sorting, .action = "sort_pods" },
-        
+
         // General and navigation commands are shared (could extract to common)
         .{ .key = "?", .description = "Help", .category = .general, .action = "help" },
         .{ .key = ":q", .description = "Quit", .category = .general, .action = "quit" },
         .{ .key = "g", .description = "Goto Top", .category = .navigation, .action = "goto_top" },
         .{ .key = "Shift-g", .description = "Goto Bottom", .category = .navigation, .action = "goto_bottom" },
     };
-    
+
     return try allocator.dupe(KeyBinding, &bindings);
 }
 
@@ -260,11 +260,11 @@ fn loadDeploymentsBindings(allocator: std.mem.Allocator) ![]const KeyBinding {
         .{ .key = "y", .description = "YAML", .category = .resource, .action = "yaml" },
         .{ .key = "Ctrl-d", .description = "Delete", .category = .resource, .action = "delete" },
         .{ .key = "enter", .description = "View Pods", .category = .resource, .action = "view_pods" },
-        
+
         .{ .key = "?", .description = "Help", .category = .general, .action = "help" },
         .{ .key = ":q", .description = "Quit", .category = .general, .action = "quit" },
     };
-    
+
     return try allocator.dupe(KeyBinding, &bindings);
 }
 
@@ -277,13 +277,13 @@ fn loadServicesBindings(allocator: std.mem.Allocator) ![]const KeyBinding {
         .{ .key = "y", .description = "YAML", .category = .resource, .action = "yaml" },
         .{ .key = "enter", .description = "View Pods", .category = .resource, .action = "view_pods" },
         .{ .key = "Shift-f", .description = "Port-Forward", .category = .resource, .action = "port_forward" },
-        
+
         .{ .key = "Shift-t", .description = "Sort Type", .category = .sorting, .action = "sort_type" },
-        
+
         .{ .key = "?", .description = "Help", .category = .general, .action = "help" },
         .{ .key = ":q", .description = "Quit", .category = .general, .action = "quit" },
     };
-    
+
     return try allocator.dupe(KeyBinding, &bindings);
 }
 
@@ -294,11 +294,11 @@ fn loadConfigMapsBindings(allocator: std.mem.Allocator) ![]const KeyBinding {
         .{ .key = "e", .description = "Edit", .category = .resource, .action = "edit" },
         .{ .key = "y", .description = "YAML", .category = .resource, .action = "yaml" },
         .{ .key = "Ctrl-d", .description = "Delete", .category = .resource, .action = "delete" },
-        
+
         .{ .key = "?", .description = "Help", .category = .general, .action = "help" },
         .{ .key = ":q", .description = "Quit", .category = .general, .action = "quit" },
     };
-    
+
     return try allocator.dupe(KeyBinding, &bindings);
 }
 

@@ -27,9 +27,9 @@ test "CLI parseArgs with version flag" {
 
 test "CLI Config default values" {
     const cli = @import("src").cli;
-    
+
     const default_config = cli.Config{};
-    
+
     try testing.expect(default_config.all_namespaces == false);
     try testing.expect(default_config.context == null);
     try testing.expect(default_config.namespace == null);
@@ -48,14 +48,14 @@ test "CLI Config default values" {
 
 test "CLI Config flag toggles" {
     const cli = @import("src").cli;
-    
+
     const config = cli.Config{
         .all_namespaces = true,
         .debug = true,
         .readonly = true,
         .write = true,
     };
-    
+
     try testing.expect(config.all_namespaces == true);
     try testing.expect(config.debug == true);
     try testing.expect(config.readonly == true);
@@ -64,14 +64,14 @@ test "CLI Config flag toggles" {
 
 test "CLI Config with custom values" {
     const cli = @import("src").cli;
-    
+
     const config = cli.Config{
         .refresh_rate = 5.0,
         .log_level = "debug",
         .context = "test-context",
         .namespace = "test-namespace",
     };
-    
+
     try testing.expect(config.refresh_rate == 5.0);
     try testing.expect(std.mem.eql(u8, config.log_level, "debug"));
     try testing.expect(std.mem.eql(u8, config.context.?, "test-context"));

@@ -68,10 +68,10 @@ test "terminal color support" {
     // Test color setting
     try terminal.setColor(.red, .black);
     try terminal.resetColor();
-    
+
     // Test all color combinations
     const colors = [_]Color{ .black, .red, .green, .yellow, .blue, .magenta, .cyan, .white };
-    
+
     for (colors, 0..) |fg, i| {
         const bg = colors[i];
         try terminal.setColor(fg, bg);

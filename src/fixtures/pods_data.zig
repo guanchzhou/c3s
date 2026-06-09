@@ -15,20 +15,20 @@ pub const PodInfo = struct {
 /// Source: testdata/k8s/deployments/dp.json (icx-db pod)
 pub const default_pods = [_]PodInfo{
     .{
-        .name = "nginx",                    // from po.json metadata.name
-        .namespace = "default",             // from po.json metadata.namespace
-        .ready = "1/1",                     // from po.json status.containerStatuses
-        .status = "Running",                // from po.json status.phase
-        .restarts = 0,                      // from po.json status.containerStatuses[0].restartCount
-        .age = "22m",                       // calculated from po.json metadata.creationTimestamp
+        .name = "nginx", // from po.json metadata.name
+        .namespace = "default", // from po.json metadata.namespace
+        .ready = "1/1", // from po.json status.containerStatuses
+        .status = "Running", // from po.json status.phase
+        .restarts = 0, // from po.json status.containerStatuses[0].restartCount
+        .age = "22m", // calculated from po.json metadata.creationTimestamp
     },
     .{
-        .name = "icx-db-7d4b578979-abc12",  // from dp.json (deployment pod)
-        .namespace = "icx",                 // from dp.json metadata.namespace
-        .ready = "1/1",                     // from dp.json status.readyReplicas
+        .name = "icx-db-7d4b578979-abc12", // from dp.json (deployment pod)
+        .namespace = "icx", // from dp.json metadata.namespace
+        .ready = "1/1", // from dp.json status.readyReplicas
         .status = "Running",
         .restarts = 0,
-        .age = "67d",                       // calculated from dp.json metadata.creationTimestamp
+        .age = "67d", // calculated from dp.json metadata.creationTimestamp
     },
     .{
         .name = "coredns-5d78c9684d-m7np2", // typical kube-system pod (from node images)
@@ -39,7 +39,7 @@ pub const default_pods = [_]PodInfo{
         .age = "67d",
     },
     .{
-        .name = "kube-proxy-xr4mp",         // from node labels (master node)
+        .name = "kube-proxy-xr4mp", // from node labels (master node)
         .namespace = "kube-system",
         .ready = "1/1",
         .status = "Running",
@@ -47,7 +47,7 @@ pub const default_pods = [_]PodInfo{
         .age = "67d",
     },
     .{
-        .name = "storage-provisioner",      // from node images (minikube addon)
+        .name = "storage-provisioner", // from node images (minikube addon)
         .namespace = "kube-system",
         .ready = "1/1",
         .status = "Running",
@@ -111,7 +111,7 @@ pub const mixed_status_pods = [_]PodInfo{
 /// Large set of pods for testing scrolling and performance
 pub fn generateManyPods(allocator: std.mem.Allocator, count: usize) ![]PodInfo {
     const pods = try allocator.alloc(PodInfo, count);
-    
+
     for (pods, 0..) |*pod, i| {
         const name = try std.fmt.allocPrint(allocator, "pod-{d}-{s}", .{ i, randomId() });
         const namespace = if (i % 3 == 0) "default" else if (i % 3 == 1) "kube-system" else "production";
@@ -119,7 +119,7 @@ pub fn generateManyPods(allocator: std.mem.Allocator, count: usize) ![]PodInfo {
         const status = if (i % 7 == 0) "Pending" else if (i % 11 == 0) "CrashLoopBackOff" else "Running";
         const restarts: u32 = @intCast(i % 10);
         const age = if (i % 4 == 0) "10m" else if (i % 4 == 1) "2h" else if (i % 4 == 2) "3d" else "1w";
-        
+
         pod.* = PodInfo{
             .name = name,
             .namespace = namespace,
@@ -129,7 +129,7 @@ pub fn generateManyPods(allocator: std.mem.Allocator, count: usize) ![]PodInfo {
             .age = age,
         };
     }
-    
+
     return pods;
 }
 
@@ -149,14 +149,14 @@ pub const namespaced_pods = struct {
         .{ .name = "nginx", .namespace = "default", .ready = "1/1", .status = "Running", .restarts = 0, .age = "22m" },
         .{ .name = "dictionary1-svc-pod", .namespace = "default", .ready = "1/1", .status = "Running", .restarts = 0, .age = "45m" },
     };
-    
+
     /// Pods in kube-system namespace
     pub const kube_system = [_]PodInfo{
         .{ .name = "coredns-5d78c9684d-m7np2", .namespace = "kube-system", .ready = "1/1", .status = "Running", .restarts = 0, .age = "67d" },
         .{ .name = "kube-proxy-xr4mp", .namespace = "kube-system", .ready = "1/1", .status = "Running", .restarts = 0, .age = "67d" },
         .{ .name = "storage-provisioner", .namespace = "kube-system", .ready = "1/1", .status = "Running", .restarts = 1, .age = "67d" },
     };
-    
+
     /// Pods in icx namespace
     pub const icx_ns = [_]PodInfo{
         .{ .name = "icx-db-7d4b578979-abc12", .namespace = "icx", .ready = "1/1", .status = "Running", .restarts = 0, .age = "67d" },

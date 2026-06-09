@@ -25,7 +25,6 @@ const auth_access_tab = @import("auth_access_tab.zig");
 const auth_policy_tab = @import("auth_policy_tab.zig");
 const auth_condition_tab = @import("auth_condition_tab.zig");
 
-
 pub const AuthorizationView = struct {
     // Re-export tab types so `AuthorizationView.AccessRow` etc. works in tests
     pub const AccessStatus = auth_access_tab.AccessStatus;

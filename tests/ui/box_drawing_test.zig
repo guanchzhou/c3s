@@ -39,7 +39,7 @@ test "BoxStyle enum has all styles" {
         .rounded,
         .thick,
     };
-    
+
     for (styles) |style| {
         _ = style;
         // Just verify they exist

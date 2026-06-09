@@ -128,10 +128,10 @@ test "PersistentVolumeClaim - Structure" {
             .storageClassName = "standard",
         },
     };
-    
+
     try std.testing.expectEqualStrings("PersistentVolumeClaim", pvc.kind.?);
     try std.testing.expectEqualStrings("myclaim", pvc.metadata.name);
     try std.testing.expectEqualStrings("standard", pvc.spec.?.storageClassName.?);
-    
+
     std.debug.print("✅ PersistentVolumeClaim structure test passed\n", .{});
 }

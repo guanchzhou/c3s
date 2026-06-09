@@ -1,7 +1,7 @@
 const std = @import("std");
 
 /// Universal filter helper that works with any list view
-/// 
+///
 /// This function applies a filter to a list of items and updates the filtered_indices array.
 /// It also preserves the selection by trying to keep the same item selected after filtering.
 ///
@@ -31,10 +31,10 @@ pub fn applyFilter(
         filtered_indices.items[current_selected_row.*]
     else
         null;
-    
+
     // Clear filtered indices
     filtered_indices.clearRetainingCapacity();
-    
+
     if (filter_text.len == 0) {
         // No filter - show all items
         for (0..items.len) |i| {
@@ -48,7 +48,7 @@ pub fn applyFilter(
             }
         }
     }
-    
+
     // Try to restore selection to the same item if it's still in the filtered list
     if (old_selected_idx) |item_idx| {
         for (filtered_indices.items, 0..) |filtered_idx, i| {
@@ -67,7 +67,7 @@ pub fn applyFilter(
             }
         }
     }
-    
+
     // If we couldn't restore the selection, reset to top
     current_selected_row.* = 0;
     current_scroll_offset.* = 0;

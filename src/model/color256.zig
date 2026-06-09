@@ -208,7 +208,7 @@ pub fn applyPalette(stdout_fd: posix.fd_t, palette: [256]Rgb, start: u16, end: u
     while (i < end) : (i += 1) {
         // Flush if buffer might be too small for next entry (~30 bytes max)
         if (pos + 32 > buf.len) {
-            try writeAllFd(stdout_fd,buf[0..pos]);
+            try writeAllFd(stdout_fd, buf[0..pos]);
             pos = 0;
         }
         const c = palette[i];
@@ -219,7 +219,7 @@ pub fn applyPalette(stdout_fd: posix.fd_t, palette: [256]Rgb, start: u16, end: u
     }
 
     if (pos > 0) {
-        try writeAllFd(stdout_fd,buf[0..pos]);
+        try writeAllFd(stdout_fd, buf[0..pos]);
     }
 }
 
@@ -233,7 +233,7 @@ pub fn resetPalette(stdout_fd: posix.fd_t, start: u16, end: u16) !void {
     var i: usize = start;
     while (i < end) : (i += 1) {
         if (pos + 16 > buf.len) {
-            try writeAllFd(stdout_fd,buf[0..pos]);
+            try writeAllFd(stdout_fd, buf[0..pos]);
             pos = 0;
         }
         const seq = try std.fmt.bufPrint(buf[pos..], "\x1b]104;{d}\x1b\\", .{i});
@@ -241,7 +241,7 @@ pub fn resetPalette(stdout_fd: posix.fd_t, start: u16, end: u16) !void {
     }
 
     if (pos > 0) {
-        try writeAllFd(stdout_fd,buf[0..pos]);
+        try writeAllFd(stdout_fd, buf[0..pos]);
     }
 }
 
@@ -255,7 +255,7 @@ pub fn queryTerminalColors(stdin_fd: posix.fd_t, stdout_fd: posix.fd_t) ?[16]Rgb
         const s = std.fmt.bufPrint(query_buf[qpos..], "\x1b]4;{d};?\x1b\\", .{i}) catch break;
         qpos += s.len;
     }
-    writeAllFd(stdout_fd,query_buf[0..qpos]) catch return null;
+    writeAllFd(stdout_fd, query_buf[0..qpos]) catch return null;
 
     // Read responses with 200ms total timeout
     var response: [4096]u8 = undefined;
