@@ -59,7 +59,7 @@ tests work without `main`); `main(init: std.process.Init)` calls `runtime.set(in
 
 - `camelCase` functions, `PascalCase` types, `snake_case` fields/locals (Zig std / ghostty style). GoDoc-style comments on public fns. `zig fmt` enforced (`zig build fmt`).
 - Allocators explicit; `defer deinit()` always. ArenaAllocator for temporary data.
-- Tests mirror src tree (`tests/ui/header_test.zig` ↔ `src/ui/header.zig`); use `@import("c3s")`.
+- Unit tests are **co-located** as `test{}` blocks in the source file (idiomatic Zig / ghostty); they run via `zig build test` (rooted at `index.zig`, which imports every module so all blocks are discovered). Integration/cluster/cross-cutting tests (k8s_*, integration, e2e, app, memory_leak, retry, advanced) stay as separate files under `tests/`, wired in `build.zig`'s `test_specs` loop; `zig build test-all` runs everything.
 - Fixtures in `src/fixtures/`: `fixtures.k8s_data.getData(debug)` picks dummy vs n/a.
 - Target 60 FPS. Dirty-flag rendering, minimal allocations in hot paths.
 

@@ -103,9 +103,12 @@ pub fn build(b: *std.Build) void {
         run_cmd.addArgs(args);
     }
 
-    // Create unit tests
+    // Create unit tests. Root at index.zig (c3s_module), NOT main.zig: index.zig
+    // pub-imports every source module, so Zig analyzes them all and discovers
+    // every co-located `test{}` block. Rooting at main.zig would silently skip
+    // tests in files main's graph doesn't force-analyze.
     const unit_tests = b.addTest(.{
-        .root_module = exe.root_module,
+        .root_module = c3s_module,
     });
 
     const run_unit_tests = b.addRunArtifact(unit_tests);
@@ -123,50 +126,21 @@ pub fn build(b: *std.Build) void {
     const test_specs = [_]TestSpec{
         .{ .step = "test-advanced", .path = "tests/advanced_features_test.zig" },
         .{ .step = "test-app", .path = "tests/app_test.zig" },
-        .{ .step = "test-cli", .path = "tests/cli_test.zig" },
-        .{ .step = "test-logger", .path = "tests/core/logger_test.zig" },
-        .{ .step = "test-terminal-input", .path = "tests/core/terminal_input_test.zig" },
-        .{ .step = "test-terminal", .path = "tests/core/terminal_test.zig" },
-        .{ .step = "test-xdg", .path = "tests/core/xdg_test.zig" },
         .{ .step = "test-basic-workflow", .path = "tests/e2e/basic_workflow_test.zig" },
         .{ .step = "test-integration", .path = "tests/integration/k8s_service_integration_test.zig" },
         .{ .step = "test-k8s-client", .path = "tests/k8s_client_test.zig" },
         .{ .step = "test-k8s-resources", .path = "tests/k8s_resources_test.zig" },
         .{ .step = "test-memory-leak", .path = "tests/memory_leak_test.zig" },
-        .{ .step = "test-config", .path = "tests/model/config_test.zig" },
-        .{ .step = "test-hints", .path = "tests/model/hints_test.zig" },
-        .{ .step = "test-keybindings", .path = "tests/model/keybindings_test.zig" },
-        .{ .step = "test-theme-loader", .path = "tests/model/theme_loader_test.zig" },
-        .{ .step = "test-theme-security", .path = "tests/model/theme_security_test.zig" },
-        .{ .step = "test-version", .path = "tests/model/version_test.zig" },
         .{ .step = "test-new-resources", .path = "tests/new_resources_test.zig" },
-        .{ .step = "test-panic-hook", .path = "tests/panic_hook_test.zig" },
         .{ .step = "test-retry", .path = "tests/retry_test.zig" },
         .{ .step = "test-k8s-service", .path = "tests/services/k8s_service_test.zig" },
-        .{ .step = "test-theme", .path = "tests/theme_test.zig" },
-        .{ .step = "test-box-drawing", .path = "tests/ui/box_drawing_test.zig" },
-        .{ .step = "test-command-input", .path = "tests/ui/command_input_test.zig" },
-        .{ .step = "test-footer", .path = "tests/ui/footer_test.zig" },
-        .{ .step = "test-header-compact", .path = "tests/ui/header_compact_test.zig" },
-        .{ .step = "test-header-render", .path = "tests/ui/header_render_test.zig" },
-        .{ .step = "test-header", .path = "tests/ui/header_test.zig" },
-        .{ .step = "test-table-layout", .path = "tests/ui/table_layout_test.zig" },
-        .{ .step = "test-table-state", .path = "tests/ui/table_state_test.zig" },
-        .{ .step = "test-auth-view", .path = "tests/view/authorization_view_test.zig" },
+        // ui tests are co-located in their src files (run via the `test`
+        // unit-test step, which test-all depends on).
         .{ .step = "test-body-render", .path = "tests/view/body_render_test.zig" },
-        .{ .step = "test-help-view", .path = "tests/view/help_view_test.zig" },
-        .{ .step = "test-pods-view", .path = "tests/view/pods_view_test.zig" },
         .{ .step = "test-resource-view", .path = "tests/view/resource_view_test.zig" },
         .{ .step = "test-resource-views", .path = "tests/view/resource_views_test.zig" },
-        .{ .step = "test-themes-view", .path = "tests/view/themes_view_test.zig" },
-        .{ .step = "test-age", .path = "tests/viewmodel/age_test.zig" },
-        .{ .step = "test-command", .path = "tests/viewmodel/command_test.zig" },
-        .{ .step = "test-filter", .path = "tests/viewmodel/filter_test.zig" },
-        .{ .step = "test-keybindings-data", .path = "tests/viewmodel/keybindings_data_test.zig" },
-        .{ .step = "test-keybindings-vm", .path = "tests/viewmodel/keybindings_vm_test.zig" },
-        .{ .step = "test-sort", .path = "tests/viewmodel/sort_test.zig" },
-        .{ .step = "test-view-manager", .path = "tests/viewmodel/view_manager_test.zig" },
-        .{ .step = "test-view-trait", .path = "tests/viewmodel/view_test.zig" },
+        // viewmodel tests are co-located in their src files (run via the `test`
+        // unit-test step, which test-all depends on).
     };
     for (test_specs) |spec| {
         const t = b.addTest(.{ .root_module = b.createModule(.{

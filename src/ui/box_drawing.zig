@@ -117,3 +117,66 @@ pub const Box = struct {
         }
     }
 };
+
+const testing = std.testing;
+
+test "Symbols constants are defined" {
+    try testing.expect(Symbols.h_line.len > 0);
+    try testing.expect(Symbols.v_line.len > 0);
+    try testing.expect(Symbols.left_up.len > 0);
+    try testing.expect(Symbols.right_up.len > 0);
+    try testing.expect(Symbols.left_down.len > 0);
+    try testing.expect(Symbols.right_down.len > 0);
+}
+
+test "Symbols have correct Unicode values" {
+    try testing.expect(std.mem.eql(u8, Symbols.h_line, "─"));
+    try testing.expect(std.mem.eql(u8, Symbols.v_line, "│"));
+    try testing.expect(std.mem.eql(u8, Symbols.left_up, "┌"));
+    try testing.expect(std.mem.eql(u8, Symbols.right_up, "┐"));
+    try testing.expect(std.mem.eql(u8, Symbols.left_down, "└"));
+    try testing.expect(std.mem.eql(u8, Symbols.right_down, "┘"));
+}
+
+test "Symbols for dividers are defined" {
+    try testing.expect(std.mem.eql(u8, Symbols.div_right, "┤"));
+    try testing.expect(std.mem.eql(u8, Symbols.div_left, "├"));
+    try testing.expect(std.mem.eql(u8, Symbols.div_up, "┬"));
+    try testing.expect(std.mem.eql(u8, Symbols.div_down, "┴"));
+    try testing.expect(std.mem.eql(u8, Symbols.cross, "┼"));
+}
+
+test "Symbols for title brackets are defined" {
+    try testing.expect(std.mem.eql(u8, Symbols.title_left, "┐"));
+    try testing.expect(std.mem.eql(u8, Symbols.title_right, "┌"));
+}
+
+test "BoxStyle enum has all styles" {
+    const styles = [_]BoxStyle{
+        .normal,
+        .rounded,
+        .thick,
+    };
+
+    for (styles) |style| {
+        _ = style;
+        // Just verify they exist
+    }
+}
+
+test "BoxStyle enum comparison" {
+    try testing.expect(BoxStyle.normal != BoxStyle.rounded);
+    try testing.expect(BoxStyle.normal != BoxStyle.thick);
+    try testing.expect(BoxStyle.rounded != BoxStyle.thick);
+}
+
+// Note: Testing createBox would require mocking Terminal, which is complex
+// The function signature and style selection logic can be verified at compile time
+test "Box.createBox function exists and compiles" {
+    // This test ensures the function signature is correct
+    _ = Box.createBox;
+}
+
+test "Box.createHorizontalDivider function exists" {
+    _ = Box.createHorizontalDivider;
+}

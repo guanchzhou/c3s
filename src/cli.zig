@@ -226,3 +226,71 @@ fn printInfo() void {
     printInfoLine("Benchmarks", paths.benchmarks_dir, cyan);
     printInfoLine("ScreenDumps", paths.dumps_dir, cyan);
 }
+
+const testing = std.testing;
+
+// Since cli.zig functions use std.debug.print and interact with environment,
+// we'll test the public interface and helper functions
+
+test "logo array is correctly defined" {
+    // Verify the logo is present and non-empty.
+    try testing.expect(logo_small.len > 0);
+}
+
+test "CLI parseArgs with help flag" {
+    // Test would require mocking process.args, which is complex
+    // For now, verify the function reference is valid.
+    _ = parseArgs;
+}
+
+test "CLI parseArgs with version flag" {
+    _ = parseArgs;
+    // Version handling is tested separately in src/model/version.zig
+}
+
+test "CLI Config default values" {
+    const default_config = Config{};
+
+    try testing.expect(default_config.all_namespaces == false);
+    try testing.expect(default_config.context == null);
+    try testing.expect(default_config.namespace == null);
+    try testing.expect(default_config.command == null);
+    try testing.expect(default_config.refresh_rate == 2.0);
+    try testing.expect(std.mem.eql(u8, default_config.log_level, "info"));
+    try testing.expect(default_config.log_file == null);
+    try testing.expect(default_config.debug == false);
+    try testing.expect(default_config.readonly == false);
+    try testing.expect(default_config.headless == false);
+    try testing.expect(default_config.crumbsless == false);
+    try testing.expect(default_config.logoless == false);
+    try testing.expect(default_config.splashless == false);
+    try testing.expect(default_config.write == false);
+}
+
+test "CLI Config flag toggles" {
+    const config = Config{
+        .all_namespaces = true,
+        .debug = true,
+        .readonly = true,
+        .write = true,
+    };
+
+    try testing.expect(config.all_namespaces == true);
+    try testing.expect(config.debug == true);
+    try testing.expect(config.readonly == true);
+    try testing.expect(config.write == true);
+}
+
+test "CLI Config with custom values" {
+    const config = Config{
+        .refresh_rate = 5.0,
+        .log_level = "debug",
+        .context = "test-context",
+        .namespace = "test-namespace",
+    };
+
+    try testing.expect(config.refresh_rate == 5.0);
+    try testing.expect(std.mem.eql(u8, config.log_level, "debug"));
+    try testing.expect(std.mem.eql(u8, config.context.?, "test-context"));
+    try testing.expect(std.mem.eql(u8, config.namespace.?, "test-namespace"));
+}

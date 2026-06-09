@@ -7,6 +7,7 @@ const build = @import("c3s_build");
 const version = @import("../model/version.zig");
 const fixtures = @import("../fixtures/index.zig");
 const Logger = @import("../core/logger.zig");
+const hints_mod = @import("../model/hints.zig");
 
 pub const Header = struct {
     allocator: std.mem.Allocator,
@@ -694,3 +695,647 @@ pub const Header = struct {
         self.last_height = box_height;
     }
 };
+
+const testing = std.testing;
+
+// ===========================================================================
+// Tests: initialization, rendering, data validation, memory (header_test)
+// ===========================================================================
+
+test "header initialization and cleanup with debug mode" {
+    var gpa = std.heap.DebugAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
+    const theme = try allocator.create(theme_loader.ThemeColors);
+    theme.* = try theme_loader.defaultTheme(allocator);
+    defer {
+        theme_loader.deinitTheme(theme);
+        allocator.destroy(theme);
+    }
+
+    var header = try Header.init(allocator, theme, true); // debug = true
+    defer header.deinit();
+
+    // Test that header was initialized with debug values (fixtures.k8s_data.default_data)
+    try testing.expect(std.mem.eql(u8, header.context, "fred [RW]"));
+    try testing.expect(std.mem.eql(u8, header.cluster, "zorg"));
+    try testing.expect(std.mem.eql(u8, header.user, "fred"));
+    try testing.expect(std.mem.eql(u8, header.k8s_version, "v1.15.2"));
+    try testing.expect(header.cpu_usage == 25);
+    try testing.expect(header.mem_usage == 35);
+}
+
+test "header initialization without debug mode" {
+    var gpa = std.heap.DebugAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
+    const theme = try allocator.create(theme_loader.ThemeColors);
+    theme.* = try theme_loader.defaultTheme(allocator);
+    defer {
+        theme_loader.deinitTheme(theme);
+        allocator.destroy(theme);
+    }
+
+    var header = try Header.init(allocator, theme, false); // debug = false
+    defer header.deinit();
+
+    // Test that header was initialized with n/a values
+    try testing.expect(std.mem.eql(u8, header.context, "n/a"));
+    try testing.expect(std.mem.eql(u8, header.cluster, "n/a"));
+    try testing.expect(std.mem.eql(u8, header.user, "n/a"));
+    try testing.expect(std.mem.eql(u8, header.k8s_version, "n/a"));
+    try testing.expect(std.mem.eql(u8, header.cpu_str, "n/a"));
+    try testing.expect(std.mem.eql(u8, header.mem_str, "n/a"));
+    try testing.expect(header.cpu_usage == 0);
+    try testing.expect(header.mem_usage == 0);
+}
+
+test "header rendering" {
+    var gpa = std.heap.DebugAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
+    const theme = try allocator.create(theme_loader.ThemeColors);
+    theme.* = try theme_loader.defaultTheme(allocator);
+    defer {
+        theme_loader.deinitTheme(theme);
+        allocator.destroy(theme);
+    }
+
+    var header = try Header.init(allocator, theme, true);
+    defer header.deinit();
+
+    var terminal = try Terminal.init(allocator);
+    defer terminal.deinit();
+
+    const hint_config: hints_mod.HintConfig = .{};
+
+    // Test that rendering doesn't crash
+    try header.render(&terminal, 0, 0, 80, 8, hint_config);
+
+    // Test rendering at different positions
+    try header.render(&terminal, 10, 5, 100, 8, hint_config);
+
+    // Test rendering with different sizes
+    try header.render(&terminal, 0, 0, 120, 10, hint_config);
+}
+
+test "header data validation" {
+    var gpa = std.heap.DebugAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
+    const theme = try allocator.create(theme_loader.ThemeColors);
+    theme.* = try theme_loader.defaultTheme(allocator);
+    defer {
+        theme_loader.deinitTheme(theme);
+        allocator.destroy(theme);
+    }
+
+    var header = try Header.init(allocator, theme, true);
+    defer header.deinit();
+
+    // Test that all string fields are non-empty
+    try testing.expect(header.context.len > 0);
+    try testing.expect(header.cluster.len > 0);
+    try testing.expect(header.user.len > 0);
+    try testing.expect(header.app_version.len > 0);
+    try testing.expect(header.k8s_version.len > 0);
+
+    // Test that numeric values are within reasonable ranges
+    try testing.expect(header.cpu_usage >= 0 and header.cpu_usage <= 100);
+    try testing.expect(header.mem_usage >= 0 and header.mem_usage <= 100);
+}
+
+test "header memory management" {
+    var gpa = std.heap.DebugAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
+    const theme = try allocator.create(theme_loader.ThemeColors);
+    theme.* = try theme_loader.defaultTheme(allocator);
+    defer {
+        theme_loader.deinitTheme(theme);
+        allocator.destroy(theme);
+    }
+
+    // Test multiple initialization and cleanup cycles
+    for (0..10) |_| {
+        var header = try Header.init(allocator, theme, true);
+        header.deinit();
+    }
+
+    // No explicit gpa.deinit() here: the deferred gpa.deinit() runs after the
+    // theme's defer frees its allocation, and DebugAllocator reports any leak
+    // from the header init/deinit cycles at that point.
+}
+
+// ===========================================================================
+// Tests: render edge cases (header_render_test)
+// ===========================================================================
+
+test "header: render with empty hints should not crash" {
+    var gpa = std.heap.DebugAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
+    const theme = try theme_loader.defaultTheme(allocator);
+    defer theme_loader.deinitTheme(@constCast(&theme));
+    var header = try Header.init(allocator, &theme, true);
+    defer header.deinit();
+
+    // Create terminal (won't actually write to screen in tests)
+    var terminal = try Terminal.init(allocator);
+    defer terminal.deinit();
+
+    // Empty hints config
+    const empty_hints = hints_mod.HintConfig{
+        .quick_commands = &.{},
+        .hints = &.{},
+    };
+
+    // Should not crash
+    try header.render(&terminal, 0, 0, 120, 5, empty_hints);
+}
+
+test "header: render with hints that have empty text fields" {
+    var gpa = std.heap.DebugAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
+    const theme = try theme_loader.defaultTheme(allocator);
+    defer theme_loader.deinitTheme(@constCast(&theme));
+    var header = try Header.init(allocator, &theme, true);
+    defer header.deinit();
+
+    var terminal = try Terminal.init(allocator);
+    defer terminal.deinit();
+
+    // Hints with empty strings (edge case)
+    const hints_with_empty = [_]hints_mod.Hint{
+        hints_mod.Hint.plain("", 1),
+        hints_mod.Hint.highlighted("", "", "", 2),
+    };
+
+    const hints_cfg = hints_mod.HintConfig{
+        .quick_commands = &.{},
+        .hints = &hints_with_empty,
+    };
+
+    // Should not crash
+    try header.render(&terminal, 0, 0, 120, 5, hints_cfg);
+}
+
+test "header: render with very long hint text" {
+    var gpa = std.heap.DebugAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
+    const theme = try theme_loader.defaultTheme(allocator);
+    defer theme_loader.deinitTheme(@constCast(&theme));
+    var header = try Header.init(allocator, &theme, true);
+    defer header.deinit();
+
+    var terminal = try Terminal.init(allocator);
+    defer terminal.deinit();
+
+    // Very long hint that should be truncated
+    const long_text = "This is a very long hint text that should be truncated to fit within the available space without causing a buffer overflow or segmentation fault";
+    const long_hints = [_]hints_mod.Hint{
+        hints_mod.Hint.plain(long_text, 1),
+    };
+
+    const hints_cfg = hints_mod.HintConfig{
+        .quick_commands = &.{},
+        .hints = &long_hints,
+    };
+
+    // Should not crash
+    try header.render(&terminal, 0, 0, 80, 5, hints_cfg);
+}
+
+test "header: render in very narrow terminal" {
+    var gpa = std.heap.DebugAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
+    const theme = try theme_loader.defaultTheme(allocator);
+    defer theme_loader.deinitTheme(@constCast(&theme));
+    var header = try Header.init(allocator, &theme, true);
+    defer header.deinit();
+
+    var terminal = try Terminal.init(allocator);
+    defer terminal.deinit();
+
+    const hints_cfg = hints_mod.podsHints();
+
+    // Very narrow terminal (should handle gracefully)
+    try header.render(&terminal, 0, 0, 20, 5, hints_cfg);
+    try header.render(&terminal, 0, 0, 10, 5, hints_cfg);
+    try header.render(&terminal, 0, 0, 5, 5, hints_cfg);
+}
+
+test "header: render with many hints in narrow terminal" {
+    var gpa = std.heap.DebugAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
+    const theme = try theme_loader.defaultTheme(allocator);
+    defer theme_loader.deinitTheme(@constCast(&theme));
+    var header = try Header.init(allocator, &theme, true);
+    defer header.deinit();
+
+    var terminal = try Terminal.init(allocator);
+    defer terminal.deinit();
+
+    // Many hints
+    const many_hints = [_]hints_mod.Hint{
+        hints_mod.Hint.plain("hint1", 1),
+        hints_mod.Hint.plain("hint2", 2),
+        hints_mod.Hint.plain("hint3", 3),
+        hints_mod.Hint.plain("hint4", 4),
+        hints_mod.Hint.plain("hint5", 5),
+        hints_mod.Hint.plain("hint6", 6),
+        hints_mod.Hint.plain("hint7", 7),
+        hints_mod.Hint.plain("hint8", 8),
+        hints_mod.Hint.highlighted("a", "b", "c", 9),
+        hints_mod.Hint.highlighted("d", "e", "f", 10),
+    };
+
+    const hints_cfg = hints_mod.HintConfig{
+        .quick_commands = &.{},
+        .hints = &many_hints,
+    };
+
+    // Render in narrow terminal - should handle gracefully
+    try header.render(&terminal, 0, 0, 60, 5, hints_cfg);
+}
+
+test "header: compact mode at various widths" {
+    var gpa = std.heap.DebugAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
+    const theme = try theme_loader.defaultTheme(allocator);
+    defer theme_loader.deinitTheme(@constCast(&theme));
+    var header = try Header.init(allocator, &theme, true);
+    defer header.deinit();
+
+    var terminal = try Terminal.init(allocator);
+    defer terminal.deinit();
+
+    const hints_cfg = hints_mod.podsHints();
+
+    // Toggle compact mode
+    header.toggleCompact();
+
+    // Test all compression levels (0-11)
+    const widths = [_]u16{ 200, 180, 160, 140, 120, 100, 80, 70, 60, 50, 40, 30 };
+    for (widths) |width| {
+        try header.render(&terminal, 0, 0, width, 1, hints_cfg);
+    }
+}
+
+test "header: non-compact mode progressive hiding" {
+    var gpa = std.heap.DebugAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
+    const theme = try theme_loader.defaultTheme(allocator);
+    defer theme_loader.deinitTheme(@constCast(&theme));
+    var header = try Header.init(allocator, &theme, true);
+    defer header.deinit();
+
+    var terminal = try Terminal.init(allocator);
+    defer terminal.deinit();
+
+    const hints_cfg = hints_mod.podsHints();
+
+    // Test progressive hiding at various widths
+    const widths = [_]u16{ 200, 150, 120, 100, 80, 60, 40 };
+    for (widths) |width| {
+        try header.render(&terminal, 0, 0, width, 5, hints_cfg);
+    }
+}
+
+test "header: render with special characters in hints" {
+    var gpa = std.heap.DebugAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
+    const theme = try theme_loader.defaultTheme(allocator);
+    defer theme_loader.deinitTheme(@constCast(&theme));
+    var header = try Header.init(allocator, &theme, true);
+    defer header.deinit();
+
+    var terminal = try Terminal.init(allocator);
+    defer terminal.deinit();
+
+    // Hints with special characters
+    const special_hints = [_]hints_mod.Hint{
+        hints_mod.Hint.plain("<ctrl-d> delete", 1),
+        hints_mod.Hint.plain("<shift-f> forward", 2),
+        hints_mod.Hint.highlighted("?", "", " help", 3),
+    };
+
+    const hints_cfg = hints_mod.HintConfig{
+        .quick_commands = &.{},
+        .hints = &special_hints,
+    };
+
+    // Should not crash
+    try header.render(&terminal, 0, 0, 120, 5, hints_cfg);
+}
+
+test "header: all hint rendering modes" {
+    var gpa = std.heap.DebugAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
+    const theme = try theme_loader.defaultTheme(allocator);
+    defer theme_loader.deinitTheme(@constCast(&theme));
+    var header = try Header.init(allocator, &theme, true);
+    defer header.deinit();
+
+    var terminal = try Terminal.init(allocator);
+    defer terminal.deinit();
+
+    // Mix of plain and highlighted hints
+    const mixed_hints = [_]hints_mod.Hint{
+        hints_mod.Hint.plain("plain text", 1),
+        hints_mod.Hint.highlighted("k", "", "ey", 2),
+        hints_mod.Hint.highlighted("b", "be", "fore", 3),
+        hints_mod.Hint.plain("<ctrl-d> delete", 4),
+    };
+
+    const hints_cfg = hints_mod.HintConfig{
+        .quick_commands = &.{},
+        .hints = &mixed_hints,
+    };
+
+    // Should handle both render modes
+    try header.render(&terminal, 0, 0, 120, 5, hints_cfg);
+}
+
+test "header: stress test with maximum hints" {
+    var gpa = std.heap.DebugAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
+    const theme = try theme_loader.defaultTheme(allocator);
+    defer theme_loader.deinitTheme(@constCast(&theme));
+    var header = try Header.init(allocator, &theme, true);
+    defer header.deinit();
+
+    var terminal = try Terminal.init(allocator);
+    defer terminal.deinit();
+
+    // Maximum number of hints (stress test)
+    const max_hints = [_]hints_mod.Hint{
+        hints_mod.Hint.plain("hint1", 1),
+        hints_mod.Hint.plain("hint2", 2),
+        hints_mod.Hint.plain("hint3", 3),
+        hints_mod.Hint.plain("hint4", 4),
+        hints_mod.Hint.plain("hint5", 5),
+        hints_mod.Hint.plain("hint6", 6),
+        hints_mod.Hint.plain("hint7", 7),
+        hints_mod.Hint.plain("hint8", 8),
+        hints_mod.Hint.plain("hint9", 9),
+        hints_mod.Hint.plain("hint10", 10),
+        hints_mod.Hint.plain("hint11", 11),
+        hints_mod.Hint.plain("hint12", 12),
+        hints_mod.Hint.plain("hint13", 13),
+        hints_mod.Hint.plain("hint14", 14),
+        hints_mod.Hint.plain("hint15", 15),
+        hints_mod.Hint.plain("hint16", 16),
+        hints_mod.Hint.plain("hint17", 17),
+        hints_mod.Hint.plain("hint18", 18),
+        hints_mod.Hint.plain("hint19", 19),
+        hints_mod.Hint.plain("hint20", 20),
+    };
+
+    const max_quick = [_]hints_mod.QuickCommand{
+        .{ .key = "0", .cmd = "all" },
+        .{ .key = "1", .cmd = "default" },
+        .{ .key = "2", .cmd = "kube-system" },
+        .{ .key = "3", .cmd = "kube-public" },
+        .{ .key = "4", .cmd = "custom" },
+    };
+
+    const hints_cfg = hints_mod.HintConfig{
+        .quick_commands = &max_quick,
+        .hints = &max_hints,
+    };
+
+    // Should handle maximum load
+    try header.render(&terminal, 0, 0, 200, 5, hints_cfg);
+}
+
+// ===========================================================================
+// Tests: progressive compact levels (header_compact_test)
+// ===========================================================================
+
+// calculateCompactLevel is a pure function over the Header's string fields, so
+// these tests build a Header literal directly with static string values. This
+// avoids Header.init's allocator.dupe ownership (deinit frees every string
+// field, which would crash if we overwrote them with string literals).
+fn makeHeader(theme: *const theme_loader.ThemeColors) Header {
+    return Header{
+        .allocator = testing.allocator,
+        .theme = theme,
+        .context = "",
+        .cluster = "",
+        .user = "",
+        .app_version = "",
+        .k8s_version = "",
+        .cpu_usage = 0,
+        .mem_usage = 0,
+        .title_with_version = "",
+        .cpu_str = "",
+        .mem_str = "",
+    };
+}
+
+test "Header progressive compact levels" {
+    const allocator = testing.allocator;
+
+    // Load default theme
+    const theme = try allocator.create(theme_loader.ThemeColors);
+    theme.* = try theme_loader.defaultTheme(allocator);
+    defer {
+        theme_loader.deinitTheme(theme);
+        allocator.destroy(theme);
+    }
+
+    var header = makeHeader(theme);
+
+    // Set specific test values (matching the example from requirements)
+    header.context = "rancher-desktop [RW]";
+    header.cluster = "rancher-desktop";
+    header.user = "rancher-desktop";
+    header.k8s_version = "v1.33.3+k3s1";
+    header.cpu_str = "2%";
+    header.mem_str = "27%";
+    header.title_with_version = "v0.2025.09.30.12.08";
+    header.setCompact(true);
+
+    // Test Level 0: Full header with version
+    {
+        const width: u16 = 200; // Wide enough for level 0
+        const level = header.calculateCompactLevel(width);
+        try testing.expectEqual(@as(u8, 0), level);
+    }
+
+    // Test Level 1: Drop version prefix
+    {
+        const width: u16 = 130;
+        const level = header.calculateCompactLevel(width);
+        try testing.expectEqual(@as(u8, 1), level);
+    }
+
+    // Test Level 2: Drop k8s prefix
+    {
+        const width: u16 = 125;
+        const level = header.calculateCompactLevel(width);
+        try testing.expectEqual(@as(u8, 2), level);
+    }
+
+    // Test Level 3: Compact CPU/MEM
+    {
+        const width: u16 = 115;
+        const level = header.calculateCompactLevel(width);
+        try testing.expectEqual(@as(u8, 3), level);
+    }
+
+    // Test Level 4: Short labels
+    {
+        const width: u16 = 105;
+        const level = header.calculateCompactLevel(width);
+        try testing.expectEqual(@as(u8, 4), level);
+    }
+
+    // Test Level 5: Drop [RW]
+    {
+        const width: u16 = 95;
+        const level = header.calculateCompactLevel(width);
+        try testing.expectEqual(@as(u8, 5), level);
+    }
+
+    // Test Level 6: Drop c3s
+    {
+        const width: u16 = 90;
+        const level = header.calculateCompactLevel(width);
+        try testing.expectEqual(@as(u8, 6), level);
+    }
+
+    // Test Level 7: Values only
+    {
+        const width: u16 = 80;
+        const level = header.calculateCompactLevel(width);
+        try testing.expectEqual(@as(u8, 7), level);
+    }
+
+    // Test Level 8: Drop k8s version
+    {
+        const width: u16 = 65;
+        const level = header.calculateCompactLevel(width);
+        try testing.expectEqual(@as(u8, 8), level);
+    }
+
+    // Test Level 9: Truncate user
+    {
+        const width: u16 = 55;
+        const level = header.calculateCompactLevel(width);
+        try testing.expectEqual(@as(u8, 9), level);
+    }
+
+    // Test Level 10: Truncate cluster and user
+    {
+        const width: u16 = 45;
+        const level = header.calculateCompactLevel(width);
+        try testing.expectEqual(@as(u8, 10), level);
+    }
+
+    // Test Level 11: Minimum (context | 2%::27%) - 25 chars minimum
+    {
+        const width: u16 = 25;
+        const level = header.calculateCompactLevel(width);
+        try testing.expectEqual(@as(u8, 11), level);
+    }
+}
+
+test "Header compact with short values" {
+    const allocator = testing.allocator;
+
+    const theme = try allocator.create(theme_loader.ThemeColors);
+    theme.* = try theme_loader.defaultTheme(allocator);
+    defer {
+        theme_loader.deinitTheme(theme);
+        allocator.destroy(theme);
+    }
+
+    var header = makeHeader(theme);
+
+    // Test with very short values
+    header.context = "dev [RO]";
+    header.cluster = "local";
+    header.user = "me";
+    header.k8s_version = "v1.28";
+    header.cpu_str = "5%";
+    header.mem_str = "10%";
+    header.title_with_version = "v0.2025.01.01";
+    header.setCompact(true);
+
+    // Even with short values, level 0 requires enough width
+    {
+        const width: u16 = 100;
+        const level = header.calculateCompactLevel(width);
+        try testing.expect(level >= 0);
+    }
+
+    // Very narrow should still give level 11
+    {
+        const width: u16 = 20;
+        const level = header.calculateCompactLevel(width);
+        try testing.expectEqual(@as(u8, 11), level);
+    }
+}
+
+test "Header compact minimum width" {
+    const allocator = testing.allocator;
+
+    const theme = try allocator.create(theme_loader.ThemeColors);
+    theme.* = try theme_loader.defaultTheme(allocator);
+    defer {
+        theme_loader.deinitTheme(theme);
+        allocator.destroy(theme);
+    }
+
+    var header = makeHeader(theme);
+
+    header.context = "rancher-desktop";
+    header.cluster = "rancher-desktop";
+    header.user = "rancher-desktop";
+    header.k8s_version = "v1.33.3+k3s1";
+    header.cpu_str = "2%";
+    header.mem_str = "27%";
+    header.title_with_version = "v0.2025.09.30.12.08";
+    header.setCompact(true);
+
+    // Level 11 format: "rancher-desktop | 2%::27%" = 30 chars
+    // This is the absolute minimum supported width
+    {
+        const width: u16 = 30;
+        const level = header.calculateCompactLevel(width);
+        try testing.expectEqual(@as(u8, 11), level);
+    }
+
+    // Anything narrower should still be level 11
+    {
+        const width: u16 = 15;
+        const level = header.calculateCompactLevel(width);
+        try testing.expectEqual(@as(u8, 11), level);
+    }
+}

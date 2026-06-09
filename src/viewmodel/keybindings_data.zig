@@ -315,3 +315,206 @@ pub fn loadHelmChartsBindings(allocator: std.mem.Allocator) ![]const KeyBinding 
     };
     return try allocator.dupe(KeyBinding, &bindings);
 }
+
+// --- Tests ---
+
+test "keybindings_data: all load functions return valid bindings" {
+    var gpa = std.heap.DebugAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
+    // Test all 24 binding load functions
+    const load_functions = .{
+        loadNamespacesBindings,
+        loadEventsBindings,
+        loadSecretsBindings,
+        loadServiceAccountsBindings,
+        loadPVCsBindings,
+        loadPriorityClassesBindings,
+        loadReplicaSetsBindings,
+        loadStatefulSetsBindings,
+        loadDaemonSetsBindings,
+        loadCronJobsBindings,
+        loadJobsBindings,
+        loadRolesBindings,
+        loadRoleBindingsBindings,
+        loadUsersBindings,
+        loadGroupsBindings,
+        loadCRDBindings,
+        loadContextsBindings,
+        loadContainersBindings,
+        loadWorkloadsBindings,
+        loadPortForwardsBindings,
+        loadAliasesBindings,
+        loadBenchmarksBindings,
+        loadImageScansBindings,
+        loadReferencesBindings,
+        loadScreenDumpsBindings,
+        loadPulseBindings,
+        loadHelmChartsBindings,
+    };
+
+    inline for (load_functions) |load_fn| {
+        const bindings = try load_fn(allocator);
+        defer allocator.free(bindings);
+
+        // Validate each binding
+        for (bindings) |binding| {
+            try std.testing.expect(binding.key.len > 0);
+            try std.testing.expect(binding.description.len > 0);
+            try std.testing.expect(binding.action.len > 0);
+
+            // Validate category is a valid enum value
+            _ = binding.category;
+        }
+    }
+}
+
+test "keybindings_data: namespaces has switch binding" {
+    var gpa = std.heap.DebugAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
+    const bindings = try loadNamespacesBindings(allocator);
+    defer allocator.free(bindings);
+
+    var has_switch = false;
+    for (bindings) |binding| {
+        if (std.mem.eql(u8, binding.action, "switch")) has_switch = true;
+    }
+
+    try std.testing.expect(has_switch);
+}
+
+test "keybindings_data: secrets has decode binding" {
+    var gpa = std.heap.DebugAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
+    const bindings = try loadSecretsBindings(allocator);
+    defer allocator.free(bindings);
+
+    var has_decode = false;
+    for (bindings) |binding| {
+        if (std.mem.eql(u8, binding.action, "decode")) has_decode = true;
+    }
+
+    try std.testing.expect(has_decode);
+}
+
+test "keybindings_data: cronjobs has trigger and suspend" {
+    var gpa = std.heap.DebugAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
+    const bindings = try loadCronJobsBindings(allocator);
+    defer allocator.free(bindings);
+
+    var has_trigger = false;
+    var has_suspend = false;
+
+    for (bindings) |binding| {
+        if (std.mem.eql(u8, binding.action, "trigger")) has_trigger = true;
+        if (std.mem.eql(u8, binding.action, "suspend")) has_suspend = true;
+    }
+
+    try std.testing.expect(has_trigger);
+    try std.testing.expect(has_suspend);
+}
+
+test "keybindings_data: containers has shell and attach" {
+    var gpa = std.heap.DebugAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
+    const bindings = try loadContainersBindings(allocator);
+    defer allocator.free(bindings);
+
+    var has_shell = false;
+    var has_attach = false;
+
+    for (bindings) |binding| {
+        if (std.mem.eql(u8, binding.action, "shell")) has_shell = true;
+        if (std.mem.eql(u8, binding.action, "attach")) has_attach = true;
+    }
+
+    try std.testing.expect(has_shell);
+    try std.testing.expect(has_attach);
+}
+
+test "keybindings_data: all bindings are UTF-8 valid" {
+    var gpa = std.heap.DebugAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
+    const load_functions = .{
+        loadNamespacesBindings,
+        loadSecretsBindings,
+        loadCronJobsBindings,
+    };
+
+    inline for (load_functions) |load_fn| {
+        const bindings = try load_fn(allocator);
+        defer allocator.free(bindings);
+
+        for (bindings) |binding| {
+            try std.testing.expect(std.unicode.utf8ValidateSlice(binding.key));
+            try std.testing.expect(std.unicode.utf8ValidateSlice(binding.description));
+            try std.testing.expect(std.unicode.utf8ValidateSlice(binding.action));
+        }
+    }
+}
+
+test "keybindings_data: portforwards has start and stop" {
+    var gpa = std.heap.DebugAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
+    const bindings = try loadPortForwardsBindings(allocator);
+    defer allocator.free(bindings);
+
+    var has_stop = false;
+    var has_start = false;
+
+    for (bindings) |binding| {
+        if (std.mem.eql(u8, binding.action, "stop")) has_stop = true;
+        if (std.mem.eql(u8, binding.action, "start")) has_start = true;
+    }
+
+    try std.testing.expect(has_stop);
+    try std.testing.expect(has_start);
+}
+
+test "keybindings_data: helmcharts has uninstall binding" {
+    var gpa = std.heap.DebugAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
+    const bindings = try loadHelmChartsBindings(allocator);
+    defer allocator.free(bindings);
+
+    var has_uninstall = false;
+
+    for (bindings) |binding| {
+        if (std.mem.eql(u8, binding.action, "uninstall")) has_uninstall = true;
+    }
+
+    try std.testing.expect(has_uninstall);
+}
+
+test "keybindings_data: pvcs has capacity sorting" {
+    var gpa = std.heap.DebugAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
+    const bindings = try loadPVCsBindings(allocator);
+    defer allocator.free(bindings);
+
+    var has_sort_capacity = false;
+
+    for (bindings) |binding| {
+        if (std.mem.eql(u8, binding.action, "sort_capacity")) has_sort_capacity = true;
+    }
+
+    try std.testing.expect(has_sort_capacity);
+}

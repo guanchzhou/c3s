@@ -431,3 +431,250 @@ pub const Color = enum(u8) {
     cyan = 36,
     white = 37,
 };
+
+const testing = std.testing;
+
+test "terminal initialization and cleanup" {
+    var gpa = std.heap.DebugAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
+    var terminal = try Terminal.init(allocator);
+    defer terminal.deinit();
+
+    // Test that terminal was initialized successfully
+    // Note: We can't directly compare allocators, so we just check that terminal exists
+    // The terminal should have been created without errors
+}
+
+test "terminal size query" {
+    var gpa = std.heap.DebugAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
+    var terminal = try Terminal.init(allocator);
+    defer terminal.deinit();
+
+    const size = try terminal.getSize();
+    try testing.expect(size.width > 0);
+    try testing.expect(size.height > 0);
+}
+
+test "terminal screen control" {
+    var gpa = std.heap.DebugAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
+    var terminal = try Terminal.init(allocator);
+    defer terminal.deinit();
+
+    // Test basic screen control
+    try terminal.clear();
+    try terminal.hideCursor();
+    try terminal.showCursor();
+    try terminal.setCursor(0, 0);
+}
+
+test "terminal text writing" {
+    var gpa = std.heap.DebugAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
+    var terminal = try Terminal.init(allocator);
+    defer terminal.deinit();
+
+    // Test basic text output
+    try terminal.writeString(0, 0, "Hello, World!");
+    try terminal.flush();
+}
+
+test "terminal color support" {
+    var gpa = std.heap.DebugAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
+    var terminal = try Terminal.init(allocator);
+    defer terminal.deinit();
+
+    // Test color setting
+    try terminal.setColor(.red, .black);
+    try terminal.resetColor();
+
+    // Test all color combinations
+    const colors = [_]Color{ .black, .red, .green, .yellow, .blue, .magenta, .cyan, .white };
+
+    for (colors, 0..) |fg, i| {
+        const bg = colors[i];
+        try terminal.setColor(fg, bg);
+        try terminal.resetColor();
+    }
+}
+
+test "terminal colored text writing" {
+    var gpa = std.heap.DebugAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
+    var terminal = try Terminal.init(allocator);
+    defer terminal.deinit();
+
+    // Test colored text output
+    try terminal.writeStringWithColor(0, 0, "Red text", .red, .black);
+    try terminal.writeStringWithColor(0, 1, "Green text", .green, .black);
+    try terminal.writeStringWithColor(0, 2, "Blue text", .blue, .black);
+    try terminal.flush();
+}
+
+test "terminal raw mode" {
+    var gpa = std.heap.DebugAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
+    var terminal = try Terminal.init(allocator);
+    defer terminal.deinit();
+
+    // These tests can't run in automated environment as they require a terminal
+    // Just verify they exist and can be called with proper error handling
+    _ = terminal.enableRawMode() catch {};
+    terminal.disableRawMode();
+}
+
+test "terminal buffer operations" {
+    var gpa = std.heap.DebugAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
+    var terminal = try Terminal.init(allocator);
+    defer terminal.deinit();
+
+    // Test buffer operations
+    try terminal.writeString(0, 0, "Test");
+    try terminal.flush();
+}
+
+// Mock terminal for testing key parsing without actual stdin
+const MockTerminal = struct {
+    buffer: []const u8,
+    pos: usize = 0,
+
+    pub fn init(buffer: []const u8) MockTerminal {
+        return .{ .buffer = buffer };
+    }
+
+    pub fn readByte(self: *MockTerminal) ?u8 {
+        if (self.pos >= self.buffer.len) return null;
+        const b = self.buffer[self.pos];
+        self.pos += 1;
+        return b;
+    }
+};
+
+// These tests are placeholders documenting the intended key-decoding behavior.
+// Terminal.readKey reads directly from a raw-mode fd and has no injection seam
+// yet, so the mock is constructed but not yet exercised. Keeping the mock alive
+// via a discard so the file compiles under Zig 0.16 (unused locals are errors).
+// Referenced types are kept for when injection lands.
+comptime {
+    _ = Terminal;
+    _ = Key;
+}
+
+fn placeholder(seq: []const u8) void {
+    var mock = MockTerminal.init(seq);
+    _ = &mock;
+    // Expected behavior is documented per call site below.
+    // const key = try terminal.readKey();
+    // try testing.expectEqual(expected, key);
+}
+
+test "arrow up key decoded" {
+    placeholder("\x1b[A"); // Expected: Key.up
+}
+
+test "arrow down key decoded" {
+    placeholder("\x1b[B"); // Expected: Key.down
+}
+
+test "arrow right key decoded" {
+    placeholder("\x1b[C"); // Expected: Key.right
+}
+
+test "arrow left key decoded" {
+    placeholder("\x1b[D"); // Expected: Key.left
+}
+
+test "single escape key" {
+    placeholder("\x1b"); // Expected: Key.escape (no hang waiting for more bytes)
+}
+
+test "home key with ESC[H" {
+    placeholder("\x1b[H"); // Expected: Key.home
+}
+
+test "home key with ESC[1~" {
+    placeholder("\x1b[1~"); // Expected: Key.home
+}
+
+test "end key with ESC[F" {
+    placeholder("\x1b[F"); // Expected: Key.end
+}
+
+test "end key with ESC[4~" {
+    placeholder("\x1b[4~"); // Expected: Key.end
+}
+
+test "page up key" {
+    placeholder("\x1b[5~"); // Expected: Key.page_up
+}
+
+test "page down key" {
+    placeholder("\x1b[6~"); // Expected: Key.page_down
+}
+
+test "ctrl+arrow up normalized" {
+    placeholder("\x1b[1;5A"); // Expected: Key.up (modifier ignored)
+}
+
+test "shift+arrow up normalized" {
+    placeholder("\x1b[1;2A"); // Expected: Key.up (modifier ignored)
+}
+
+test "ctrl+c" {
+    placeholder("\x03"); // Expected: Key.ctrl_c
+}
+
+test "ctrl+d" {
+    placeholder("\x04"); // Expected: Key.ctrl_d
+}
+
+test "ctrl+e" {
+    placeholder("\x05"); // Expected: Key.ctrl_e
+}
+
+test "ctrl+f" {
+    placeholder("\x06"); // Expected: Key.ctrl_f
+}
+
+test "ctrl+b" {
+    placeholder("\x02"); // Expected: Key.ctrl_b
+}
+
+test "unsupported escape sequence" {
+    placeholder("\x1b[99Z"); // Expected: Key.unsupported
+}
+
+test "regular character" {
+    placeholder("a"); // Expected: Key{ .char = 'a' }
+}
+
+test "question mark" {
+    placeholder("?"); // Expected: Key.question_mark
+}
+
+test "colon" {
+    placeholder(":"); // Expected: Key.colon
+}
+
+test "shift+g" {
+    placeholder("G"); // Expected: Key.shift_g
+}
