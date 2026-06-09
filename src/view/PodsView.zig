@@ -1,7 +1,7 @@
 const std = @import("std");
 const View = @import("../viewmodel/view.zig").View;
-const Terminal = @import("../core/terminal.zig").Terminal;
-const Key = @import("../core/terminal.zig").Key;
+const Terminal = @import("../core/Terminal.zig").Terminal;
+const Key = @import("../core/Terminal.zig").Key;
 const KeyResult = View.KeyResult;
 const Logger = @import("../core/logger.zig");
 const theme_loader = @import("../model/theme_loader.zig");
@@ -10,11 +10,11 @@ const hints_model = @import("../model/hints.zig");
 const table_layout = @import("../ui/table_layout.zig");
 const sort_util = @import("../viewmodel/sort.zig");
 const age_util = @import("../viewmodel/age.zig");
-const k8s_service_mod = @import("../services/k8s_service.zig");
+const k8s_service_mod = @import("../services/K8sService.zig");
 const K8sService = k8s_service_mod.K8sService;
 const view_mod = @import("../viewmodel/view.zig");
 const ResourceInfo = view_mod.ResourceInfo;
-const TableState = @import("../ui/table_state.zig").TableState;
+const TableState = @import("../ui/TableState.zig").TableState;
 
 /// PodsView - displays Kubernetes pods with filtering and navigation
 pub const PodsView = struct {

@@ -1,5 +1,5 @@
 const std = @import("std");
-const Terminal = @import("../core/terminal.zig").Terminal;
+const Terminal = @import("../core/Terminal.zig").Terminal;
 const Theme = @import("../model/theme_loader.zig");
 
 // Box drawing characters (exact from btop)

@@ -1,5 +1,5 @@
 const std = @import("std");
-const Terminal = @import("../core/terminal.zig").Terminal;
+const Terminal = @import("../core/Terminal.zig").Terminal;
 const BoxDrawing = @import("box_drawing.zig");
 const theme_loader = @import("../model/theme_loader.zig");
 const Theme = theme_loader;

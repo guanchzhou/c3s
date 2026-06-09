@@ -1,6 +1,6 @@
 const std = @import("std");
-const Terminal = @import("../core/terminal.zig").Terminal;
-const Key = @import("../core/terminal.zig").Key;
+const Terminal = @import("../core/Terminal.zig").Terminal;
+const Key = @import("../core/Terminal.zig").Key;
 const hints_model = @import("../model/hints.zig");
 
 /// Resource info returned by views for describe/delete/logs operations

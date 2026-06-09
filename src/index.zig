@@ -1,22 +1,22 @@
 // Main module exports for testing
-pub const Terminal = @import("core/terminal.zig").Terminal;
-pub const Key = @import("core/terminal.zig").Key;
-pub const Color = @import("core/terminal.zig").Color;
-pub const Header = @import("ui/header.zig").Header;
-pub const Footer = @import("ui/footer.zig").Footer;
+pub const Terminal = @import("core/Terminal.zig").Terminal;
+pub const Key = @import("core/Terminal.zig").Key;
+pub const Color = @import("core/Terminal.zig").Color;
+pub const Header = @import("ui/Header.zig").Header;
+pub const Footer = @import("ui/Footer.zig").Footer;
 
 // UI module exports
 pub const ui = struct {
     pub const table_layout = @import("ui/table_layout.zig");
-    pub const table_state = @import("ui/table_state.zig");
+    pub const table_state = @import("ui/TableState.zig");
 };
 
 // View exports - pods_view is standalone, all others come from resource_configs
-pub const PodsView = @import("view/pods_view.zig").PodsView;
+pub const PodsView = @import("view/PodsView.zig").PodsView;
 const rc = @import("view/resource_configs.zig");
 pub const DeploymentsView = rc.DeploymentsView;
 pub const ServicesView = rc.ServicesView;
-pub const NamespacesView = @import("view/namespaces_view.zig").NamespacesView;
+pub const NamespacesView = @import("view/NamespacesView.zig").NamespacesView;
 pub const NodesView = rc.NodesView;
 pub const StatefulSetsView = rc.StatefulSetsView;
 pub const DaemonSetsView = rc.DaemonSetsView;
@@ -41,21 +41,21 @@ pub const PodDisruptionBudgetsView = rc.PodDisruptionBudgetsView;
 pub const HPAView = rc.HPAView;
 pub const EndpointsView = rc.EndpointsView;
 pub const StorageClassesView = rc.StorageClassesView;
-pub const ContextsView = @import("view/contexts_view.zig").ContextsView;
-pub const ThemesView = @import("view/themes_view.zig").ThemesView;
-pub const HelpView = @import("view/help_view.zig").HelpView;
-pub const DetailView = @import("view/detail_view.zig").DetailView;
-pub const LogsView = @import("view/logs_view.zig").LogsView;
-pub const AuthorizationView = @import("view/authorization_view.zig").AuthorizationView;
+pub const ContextsView = @import("view/ContextsView.zig").ContextsView;
+pub const ThemesView = @import("view/ThemesView.zig").ThemesView;
+pub const HelpView = @import("view/HelpView.zig").HelpView;
+pub const DetailView = @import("view/DetailView.zig").DetailView;
+pub const LogsView = @import("view/LogsView.zig").LogsView;
+pub const AuthorizationView = @import("view/AuthorizationView.zig").AuthorizationView;
 pub const resource_view = @import("view/resource_view.zig");
 pub const resource_configs = @import("view/resource_configs.zig");
-pub const TableState = @import("ui/table_state.zig").TableState;
+pub const TableState = @import("ui/TableState.zig").TableState;
 pub const View = @import("viewmodel/view.zig").View;
 pub const ResourceInfo = @import("viewmodel/view.zig").ResourceInfo;
 pub const sort = @import("viewmodel/sort.zig");
 pub const filter = @import("viewmodel/filter.zig");
-pub const App = @import("app.zig").App;
-pub const viewNameToPrimaryView = @import("app.zig").viewNameToPrimaryView;
+pub const App = @import("App.zig").App;
+pub const viewNameToPrimaryView = @import("App.zig").viewNameToPrimaryView;
 pub const Config = @import("model/config.zig");
 pub const Logger = @import("core/logger.zig");
 pub const version = @import("model/version.zig");
@@ -74,19 +74,19 @@ pub const env = @import("core/env.zig");
 pub const sys = @import("core/sys.zig");
 pub const age = @import("viewmodel/age.zig");
 pub const command = @import("viewmodel/command.zig");
-pub const view_manager = @import("viewmodel/view_manager.zig");
+pub const view_manager = @import("viewmodel/ViewManager.zig");
 pub const keybindings_vm = @import("viewmodel/keybindings_vm.zig");
 pub const keybindings_data = @import("viewmodel/keybindings_data.zig");
 pub const keybindings = @import("model/keybindings.zig");
 pub const box_drawing = @import("ui/box_drawing.zig");
-pub const command_input = @import("ui/command_input.zig");
-pub const CommandInput = @import("ui/command_input.zig").CommandInput;
+pub const command_input = @import("ui/CommandInput.zig");
+pub const CommandInput = @import("ui/CommandInput.zig").CommandInput;
 pub const panic_hook = @import("panic_hook.zig");
 pub const cli = @import("cli.zig");
 
 // Services
-pub const K8sService = @import("services/k8s_service.zig").K8sService;
-pub const ClusterInfo = @import("services/k8s_service.zig").ClusterInfo;
+pub const K8sService = @import("services/K8sService.zig").K8sService;
+pub const ClusterInfo = @import("services/K8sService.zig").ClusterInfo;
 pub const k8s_service_types = @import("services/k8s_types.zig");
 
 // K8s module exports (from zig-klient library)

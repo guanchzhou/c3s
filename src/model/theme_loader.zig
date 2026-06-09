@@ -2,7 +2,7 @@ const std = @import("std");
 const ascii = std.ascii;
 const fmt = std.fmt;
 const mem = std.mem;
-const Terminal = @import("../core/terminal.zig").Terminal;
+const Terminal = @import("../core/Terminal.zig").Terminal;
 const runtime = @import("../core/runtime.zig");
 
 pub const ThemeColors = struct {

@@ -5,17 +5,17 @@ const klient = @import("klient");
 const view_mod = @import("../viewmodel/view.zig");
 const View = view_mod.View;
 const KeyResult = View.KeyResult;
-const Key = @import("../core/terminal.zig").Key;
-const Terminal = @import("../core/terminal.zig").Terminal;
+const Key = @import("../core/Terminal.zig").Key;
+const Terminal = @import("../core/Terminal.zig").Terminal;
 const theme_loader = @import("../model/theme_loader.zig");
 const Theme = theme_loader;
 const hints_model = @import("../model/hints.zig");
-const k8s_service_mod = @import("../services/k8s_service.zig");
+const k8s_service_mod = @import("../services/K8sService.zig");
 const K8sService = k8s_service_mod.K8sService;
 const Logger = @import("../core/logger.zig");
 const sort_util = @import("../viewmodel/sort.zig");
 const age_util = @import("../viewmodel/age.zig");
-const TableState = @import("../ui/table_state.zig").TableState;
+const TableState = @import("../ui/TableState.zig").TableState;
 const table_layout = @import("../ui/table_layout.zig");
 
 /// Column definition for a resource view

@@ -1,13 +1,13 @@
 const std = @import("std");
 const posix = std.posix;
-const terminal = @import("core/terminal.zig");
+const terminal = @import("core/Terminal.zig");
 const runtime = @import("core/runtime.zig");
 const clock = @import("core/clock.zig");
 const Terminal = terminal.Terminal;
 const Key = terminal.Key;
-const Header = @import("ui/header.zig").Header;
-const Footer = @import("ui/footer.zig").Footer;
-const CommandInput = @import("ui/command_input.zig").CommandInput;
+const Header = @import("ui/Header.zig").Header;
+const Footer = @import("ui/Footer.zig").Footer;
+const CommandInput = @import("ui/CommandInput.zig").CommandInput;
 const Theme = theme_loader;
 const BoxDrawing = @import("ui/box_drawing.zig");
 const Cli = @import("cli.zig");
@@ -17,16 +17,16 @@ const version = @import("model/version.zig");
 const theme_loader = @import("model/theme_loader.zig");
 // MVVM imports
 const View = @import("viewmodel/view.zig").View;
-const ViewManager = @import("viewmodel/view_manager.zig").ViewManager;
+const ViewManager = @import("viewmodel/ViewManager.zig").ViewManager;
 const Command = @import("viewmodel/command.zig").Command;
 const CommandRegistry = @import("viewmodel/command.zig").CommandRegistry;
 
 // View imports - generic resource views from single config file
 const rc = @import("view/resource_configs.zig");
-const PodsView = @import("view/pods_view.zig").PodsView;
+const PodsView = @import("view/PodsView.zig").PodsView;
 const DeploymentsView = rc.DeploymentsView;
 const ServicesView = rc.ServicesView;
-const NamespacesView = @import("view/namespaces_view.zig").NamespacesView;
+const NamespacesView = @import("view/NamespacesView.zig").NamespacesView;
 const NodesView = rc.NodesView;
 const StatefulSetsView = rc.StatefulSetsView;
 const DaemonSetsView = rc.DaemonSetsView;
@@ -51,17 +51,17 @@ const PodDisruptionBudgetsView = rc.PodDisruptionBudgetsView;
 const HPAView = rc.HPAView;
 const EndpointsView = rc.EndpointsView;
 const StorageClassesView = rc.StorageClassesView;
-const ContextsView = @import("view/contexts_view.zig").ContextsView;
-const ThemesView = @import("view/themes_view.zig").ThemesView;
-const HelpView = @import("view/help_view.zig").HelpView;
+const ContextsView = @import("view/ContextsView.zig").ContextsView;
+const ThemesView = @import("view/ThemesView.zig").ThemesView;
+const HelpView = @import("view/HelpView.zig").HelpView;
 const ViewType = @import("viewmodel/keybindings_vm.zig").ViewType;
-const DetailView = @import("view/detail_view.zig").DetailView;
-const LogsView = @import("view/logs_view.zig").LogsView;
-const AuthorizationView = @import("view/authorization_view.zig").AuthorizationView;
+const DetailView = @import("view/DetailView.zig").DetailView;
+const LogsView = @import("view/LogsView.zig").LogsView;
+const AuthorizationView = @import("view/AuthorizationView.zig").AuthorizationView;
 
 // Service imports
 const klient = @import("klient");
-const k8s_service_mod = @import("services/k8s_service.zig");
+const k8s_service_mod = @import("services/K8sService.zig");
 const K8sService = k8s_service_mod.K8sService;
 const ResourceType = k8s_service_mod.ResourceType;
 const view_mod = @import("viewmodel/view.zig");

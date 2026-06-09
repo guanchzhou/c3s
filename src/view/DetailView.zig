@@ -1,8 +1,8 @@
 /// DetailView - Scrollable text view for describe/JSON display
 const std = @import("std");
 const View = @import("../viewmodel/view.zig").View;
-const Terminal = @import("../core/terminal.zig").Terminal;
-const Key = @import("../core/terminal.zig").Key;
+const Terminal = @import("../core/Terminal.zig").Terminal;
+const Key = @import("../core/Terminal.zig").Key;
 const Logger = @import("../core/logger.zig");
 const theme_loader = @import("../model/theme_loader.zig");
 const hints_model = @import("../model/hints.zig");

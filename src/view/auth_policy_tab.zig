@@ -3,13 +3,13 @@
 /// Lists all RBAC ClusterRoles/Bindings and Cedar policies in a unified table.
 /// Part of the Authorization View three-tab layout.
 const std = @import("std");
-const Terminal = @import("../core/terminal.zig").Terminal;
+const Terminal = @import("../core/Terminal.zig").Terminal;
 const theme_loader = @import("../model/theme_loader.zig");
 const Theme = theme_loader;
 const Logger = @import("../core/logger.zig");
-const k8s_service_mod = @import("../services/k8s_service.zig");
+const k8s_service_mod = @import("../services/K8sService.zig");
 const K8sService = k8s_service_mod.K8sService;
-const TableState = @import("../ui/table_state.zig").TableState;
+const TableState = @import("../ui/TableState.zig").TableState;
 
 pub const PolicyRow = struct {
     source: []const u8, // role name or cedar policy name

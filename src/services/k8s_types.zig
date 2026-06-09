@@ -1,7 +1,7 @@
 /// Kubernetes Type Definitions
 ///
 /// Shared type definitions used by K8sService and views.
-/// Extracted from k8s_service.zig for better modularity.
+/// Extracted from K8sService.zig for better modularity.
 const std = @import("std");
 
 /// Cluster information structure

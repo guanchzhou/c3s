@@ -28,7 +28,7 @@ src/
 ```
 
 Key components:
-- **Terminal** (`core/terminal.zig`) — custom raw-mode terminal (replaced vaxis), ANSI escape codes, key input incl. Shift/Ctrl.
+- **Terminal** (`core/Terminal.zig`) — custom raw-mode terminal (replaced vaxis), ANSI escape codes, key input incl. Shift/Ctrl.
 - **View system** — View trait + vtables, ViewManager (stack nav), CommandRegistry (Shift+: or `/`).
 - **Theme loader** — k9s skin files, real-time preview, hex/named → ANSI, validated against command injection (100KB cap).
 - **Header** — 12-level progressive compression for narrow terminals (full → values only → minimum `context | 2%::27%`).
@@ -73,7 +73,7 @@ tests work without `main`); `main(init: std.process.Init)` calls `runtime.set(in
 
 - **View**: create `src/view/x.zig` implementing View trait (render/handleKey/onShow/onHide/getName/deinit), register in ViewManager, add command + test.
 - **Fixture**: `src/fixtures/x.zig`, export in `src/fixtures/index.zig`.
-- **Command**: register in `src/app.zig` CommandRegistry, bind key, update help.
+- **Command**: register in `src/App.zig` CommandRegistry, bind key, update help.
 
 ## Patterns
 

@@ -20,7 +20,7 @@ fn connectWithFallback(
     return klient.connectWithFallback(allocator, runtime.io(), server, token, namespace);
 }
 
-// Re-export shared types so existing `@import("services/k8s_service.zig").ClusterInfo` etc. keep working.
+// Re-export shared types so existing `@import("services/K8sService.zig").ClusterInfo` etc. keep working.
 pub const ClusterInfo = k8s_types.ClusterInfo;
 pub const ResourceType = k8s_types.ResourceType;
 pub const ResourceInfo = k8s_types.ResourceInfo;

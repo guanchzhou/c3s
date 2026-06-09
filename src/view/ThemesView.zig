@@ -1,11 +1,11 @@
 const std = @import("std");
 const View = @import("../viewmodel/view.zig").View;
-const Terminal = @import("../core/terminal.zig").Terminal;
-const Key = @import("../core/terminal.zig").Key;
+const Terminal = @import("../core/Terminal.zig").Terminal;
+const Key = @import("../core/Terminal.zig").Key;
 const Logger = @import("../core/logger.zig");
 const theme_loader = @import("../model/theme_loader.zig");
 const hints_model = @import("../model/hints.zig");
-const TableState = @import("../ui/table_state.zig").TableState;
+const TableState = @import("../ui/TableState.zig").TableState;
 const runtime = @import("../core/runtime.zig");
 
 /// ThemesView - displays and manages theme selection

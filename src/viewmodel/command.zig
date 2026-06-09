@@ -59,4 +59,4 @@ pub const CommandRegistry = struct {
 };
 
 // Import ViewManager here to avoid circular dependency
-const ViewManager = @import("view_manager.zig").ViewManager;
+const ViewManager = @import("ViewManager.zig").ViewManager;
