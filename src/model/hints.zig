@@ -126,6 +126,9 @@ pub fn detailHints() HintConfig {
         Hint.highlighted("h/l", "", " left/right", 3),
         Hint.highlighted("g", "", " top", 4),
         Hint.highlighted("G", "shift-", " bottom", 5),
+        Hint.highlighted("Spc", "", " fold", 6),
+        Hint.highlighted("c", "", " fold all", 7),
+        Hint.highlighted("o", "", " unfold all", 8),
     };
 
     return .{
