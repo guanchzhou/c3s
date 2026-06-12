@@ -8,16 +8,10 @@ on:
 
 # c3s has two PATH dependencies declared in build.zig.zon:
 #   .klient          -> ../zig-klient        (github.com/guanchzhou/zig-klient, PUBLIC)
-#   .kubectl_traffic -> ../kubectl-traffic   (github.com/guanchzhou/kubectl-traffic, PRIVATE)
+#   .kubectl_traffic -> ../kubectl-traffic   (github.com/guanchzhou/kubectl-traffic, PUBLIC)
 # A bare checkout of c3s has neither sibling on disk, so `zig build` would fail
-# for lack of the path deps. We clone both siblings next to the checkout before
-# building.
-#
-# zig-klient is public and clones with no credentials. kubectl-traffic is PRIVATE:
-# the clone needs a token with read access. Provide a repo/org secret named
-# SIBLING_REPO_TOKEN (a PAT or fine-grained token with `contents: read` on
-# guanchzhou/kubectl-traffic). Without it, the kubectl-traffic clone — and
-# therefore `zig build` — will fail; add the secret to make CI green.
+# for lack of the path deps. We clone both siblings (both public, plain HTTPS,
+# no credentials) next to the checkout before building.
 jobs:
   lint:
     name: zig fmt
@@ -59,21 +53,11 @@ jobs:
       # build.zig.zon `.path = "../zig-klient"` / "../kubectl-traffic" resolve.
       # GITHUB_WORKSPACE is the c3s checkout dir; its parent receives the siblings.
       - name: Clone sibling dependencies
-        env:
-          SIBLING_REPO_TOKEN: ${{ secrets.SIBLING_REPO_TOKEN }}
         run: |
           cd "$(dirname "$GITHUB_WORKSPACE")"
-          # zig-klient is public — plain HTTPS clone.
+          # Both siblings are public — plain HTTPS clones, no credentials needed.
           git clone --depth 1 https://github.com/guanchzhou/zig-klient zig-klient
-          # kubectl-traffic is PRIVATE — needs SIBLING_REPO_TOKEN. If the secret
-          # is absent the clone fails and the build step below can't satisfy the
-          # path dep; add the secret (contents:read on guanchzhou/kubectl-traffic).
-          if [ -n "$SIBLING_REPO_TOKEN" ]; then
-            git clone --depth 1 "https://x-access-token:${SIBLING_REPO_TOKEN}@github.com/guanchzhou/kubectl-traffic" kubectl-traffic
-          else
-            echo "::error::SIBLING_REPO_TOKEN is not set; cannot clone the private kubectl-traffic dependency. Add the secret to make this job green."
-            exit 1
-          fi
+          git clone --depth 1 https://github.com/guanchzhou/kubectl-traffic kubectl-traffic
       - name: Install Zig 0.16.0
         env:
           ZIG_URL: ${{ matrix.zig_url }}
