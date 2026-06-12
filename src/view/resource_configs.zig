@@ -47,6 +47,105 @@ fn intToStr(alloc: std.mem.Allocator, val: i32) ![]const u8 {
     return std.fmt.allocPrint(alloc, "{d}", .{val});
 }
 
+/// Read a string at obj[key] from a nested JSON object (e.g. capacity.storage).
+fn jsonValStr(v: std.json.Value, key: []const u8) ?[]const u8 {
+    if (v == .object) {
+        if (v.object.get(key)) |inner| {
+            if (inner == .string) return inner.string;
+        }
+    }
+    return null;
+}
+
+/// Stringify a scalar JSON value (int or string) into `alloc`, or null.
+fn jsonScalarToStr(alloc: std.mem.Allocator, v: std.json.Value) !?[]const u8 {
+    return switch (v) {
+        .integer => |i| try std.fmt.allocPrint(alloc, "{d}", .{i}),
+        .string => |s| try alloc.dupe(u8, s),
+        else => null,
+    };
+}
+
+/// k9s-style access-mode abbreviations.
+fn abbrevAccessMode(mode: []const u8) []const u8 {
+    if (std.mem.eql(u8, mode, "ReadWriteOnce")) return "RWO";
+    if (std.mem.eql(u8, mode, "ReadOnlyMany")) return "ROX";
+    if (std.mem.eql(u8, mode, "ReadWriteMany")) return "RWX";
+    if (std.mem.eql(u8, mode, "ReadWriteOncePod")) return "RWOP";
+    return mode;
+}
+
+/// Join `[]const []const u8` with `,` into `alloc`; abbreviate each via `xform`.
+fn joinStrings(
+    alloc: std.mem.Allocator,
+    items: []const []const u8,
+    comptime xform: fn ([]const u8) []const u8,
+) ![]const u8 {
+    if (items.len == 0) return alloc.dupe(u8, "<none>");
+    var buf = std.ArrayListUnmanaged(u8).empty;
+    defer buf.deinit(alloc);
+    for (items, 0..) |it, i| {
+        if (i > 0) try buf.append(alloc, ',');
+        try buf.appendSlice(alloc, xform(it));
+    }
+    return buf.toOwnedSlice(alloc);
+}
+
+fn identity(s: []const u8) []const u8 {
+    return s;
+}
+
+/// Join `status.loadBalancer.ingress[].ip`/`.hostname` (k9s ADDRESS/EXTERNAL-IP
+/// for LoadBalancer Services and Ingresses). Returns `<pending>` when the
+/// loadBalancer block exists but has no ingress entries; null when absent.
+fn loadBalancerAddresses(alloc: std.mem.Allocator, status: ?std.json.Value) !?[]const u8 {
+    const s = status orelse return null;
+    if (s != .object) return null;
+    const lb = s.object.get("loadBalancer") orelse return null;
+    if (lb != .object) return null;
+    const ingress = lb.object.get("ingress") orelse return try alloc.dupe(u8, "<pending>");
+    if (ingress != .array) return null;
+    if (ingress.array.items.len == 0) return try alloc.dupe(u8, "<pending>");
+
+    var buf = std.ArrayListUnmanaged(u8).empty;
+    defer buf.deinit(alloc);
+    var wrote = false;
+    for (ingress.array.items) |entry| {
+        if (entry != .object) continue;
+        const addr = jsonValStr(entry, "ip") orelse jsonValStr(entry, "hostname") orelse continue;
+        if (wrote) try buf.append(alloc, ',');
+        try buf.appendSlice(alloc, addr);
+        wrote = true;
+    }
+    if (!wrote) return try alloc.dupe(u8, "<pending>");
+    return try buf.toOwnedSlice(alloc);
+}
+
+/// Format `spec.podSelector.matchLabels` as `k=v,k=v`, or `<none>` when empty
+/// (matchExpressions-only selectors also render `<none>`, matching k9s which
+/// only surfaces matchLabels in the POD-SELECTOR column).
+fn formatMatchLabels(alloc: std.mem.Allocator, selector: ?std.json.Value) ![]const u8 {
+    const sel = selector orelse return alloc.dupe(u8, "<none>");
+    if (sel != .object) return alloc.dupe(u8, "<none>");
+    const ml = sel.object.get("matchLabels") orelse return alloc.dupe(u8, "<none>");
+    if (ml != .object or ml.object.count() == 0) return alloc.dupe(u8, "<none>");
+
+    var buf = std.ArrayListUnmanaged(u8).empty;
+    defer buf.deinit(alloc);
+    var it = ml.object.iterator();
+    var first = true;
+    while (it.next()) |entry| {
+        if (!first) try buf.append(alloc, ',');
+        first = false;
+        try buf.appendSlice(alloc, entry.key_ptr.*);
+        try buf.append(alloc, '=');
+        if (entry.value_ptr.* == .string) {
+            try buf.appendSlice(alloc, entry.value_ptr.*.string);
+        }
+    }
+    return buf.toOwnedSlice(alloc);
+}
+
 // ============================================================================
 // === Pods ===
 // ============================================================================
@@ -150,38 +249,53 @@ pub const DeploymentsView = ResourceView(klient.types.Deployment, klient.resourc
 // === Services ===
 // ============================================================================
 fn transformService(svc: klient.types.Service, alloc: std.mem.Allocator) ![7][]const u8 {
+    // PORTS: comma-joined "port/proto" for every spec.ports entry (k9s).
     const ports_str = if (svc.spec) |spec| blk: {
         if (spec.ports) |ports| {
             if (ports.len > 0) {
-                const port_num = if (ports[0].port) |p| blk2: {
-                    if (p == .integer) break :blk2 @as(i64, @intCast(p.integer));
-                    break :blk2 @as(i64, 0);
-                } else 0;
-
-                var buf: [64]u8 = undefined;
-                const port_str = try std.fmt.bufPrint(
-                    &buf,
-                    "{d}/{s}",
-                    .{ port_num, ports[0].protocol orelse "TCP" },
-                );
-                break :blk try alloc.dupe(u8, port_str);
+                var buf = std.ArrayListUnmanaged(u8).empty;
+                defer buf.deinit(alloc);
+                for (ports, 0..) |p, i| {
+                    if (i > 0) try buf.append(alloc, ',');
+                    const port_num: i64 = if (p.port) |pv|
+                        (if (pv == .integer) @intCast(pv.integer) else 0)
+                    else
+                        0;
+                    var pbuf: [64]u8 = undefined;
+                    const seg = try std.fmt.bufPrint(&pbuf, "{d}/{s}", .{ port_num, p.protocol orelse "TCP" });
+                    try buf.appendSlice(alloc, seg);
+                }
+                break :blk try buf.toOwnedSlice(alloc);
             }
         }
         break :blk try alloc.dupe(u8, "<none>");
     } else try alloc.dupe(u8, "<none>");
 
+    const svc_type: []const u8 = if (svc.spec) |spec| spec.type orelse "ClusterIP" else "ClusterIP";
+
+    // EXTERNAL-IP: LoadBalancer ingress addrs, else spec.externalIPs, else <none>.
+    const external_ip = blk: {
+        if (std.mem.eql(u8, svc_type, "LoadBalancer")) {
+            if (try loadBalancerAddresses(alloc, svc.status)) |addr| break :blk addr;
+            break :blk try alloc.dupe(u8, "<pending>");
+        }
+        if (svc.spec) |spec| {
+            if (spec.externalIPs) |ips| {
+                if (ips.len > 0) break :blk try joinStrings(alloc, ips, identity);
+            }
+        }
+        break :blk try alloc.dupe(u8, "<none>");
+    };
+
     return .{
         try alloc.dupe(u8, if (svc.metadata.namespace) |ns| ns else "default"),
         try alloc.dupe(u8, svc.metadata.name),
-        if (svc.spec) |spec|
-            try alloc.dupe(u8, spec.type orelse "ClusterIP")
-        else
-            try alloc.dupe(u8, "Unknown"),
+        try alloc.dupe(u8, svc_type),
         if (svc.spec) |spec|
             try alloc.dupe(u8, spec.clusterIP orelse "<none>")
         else
             try alloc.dupe(u8, "<none>"),
-        try alloc.dupe(u8, "<pending>"),
+        external_ip,
         ports_str,
         try age_util.calculateAge(alloc, svc.metadata.creationTimestamp),
     };
@@ -231,7 +345,7 @@ pub const ConfigMapsView = ResourceView(klient.types.ConfigMap, klient.resources
     .columns = &.{
         .{ .name = "NAMESPACE", .min_width = 12, .max_width = 20, .priority = P.MEDIUM, .searchable = true },
         .{ .name = "NAME", .min_width = 12, .max_width = 30, .priority = P.CRITICAL, .sort_key = 'N', .searchable = true },
-        .{ .name = "KEYS", .min_width = 5, .max_width = 8, .priority = P.HIGH },
+        .{ .name = "DATA", .min_width = 5, .max_width = 8, .priority = P.HIGH },
         .{ .name = "AGE", .min_width = 6, .max_width = 12, .priority = P.MEDIUM, .sort_key = 'A' },
     },
 }, transformConfigMap);
@@ -263,7 +377,7 @@ pub const SecretsView = ResourceView(klient.types.Secret, klient.resources.Secre
         .{ .name = "NAMESPACE", .min_width = 12, .max_width = 20, .priority = P.MEDIUM, .searchable = true },
         .{ .name = "NAME", .min_width = 12, .max_width = 30, .priority = P.CRITICAL, .sort_key = 'N', .searchable = true },
         .{ .name = "TYPE", .min_width = 8, .max_width = 20, .priority = P.HIGH },
-        .{ .name = "KEYS", .min_width = 5, .max_width = 8, .priority = P.MEDIUM },
+        .{ .name = "DATA", .min_width = 5, .max_width = 8, .priority = P.MEDIUM },
         .{ .name = "AGE", .min_width = 6, .max_width = 12, .priority = P.MEDIUM, .sort_key = 'A' },
     },
 }, transformSecret);
@@ -470,13 +584,41 @@ pub const CronJobsView = ResourceView(klient.types.CronJob, klient.resources.Cro
 // ============================================================================
 // === Ingresses ===
 // ============================================================================
-fn transformIngress(ing: klient.types.Ingress, alloc: std.mem.Allocator) ![6][]const u8 {
+fn transformIngress(ing: klient.types.Ingress, alloc: std.mem.Allocator) ![7][]const u8 {
+    const class: []const u8 = if (ing.spec) |spec| spec.ingressClassName orelse "<none>" else "<none>";
+
+    // HOSTS: comma-joined spec.rules[].host, or "*" when none specify a host.
+    const hosts = blk: {
+        if (ing.spec) |spec| {
+            if (spec.rules) |rules| {
+                var buf = std.ArrayListUnmanaged(u8).empty;
+                defer buf.deinit(alloc);
+                var wrote = false;
+                for (rules) |rule| {
+                    const h = jsonValStr(rule, "host") orelse continue;
+                    if (wrote) try buf.append(alloc, ',');
+                    try buf.appendSlice(alloc, h);
+                    wrote = true;
+                }
+                if (wrote) break :blk try buf.toOwnedSlice(alloc);
+            }
+        }
+        break :blk try alloc.dupe(u8, "*");
+    };
+
+    const address = (try loadBalancerAddresses(alloc, ing.status)) orelse try alloc.dupe(u8, "");
+
+    // PORTS: 80, plus 443 when spec.tls is present (k9s).
+    const has_tls = if (ing.spec) |spec| (spec.tls != null and spec.tls.?.len > 0) else false;
+    const ports = if (has_tls) try alloc.dupe(u8, "80, 443") else try alloc.dupe(u8, "80");
+
     return .{
         try alloc.dupe(u8, ing.metadata.namespace orelse "default"),
         try alloc.dupe(u8, ing.metadata.name),
-        try alloc.dupe(u8, "nginx"),
-        try alloc.dupe(u8, "*"),
-        try alloc.dupe(u8, "10.0.0.1"),
+        try alloc.dupe(u8, class),
+        hosts,
+        address,
+        ports,
         try age_util.calculateAge(alloc, ing.metadata.creationTimestamp),
     };
 }
@@ -490,8 +632,9 @@ pub const IngressesView = ResourceView(klient.types.Ingress, klient.resources.In
         .{ .name = "NAMESPACE", .min_width = 12, .max_width = 20, .priority = P.MEDIUM, .searchable = true },
         .{ .name = "NAME", .min_width = 12, .max_width = 22, .priority = P.CRITICAL, .sort_key = 'N', .searchable = true },
         .{ .name = "CLASS", .min_width = 6, .max_width = 12, .priority = P.HIGH },
-        .{ .name = "HOSTS", .min_width = 6, .max_width = 12, .priority = P.MEDIUM },
-        .{ .name = "ADDRESS", .min_width = 8, .max_width = 16, .priority = P.MEDIUM },
+        .{ .name = "HOSTS", .min_width = 8, .max_width = 30, .priority = P.MEDIUM },
+        .{ .name = "ADDRESS", .min_width = 8, .max_width = 30, .priority = P.MEDIUM },
+        .{ .name = "PORTS", .min_width = 5, .max_width = 10, .priority = P.LOW },
         .{ .name = "AGE", .min_width = 6, .max_width = 12, .priority = P.MEDIUM, .sort_key = 'A' },
     },
 }, transformIngress);
@@ -500,10 +643,11 @@ pub const IngressesView = ResourceView(klient.types.Ingress, klient.resources.In
 // === NetworkPolicies ===
 // ============================================================================
 fn transformNetworkPolicy(np: klient.types.NetworkPolicy, alloc: std.mem.Allocator) ![4][]const u8 {
+    const selector = if (np.spec) |spec| spec.podSelector else null;
     return .{
         try alloc.dupe(u8, np.metadata.namespace orelse "default"),
         try alloc.dupe(u8, np.metadata.name),
-        try alloc.dupe(u8, "<all>"),
+        try formatMatchLabels(alloc, selector),
         try age_util.calculateAge(alloc, np.metadata.creationTimestamp),
     };
 }
@@ -525,10 +669,11 @@ pub const NetworkPoliciesView = ResourceView(klient.types.NetworkPolicy, klient.
 // === ServiceAccounts ===
 // ============================================================================
 fn transformServiceAccount(sa: klient.types.ServiceAccount, alloc: std.mem.Allocator) ![4][]const u8 {
+    const secret_count: usize = if (sa.secrets) |s| s.len else 0;
     return .{
         try alloc.dupe(u8, sa.metadata.namespace orelse "default"),
         try alloc.dupe(u8, sa.metadata.name),
-        try alloc.dupe(u8, "1"),
+        try std.fmt.allocPrint(alloc, "{d}", .{secret_count}),
         try age_util.calculateAge(alloc, sa.metadata.creationTimestamp),
     };
 }
@@ -576,7 +721,7 @@ fn transformRoleBinding(rb: klient.types.RoleBinding, alloc: std.mem.Allocator) 
     return .{
         try alloc.dupe(u8, rb.metadata.namespace orelse "default"),
         try alloc.dupe(u8, rb.metadata.name),
-        try alloc.dupe(u8, "role"),
+        try std.fmt.allocPrint(alloc, "{s}/{s}", .{ rb.roleRef.kind, rb.roleRef.name }),
         try age_util.calculateAge(alloc, rb.metadata.creationTimestamp),
     };
 }
@@ -620,7 +765,7 @@ pub const ClusterRolesView = ResourceView(klient.types.ClusterRole, klient.resou
 fn transformClusterRoleBinding(crb: klient.types.ClusterRoleBinding, alloc: std.mem.Allocator) ![3][]const u8 {
     return .{
         try alloc.dupe(u8, crb.metadata.name),
-        try alloc.dupe(u8, "role"),
+        try std.fmt.allocPrint(alloc, "{s}/{s}", .{ crb.roleRef.kind, crb.roleRef.name }),
         try age_util.calculateAge(alloc, crb.metadata.creationTimestamp),
     };
 }
@@ -639,14 +784,30 @@ pub const ClusterRoleBindingsView = ResourceView(klient.types.ClusterRoleBinding
 // ============================================================================
 // === Events ===
 // ============================================================================
-fn transformEvent(ev: klient.types.Event, alloc: std.mem.Allocator) ![6][]const u8 {
+fn transformEvent(ev: klient.types.Event, alloc: std.mem.Allocator) ![7][]const u8 {
+    // LAST-SEEN: age of lastTimestamp, falling back to eventTime, then creation.
+    const last_seen_ts = ev.lastTimestamp orelse ev.eventTime orelse ev.metadata.creationTimestamp;
+
+    // OBJECT: "<kind>/<name>" from involvedObject (k9s).
+    const object = blk: {
+        if (ev.involvedObject) |io| {
+            const kind = io.kind orelse "";
+            const name = io.name orelse "";
+            if (kind.len > 0 and name.len > 0)
+                break :blk try std.fmt.allocPrint(alloc, "{s}/{s}", .{ kind, name });
+            if (name.len > 0) break :blk try alloc.dupe(u8, name);
+        }
+        break :blk try alloc.dupe(u8, "");
+    };
+
     return .{
         try alloc.dupe(u8, ev.metadata.namespace orelse "default"),
-        try alloc.dupe(u8, ev.metadata.name),
-        try alloc.dupe(u8, "Normal"),
-        try alloc.dupe(u8, "Created"),
-        try alloc.dupe(u8, "Event message"),
-        try age_util.calculateAge(alloc, ev.metadata.creationTimestamp),
+        try age_util.calculateAge(alloc, last_seen_ts),
+        try alloc.dupe(u8, ev.type orelse "-"),
+        try alloc.dupe(u8, ev.reason orelse "-"),
+        object,
+        try std.fmt.allocPrint(alloc, "{d}", .{ev.count orelse 0}),
+        try alloc.dupe(u8, ev.message orelse ""),
     };
 }
 
@@ -654,15 +815,16 @@ pub const EventsView = ResourceView(klient.types.Event, klient.resources.Events,
     .name = "events",
     .is_namespaced = true,
     .default_all_namespaces = true,
-    .name_column = 1,
+    .name_column = 4,
     .namespace_column = 0,
     .columns = &.{
         .{ .name = "NAMESPACE", .min_width = 10, .max_width = 18, .priority = P.MEDIUM, .searchable = true },
-        .{ .name = "NAME", .min_width = 10, .max_width = 18, .priority = P.CRITICAL, .sort_key = 'N', .searchable = true },
-        .{ .name = "TYPE", .min_width = 6, .max_width = 10, .priority = P.HIGH },
-        .{ .name = "REASON", .min_width = 8, .max_width = 14, .priority = P.HIGH },
-        .{ .name = "MESSAGE", .min_width = 10, .max_width = 18, .priority = P.MEDIUM },
-        .{ .name = "AGE", .min_width = 6, .max_width = 12, .priority = P.MEDIUM, .sort_key = 'A' },
+        .{ .name = "LAST-SEEN", .min_width = 8, .max_width = 12, .priority = P.MEDIUM, .sort_key = 'A' },
+        .{ .name = "TYPE", .min_width = 6, .max_width = 10, .priority = P.HIGH, .sort_key = 'T' },
+        .{ .name = "REASON", .min_width = 8, .max_width = 18, .priority = P.HIGH, .sort_key = 'R' },
+        .{ .name = "OBJECT", .min_width = 12, .max_width = 36, .priority = P.CRITICAL, .sort_key = 'N', .searchable = true },
+        .{ .name = "COUNT", .min_width = 5, .max_width = 7, .priority = P.LOW },
+        .{ .name = "MESSAGE", .min_width = 16, .max_width = null, .priority = P.MEDIUM, .searchable = true },
     },
 }, transformEvent);
 
@@ -862,11 +1024,33 @@ pub const LimitRangesView = ResourceView(klient.types.LimitRange, klient.resourc
 // ============================================================================
 // === PodDisruptionBudgets ===
 // ============================================================================
-fn transformPodDisruptionBudget(pdb: klient.types.PodDisruptionBudget, alloc: std.mem.Allocator) ![4][]const u8 {
+fn transformPodDisruptionBudget(pdb: klient.types.PodDisruptionBudget, alloc: std.mem.Allocator) ![6][]const u8 {
+    // minAvailable / maxUnavailable are IntOrString (int or "%") — render either,
+    // "-" when absent.
+    const min_available = blk: {
+        if (pdb.spec) |spec| {
+            if (spec.minAvailable) |v| {
+                if (try jsonScalarToStr(alloc, v)) |s| break :blk s;
+            }
+        }
+        break :blk try alloc.dupe(u8, "-");
+    };
+    const max_unavailable = blk: {
+        if (pdb.spec) |spec| {
+            if (spec.maxUnavailable) |v| {
+                if (try jsonScalarToStr(alloc, v)) |s| break :blk s;
+            }
+        }
+        break :blk try alloc.dupe(u8, "-");
+    };
+    const allowed = intToStr(alloc, statusInt(pdb.status, "disruptionsAllowed"));
+
     return .{
         try alloc.dupe(u8, pdb.metadata.namespace orelse "default"),
         try alloc.dupe(u8, pdb.metadata.name),
-        try alloc.dupe(u8, "1"),
+        min_available,
+        max_unavailable,
+        try allowed,
         try age_util.calculateAge(alloc, pdb.metadata.creationTimestamp),
     };
 }
@@ -879,8 +1063,10 @@ pub const PodDisruptionBudgetsView = ResourceView(klient.types.PodDisruptionBudg
     .namespace_column = 0,
     .columns = &.{
         .{ .name = "NAMESPACE", .min_width = 12, .max_width = 20, .priority = P.MEDIUM, .searchable = true },
-        .{ .name = "NAME", .min_width = 12, .max_width = 22, .priority = P.CRITICAL, .sort_key = 'N', .searchable = true },
+        .{ .name = "NAME", .min_width = 12, .max_width = 30, .priority = P.CRITICAL, .sort_key = 'N', .searchable = true },
         .{ .name = "MIN-AVAILABLE", .min_width = 8, .max_width = 14, .priority = P.HIGH },
+        .{ .name = "MAX-UNAVAILABLE", .min_width = 8, .max_width = 16, .priority = P.HIGH },
+        .{ .name = "ALLOWED-DISRUPTIONS", .min_width = 10, .max_width = 20, .priority = P.MEDIUM },
         .{ .name = "AGE", .min_width = 6, .max_width = 12, .priority = P.MEDIUM, .sort_key = 'A' },
     },
 }, transformPodDisruptionBudget);
@@ -924,9 +1110,9 @@ pub const HPAView = ResourceView(klient.types.HorizontalPodAutoscaler, klient.re
     .columns = &.{
         .{ .name = "NAMESPACE", .min_width = 10, .max_width = 20, .priority = P.MEDIUM, .searchable = true },
         .{ .name = "NAME", .min_width = 12, .max_width = 28, .priority = P.CRITICAL, .sort_key = 'N', .searchable = true },
-        .{ .name = "MIN", .min_width = 4, .max_width = 6, .priority = P.HIGH },
-        .{ .name = "MAX", .min_width = 4, .max_width = 6, .priority = P.HIGH },
-        .{ .name = "CURRENT", .min_width = 6, .max_width = 8, .priority = P.HIGH },
+        .{ .name = "MINPODS", .min_width = 6, .max_width = 9, .priority = P.HIGH },
+        .{ .name = "MAXPODS", .min_width = 6, .max_width = 9, .priority = P.HIGH },
+        .{ .name = "REPLICAS", .min_width = 7, .max_width = 10, .priority = P.HIGH },
         .{ .name = "AGE", .min_width = 6, .max_width = 12, .priority = P.MEDIUM, .sort_key = 'A' },
     },
 }, transformHPA);
@@ -934,13 +1120,49 @@ pub const HPAView = ResourceView(klient.types.HorizontalPodAutoscaler, klient.re
 // ============================================================================
 // === PersistentVolumes ===
 // ============================================================================
-fn transformPersistentVolume(pv: klient.types.PersistentVolume, alloc: std.mem.Allocator) ![6][]const u8 {
+fn transformPersistentVolume(pv: klient.types.PersistentVolume, alloc: std.mem.Allocator) ![8][]const u8 {
+    const capacity = blk: {
+        if (pv.spec) |spec| {
+            if (spec.capacity) |cap| {
+                if (jsonValStr(cap, "storage")) |s| break :blk try alloc.dupe(u8, s);
+            }
+        }
+        break :blk try alloc.dupe(u8, "<unknown>");
+    };
+
+    const access = blk: {
+        if (pv.spec) |spec| {
+            if (spec.accessModes) |modes| break :blk try joinStrings(alloc, modes, abbrevAccessMode);
+        }
+        break :blk try alloc.dupe(u8, "<none>");
+    };
+
+    const reclaim: []const u8 = if (pv.spec) |spec| spec.persistentVolumeReclaimPolicy orelse "<none>" else "<none>";
+    const status = statusStr(pv.status, "phase") orelse "<unknown>";
+
+    const claim = blk: {
+        if (pv.spec) |spec| {
+            if (spec.claimRef) |ref| {
+                if (ref.name) |name| {
+                    if (ref.namespace) |ns|
+                        break :blk try std.fmt.allocPrint(alloc, "{s}/{s}", .{ ns, name });
+                    break :blk try alloc.dupe(u8, name);
+                }
+            }
+        }
+        break :blk try alloc.dupe(u8, "<none>");
+    };
+
+    const storageclass: []const u8 = if (pv.spec) |spec| spec.storageClassName orelse "<none>" else "<none>";
+
     return .{
         try alloc.dupe(u8, pv.metadata.name),
-        try alloc.dupe(u8, "10Gi"),
-        try alloc.dupe(u8, "RWO"),
-        try alloc.dupe(u8, "Retain"),
-        try alloc.dupe(u8, "Available"),
+        capacity,
+        access,
+        try alloc.dupe(u8, reclaim),
+        try alloc.dupe(u8, status),
+        claim,
+        try alloc.dupe(u8, storageclass),
         try age_util.calculateAge(alloc, pv.metadata.creationTimestamp),
     };
 }
@@ -950,11 +1172,13 @@ pub const PersistentVolumesView = ResourceView(klient.types.PersistentVolume, kl
     .is_namespaced = false,
     .name_column = 0,
     .columns = &.{
-        .{ .name = "NAME", .min_width = 12, .max_width = 30, .priority = P.CRITICAL, .sort_key = 'N', .searchable = true },
+        .{ .name = "NAME", .min_width = 12, .max_width = 36, .priority = P.CRITICAL, .sort_key = 'N', .searchable = true },
         .{ .name = "CAPACITY", .min_width = 8, .max_width = 12, .priority = P.HIGH },
-        .{ .name = "ACCESS", .min_width = 6, .max_width = 10, .priority = P.MEDIUM },
-        .{ .name = "RECLAIM", .min_width = 6, .max_width = 10, .priority = P.MEDIUM },
+        .{ .name = "ACCESS", .min_width = 6, .max_width = 12, .priority = P.MEDIUM },
+        .{ .name = "RECLAIM", .min_width = 7, .max_width = 10, .priority = P.MEDIUM },
         .{ .name = "STATUS", .min_width = 8, .max_width = 12, .priority = P.HIGH, .sort_key = 'S' },
+        .{ .name = "CLAIM", .min_width = 10, .max_width = 36, .priority = P.MEDIUM, .searchable = true },
+        .{ .name = "STORAGECLASS", .min_width = 10, .max_width = 20, .priority = P.MEDIUM },
         .{ .name = "AGE", .min_width = 6, .max_width = 12, .priority = P.MEDIUM, .sort_key = 'A' },
     },
 }, transformPersistentVolume);
@@ -962,14 +1186,39 @@ pub const PersistentVolumesView = ResourceView(klient.types.PersistentVolume, kl
 // ============================================================================
 // === PersistentVolumeClaims ===
 // ============================================================================
-fn transformPersistentVolumeClaim(pvc: klient.types.PersistentVolumeClaim, alloc: std.mem.Allocator) ![7][]const u8 {
+fn transformPersistentVolumeClaim(pvc: klient.types.PersistentVolumeClaim, alloc: std.mem.Allocator) ![8][]const u8 {
+    const status = statusStr(pvc.status, "phase") orelse "<unknown>";
+    const volume: []const u8 = if (pvc.spec) |spec| spec.volumeName orelse "" else "";
+
+    // CAPACITY comes from status.capacity.storage (the bound size), per k9s.
+    const capacity = blk: {
+        if (pvc.status) |st| {
+            if (st == .object) {
+                if (st.object.get("capacity")) |cap| {
+                    if (jsonValStr(cap, "storage")) |s| break :blk try alloc.dupe(u8, s);
+                }
+            }
+        }
+        break :blk try alloc.dupe(u8, "<none>");
+    };
+
+    const access = blk: {
+        if (pvc.spec) |spec| {
+            if (spec.accessModes) |modes| break :blk try joinStrings(alloc, modes, abbrevAccessMode);
+        }
+        break :blk try alloc.dupe(u8, "<none>");
+    };
+
+    const storageclass: []const u8 = if (pvc.spec) |spec| spec.storageClassName orelse "<none>" else "<none>";
+
     return .{
         try alloc.dupe(u8, pvc.metadata.namespace orelse "default"),
         try alloc.dupe(u8, pvc.metadata.name),
-        try alloc.dupe(u8, "Bound"),
-        try alloc.dupe(u8, "pv-001"),
-        try alloc.dupe(u8, "10Gi"),
-        try alloc.dupe(u8, "RWO"),
+        try alloc.dupe(u8, status),
+        try alloc.dupe(u8, volume),
+        capacity,
+        access,
+        try alloc.dupe(u8, storageclass),
         try age_util.calculateAge(alloc, pvc.metadata.creationTimestamp),
     };
 }
@@ -981,11 +1230,12 @@ pub const PersistentVolumeClaimsView = ResourceView(klient.types.PersistentVolum
     .namespace_column = 0,
     .columns = &.{
         .{ .name = "NAMESPACE", .min_width = 12, .max_width = 20, .priority = P.MEDIUM, .searchable = true },
-        .{ .name = "NAME", .min_width = 12, .max_width = 22, .priority = P.CRITICAL, .sort_key = 'N', .searchable = true },
+        .{ .name = "NAME", .min_width = 12, .max_width = 30, .priority = P.CRITICAL, .sort_key = 'N', .searchable = true },
         .{ .name = "STATUS", .min_width = 6, .max_width = 10, .priority = P.HIGH, .sort_key = 'S' },
-        .{ .name = "VOLUME", .min_width = 6, .max_width = 10, .priority = P.MEDIUM },
-        .{ .name = "CAPACITY", .min_width = 6, .max_width = 10, .priority = P.MEDIUM },
-        .{ .name = "ACCESS", .min_width = 5, .max_width = 8, .priority = P.LOW },
+        .{ .name = "VOLUME", .min_width = 10, .max_width = 40, .priority = P.MEDIUM },
+        .{ .name = "CAPACITY", .min_width = 8, .max_width = 12, .priority = P.MEDIUM },
+        .{ .name = "ACCESS", .min_width = 6, .max_width = 12, .priority = P.LOW },
+        .{ .name = "STORAGECLASS", .min_width = 10, .max_width = 20, .priority = P.MEDIUM },
         .{ .name = "AGE", .min_width = 6, .max_width = 12, .priority = P.MEDIUM, .sort_key = 'A' },
     },
 }, transformPersistentVolumeClaim);
