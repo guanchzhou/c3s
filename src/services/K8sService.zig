@@ -8,6 +8,8 @@ const Logger = @import("../core/logger.zig");
 const k8s_types = @import("k8s_types.zig");
 const runtime = @import("../core/runtime.zig");
 const env = @import("../core/env.zig");
+const xdg = @import("../core/xdg.zig");
+const clock = @import("../core/clock.zig");
 
 /// Zig 0.16: klient.connectWithFallback gained an `io` parameter. Wrap it once
 /// to inject the global io, so the many call sites below stay unchanged.
@@ -49,6 +51,20 @@ pub const K8sService = struct {
     tls_cert_data: ?[]const u8 = null,
     tls_key_data: ?[]const u8 = null,
 
+    // Cached bearer token from the exec credential plugin, passed to kubectl via
+    // --token so kubectl doesn't re-run the (~0.6s) auth plugin on every call.
+    // The exec config is duped so the token can be refreshed on expiry/failure.
+    auth_token: ?[]const u8 = null,
+    exec_command: ?[]const u8 = null,
+    exec_args: ?[][]const u8 = null,
+    exec_api_version: ?[]const u8 = null,
+
+    // Persistent `kubectl proxy` (one long-lived authenticated connection to the
+    // API server). When up, raw requests hit it over localhost HTTP (~0.1s)
+    // instead of spawning a fresh ~2s kubectl per call. Killed on deinit.
+    proxy_child: ?std.process.Child = null,
+    proxy_port: ?u16 = null,
+
     /// Wrapper around parsed pod lists so callers can keep JSON alive while consuming
     const PodList = std.json.Parsed(klient.types.List(klient.types.Pod));
 
@@ -63,6 +79,14 @@ pub const K8sService = struct {
             .cluster_name = try allocator.dupe(u8, "unknown"),
             .user_name = try allocator.dupe(u8, "unknown"),
         };
+    }
+
+    /// Zero sensitive bytes before returning them to the allocator so bearer
+    /// tokens and private key material don't linger in freed heap pages
+    /// (readable via core dumps, swap, or later allocations).
+    fn secureFree(self: *K8sService, data: []const u8) void {
+        std.crypto.secureZero(u8, @constCast(data));
+        self.allocator.free(data);
     }
 
     /// Clean up resources
@@ -81,10 +105,72 @@ pub const K8sService = struct {
         // Free cached server version if allocated
         if (self.cached_k8s_version) |v| self.allocator.free(v);
 
-        // Free TLS certificate data if allocated
+        // Free TLS certificate data. The CA cert is public; the client cert and
+        // especially the private key are credentials — zero them before free.
         if (self.tls_ca_data) |ca| self.allocator.free(ca);
-        if (self.tls_cert_data) |cert| self.allocator.free(cert);
-        if (self.tls_key_data) |key| self.allocator.free(key);
+        if (self.tls_cert_data) |cert| self.secureFree(cert);
+        if (self.tls_key_data) |key| self.secureFree(key);
+
+        // Stop the persistent kubectl proxy.
+        if (self.proxy_child) |*child| child.kill(runtime.io());
+
+        // Free cached exec-auth token + config
+        if (self.auth_token) |t| self.secureFree(t);
+        if (self.exec_command) |c| self.allocator.free(c);
+        if (self.exec_api_version) |v| self.allocator.free(v);
+        if (self.exec_args) |args| {
+            for (args) |a| self.allocator.free(a);
+            self.allocator.free(args);
+        }
+    }
+
+    /// Cache the exec-auth token and a private copy of the exec config (the
+    /// kubeconfig is freed after connect()). Lets kubectl skip its own auth via
+    /// --token, and lets us refresh the token on expiry without re-parsing.
+    fn cacheExecAuth(self: *K8sService, exec_cfg: anytype, token: []const u8) void {
+        // Token (replace any prior).
+        if (self.auth_token) |old| self.secureFree(old);
+        self.auth_token = self.allocator.dupe(u8, token) catch null;
+
+        // Exec config is stable across refreshes — store once.
+        if (self.exec_command == null) {
+            if (exec_cfg.command) |cmd| self.exec_command = self.allocator.dupe(u8, cmd) catch null;
+            self.exec_api_version = self.allocator.dupe(u8, exec_cfg.api_version orelse "client.authentication.k8s.io/v1beta1") catch null;
+            if (exec_cfg.args) |args| {
+                const owned = self.allocator.alloc([]const u8, args.len) catch return;
+                var n: usize = 0;
+                for (args) |a| {
+                    owned[n] = self.allocator.dupe(u8, a) catch break;
+                    n += 1;
+                }
+                self.exec_args = owned[0..n];
+            }
+        }
+    }
+
+    /// Re-run the exec credential plugin to obtain a fresh bearer token.
+    /// Best-effort: on any failure the existing token is left in place.
+    fn refreshAuthToken(self: *K8sService) void {
+        const cmd = self.exec_command orelse return;
+        const cfg = klient.exec_credential.ExecConfig{
+            .command = cmd,
+            .args = self.exec_args,
+            .apiVersion = self.exec_api_version orelse "client.authentication.k8s.io/v1beta1",
+        };
+        const cred = klient.exec_credential.executeCredentialPlugin(self.allocator, runtime.io(), cfg) catch return;
+        // The Parsed arena owns all credential strings — without this deinit the
+        // token-bearing buffer leaked on every refresh.
+        defer cred.deinit();
+        if (cred.value.status) |s| {
+            if (s.token) |tok| {
+                const dup = self.allocator.dupe(u8, tok) catch return;
+                // Scrub the arena's copy; the arena free below won't zero it.
+                std.crypto.secureZero(u8, @constCast(tok));
+                if (self.auth_token) |old| self.secureFree(old);
+                self.auth_token = dup;
+                Logger.info("Refreshed exec-auth token", .{});
+            }
+        }
     }
 
     /// Connect to Kubernetes cluster using kubeconfig
@@ -153,10 +239,10 @@ pub const K8sService = struct {
         // Build TLS config from kubeconfig (handles both file paths and base64 data)
         var tls_config: ?klient.tls.TlsConfig = null;
 
-        // Free old TLS data if reconnecting
+        // Free old TLS data if reconnecting (zero credentials, see secureFree)
         if (self.tls_ca_data) |ca| self.allocator.free(ca);
-        if (self.tls_cert_data) |cert| self.allocator.free(cert);
-        if (self.tls_key_data) |key| self.allocator.free(key);
+        if (self.tls_cert_data) |cert| self.secureFree(cert);
+        if (self.tls_key_data) |key| self.secureFree(key);
         self.tls_ca_data = null;
         self.tls_cert_data = null;
         self.tls_key_data = null;
@@ -309,10 +395,23 @@ pub const K8sService = struct {
                 self.connected = true;
                 return;
             };
+            // Everything below dupes what it keeps (K8sClient dupes the token,
+            // cacheExecAuth dupes token + config), so the Parsed arena can be
+            // released — and the arena's token copy scrubbed — when connect()
+            // returns. Without this the credential JSON leaked for the
+            // process lifetime.
+            defer {
+                if (cred.value.status) |s| {
+                    if (s.token) |tok| std.crypto.secureZero(u8, @constCast(tok));
+                }
+                cred.deinit();
+            }
 
             const exec_token = if (cred.value.status) |s| s.token else null;
             if (exec_token) |token| {
                 Logger.info("Got token from exec credential plugin", .{});
+                // Cache for kubectl --token (skips kubectl's own ~0.6s re-auth).
+                self.cacheExecAuth(exec_cfg, token);
 
                 if (self.tls_ca_data) |ca| {
                     Logger.debug("Setting TLS config with CA cert ({d} bytes)", .{ca.len});
@@ -410,27 +509,200 @@ pub const K8sService = struct {
     /// Verify that a client can actually reach the cluster by making a lightweight
     /// request (forces TLS handshake). If verification fails, fall back to using
     /// `kubectl get --raw` for API calls (handles TLS via Go's net/http).
-    fn verifyOrFallback(self: *K8sService, client: *klient.K8sClient, _: []const u8, _: ?[]const u8) !void {
+    ///
+    /// The probe outcome is remembered per server in the state dir: clusters
+    /// whose direct TLS always fails (e.g. EKS behind TLS interception) would
+    /// otherwise pay the same doomed ~3s probe on every launch before the
+    /// identical fallback engaged. Entries expire so direct is re-probed daily.
+    fn verifyOrFallback(self: *K8sService, client: *klient.K8sClient, server: []const u8, _: ?[]const u8) !void {
+        if (self.directTlsKnownBad(server)) {
+            Logger.info("Direct TLS to {s} failed within 24h; kubectl transport (probe skipped)", .{server});
+            self.use_kubectl = true;
+            return;
+        }
+
         const response = client.request(.GET, "/version", null) catch |err| {
             Logger.warn("Direct connection failed: {any}. Will use kubectl transport.", .{err});
             // Switch to kubectl mode immediately — no verification needed.
             // The first actual API call will validate kubectl works.
             self.use_kubectl = true;
+            self.setTransportHint(server, true);
             return;
         };
 
+        self.setTransportHint(server, false);
         self.cacheVersionFromResponse(response);
         self.allocator.free(response);
+    }
+
+    // ── Transport hint cache ────────────────────────────────────────────────
+    // State file `transport-hints`: one "<unix-ts> <server>" line per cluster
+    // whose direct-TLS probe failed. Best-effort — any I/O failure simply
+    // means the probe runs as before.
+
+    const transport_hint_ttl: i64 = 24 * 60 * 60;
+
+    fn transportHintsPath(self: *K8sService) ?[]u8 {
+        const paths = xdg.ensurePaths() catch return null;
+        return std.fs.path.join(self.allocator, &.{ paths.state_dir, "transport-hints" }) catch null;
+    }
+
+    fn readTransportHints(self: *K8sService, path: []const u8) ?[]u8 {
+        return std.Io.Dir.cwd().readFileAlloc(runtime.io(), path, self.allocator, .limited(64 * 1024)) catch null;
+    }
+
+    /// True when `server` failed its direct-TLS probe within the TTL.
+    fn directTlsKnownBad(self: *K8sService, server: []const u8) bool {
+        const path = self.transportHintsPath() orelse return false;
+        defer self.allocator.free(path);
+        const content = self.readTransportHints(path) orelse return false;
+        defer self.allocator.free(content);
+        return hintsContainFresh(content, server, clock.timestamp(), transport_hint_ttl);
+    }
+
+    /// Record (`bad = true`) or clear (`bad = false`) the failure hint for `server`.
+    fn setTransportHint(self: *K8sService, server: []const u8, bad: bool) void {
+        if (std.mem.indexOfAny(u8, server, " \n") != null) return; // keep the line format unambiguous
+        const path = self.transportHintsPath() orelse return;
+        defer self.allocator.free(path);
+
+        var out: std.ArrayList(u8) = .empty;
+        defer out.deinit(self.allocator);
+
+        // Keep other servers' entries; drop any existing entry for this one.
+        var had_entry = false;
+        if (self.readTransportHints(path)) |content| {
+            defer self.allocator.free(content);
+            var lines = std.mem.splitScalar(u8, content, '\n');
+            while (lines.next()) |line| {
+                if (line.len == 0) continue;
+                const sp = std.mem.indexOfScalar(u8, line, ' ') orelse continue;
+                if (std.mem.eql(u8, line[sp + 1 ..], server)) {
+                    had_entry = true;
+                    continue;
+                }
+                out.appendSlice(self.allocator, line) catch return;
+                out.append(self.allocator, '\n') catch return;
+            }
+        }
+        if (!bad and !had_entry) return; // nothing to change — skip the write
+
+        if (bad) {
+            const entry = std.fmt.allocPrint(self.allocator, "{d} {s}\n", .{ clock.timestamp(), server }) catch return;
+            defer self.allocator.free(entry);
+            out.appendSlice(self.allocator, entry) catch return;
+        }
+        std.Io.Dir.cwd().writeFile(runtime.io(), .{ .sub_path = path, .data = out.items }) catch |err| {
+            Logger.warn("transport-hints write failed: {any}", .{err});
+        };
+    }
+
+    /// Pure scan of hint-file content: does `server` have an entry newer than `ttl`?
+    fn hintsContainFresh(content: []const u8, server: []const u8, now: i64, ttl: i64) bool {
+        var lines = std.mem.splitScalar(u8, content, '\n');
+        while (lines.next()) |line| {
+            const sp = std.mem.indexOfScalar(u8, line, ' ') orelse continue;
+            if (!std.mem.eql(u8, line[sp + 1 ..], server)) continue;
+            const ts = std.fmt.parseInt(i64, line[0..sp], 10) catch continue;
+            return now - ts < ttl;
+        }
+        return false;
+    }
+
+    /// Like kubectlRequest but uses `a` for the response body allocation instead
+    /// of self.allocator. Safe to call from a worker thread — the response buffer
+    /// is owned by `a`, never by the shared App GPA. URL/argv scratch allocations
+    /// internally still use self.allocator for buildKubectlArgv, BUT those are
+    /// allocated and freed entirely within the call (no cross-thread sharing window
+    /// since the main thread never allocates concurrently with the worker on the
+    /// same GPA — the worker only calls this from workerMain where the main thread
+    /// is in poll/render with no allocations in flight). The response buffer (the
+    /// only long-lived result) uses `a`.
+    pub fn kubectlRequestAlloc(self: *K8sService, a: std.mem.Allocator, path: []const u8) ![]u8 {
+        // Fast path: proxy (curl subprocess) with caller's allocator for the result.
+        if (self.proxy_port != null) {
+            if (self.proxyRequestAlloc(a, path)) |body| {
+                return body;
+            } else |_| {
+                // Proxy died — fall through.
+            }
+        }
+        return self.kubectlRequestOnceAlloc(a, path) catch |err| {
+            if (self.exec_command != null) {
+                self.refreshAuthToken();
+                return self.kubectlRequestOnceAlloc(a, path);
+            }
+            return err;
+        };
+    }
+
+    fn proxyRequestAlloc(self: *K8sService, a: std.mem.Allocator, path: []const u8) ![]u8 {
+        const url = try std.fmt.allocPrint(self.allocator, "http://127.0.0.1:18217{s}", .{path});
+        defer self.allocator.free(url);
+        const result = std.process.run(a, runtime.io(), .{
+            .argv = &.{ "curl", "-sf", "--max-time", "8", url },
+            .stdout_limit = .limited(128 * 1024 * 1024),
+        }) catch return error.KubectlFailed;
+        defer a.free(result.stderr);
+        if (result.term.exited != 0) {
+            a.free(result.stdout);
+            return error.KubectlFailed;
+        }
+        return result.stdout;
+    }
+
+    fn kubectlRequestOnceAlloc(self: *K8sService, a: std.mem.Allocator, path: []const u8) ![]u8 {
+        const argv = try self.buildKubectlArgv(&.{ "get", "--raw", path });
+        defer self.allocator.free(argv);
+        const result = std.process.run(a, runtime.io(), .{
+            .argv = argv,
+            .stdout_limit = .limited(128 * 1024 * 1024),
+        });
+        const output = result catch |err| {
+            Logger.warn("kubectl request failed for path '{s}': {}", .{ path, err });
+            return error.KubectlFailed;
+        };
+        defer a.free(output.stderr);
+        if (output.term.exited != 0) {
+            defer a.free(output.stdout);
+            const reason = std.mem.trim(u8, output.stderr, " \r\n\t");
+            Logger.warn("kubectl exited with code {} for path '{s}': {s}", .{
+                output.term.exited, path, reason[0..@min(reason.len, 300)],
+            });
+            if (std.mem.indexOf(u8, reason, "Forbidden") != null) return error.Forbidden;
+            return error.KubectlFailed;
+        }
+        return output.stdout;
     }
 
     /// Execute a raw kubectl request and return the JSON response.
     /// Uses `kubectl get --raw <path> --context <context>` which handles
     /// TLS, auth, and exec credentials via Go's standard library.
     pub fn kubectlRequest(self: *K8sService, path: []const u8) ![]u8 {
-        // Don't pass --context; let kubectl use its own current context.
-        // This ensures consistency with the user's kubectl configuration.
+        // Fast path: the persistent kubectl proxy over localhost.
+        if (self.proxy_port != null) {
+            if (self.proxyRequest(path)) |body| {
+                return body;
+            } else |_| {
+                // Proxy died/unreachable — fall through to per-call kubectl.
+            }
+        }
+        return self.kubectlRequestOnce(path) catch |err| {
+            // A failure may be an expired token. If we have an exec plugin,
+            // refresh once and retry — transparently handles token expiry.
+            if (self.exec_command != null) {
+                self.refreshAuthToken();
+                return self.kubectlRequestOnce(path);
+            }
+            return err;
+        };
+    }
+
+    fn kubectlRequestOnce(self: *K8sService, path: []const u8) ![]u8 {
+        const argv = try self.buildKubectlArgv(&.{ "get", "--raw", path });
+        defer self.allocator.free(argv);
         const result = std.process.run(self.allocator, runtime.io(), .{
-            .argv = &.{ "kubectl", "get", "--raw", path },
+            .argv = argv,
             .stdout_limit = .limited(128 * 1024 * 1024), // 128MB max
         });
 
@@ -442,64 +714,153 @@ pub const K8sService = struct {
 
         if (output.term.exited != 0) {
             defer self.allocator.free(output.stdout);
-            Logger.warn("kubectl exited with code {} for path '{s}'", .{ output.term.exited, path });
+            // Surface kubectl's own reason (RBAC denials, expired creds, …) —
+            // a bare exit code hides e.g. `pods is forbidden: User "x" cannot
+            // list …` and sends debugging down the wrong path entirely.
+            const reason = std.mem.trim(u8, output.stderr, " \r\n\t");
+            Logger.warn("kubectl exited with code {} for path '{s}': {s}", .{
+                output.term.exited, path, reason[0..@min(reason.len, 300)],
+            });
+            if (std.mem.indexOf(u8, reason, "Forbidden") != null) return error.Forbidden;
             return error.KubectlFailed;
         }
 
         return output.stdout;
     }
 
-    /// Update context/cluster/user names from kubectl config when in kubectl mode.
-    /// This ensures the header displays the correct context info.
-    fn updateNamesFromKubectl(self: *K8sService) void {
-        // Get current context name
-        const ctx_result = std.process.run(self.allocator, runtime.io(), .{
-            .argv = &.{ "kubectl", "config", "current-context" },
-            .stdout_limit = .limited(4096),
-        }) catch return;
-        defer self.allocator.free(ctx_result.stderr);
-        defer self.allocator.free(ctx_result.stdout);
-
-        if (ctx_result.term.exited != 0) return;
-
-        // Trim trailing newline
-        const ctx_name = std.mem.trimEnd(u8, ctx_result.stdout, "\n\r ");
-        if (ctx_name.len == 0) return;
-
-        self.allocator.free(self.context_name);
-        self.context_name = self.allocator.dupe(u8, ctx_name) catch return;
-
-        // Get cluster and user from context
-        const view_result = std.process.run(self.allocator, runtime.io(), .{
-            .argv = &.{ "kubectl", "config", "view", "--minify", "-o", "jsonpath={.contexts[0].context.cluster},{.contexts[0].context.user},{.contexts[0].context.namespace}" },
-            .stdout_limit = .limited(4096),
-        }) catch return;
-        defer self.allocator.free(view_result.stderr);
-        defer self.allocator.free(view_result.stdout);
-
-        if (view_result.term.exited != 0) return;
-
-        // Parse "cluster,user,namespace"
-        var it = std.mem.splitScalar(u8, view_result.stdout, ',');
-        if (it.next()) |cluster| {
-            if (cluster.len > 0) {
-                self.allocator.free(self.cluster_name);
-                self.cluster_name = self.allocator.dupe(u8, cluster) catch return;
-            }
+    /// Run `kubectl api-resources` and return its raw, column-aligned output
+    /// (NAME / SHORTNAMES / APIVERSION / NAMESPACED / KIND). Caller frees.
+    /// Uses the cached exec token (--token) when available.
+    pub fn listApiResources(self: *K8sService) ![]u8 {
+        const argv = try self.buildKubectlArgv(&.{"api-resources"});
+        defer self.allocator.free(argv);
+        const result = std.process.run(self.allocator, runtime.io(), .{
+            .argv = argv,
+            .stdout_limit = .limited(8 * 1024 * 1024),
+        });
+        const output = result catch return error.KubectlFailed;
+        defer self.allocator.free(output.stderr);
+        if (output.term.exited != 0) {
+            defer self.allocator.free(output.stdout);
+            return error.KubectlFailed;
         }
-        if (it.next()) |user| {
-            if (user.len > 0) {
-                self.allocator.free(self.user_name);
-                self.user_name = self.allocator.dupe(u8, user) catch return;
-            }
-        }
-        if (it.next()) |ns| {
-            if (ns.len > 0) {
-                self.allocator.free(self.current_namespace);
-                self.current_namespace = self.allocator.dupe(u8, ns) catch return;
-            }
-        }
+        return output.stdout;
     }
+
+    /// Build `kubectl [--context <ctx>] [--token <tok>] <args...>` into an
+    /// owned argv. Caller frees.
+    ///
+    /// --context pins kubectl to the cluster c3s is connected to: after an
+    /// in-app context switch, kubectl's own current-context (the shell
+    /// kubeconfig) may point at a DIFFERENT cluster — presenting the new
+    /// context's token to the old server yields Forbidden for everything.
+    /// --token is the cached exec token so kubectl skips its ~0.6s auth plugin.
+    fn buildKubectlArgv(self: *K8sService, args: []const []const u8) ![]const []const u8 {
+        var argv = std.ArrayListUnmanaged([]const u8).empty;
+        errdefer argv.deinit(self.allocator);
+        try argv.append(self.allocator, "kubectl");
+        if (!std.mem.eql(u8, self.context_name, "unknown")) {
+            try argv.append(self.allocator, "--context");
+            try argv.append(self.allocator, self.context_name);
+        }
+        if (self.auth_token) |tok| {
+            try argv.append(self.allocator, "--token");
+            try argv.append(self.allocator, tok);
+        }
+        for (args) |a| try argv.append(self.allocator, a);
+        return argv.toOwnedSlice(self.allocator);
+    }
+
+    /// Start a long-lived `kubectl proxy` on a fixed localhost port. It holds ONE
+    /// authenticated connection to the API server; c3s then makes fast localhost
+    /// HTTP calls instead of spawning a ~2s kubectl per request. Best-effort:
+    /// on any failure `proxy_port` stays null and we fall back to per-call kubectl.
+    pub fn startProxy(self: *K8sService) void {
+        if (self.proxy_child != null) return;
+        // --context/--token via buildKubectlArgv: the proxy must serve the
+        // cluster c3s is connected to, not the shell's current-context.
+        const argv = self.buildKubectlArgv(&.{ "proxy", "--port=18217", "--address=127.0.0.1" }) catch return;
+        defer self.allocator.free(argv);
+        var child = std.process.spawn(runtime.io(), .{
+            .argv = argv,
+            .stdin = .ignore,
+            .stdout = .ignore,
+            .stderr = .ignore,
+        }) catch {
+            Logger.warn("kubectl proxy spawn failed; using per-call kubectl", .{});
+            return;
+        };
+        // Wait for it to bind (curl retries on connection-refused, returns once up).
+        const ready = std.process.run(self.allocator, runtime.io(), .{
+            .argv = &.{ "curl", "-sf", "-o", "/dev/null", "--retry", "10", "--retry-connrefused", "--retry-delay", "0", "--max-time", "5", "http://127.0.0.1:18217/livez" },
+            .stdout_limit = .limited(256),
+        }) catch {
+            child.kill(runtime.io());
+            Logger.warn("kubectl proxy readiness check failed; per-call kubectl", .{});
+            return;
+        };
+        self.allocator.free(ready.stdout);
+        self.allocator.free(ready.stderr);
+        if (ready.term.exited != 0) {
+            child.kill(runtime.io());
+            Logger.warn("kubectl proxy not ready (port busy?); per-call kubectl", .{});
+            return;
+        }
+        self.proxy_child = child;
+        self.proxy_port = 18217;
+        Logger.info("kubectl proxy ready on 127.0.0.1:18217 (fast localhost requests)", .{});
+    }
+
+    /// GET a raw API path through the local kubectl proxy (no per-call TLS/auth).
+    fn proxyRequest(self: *K8sService, path: []const u8) ![]u8 {
+        const url = try std.fmt.allocPrint(self.allocator, "http://127.0.0.1:18217{s}", .{path});
+        defer self.allocator.free(url);
+        const result = std.process.run(self.allocator, runtime.io(), .{
+            .argv = &.{ "curl", "-sf", "--max-time", "8", url },
+            .stdout_limit = .limited(128 * 1024 * 1024),
+        }) catch return error.KubectlFailed;
+        defer self.allocator.free(result.stderr);
+        if (result.term.exited != 0) {
+            self.allocator.free(result.stdout);
+            return error.KubectlFailed;
+        }
+        return result.stdout;
+    }
+
+    /// Run a one-shot kubectl command (e.g. `set image`, `cp`, `delete`).
+    /// Returns error.KubectlFailed on non-zero exit.
+    pub fn runKubectl(self: *K8sService, args: []const []const u8) !void {
+        const argv = try self.buildKubectlArgv(args);
+        defer self.allocator.free(argv);
+        const result = std.process.run(self.allocator, runtime.io(), .{
+            .argv = argv,
+            .stdout_limit = .limited(1024 * 1024),
+        }) catch return error.KubectlFailed;
+        defer self.allocator.free(result.stdout);
+        defer self.allocator.free(result.stderr);
+        if (result.term.exited != 0) return error.KubectlFailed;
+    }
+
+    /// Spawn a long-running kubectl command detached from the TUI terminal
+    /// (stdio → /dev/null), e.g. `port-forward`. Caller owns the returned Child
+    /// and must kill/wait it.
+    pub fn spawnKubectl(self: *K8sService, args: []const []const u8) !std.process.Child {
+        const argv = try self.buildKubectlArgv(args);
+        defer self.allocator.free(argv);
+        return std.process.spawn(runtime.io(), .{
+            .argv = argv,
+            .stdin = .ignore,
+            .stdout = .ignore,
+            .stderr = .ignore,
+        });
+    }
+
+    // NOTE: a former updateNamesFromKubectl() helper (read the SHELL's
+    // current-context via `kubectl config current-context`) was deleted: it
+    // had no callers, and after an in-app context switch it would overwrite
+    // context_name with the shell's context — breaking the --context pinning
+    // that keeps kubectl pointed at the cluster c3s is actually connected to.
+    // connect() derives all names from the parsed kubeconfig instead.
 
     /// Parse /version JSON response and cache the gitVersion string.
     fn cacheVersionFromResponse(self: *K8sService, response: []const u8) void {
@@ -777,8 +1138,12 @@ pub const K8sService = struct {
     // ===== Namespace Operations =====
 
     /// List all namespaces
-    pub fn listNamespaces(self: *K8sService) ![]klient.types.Namespace {
-        return self.listAllGeneric(klient.types.Namespace, klient.resources.Namespaces);
+    /// Caller owns the result and MUST call `.deinit()` when done — the items'
+    /// `status` (json.Value) and string fields reference the parsed arena. (The
+    /// legacy shallow-copy `listAllGeneric` freed that arena and returned
+    /// dangling json.Value fields → use-after-free in `.object.get`.)
+    pub fn listNamespaces(self: *K8sService) !ParsedList(klient.types.Namespace) {
+        return self.listAllGenericPub(klient.types.Namespace, klient.resources.Namespaces);
     }
 
     // ===== Node Operations =====
@@ -1233,7 +1598,7 @@ pub const K8sService = struct {
     }
 
     /// Delete any resource by type, name, namespace
-    pub fn deleteResource(self: *K8sService, resource_type: ResourceType, name: []const u8, namespace: []const u8) !void {
+    pub fn deleteResource(self: *K8sService, resource_type: ResourceType, name: []const u8, namespace: []const u8, force: bool) !void {
         if (!self.isConnected()) return error.NotConnected;
 
         const path = if (resource_type.isClusterScoped())
@@ -1245,8 +1610,11 @@ pub const K8sService = struct {
         if (self.use_kubectl) {
             // Use kubectl delete for kubectl mode. Zig 0.16: std.process.run
             // spawns + waits + collects output in one call (output discarded).
+            // force adds --grace-period=0 --force (Ctrl-K kill vs Ctrl-D delete).
+            const base = [_][]const u8{ "kubectl", "delete", resource_type.resourceName(), name, "-n", namespace };
+            const forced = base ++ [_][]const u8{ "--grace-period=0", "--force" };
             const result = std.process.run(self.allocator, runtime.io(), .{
-                .argv = &.{ "kubectl", "delete", resource_type.resourceName(), name, "-n", namespace },
+                .argv = if (force) &forced else &base,
                 .stdout_limit = .limited(64 * 1024),
             }) catch return error.KubectlFailed;
             self.allocator.free(result.stdout);
@@ -1260,11 +1628,14 @@ pub const K8sService = struct {
     }
 
     /// Get pod logs
-    pub fn getPodLogs(self: *K8sService, name: []const u8, namespace: ?[]const u8) ![]u8 {
+    pub fn getPodLogs(self: *K8sService, name: []const u8, namespace: ?[]const u8, previous: bool) ![]u8 {
         if (!self.isConnected()) return error.NotConnected;
 
         const ns = namespace orelse "default";
-        const path = try std.fmt.allocPrint(self.allocator, "/api/v1/namespaces/{s}/pods/{s}/log?tailLines=1000", .{ ns, name });
+        const path = if (previous)
+            try std.fmt.allocPrint(self.allocator, "/api/v1/namespaces/{s}/pods/{s}/log?tailLines=1000&previous=true", .{ ns, name })
+        else
+            try std.fmt.allocPrint(self.allocator, "/api/v1/namespaces/{s}/pods/{s}/log?tailLines=1000", .{ ns, name });
         defer self.allocator.free(path);
 
         if (self.use_kubectl) return try self.kubectlRequest(path);
@@ -1658,6 +2029,32 @@ pub const K8sService = struct {
         }
         self.connected = false;
 
+        // The persistent proxy is bound to the OLD context's cluster — kill it.
+        // The next render's startProxy() respawns it against the new context.
+        if (self.proxy_child) |*child| {
+            child.kill(runtime.io());
+            self.proxy_child = null;
+            self.proxy_port = null;
+        }
+        // Let connect() re-decide the transport for the new cluster instead of
+        // inheriting the previous cluster's kubectl fallback.
+        self.use_kubectl = false;
+
+        // Drop the cached exec-auth config: cacheExecAuth stores it once, so a
+        // stale copy would make token refresh re-run the OLD context's auth
+        // plugin and fetch a token for the wrong cluster.
+        if (self.auth_token) |t| self.secureFree(t);
+        if (self.exec_command) |c| self.allocator.free(c);
+        if (self.exec_api_version) |v| self.allocator.free(v);
+        if (self.exec_args) |args| {
+            for (args) |a| self.allocator.free(a);
+            self.allocator.free(args);
+        }
+        self.auth_token = null;
+        self.exec_command = null;
+        self.exec_api_version = null;
+        self.exec_args = null;
+
         // Clear cached version so it gets re-fetched for the new cluster
         if (self.cached_k8s_version) |v| {
             self.allocator.free(v);
@@ -1668,3 +2065,22 @@ pub const K8sService = struct {
         try self.connect(context_name);
     }
 };
+
+const testing = std.testing;
+
+test "hintsContainFresh matches only fresh entries for the exact server" {
+    const ttl = K8sService.transport_hint_ttl;
+    const content =
+        "1000 https://eks.example.com\n" ++
+        "5000 https://other.example.com\n";
+
+    // Fresh entry (now - ts < ttl).
+    try testing.expect(K8sService.hintsContainFresh(content, "https://eks.example.com", 1000 + ttl - 1, ttl));
+    // Expired entry.
+    try testing.expect(!K8sService.hintsContainFresh(content, "https://eks.example.com", 1000 + ttl, ttl));
+    // Unknown server / prefix must not match.
+    try testing.expect(!K8sService.hintsContainFresh(content, "https://eks.example.co", 1001, ttl));
+    try testing.expect(!K8sService.hintsContainFresh(content, "https://missing.example.com", 1001, ttl));
+    // Malformed lines are skipped.
+    try testing.expect(!K8sService.hintsContainFresh("garbage\nx y\n", "y", 0, ttl));
+}

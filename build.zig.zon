@@ -7,6 +7,9 @@
         .klient = .{
             .path = "../zig-klient",
         },
+        .kubectl_traffic = .{
+            .path = "../kubectl-traffic",
+        },
     },
     .paths = .{
         "build.zig",

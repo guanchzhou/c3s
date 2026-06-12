@@ -2,7 +2,9 @@
 
 Kubernetes TUI client in Zig 0.16.x, inspired by k9s + btop. Fast, lightweight, k9s-compatible skins.
 
-Brain: `brain/Projects/c3s/`.
+## External Brain
+Knowledge base: `brain/Projects/c3s/` in Obsidian vault (`guanchzhou`).
+Read prior decisions before starting work. Append new decisions after completing work.
 
 ## Build & run
 

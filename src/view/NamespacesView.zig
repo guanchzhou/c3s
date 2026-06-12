@@ -84,15 +84,18 @@ pub const NamespacesView = struct {
             return;
         }
 
-        // Fetch namespaces
-        const k8s_namespaces = self.k8s_service.listNamespaces() catch |err| {
+        // Fetch namespaces. Keep the parsed list alive for the whole loop: the
+        // items' status (json.Value) references its arena, so deinit must wait
+        // until after we've copied out the fields we need.
+        var ns_list = self.k8s_service.listNamespaces() catch |err| {
             try self.table.setConnectionError("namespaces", err);
             return;
         };
+        defer ns_list.deinit();
 
         // Convert to NamespaceInfo
         var selected_idx: ?usize = null;
-        for (k8s_namespaces, 0..) |ns, i| {
+        for (ns_list.items(), 0..) |ns, i| {
             // Extract status from JSON value
             const status = if (ns.status) |status_json| blk: {
                 if (status_json == .object) {
@@ -219,7 +222,7 @@ pub const NamespacesView = struct {
         return self.getSelectedResourceInfo();
     }
 
-    fn render(ptr: *anyopaque, terminal: *Terminal, x: u16, y: u16, _: u16, height: u16) !void {
+    fn render(ptr: *anyopaque, terminal: *Terminal, x: u16, y: u16, width: u16, height: u16) !void {
         const self: *NamespacesView = @ptrCast(@alignCast(ptr));
         self.table.visible_rows = if (height > 1) height - 1 else 0;
 
@@ -247,6 +250,12 @@ pub const NamespacesView = struct {
             const colors = self.table.rowColors(i, self.theme);
             const is_current = std.mem.eql(u8, ns.name, self.current_namespace);
             const row_y = y + 1 + @as(u16, @intCast(i));
+
+            // Paint the full row background first so inter-column gaps share
+            // the row bg (no black seams behind/between the segmented columns).
+            if (width > 0) {
+                try terminal.fillRow(x, row_y, width, colors.fg, colors.bg);
+            }
 
             // Current namespace indicator
             const indicator = if (is_current) "* " else "  ";

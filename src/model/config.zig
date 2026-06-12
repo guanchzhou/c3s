@@ -156,12 +156,22 @@ const SharedEnv = struct {
     fn writeConfig(content: []const u8) !void {
         const d = try dir();
         try d.writeFile(testing.io, .{ .sub_path = "c3s/config.yaml", .data = content });
+        repinXdgCache();
     }
 
     /// Removes config.yaml so `Config.load` exercises the missing-file path.
     fn removeConfig() !void {
         const d = try dir();
         d.deleteFile(testing.io, "c3s/config.yaml") catch {};
+        repinXdgCache();
+    }
+
+    /// Any earlier test that touched ensurePaths() pinned the process-wide
+    /// XDG cache to the REAL ~/.config/c3s — Config.load would then read the
+    /// user's actual config instead of the fixture written above. Drop the
+    /// cache so the next load re-resolves from our XDG_CONFIG_HOME.
+    fn repinXdgCache() void {
+        xdg.resetCachedPathsForTests();
     }
 };
 

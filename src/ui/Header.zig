@@ -458,6 +458,15 @@ pub const Header = struct {
     pub fn updateCpuMem(self: *Header, cpu_pct: u8, mem_pct: u8) !void {
         self.cpu_usage = cpu_pct;
         self.mem_usage = mem_pct;
+        // The header renders cpu_str/mem_str (not the u8 fields), so the
+        // displayed values must be rebuilt here — otherwise CPU/MEM stay stuck
+        // at the "0%"/"n/a" placeholder set at init.
+        const new_cpu = try std.fmt.allocPrint(self.allocator, "{d}%", .{cpu_pct});
+        self.allocator.free(self.cpu_str);
+        self.cpu_str = new_cpu;
+        const new_mem = try std.fmt.allocPrint(self.allocator, "{d}%", .{mem_pct});
+        self.allocator.free(self.mem_str);
+        self.mem_str = new_mem;
     }
 
     pub fn deinit(self: *Header) void {

@@ -7,6 +7,8 @@ const sys = @import("sys.zig");
 const c = @cImport({
     @cInclude("termios.h");
     @cInclude("sys/ioctl.h"); // TIOCGWINSZ + struct winsize for terminal size
+    @cInclude("fcntl.h"); // open + O_RDONLY for /dev/tty size probe
+    @cInclude("unistd.h"); // close
 });
 
 pub const Terminal = struct {
@@ -108,8 +110,20 @@ pub const Terminal = struct {
         // can't be relied on: std.process.run forces child stdin=.ignore, so
         // `stty size` has no controlling TTY and returns nothing.)
         var ws: c.winsize = undefined;
-        if (c.ioctl(self.stdout.handle, c.TIOCGWINSZ, &ws) == 0 and ws.ws_col > 0 and ws.ws_row > 0) {
-            return .{ .width = @intCast(ws.ws_col), .height = @intCast(ws.ws_row) };
+        // Try whichever of stdout/stdin/stderr is a real terminal. Under a
+        // debugger (lldb) or when stdout is piped, fd 1 isn't a tty.
+        for ([_]c_int{ self.stdout.handle, self.stdin.handle, self.stderr.handle }) |fd| {
+            if (c.ioctl(fd, c.TIOCGWINSZ, &ws) == 0 and ws.ws_col > 0 and ws.ws_row > 0) {
+                return .{ .width = @intCast(ws.ws_col), .height = @intCast(ws.ws_row) };
+            }
+        }
+        // Last resort: the controlling terminal, which survives stdio redirection.
+        const tty_fd = c.open("/dev/tty", c.O_RDONLY);
+        if (tty_fd >= 0) {
+            defer _ = c.close(tty_fd);
+            if (c.ioctl(tty_fd, c.TIOCGWINSZ, &ws) == 0 and ws.ws_col > 0 and ws.ws_row > 0) {
+                return .{ .width = @intCast(ws.ws_col), .height = @intCast(ws.ws_row) };
+            }
         }
 
         // 1) Try environment variables (often accurate in interactive shells)
@@ -207,9 +221,20 @@ pub const Terminal = struct {
     pub fn enterAlternateScreen(self: *Terminal) !void {
         try self.writeAllStdout("\x1b[?1049h");
         try self.writeAllStdout("\x1b[?25l"); // Hide cursor immediately
+        // Disable autowrap (DECAWM): every cell is positioned explicitly, so a
+        // write that reaches the last column must NOT wrap to col 0 of the next
+        // row — that bleeds overflow into the box's left border. Clip instead.
+        try self.writeAllStdout("\x1b[?7l");
+        // Mouse: button tracking (1000) with SGR extended coordinates (1006).
+        // 1000 reports press/release only (no motion spam), which is all we need.
+        try self.writeAllStdout("\x1b[?1000h");
+        try self.writeAllStdout("\x1b[?1006h");
     }
 
     pub fn exitAlternateScreen(self: *Terminal) !void {
+        try self.writeAllStdout("\x1b[?1006l");
+        try self.writeAllStdout("\x1b[?1000l"); // disable mouse before leaving
+        try self.writeAllStdout("\x1b[?7h"); // restore autowrap
         try self.writeAllStdout("\x1b[?25h"); // Show cursor before exit
         try self.writeAllStdout("\x1b[?1049l");
     }
@@ -288,7 +313,7 @@ pub const Terminal = struct {
     }
 
     pub fn readKey(self: *Terminal) !?Key {
-        var buf: [16]u8 = undefined;
+        var buf: [32]u8 = undefined;
 
         // Read first byte (VMIN=0 means this returns immediately)
         const n = posix.read(self.stdin.handle, buf[0..1]) catch return null;
@@ -296,23 +321,34 @@ pub const Terminal = struct {
 
         const first = buf[0];
         switch (first) {
+            0x01 => return Key.ctrl_a,
             0x02 => return Key.ctrl_b,
             0x03 => return Key.ctrl_c,
             0x04 => return Key.ctrl_d,
             0x05 => return Key.ctrl_e,
             0x06 => return Key.ctrl_f,
+            0x0b => return Key.ctrl_k,
+            0x10 => return Key.ctrl_p,
             0x7f => return Key.backspace,
             '\r', '\n' => return Key.enter,
             0x1b => {
                 // Escape sequence - read remaining bytes
                 var bytes_read: usize = 1;
 
-                // Try to read up to 10 more bytes for escape sequence
+                // Read remaining bytes. SGR mouse reports (ESC [ < b ; x ; y M|m)
+                // can run ~13 bytes, so allow more than arrow/tilde sequences need.
                 var attempts: u8 = 0;
-                while (bytes_read < buf.len and attempts < 10) : (attempts += 1) {
+                while (bytes_read < buf.len and attempts < 24) : (attempts += 1) {
                     const n_read = posix.read(self.stdin.handle, buf[bytes_read .. bytes_read + 1]) catch break;
                     if (n_read == 0) break;
                     bytes_read += n_read;
+
+                    // SGR mouse sequence: read until the M (press) / m (release) terminator.
+                    if (bytes_read >= 3 and buf[1] == '[' and buf[2] == '<') {
+                        const last = buf[bytes_read - 1];
+                        if (last == 'M' or last == 'm') break;
+                        continue;
+                    }
 
                     // Check if we have a complete arrow key sequence
                     if (bytes_read >= 3 and buf[1] == '[') {
@@ -345,6 +381,32 @@ pub const Terminal = struct {
             if (seq.len == 2) return Key.escape;
 
             const code = seq[2];
+
+            // SGR mouse report: ESC [ < b ; x ; y (M=press | m=release).
+            // We surface only left-button presses as a Key.mouse with 0-based coords.
+            if (code == '<') {
+                const term = seq[seq.len - 1];
+                if ((term == 'M' or term == 'm') and seq.len > 4) {
+                    const body = seq[3 .. seq.len - 1]; // "b;x;y"
+                    var it = std.mem.splitScalar(u8, body, ';');
+                    const b = std.fmt.parseInt(u16, it.next() orelse return Key.unsupported, 10) catch return Key.unsupported;
+                    const xs = it.next() orelse return Key.unsupported;
+                    const ys = it.next() orelse return Key.unsupported;
+                    const mx = std.fmt.parseInt(u16, xs, 10) catch return Key.unsupported;
+                    const my = std.fmt.parseInt(u16, ys, 10) catch return Key.unsupported;
+                    if (term == 'M') {
+                        // Scroll wheel (buttons 64/65) → up/down, restoring the
+                        // arrow emulation the terminal did before mouse mode.
+                        if (b == 64) return Key.up;
+                        if (b == 65) return Key.down;
+                        // Left-button press → click (0-based coords).
+                        if (b == 0 and mx >= 1 and my >= 1) {
+                            return Key{ .mouse = .{ .x = mx - 1, .y = my - 1 } };
+                        }
+                    }
+                }
+                return Key.unsupported;
+            }
 
             // Simple single-character codes
             switch (code) {
@@ -415,17 +477,24 @@ pub const Key = union(enum) {
     page_up,
     page_down,
     escape,
+    ctrl_a,
     ctrl_c,
     ctrl_d,
     ctrl_e,
     shift_g,
     ctrl_f,
     ctrl_b,
+    ctrl_k,
+    ctrl_p,
     question_mark,
     colon,
     backspace,
     enter,
+    /// Left-button press at 0-based screen coordinates (SGR mouse mode).
+    mouse: Mouse,
     unsupported,
+
+    pub const Mouse = struct { x: u16, y: u16 };
 };
 
 pub const Color = enum(u8) {
@@ -483,6 +552,16 @@ test "terminal screen control" {
     try terminal.setCursor(0, 0);
 }
 
+/// Tests that flush() must NOT write to the real stdout: under `zig build
+/// test` fd 1 is the build runner's IPC pipe, and raw ANSI bytes on it desync
+/// the zig server protocol — runner and test binary then deadlock waiting for
+/// each other. Point the terminal's stdout at /dev/null instead.
+fn redirectStdoutToDevNull(terminal: *Terminal) !std.Io.File {
+    const sink = try std.Io.Dir.cwd().openFile(testing.io, "/dev/null", .{ .mode = .write_only });
+    terminal.stdout = sink;
+    return sink;
+}
+
 test "terminal text writing" {
     var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
@@ -490,6 +569,8 @@ test "terminal text writing" {
 
     var terminal = try Terminal.init(allocator);
     defer terminal.deinit();
+    const sink = try redirectStdoutToDevNull(&terminal);
+    defer sink.close(testing.io);
 
     // Test basic text output
     try terminal.writeString(0, 0, "Hello, World!");
@@ -525,6 +606,8 @@ test "terminal colored text writing" {
 
     var terminal = try Terminal.init(allocator);
     defer terminal.deinit();
+    const sink = try redirectStdoutToDevNull(&terminal);
+    defer sink.close(testing.io);
 
     // Test colored text output
     try terminal.writeStringWithColor(0, 0, "Red text", .red, .black);
@@ -554,6 +637,8 @@ test "terminal buffer operations" {
 
     var terminal = try Terminal.init(allocator);
     defer terminal.deinit();
+    const sink = try redirectStdoutToDevNull(&terminal);
+    defer sink.close(testing.io);
 
     // Test buffer operations
     try terminal.writeString(0, 0, "Test");

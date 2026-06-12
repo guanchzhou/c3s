@@ -196,26 +196,27 @@ fn distributeWidth(
         return final_widths;
     }
 
-    // If all visible columns fit at max content width, use those widths
-    // and spread leftover space evenly so the table fills the terminal.
+    // If all visible columns fit at max content width, every column shows its
+    // full content width and the single most-important visible column (lowest
+    // .priority value — the NAME/CRITICAL column) absorbs all leftover so the
+    // table always fills the terminal, regardless of per-view max_width caps.
+    // This is the one consistent rule applied to every resource view.
     if (total_max <= available_width) {
         for (max_widths, visible, 0..) |max, vis, i| {
             final_widths[i] = if (vis) max else 0;
         }
-        // Distribute leftover only to unbounded columns (max_width = null).
-        // Bounded columns (READY, STATUS, AGE, etc.) stay at content width.
         const leftover = available_width - total_max;
         if (leftover > 0) {
-            var unbounded_count: u16 = 0;
-            for (columns, visible) |col, vis| {
-                if (vis and col.max_width == null) unbounded_count += 1;
-            }
-            if (unbounded_count > 0) {
-                const per_col = leftover / unbounded_count;
-                for (final_widths, visible, columns) |*w, vis, col| {
-                    if (vis and w.* > 0 and col.max_width == null) w.* += per_col;
+            var stretch_idx: ?usize = null;
+            for (columns, visible, 0..) |col, vis, i| {
+                if (!vis or final_widths[i] == 0) continue;
+                if (stretch_idx) |s| {
+                    if (col.priority < columns[s].priority) stretch_idx = i;
+                } else {
+                    stretch_idx = i;
                 }
             }
+            if (stretch_idx) |s| final_widths[s] += leftover;
         }
         return final_widths;
     }
@@ -399,7 +400,34 @@ pub fn padText(
     return padded;
 }
 
+/// Truncate a UTF-8 string to at most `max_cols` display columns WITHOUT
+/// splitting a codepoint. Each codepoint is counted as one column (correct for
+/// the single-width glyphs used in c3s, e.g. the ▲/▼ sort indicators). This
+/// prevents byte-based truncation from cutting a multibyte glyph mid-sequence,
+/// which a terminal renders as a garbage replacement char (e.g. ◆).
+pub fn utf8TruncateCols(s: []const u8, max_cols: usize) []const u8 {
+    if (max_cols == 0) return s[0..0];
+    var i: usize = 0;
+    var cols: usize = 0;
+    while (i < s.len) {
+        const len = std.unicode.utf8ByteSequenceLength(s[i]) catch 1;
+        if (i + len > s.len) break; // invalid/partial trailing bytes
+        if (cols + 1 > max_cols) break;
+        i += len;
+        cols += 1;
+    }
+    return s[0..i];
+}
+
 const testing = std.testing;
+
+test "utf8TruncateCols keeps multibyte glyphs whole" {
+    const s = "AGE \u{25B2}"; // "AGE " + ▲ (3 bytes)
+    try testing.expectEqualStrings("AGE ", utf8TruncateCols(s, 4));
+    try testing.expectEqualStrings(s, utf8TruncateCols(s, 5));
+    try testing.expectEqualStrings(s, utf8TruncateCols(s, 9));
+    try testing.expectEqualStrings("AG", utf8TruncateCols(s, 2));
+}
 
 // =========================================================================
 // calculateMaxColumnWidths

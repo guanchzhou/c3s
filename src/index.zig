@@ -11,9 +11,9 @@ pub const ui = struct {
     pub const table_state = @import("ui/TableState.zig");
 };
 
-// View exports - pods_view is standalone, all others come from resource_configs
-pub const PodsView = @import("view/PodsView.zig").PodsView;
+// View exports - all resource views (including pods) come from resource_configs
 const rc = @import("view/resource_configs.zig");
+pub const PodsView = rc.PodsView;
 pub const DeploymentsView = rc.DeploymentsView;
 pub const ServicesView = rc.ServicesView;
 pub const NamespacesView = @import("view/NamespacesView.zig").NamespacesView;
@@ -47,6 +47,7 @@ pub const HelpView = @import("view/HelpView.zig").HelpView;
 pub const DetailView = @import("view/DetailView.zig").DetailView;
 pub const LogsView = @import("view/LogsView.zig").LogsView;
 pub const AuthorizationView = @import("view/AuthorizationView.zig").AuthorizationView;
+pub const TrafficView = @import("view/TrafficView.zig").TrafficView;
 pub const resource_view = @import("view/resource_view.zig");
 pub const resource_configs = @import("view/resource_configs.zig");
 pub const TableState = @import("ui/TableState.zig").TableState;
@@ -55,7 +56,6 @@ pub const ResourceInfo = @import("viewmodel/view.zig").ResourceInfo;
 pub const sort = @import("viewmodel/sort.zig");
 pub const filter = @import("viewmodel/filter.zig");
 pub const App = @import("App.zig").App;
-pub const viewNameToPrimaryView = @import("App.zig").viewNameToPrimaryView;
 pub const Config = @import("model/config.zig");
 pub const Logger = @import("core/logger.zig");
 pub const version = @import("model/version.zig");
@@ -81,12 +81,14 @@ pub const keybindings = @import("model/keybindings.zig");
 pub const box_drawing = @import("ui/box_drawing.zig");
 pub const command_input = @import("ui/CommandInput.zig");
 pub const CommandInput = @import("ui/CommandInput.zig").CommandInput;
+pub const fuzzy = @import("ui/fuzzy.zig");
 pub const panic_hook = @import("panic_hook.zig");
 pub const cli = @import("cli.zig");
 
 // Services
 pub const K8sService = @import("services/K8sService.zig").K8sService;
 pub const ClusterInfo = @import("services/K8sService.zig").ClusterInfo;
+pub const K9sMigration = @import("services/K9sMigration.zig");
 pub const k8s_service_types = @import("services/k8s_types.zig");
 
 // K8s module exports (from zig-klient library)
@@ -101,3 +103,12 @@ pub const k8s_tls = klient.tls;
 // Note: ConnectionPool was removed in zig-klient v0.3.0 (std.http.Client pools internally).
 pub const k8s_crd = klient.crd;
 pub const KubeconfigParser = klient.KubeconfigParser;
+
+// Test discovery root. Zig analyzes decls lazily, so the pub imports above do
+// NOT by themselves pull co-located `test{}` blocks into the test binary —
+// without this block `zig build test` compiles an EMPTY test runner and
+// reports success. refAllDecls references every pub decl, forcing analysis of
+// each imported module and collecting its tests.
+test {
+    @import("std").testing.refAllDecls(@This());
+}

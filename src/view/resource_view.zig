@@ -36,6 +36,10 @@ pub const Config = struct {
     default_all_namespaces: bool = false,
     name_column: u8, // index of resource name column
     namespace_column: ?u8 = null, // index of namespace column (null for cluster-scoped)
+    /// When set, after the transform loop the cpu/mem columns at these indices
+    /// are overwritten with live pod metrics from the metrics server (keyed
+    /// "<namespace>/<name>"). Inert for every view that leaves this null.
+    metrics_columns: ?struct { cpu: u8, mem: u8 } = null,
 };
 
 /// Generate a complete View type for a Kubernetes resource.
@@ -61,6 +65,8 @@ pub fn ResourceView(
         table: TableState(RowData),
         cached_col_widths: ?table_layout.ColumnWidths = null,
         cached_terminal_width: u16 = 0,
+        /// Scratch buffer for the decorated box title ("pods(default)[8]").
+        title_buf: [192]u8 = undefined,
 
         /// Row data: uniform array of display strings
         pub const RowData = struct {
@@ -143,6 +149,30 @@ pub fn ResourceView(
                     .columns = cols,
                     .allocator = self.table.allocator,
                 });
+            }
+
+            // Overwrite the cpu/mem placeholder columns with live metrics, when
+            // the config opts in. The metrics server is optional: on any error
+            // (or a null map) the placeholders are left untouched.
+            if (config.metrics_columns) |mc| {
+                if (self.k8s_service.getPodMetrics(self.table.show_all_namespaces)) |maybe_map| {
+                    if (maybe_map) |map_val| {
+                        var map = map_val;
+                        defer self.k8s_service.freePodMetrics(&map);
+                        for (self.table.items.items) |*row| {
+                            const ns = row.columns[config.namespace_column.?];
+                            const nm = row.columns[config.name_column];
+                            var keybuf: [512]u8 = undefined;
+                            const key = std.fmt.bufPrint(&keybuf, "{s}/{s}", .{ ns, nm }) catch continue;
+                            if (map.get(key)) |pm| {
+                                self.table.allocator.free(row.columns[mc.cpu]);
+                                self.table.allocator.free(row.columns[mc.mem]);
+                                row.columns[mc.cpu] = try self.table.allocator.dupe(u8, pm.cpu);
+                                row.columns[mc.mem] = try self.table.allocator.dupe(u8, pm.mem);
+                            }
+                        }
+                    }
+                } else |_| {}
             }
 
             try self.applyFilter(self.table.filter_text);
@@ -244,9 +274,12 @@ pub fn ResourceView(
                 defer rows_data.deinit(allocator);
 
                 for (self.table.filtered_indices.items) |item_idx| {
-                    const item = self.table.items.items[item_idx];
-                    const row: *const [col_count][]const u8 = &item.columns;
-                    try rows_data.append(allocator, row);
+                    // Point into the stable items backing array, NOT a loop-local
+                    // copy: `&item.columns` on a by-value copy aliases one stack
+                    // slot, so every row would carry the last item's values and
+                    // collapse column widths to the header width.
+                    const item: *const RowData = &self.table.items.items[item_idx];
+                    try rows_data.append(allocator, &item.columns);
                 }
 
                 if (self.cached_col_widths) |*old_widths| {
@@ -264,6 +297,19 @@ pub fn ResourceView(
                 break :blk &self.cached_col_widths.?;
             };
 
+            // Effective widths for THIS render. When scoped to a single
+            // namespace the NAMESPACE column is redundant (every row shares it),
+            // so hide it and hand its width to the NAME column — the table still
+            // fills, just like k9s drops NAMESPACE in single-namespace views.
+            var eff_widths: [col_count]u16 = undefined;
+            @memcpy(eff_widths[0..col_count], col_widths.widths[0..col_count]);
+            if (config.is_namespaced and !self.table.show_all_namespaces) {
+                if (config.namespace_column) |ns_col| {
+                    eff_widths[config.name_column] += eff_widths[ns_col];
+                    eff_widths[ns_col] = 0;
+                }
+            }
+
             // Render header using runtime loop (widths are runtime values)
             {
                 const col_defs = comptime blk: {
@@ -280,7 +326,7 @@ pub fn ResourceView(
 
                 var col_x = x;
                 const hdr_max_x = x + width;
-                for (col_defs, col_widths.widths) |cd, w| {
+                for (col_defs, eff_widths[0..]) |cd, w| {
                     if (w == 0) continue;
                     if (col_x >= hdr_max_x) break;
                     const hdr_avail = hdr_max_x - col_x;
@@ -290,9 +336,9 @@ pub fn ResourceView(
                         const indicator = sort_util.sortIndicator(self.table.sort_column, self.table.sort_ascending, cd.sort_col);
                         var hdr_buf: [64]u8 = undefined;
                         const hdr = std.fmt.bufPrint(&hdr_buf, "{s}{s}", .{ cd.name, indicator }) catch cd.name;
-                        try Theme.writeStringWithTheme(terminal, col_x, y, hdr[0..@min(hdr.len, w)], self.theme.title, self.theme.main_bg);
+                        try Theme.writeStringWithTheme(terminal, col_x, y, table_layout.utf8TruncateCols(hdr, w), self.theme.title, self.theme.main_bg);
                     } else {
-                        try Theme.writeStringWithTheme(terminal, col_x, y, cd.name[0..@min(cd.name.len, w)], self.theme.title, self.theme.main_bg);
+                        try Theme.writeStringWithTheme(terminal, col_x, y, table_layout.utf8TruncateCols(cd.name, w), self.theme.title, self.theme.main_bg);
                     }
                     col_x += w;
                 }
@@ -302,38 +348,124 @@ pub fn ResourceView(
             const range = self.table.getVisibleRange();
             for (self.table.filtered_indices.items[range.start..range.end], 0..) |item_idx, i| {
                 const item = self.table.items.items[item_idx];
-                const colors = self.table.rowColors(i, self.theme);
+                const is_selected = self.table.isSelected(i);
                 const row_y = y + 1 + @as(u16, @intCast(i));
+
+                // Determine the marked state from a stable row identity key.
+                var key_buf: [512]u8 = undefined;
+                const key = rowKey(&item, &key_buf);
+                const is_marked = self.table.isMarked(key);
+
+                // Row colors: selection wins for fg/bg; a marked-but-unselected
+                // row gets a distinct bg so the mark persists as the cursor moves.
+                const fg: []const u8 = if (is_selected)
+                    self.theme.selected_fg
+                else if (is_marked)
+                    self.theme.title_highlight
+                else
+                    self.theme.main_fg;
+                const bg: []const u8 = if (is_selected)
+                    self.theme.selected_bg
+                else if (is_marked)
+                    self.theme.selected_bg
+                else
+                    self.theme.main_bg;
+
+                // Paint the ENTIRE row background first so the highlight is a
+                // clean full-width bar (no seams in inter-column gaps or past
+                // the last column), then draw cell text on top with the same bg.
+                try terminal.fillRow(x, row_y, width, fg, bg);
 
                 var rx = x;
                 const max_x = x + width;
-                for (&item.columns, col_widths.widths) |cell, w| {
+                for (&item.columns, eff_widths[0..]) |cell, w| {
                     if (w == 0) continue;
                     if (rx >= max_x) break;
                     const avail = max_x - rx;
                     const col_w = @min(w, avail);
-                    const display_len = @min(cell.len, col_w -| 1);
-                    try Theme.writeStringWithTheme(terminal, rx, row_y, cell[0..display_len], colors.fg, colors.bg);
+                    try Theme.writeStringWithTheme(terminal, rx, row_y, table_layout.utf8TruncateCols(cell, col_w -| 1), fg, bg);
                     rx += w;
                 }
+
+                // Draw the marked-row marker LAST so it overwrites the first
+                // glyph cell and stays visible even when the row is also the
+                // selected (cursor) row — selection bar + marker together.
+                if (is_marked and x < max_x) {
+                    try Theme.writeStringWithTheme(terminal, x, row_y, "\xe2\x96\x8c", self.theme.title_highlight, bg);
+                }
             }
+        }
+
+        /// Build a stable row identity key ("<namespace>/<name>" or just
+        /// "<name>" for cluster-scoped resources) into `buf`. Used both for
+        /// rendering the marked state and for toggling marks on space.
+        fn rowKey(item: *const RowData, buf: []u8) []const u8 {
+            const name = item.columns[config.name_column];
+            if (config.namespace_column) |ns_col| {
+                const ns = item.columns[ns_col];
+                return std.fmt.bufPrint(buf, "{s}/{s}", .{ ns, name }) catch name;
+            }
+            return name;
         }
 
         // ====================================================================
         // Key handling
         // ====================================================================
 
+        const is_pods = std.mem.eql(u8, config.name, "pods");
+
         fn handleKey(ptr: *anyopaque, key: Key) !KeyResult {
             const self: *Self = @ptrCast(@alignCast(ptr));
 
             if (self.table.handleNavigationKey(key)) |result| return result;
 
+            // Pod-specific action keys (comptime-gated; inert for every other
+            // view). Mirrors the action map of the former bespoke PodsView so
+            // logs/shell/exec/etc. keep working through the generic engine.
+            if (is_pods) {
+                switch (key) {
+                    .ctrl_k => return .request_kill,
+                    .ctrl_f => return .request_kill_finalizers,
+                    .char => |c| switch (c) {
+                        'l' => return .request_logs,
+                        'e' => return .request_edit,
+                        's' => return .request_shell,
+                        'a' => return .request_attach,
+                        'o' => return .request_show_node,
+                        'p' => return .request_logs_previous,
+                        'i' => return .request_set_image,
+                        'z' => return .request_sanitize,
+                        't' => return .request_transfer,
+                        'F' => return .request_port_forward,
+                        else => {},
+                    },
+                    else => {},
+                }
+            }
+
             switch (key) {
                 .char => |c| {
+                    // Space toggles a k9s-style mark on the current row. Marks
+                    // persist by row identity as the cursor moves/refreshes.
+                    if (c == ' ') {
+                        if (self.table.getSelectedItem()) |item| {
+                            var key_buf: [512]u8 = undefined;
+                            const mark_key = rowKey(item, &key_buf);
+                            self.table.toggleMark(mark_key) catch |err|
+                                Logger.err("Failed to toggle mark in {s}: {}", .{ config.name, err });
+                        }
+                        return .handled;
+                    }
+
                     // Refresh
                     if (c == 'r') {
                         self.refresh() catch |err| Logger.err("Failed to refresh {s}: {}", .{ config.name, err });
                         return .handled;
+                    }
+
+                    // Traffic view (deployments only)
+                    if (c == 't' and std.mem.eql(u8, config.name, "deployments")) {
+                        return .request_traffic;
                     }
 
                     // Namespace toggle (only for namespaced resources)
@@ -367,6 +499,10 @@ pub fn ResourceView(
 
         fn onShow(ptr: *anyopaque) void {
             const self: *Self = @ptrCast(@alignCast(ptr));
+            // Re-showing must be instant (Esc back from a sub-view / switching
+            // back): show already-loaded rows, never block on kubectl. Only
+            // auto-load when empty; `r` forces a refresh. See PodsView.
+            if (self.table.items.items.len > 0) return;
             self.refresh() catch |err| {
                 Logger.err("Failed to refresh {s}: {}", .{ config.name, err });
                 if (self.table.error_message == null) {
@@ -381,6 +517,29 @@ pub fn ResourceView(
 
         fn getName(_: *anyopaque) []const u8 {
             return config.name;
+        }
+
+        /// k9s-style decorated title: "<name>(<scope>)[<count>]" for namespaced
+        /// resources (scope = "all" or the active namespace), "<name>[<count>]"
+        /// for cluster-scoped ones. Falls back to the plain name on overflow.
+        fn getTitle(ptr: *anyopaque) []const u8 {
+            const self: *Self = @ptrCast(@alignCast(ptr));
+            const count = self.table.filtered_indices.items.len;
+            const filt = self.table.filter_text;
+            if (!config.is_namespaced) {
+                return if (filt.len > 0)
+                    std.fmt.bufPrint(&self.title_buf, "{s}[{d}] </{s}>", .{ config.name, count, filt }) catch config.name
+                else
+                    std.fmt.bufPrint(&self.title_buf, "{s}[{d}]", .{ config.name, count }) catch config.name;
+            }
+            const scope: []const u8 = if (self.table.show_all_namespaces)
+                "all"
+            else
+                self.k8s_service.current_namespace;
+            return if (filt.len > 0)
+                std.fmt.bufPrint(&self.title_buf, "{s}({s})[{d}] </{s}>", .{ config.name, scope, count, filt }) catch config.name
+            else
+                std.fmt.bufPrint(&self.title_buf, "{s}({s})[{d}]", .{ config.name, scope, count }) catch config.name;
         }
 
         fn getHints(_: *anyopaque) hints_model.HintConfig {
@@ -422,6 +581,7 @@ pub fn ResourceView(
             .onShow = onShow,
             .onHide = onHide,
             .getName = getName,
+            .getTitle = getTitle,
             .getHints = getHints,
             .deinit = deinitView,
             .applyFilter = vtableApplyFilter,

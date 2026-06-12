@@ -256,33 +256,23 @@ pub const ThemesView = struct {
             const is_selected = self.table.isSelected(display_idx);
             const is_current = std.mem.eql(u8, theme_info.name, self.current_theme_name);
 
-            // Fill row background
+            const row_bg = if (is_selected) active_theme.selected_bg else active_theme.main_bg;
+
+            // Fill the full row background first so text never lands on the
+            // terminal default (black) bg.
             if (width > 0) {
-                try terminal.fillRow(x, row_y, width, active_theme.main_fg, if (is_selected) active_theme.selected_bg else active_theme.main_bg);
+                try terminal.fillRow(x, row_y, width, active_theme.main_fg, row_bg);
             }
 
-            // Enabled marker (small bullet, same as pods page)
+            // Enabled marker (small bullet, same as pods page). Draw with an
+            // explicit bg matching the row fill so no black block remains.
             const marker = if (is_current) "\xe2\x80\xa2" else " ";
-            try terminal.setCursor(x + 1, row_y);
-            if (is_selected) {
-                try terminal.writeAll(active_theme.selected_fg);
-                try terminal.writeAll(active_theme.selected_bg);
-            } else {
-                try terminal.writeAll(active_theme.status_running);
-            }
-            try terminal.writeAll(marker);
-            try terminal.writeAll("\x1b[0m");
+            const marker_fg = if (is_selected) active_theme.selected_fg else active_theme.status_running;
+            try theme_loader.writeStringWithTheme(terminal, x + 1, row_y, marker, marker_fg, row_bg);
 
-            // Skin name
-            try terminal.setCursor(x + 3, row_y);
-            if (is_selected) {
-                try terminal.writeAll(active_theme.selected_fg);
-                try terminal.writeAll(active_theme.selected_bg);
-            } else {
-                try terminal.writeAll(active_theme.main_fg);
-            }
-            try terminal.writeAll(theme_info.name);
-            try terminal.writeAll("\x1b[0m");
+            // Skin name — same explicit-bg rule.
+            const name_fg = if (is_selected) active_theme.selected_fg else active_theme.main_fg;
+            try theme_loader.writeStringWithTheme(terminal, x + 3, row_y, theme_info.name, name_fg, row_bg);
         }
     }
 

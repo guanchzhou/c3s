@@ -27,8 +27,13 @@ pub const View = struct {
         /// Called when view becomes inactive
         onHide: *const fn (ptr: *anyopaque) void,
 
-        /// Get view name for debugging
+        /// Get view name for debugging / identity
         getName: *const fn (ptr: *anyopaque) []const u8,
+
+        /// Optional decorated title for the box header, e.g. "pods(default)[8]"
+        /// or "pods(all)[104]". Returns "" by default; callers fall back to
+        /// getName() when empty.
+        getTitle: *const fn (ptr: *anyopaque) []const u8 = &noopGetTitle,
 
         /// Get hints configuration for this view
         getHints: *const fn (ptr: *anyopaque) hints_model.HintConfig,
@@ -59,6 +64,25 @@ pub const View = struct {
         request_yaml,
         request_logs,
         request_delete,
+        // k9s-parity actions
+        request_edit,
+        request_shell,
+        request_attach,
+        request_port_forward,
+        request_aliases,
+        request_show_node,
+        request_logs_previous,
+        request_set_image,
+        request_kill,
+        request_sanitize,
+        request_transfer,
+        request_kill_finalizers,
+        /// A cluster context was switched (contexts view, Enter). The app
+        /// returns to the view that was active before entering contexts,
+        /// refreshed against the new cluster (k9s behavior).
+        context_switched,
+        /// Open the traffic view for the selected resource.
+        request_traffic,
     };
 
     pub fn render(self: View, terminal_inst: *Terminal, x: u16, y: u16, width: u16, height: u16) !void {
@@ -79,6 +103,10 @@ pub const View = struct {
 
     pub fn getName(self: View) []const u8 {
         return self.vtable.getName(self.ptr);
+    }
+
+    pub fn getTitle(self: View) []const u8 {
+        return self.vtable.getTitle(self.ptr);
     }
 
     pub fn getHints(self: View) hints_model.HintConfig {
@@ -114,6 +142,10 @@ pub const View = struct {
     }
 
     // Default no-op implementations for optional vtable methods
+    fn noopGetTitle(_: *anyopaque) []const u8 {
+        return "";
+    }
+
     fn noopApplyFilter(_: *anyopaque, _: []const u8) anyerror!void {}
     fn noopClearFilter(_: *anyopaque) anyerror!bool {
         return false;

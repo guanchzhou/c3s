@@ -143,7 +143,7 @@ pub const HelpView = struct {
         .deinit = deinitView,
     };
 
-    fn render(ptr: *anyopaque, terminal: *Terminal, x: u16, y: u16, _: u16, height: u16) !void {
+    fn render(ptr: *anyopaque, terminal: *Terminal, x: u16, y: u16, width: u16, height: u16) !void {
         const self: *HelpView = @ptrCast(@alignCast(ptr));
 
         self.visible_rows = if (height > 1) height - 1 else 0;
@@ -156,10 +156,12 @@ pub const HelpView = struct {
             const line = self.help_lines.items[line_idx];
             const row_y = y + @as(u16, @intCast(display_idx));
 
-            try terminal.setCursor(x, row_y);
-            try terminal.writeAll(self.theme.main_fg);
-            try terminal.writeAll(line);
-            try terminal.writeAll("\x1b[0m");
+            // Fill the full row with the panel bg first, then draw text with the
+            // same bg so no glyph lands on the terminal default (black) bg.
+            if (width > 0) {
+                try terminal.fillRow(x, row_y, width, self.theme.main_fg, self.theme.main_bg);
+            }
+            try theme_loader.writeStringWithTheme(terminal, x, row_y, line, self.theme.main_fg, self.theme.main_bg);
         }
     }
 

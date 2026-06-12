@@ -20,10 +20,13 @@ pub const ViewManager = struct {
     }
 
     pub fn deinit(self: *ViewManager) void {
-        // Clean up all views in stack
-        while (self.view_ptrs.items.len > 0) {
-            _ = self.popView();
-        }
+        // The view objects are owned by App; this manager only holds
+        // (ptr, vtable) handles. Do NOT popView() here: popView fires onHide/
+        // onShow lifecycle callbacks, and during teardown App may have already
+        // destroyed the underlying view objects — invoking their methods on
+        // freed memory is a use-after-free (e.g. quitting from a pushed detail
+        // view popped back to a destroyed PodsView, whose onShow derefs self).
+        // Just release the handle arrays.
         self.view_ptrs.deinit(self.allocator);
         self.view_vtables.deinit(self.allocator);
     }

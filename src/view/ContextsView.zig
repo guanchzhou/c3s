@@ -273,12 +273,14 @@ pub const ContextsView = struct {
                     return .handled;
                 },
                 '\r', '\n' => {
-                    // Switch to selected context
+                    // Switch to selected context, then let the app return to
+                    // the view that was active before entering contexts.
                     if (self.filtered_indices.items.len > 0 and self.selected_row < self.filtered_indices.items.len) {
                         const idx = self.filtered_indices.items[self.selected_row];
                         const selected = self.items.items[idx];
                         try self.k8s_service.switchContext(selected.name);
                         try self.refresh();
+                        return .context_switched;
                     }
                     return .handled;
                 },
@@ -303,12 +305,14 @@ pub const ContextsView = struct {
                 return .handled;
             },
             .enter => {
-                // Switch to selected context
+                // Switch to selected context, then let the app return to
+                // the view that was active before entering contexts.
                 if (self.filtered_indices.items.len > 0 and self.selected_row < self.filtered_indices.items.len) {
                     const idx = self.filtered_indices.items[self.selected_row];
                     const selected = self.items.items[idx];
                     try self.k8s_service.switchContext(selected.name);
                     try self.refresh();
+                    return .context_switched;
                 }
                 return .handled;
             },

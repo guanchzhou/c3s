@@ -48,10 +48,76 @@ fn intToStr(alloc: std.mem.Allocator, val: i32) ![]const u8 {
 }
 
 // ============================================================================
+// === Pods ===
+// ============================================================================
+fn transformPod(pod: klient.types.Pod, alloc: std.mem.Allocator) ![9][]const u8 {
+    // Phase + podIP live under status.object; mirror the bespoke PodsView.
+    const phase = if (pod.status) |status_json|
+        if (status_json.object.get("phase")) |p| p.string else "Unknown"
+    else
+        "Unknown";
+
+    const pod_ip = if (pod.status) |status_json|
+        if (status_json.object.get("podIP")) |ip| ip.string else "-"
+    else
+        "-";
+
+    // ready/total from status.containerStatuses (count .ready==true / array len).
+    var ready_count: u32 = 0;
+    var total_count: u32 = 0;
+    if (pod.status) |status_json| {
+        if (status_json.object.get("containerStatuses")) |cs| {
+            if (cs == .array) {
+                total_count = @intCast(cs.array.items.len);
+                for (cs.array.items) |container_status| {
+                    if (container_status.object.get("ready")) |r| {
+                        if (r.bool) ready_count += 1;
+                    }
+                }
+            }
+        }
+    }
+
+    const node = if (pod.spec) |spec| spec.nodeName orelse "-" else "-";
+
+    return .{
+        try alloc.dupe(u8, pod.metadata.namespace orelse "default"),
+        try alloc.dupe(u8, pod.metadata.name),
+        try std.fmt.allocPrint(alloc, "{d}/{d}", .{ ready_count, total_count }),
+        try alloc.dupe(u8, phase),
+        try alloc.dupe(u8, "-"), // CPU placeholder; filled by metrics_columns hook
+        try alloc.dupe(u8, "-"), // MEM placeholder; filled by metrics_columns hook
+        try alloc.dupe(u8, pod_ip),
+        try alloc.dupe(u8, node),
+        try age_util.calculateAge(alloc, pod.metadata.creationTimestamp),
+    };
+}
+
+pub const PodsView = ResourceView(klient.types.Pod, klient.resources.Pods, .{
+    .name = "pods",
+    .is_namespaced = true,
+    .name_column = 1,
+    .namespace_column = 0,
+    .metrics_columns = .{ .cpu = 4, .mem = 5 },
+    .columns = &.{
+        .{ .name = "NAMESPACE", .min_width = 10, .max_width = 24, .priority = P.MEDIUM, .searchable = true },
+        .{ .name = "NAME", .min_width = 15, .max_width = null, .priority = P.CRITICAL, .sort_key = 'N', .searchable = true },
+        .{ .name = "READY", .min_width = 6, .max_width = 8, .priority = P.HIGH, .sort_key = 'R' },
+        .{ .name = "STATUS", .min_width = 8, .max_width = 12, .priority = P.HIGH, .sort_key = 'S' },
+        .{ .name = "CPU", .min_width = 6, .max_width = 10, .priority = P.VERY_LOW, .sort_key = 'C' },
+        .{ .name = "MEM", .min_width = 6, .max_width = 10, .priority = P.VERY_LOW, .sort_key = 'M' },
+        .{ .name = "IP", .min_width = 10, .max_width = null, .priority = P.LOW, .sort_key = 'I' },
+        .{ .name = "NODE", .min_width = 10, .max_width = null, .priority = P.LOW },
+        .{ .name = "AGE", .min_width = 5, .max_width = 8, .priority = P.MEDIUM, .sort_key = 'A' },
+    },
+}, transformPod);
+
+// ============================================================================
 // === Deployments ===
 // ============================================================================
-fn transformDeployment(dep: klient.types.Deployment, alloc: std.mem.Allocator) ![5][]const u8 {
+fn transformDeployment(dep: klient.types.Deployment, alloc: std.mem.Allocator) ![6][]const u8 {
     const ready_replicas = statusInt(dep.status, "readyReplicas");
+    const updated_replicas = statusInt(dep.status, "updatedReplicas");
     const available_replicas = statusInt(dep.status, "availableReplicas");
     const replicas: i32 = if (dep.spec) |s| s.replicas orelse 0 else 0;
 
@@ -59,6 +125,7 @@ fn transformDeployment(dep: klient.types.Deployment, alloc: std.mem.Allocator) !
         try alloc.dupe(u8, if (dep.metadata.namespace) |ns| ns else "default"),
         try alloc.dupe(u8, dep.metadata.name),
         try std.fmt.allocPrint(alloc, "{d}/{d}", .{ ready_replicas, replicas }),
+        try intToStr(alloc, updated_replicas),
         try intToStr(alloc, available_replicas),
         try age_util.calculateAge(alloc, dep.metadata.creationTimestamp),
     };
@@ -70,10 +137,11 @@ pub const DeploymentsView = ResourceView(klient.types.Deployment, klient.resourc
     .name_column = 1,
     .namespace_column = 0,
     .columns = &.{
-        .{ .name = "NAMESPACE", .min_width = 12, .max_width = 20, .priority = P.MEDIUM, .searchable = true },
-        .{ .name = "NAME", .min_width = 12, .max_width = 40, .priority = P.CRITICAL, .sort_key = 'N', .searchable = true },
+        .{ .name = "NAMESPACE", .min_width = 12, .max_width = 24, .priority = P.MEDIUM, .searchable = true },
+        .{ .name = "NAME", .min_width = 16, .max_width = 40, .priority = P.CRITICAL, .sort_key = 'N', .searchable = true },
         .{ .name = "READY", .min_width = 7, .max_width = 12, .priority = P.HIGH },
-        .{ .name = "AVAILABLE", .min_width = 5, .max_width = 10, .priority = P.HIGH },
+        .{ .name = "UP-TO-DATE", .min_width = 10, .max_width = 12, .priority = P.HIGH },
+        .{ .name = "AVAILABLE", .min_width = 9, .max_width = 12, .priority = P.HIGH },
         .{ .name = "AGE", .min_width = 6, .max_width = 12, .priority = P.MEDIUM, .sort_key = 'A' },
     },
 }, transformDeployment);
@@ -251,6 +319,7 @@ fn transformDaemonSet(ds: klient.types.DaemonSet, alloc: std.mem.Allocator) ![7]
 pub const DaemonSetsView = ResourceView(klient.types.DaemonSet, klient.resources.DaemonSets, .{
     .name = "daemonsets",
     .is_namespaced = true,
+    .default_all_namespaces = true,
     .name_column = 1,
     .namespace_column = 0,
     .columns = &.{

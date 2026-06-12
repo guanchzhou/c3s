@@ -23,7 +23,8 @@ const CommandRegistry = @import("viewmodel/command.zig").CommandRegistry;
 
 // View imports - generic resource views from single config file
 const rc = @import("view/resource_configs.zig");
-const PodsView = @import("view/PodsView.zig").PodsView;
+const PodsView = rc.PodsView;
+const AliasesView = @import("view/AliasesView.zig").AliasesView;
 const DeploymentsView = rc.DeploymentsView;
 const ServicesView = rc.ServicesView;
 const NamespacesView = @import("view/NamespacesView.zig").NamespacesView;
@@ -58,11 +59,13 @@ const ViewType = @import("viewmodel/keybindings_vm.zig").ViewType;
 const DetailView = @import("view/DetailView.zig").DetailView;
 const LogsView = @import("view/LogsView.zig").LogsView;
 const AuthorizationView = @import("view/AuthorizationView.zig").AuthorizationView;
+const TrafficView = @import("view/TrafficView.zig").TrafficView;
 
 // Service imports
 const klient = @import("klient");
 const k8s_service_mod = @import("services/K8sService.zig");
 const K8sService = k8s_service_mod.K8sService;
+const K9sMigration = @import("services/K9sMigration.zig");
 const ResourceType = k8s_service_mod.ResourceType;
 const view_mod = @import("viewmodel/view.zig");
 const ResourceInfo = view_mod.ResourceInfo;
@@ -83,6 +86,7 @@ pub const App = struct {
     header_height: u16 = 8,
     footer_visible: bool = true,
     dirty: bool = true,
+    redraw_request: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     needs_connect: bool = true, // deferred K8s connection on first render
     last_render_time: i128 = 0,
     min_frame_time_ns: i128 = 16_666_667, // ~60 FPS (16.67ms)
@@ -92,6 +96,9 @@ pub const App = struct {
     view_manager: ViewManager,
     command_registry: CommandRegistry,
     theme: *theme_loader.ThemeColors,
+    /// All registered command names/aliases, kept alive for the fuzzy dropdown.
+    /// Allocated after registerCommands(); freed in deinit().
+    command_names: [][]const u8 = &.{},
 
     // Kubernetes service
     k8s_service: *K8sService,
@@ -131,21 +138,42 @@ pub const App = struct {
     themes_view: *ThemesView,
     help_view: *HelpView,
     detail_view: *DetailView,
+    aliases_view: *AliasesView,
     logs_view: *LogsView,
     authorization_view: *AuthorizationView,
+    traffic_view: *TrafficView,
 
     // Delete confirmation state
     delete_pending: bool = false,
+    delete_force: bool = false,
     delete_resource_name: ?[]u8 = null,
     delete_resource_namespace: ?[]u8 = null,
     delete_resource_type: ?ResourceType = null,
 
+    // Generic text-input prompt (set-image / port-forward / transfer / sanitize).
+    pending_input: enum { none, set_image, port_forward, transfer, sanitize } = .none,
+    pending_name: ?[]u8 = null,
+    pending_namespace: ?[]u8 = null,
+    pending_type: ?ResourceType = null,
+    /// Active background `kubectl port-forward` children, killed on exit.
+    port_forwards: std.ArrayListUnmanaged(std.process.Child) = .empty,
+
     // Track which primary view is active (matches view getName() return value)
     current_view_name: []const u8 = "pods",
+    /// View to return to when the aliases overlay is toggled off (Ctrl-A).
+    pre_aliases_view: []const u8 = "pods",
+    /// View to return to after switching cluster context (k9s behavior:
+    /// selecting a context drops you back where you were, not in contexts).
+    pre_contexts_view: []const u8 = "pods",
 
     pub fn init(allocator: std.mem.Allocator, config: Cli.Config) !App {
         // Initialize terminal
         const term = try Terminal.init(allocator);
+
+        // Drop-in k9s support: import an existing k9s config tree (skins,
+        // aliases, active skin → theme) before the config is first read.
+        // Idempotent and best-effort; never blocks startup.
+        K9sMigration.migrateIfNeeded(allocator);
 
         // Load UI config from file
         const ui_config = Config.load(allocator) catch Config.Config{
@@ -209,7 +237,6 @@ pub const App = struct {
         inline for (k8s_view_types) |entry| {
             @field(app_views, entry[0]) = try allocator.create(entry[1]);
         }
-        const pods_view = try allocator.create(PodsView);
 
         // Initialize UI views (these don't need k8s_service)
 
@@ -225,9 +252,16 @@ pub const App = struct {
         detail_view.* = try DetailView.init(allocator, theme);
         errdefer detail_view.deinit();
 
+        // AliasesView needs the stable k8s_service pointer; init after the App
+        // struct is built (mirrors pods_view).
+        const aliases_view = try allocator.create(AliasesView);
+
         const logs_view = try allocator.create(LogsView);
         logs_view.* = try LogsView.init(allocator, theme);
         errdefer logs_view.deinit();
+
+        const traffic_view = try allocator.create(TrafficView);
+        traffic_view.* = TrafficView.init(allocator, theme, k8s_service);
 
         // Initialize header — connection is deferred, so start with placeholder
         var header = try Header.initWithData(allocator, theme, .{
@@ -260,7 +294,7 @@ pub const App = struct {
             .command_registry = command_registry,
             .theme = theme,
             .k8s_service = k8s_service,
-            .pods_view = pods_view,
+            .pods_view = app_views.pods_view,
             .deployments_view = app_views.deployments_view,
             .services_view = app_views.services_view,
             .namespaces_view = app_views.namespaces_view,
@@ -292,19 +326,27 @@ pub const App = struct {
             .themes_view = themes_view,
             .help_view = help_view,
             .detail_view = detail_view,
+            .aliases_view = aliases_view,
             .logs_view = logs_view,
             .authorization_view = app_views.authorization_view,
+            .traffic_view = traffic_view,
         };
 
-        // Initialize all K8s resource views (comptime-generated loop)
-        // Must happen AFTER k8s_service is moved into the App struct for stable pointer
-        pods_view.* = try PodsView.init(allocator, theme, app.k8s_service);
+        // Initialize all K8s resource views (comptime-generated loop, includes
+        // pods_view). Must happen AFTER k8s_service is moved into the App struct
+        // for a stable pointer.
+        aliases_view.* = try AliasesView.init(allocator, theme, app.k8s_service);
         inline for (k8s_view_types) |entry| {
             @field(app, entry[0]).* = try entry[1].init(allocator, theme, app.k8s_service);
         }
 
         // Register commands
         try app.registerCommands();
+
+        // Build the candidate list for the fuzzy command palette dropdown.
+        // Done once here; the slice lives for the entire app lifetime.
+        app.command_names = try app.command_registry.getCommandNames();
+        app.command_input.setCandidates(app.command_names);
 
         // Push initial view (PodsView is the reference implementation with all features working)
         try app.view_manager.pushView(app.pods_view.createView());
@@ -313,6 +355,17 @@ pub const App = struct {
     }
 
     pub fn deinit(self: *App) void {
+        // Kill any background port-forwards we spawned.
+        for (self.port_forwards.items) |*child| child.kill(runtime.io());
+        self.port_forwards.deinit(self.allocator);
+        self.clearPendingInput();
+
+        // Tear down the view manager BEFORE destroying the view objects it
+        // references. (ViewManager.deinit no longer touches the views, but
+        // keeping this order documents the ownership and avoids any future
+        // lifecycle-callback-on-freed-view hazard.)
+        self.view_manager.deinit();
+
         // Clean up all K8s views (comptime-generated loop)
         inline for (k8s_view_types) |entry| {
             @field(self, entry[0]).deinit();
@@ -320,22 +373,24 @@ pub const App = struct {
         }
 
         // Clean up special views
-        self.pods_view.deinit();
-        self.allocator.destroy(self.pods_view);
         self.themes_view.deinit();
         self.allocator.destroy(self.themes_view);
         self.help_view.deinit();
         self.allocator.destroy(self.help_view);
         self.detail_view.deinit();
         self.allocator.destroy(self.detail_view);
+        self.aliases_view.deinit();
+        self.allocator.destroy(self.aliases_view);
         self.logs_view.deinit();
         self.allocator.destroy(self.logs_view);
+        self.traffic_view.deinit();
+        self.allocator.destroy(self.traffic_view);
 
         // Clean up delete state
         self.clearDeleteState();
 
         // Clean up MVVM components
-        self.view_manager.deinit();
+        self.allocator.free(self.command_names);
         self.command_registry.deinit();
 
         // Clean up Kubernetes service
@@ -369,6 +424,12 @@ pub const App = struct {
             for (vc.aliases) |alias| {
                 try self.command_registry.register(alias, Command{ .name = alias, .execute = cmd_fn });
             }
+        }
+
+        // Aliases view (k9s Ctrl-A): also reachable via `:aliases` and the
+        // fuzzy palette. Toggles the same as Ctrl-A.
+        for ([_][]const u8{ "aliases", "alias", "al" }) |alias| {
+            try self.command_registry.register(alias, Command{ .name = alias, .execute = aliasesCommand });
         }
 
         // Internal commands
@@ -405,6 +466,7 @@ pub const App = struct {
         self.prev_height = 0;
 
         while (self.running) {
+            if (self.redraw_request.swap(false, .acq_rel)) self.dirty = true;
             self.renderIfNeeded() catch |err| {
                 Logger.err("Render error: {any}", .{err});
             };
@@ -415,16 +477,26 @@ pub const App = struct {
                 self.k8s_service.connect(self.config.context) catch |err| {
                     Logger.warn("Failed to connect to Kubernetes: {}. Continuing without cluster connection.", .{err});
                 };
-                // Update header with connection info
+                // Start the persistent kubectl proxy so the first (and every)
+                // request is a fast localhost call, not a ~2s kubectl spawn.
+                if (self.k8s_service.use_kubectl) self.k8s_service.startProxy();
+                // Update header with connection info (cheap, no network).
                 const cluster_info = self.k8s_service.getClusterInfo();
                 self.header.updateClusterInfo(cluster_info.context, cluster_info.cluster, cluster_info.user) catch {};
-                self.header.updateK8sVersion(self.k8s_service.getServerVersion()) catch {};
-                // Fetch node metrics for header CPU/MEM
-                self.updateHeaderMetrics();
-                // Refresh the active view to load data
+
+                // Load + paint the resource data FIRST so the user sees pods
+                // immediately, before the slower header version/metrics calls.
                 if (self.view_manager.getCurrentView()) |current_view| {
                     current_view.refresh() catch {};
                 }
+                self.dirty = true;
+                self.renderIfNeeded() catch {};
+
+                // Now fetch the slower header extras (server version + node
+                // metrics) and repaint the header. Deferred so they never block
+                // the initial data render.
+                self.header.updateK8sVersion(self.k8s_service.getServerVersion()) catch {};
+                self.updateHeaderMetrics();
                 self.dirty = true;
             }
 
@@ -538,7 +610,15 @@ pub const App = struct {
                 // Draw box border at framework level
                 const view_name = current_view.getName();
                 self.footer.current_resource = view_name;
-                try BoxDrawing.Box.createBox(&self.terminal, 0, body_start, size.width, body_height, effective_theme.proc_box, effective_theme.main_bg, view_name, .rounded, effective_theme.main_fg, effective_theme.title_highlight);
+                // Box header shows the decorated title (e.g. "pods(default)[8]"
+                // or "aliases[123]") when the view provides one; otherwise the
+                // plain name.
+                const dyn_title = current_view.getTitle();
+                const box_title = if (dyn_title.len == 0)
+                    view_name
+                else
+                    dyn_title;
+                try BoxDrawing.Box.createBox(&self.terminal, 0, body_start, size.width, body_height, effective_theme.proc_box, effective_theme.main_bg, box_title, .rounded, effective_theme.main_fg, effective_theme.title_highlight);
                 // Render view inside the box (inner coordinates)
                 if (body_height > 2 and size.width > 2) {
                     const inner_x: u16 = 1;
@@ -551,8 +631,11 @@ pub const App = struct {
                         std.mem.eql(u8, view_name, "themes") or
                         std.mem.eql(u8, view_name, "help");
 
-                    // Clear full box interior (including padding) to prevent artifacts
-                    try self.terminal.clearRegion(1, inner_y, size.width - 2, inner_h);
+                    // NB: do NOT clearRegion here. createBox already fills the
+                    // interior every frame with the theme's main_bg; clearRegion
+                    // reset it to the terminal's DEFAULT bg, so cells (painted
+                    // with main_bg) showed as lighter blocks on a darker
+                    // interior — most visible in sparse layouts like namespaces.
 
                     if (!self.k8s_service.isConnected() and !offline_ok and self.k8s_service.hasAttemptedConnect()) {
                         try self.renderDisconnectedDialog(inner_x, inner_y, inner_w, inner_h);
@@ -701,7 +784,24 @@ pub const App = struct {
         // Handle command input first
         if (self.command_input.visible) {
             switch (key) {
+                // Arrow keys and Tab navigate the suggestion dropdown
+                .down => {
+                    self.command_input.moveSelection(1);
+                    self.dirty = true;
+                    return;
+                },
+                .up => {
+                    self.command_input.moveSelection(-1);
+                    self.dirty = true;
+                    return;
+                },
+                // Tab (arrives as char 9) also steps forward through suggestions
                 .char => |c| {
+                    if (c == 9) {
+                        self.command_input.moveSelection(1);
+                        self.dirty = true;
+                        return;
+                    }
                     if (c >= 32 and c <= 126) {
                         try self.command_input.addChar(c);
                         self.dirty = true;
@@ -712,9 +812,19 @@ pub const App = struct {
                     self.dirty = true;
                 },
                 .enter => {
-                    // Process command
-                    const cmd_text = self.command_input.getCommand();
+                    // For ':' prompt: prefer the highlighted suggestion over the raw buffer.
                     const prompt = self.command_input.prompt;
+                    const cmd_text = if (std.mem.eql(u8, prompt, ":"))
+                        self.command_input.currentSuggestion() orelse self.command_input.getCommand()
+                    else
+                        self.command_input.getCommand();
+
+                    if (self.pending_input != .none) {
+                        self.dispatchPendingInput(cmd_text);
+                        self.command_input.hide();
+                        self.dirty = true;
+                        return;
+                    }
 
                     if (std.mem.eql(u8, prompt, "/")) {
                         // Apply filter to current view
@@ -744,6 +854,8 @@ pub const App = struct {
                 },
                 .escape => {
                     self.command_input.hide();
+                    self.clearPendingInput();
+                    self.clearDeleteState();
                     self.dirty = true;
                 },
                 else => {},
@@ -845,6 +957,13 @@ pub const App = struct {
                     if (result == .handled) self.dirty = true;
                 }
             },
+            .mouse => {
+                // Pass clicks to the current view (e.g. DetailView fold toggling).
+                if (self.view_manager.getCurrentView()) |current_view| {
+                    const result = try current_view.handleKey(key);
+                    try self.handleViewResult(result, current_view, key);
+                }
+            },
             .escape => {
                 // Clear delete state if pending
                 if (self.delete_pending) {
@@ -873,12 +992,25 @@ pub const App = struct {
             .ctrl_c => {
                 // Ctrl+C doesn't exit, use :q command instead
             },
+            .ctrl_a => {
+                // Ctrl+A: toggle the aliases view (full view; Ctrl-A again exits).
+                self.toggleAliases() catch |err| {
+                    Logger.err("Failed to toggle aliases: {any}", .{err});
+                };
+            },
             .ctrl_d => {
-                // Ctrl+D: delete resource
+                // Ctrl+D: delete resource (graceful)
                 if (self.view_manager.getCurrentView()) |_| {
-                    self.handleDeleteRequest() catch |err| {
+                    self.handleDeleteRequest(false) catch |err| {
                         Logger.err("Delete request failed: {any}", .{err});
                     };
+                }
+            },
+            .ctrl_k => {
+                // Ctrl+K: kill — pass to current view (returns request_kill).
+                if (self.view_manager.getCurrentView()) |current_view| {
+                    const result = try current_view.handleKey(key);
+                    try self.handleViewResult(result, current_view, key);
                 }
             },
             .shift_g => {
@@ -889,10 +1021,10 @@ pub const App = struct {
                 }
             },
             .ctrl_f => {
-                // Pass to current view
+                // Pass to current view (e.g. kill-finalizers), routing results.
                 if (self.view_manager.getCurrentView()) |current_view| {
                     const result = try current_view.handleKey(key);
-                    if (result == .handled) self.dirty = true;
+                    try self.handleViewResult(result, current_view, key);
                 }
             },
             .ctrl_b => {
@@ -919,6 +1051,12 @@ pub const App = struct {
                 self.dirty = true;
             },
             .colon => {
+                self.command_input.showWithPrompt(":");
+                self.dirty = true;
+            },
+            .ctrl_p => {
+                // Ctrl-P opens the fuzzy command palette, same as ':'.
+                // Candidates were set once at startup (setCandidates).
                 self.command_input.showWithPrompt(":");
                 self.dirty = true;
             },
@@ -966,6 +1104,18 @@ pub const App = struct {
                 self.command_input.showWithPrompt("/");
                 self.dirty = true;
             },
+            .context_switched => {
+                // Return to the pre-contexts view. Its onShow skips network
+                // refresh when data exists (instant-Esc guard), but that data
+                // is the OLD cluster's — force a refresh against the new one.
+                try self.switchToView(self.pre_contexts_view);
+                if (self.view_manager.getCurrentView()) |v| {
+                    v.refresh() catch |err| {
+                        Logger.err("Refresh after context switch failed: {any}", .{err});
+                    };
+                }
+                self.dirty = true;
+            },
             .request_quit => {
                 self.running = false;
             },
@@ -980,16 +1130,292 @@ pub const App = struct {
                 };
             },
             .request_logs => {
-                self.showLogsView() catch |err| {
+                self.showLogsView(false) catch |err| {
                     Logger.err("Failed to show logs view: {any}", .{err});
                 };
             },
+            .request_logs_previous => {
+                self.showLogsView(true) catch |err| {
+                    Logger.err("Failed to show previous logs: {any}", .{err});
+                };
+            },
             .request_delete => {
-                self.handleDeleteRequest() catch |err| {
+                self.handleDeleteRequest(false) catch |err| {
                     Logger.err("Delete request failed: {any}", .{err});
                 };
             },
+            .request_kill => {
+                // Ctrl-K: force kill (--grace-period=0 --force), with confirm.
+                self.handleDeleteRequest(true) catch |err| {
+                    Logger.err("Kill request failed: {any}", .{err});
+                };
+            },
+            .request_edit => {
+                self.runResourceEdit() catch |err| {
+                    Logger.err("edit failed: {any}", .{err});
+                };
+            },
+            .request_shell => {
+                self.runPodShell() catch |err| {
+                    Logger.err("shell failed: {any}", .{err});
+                };
+            },
+            .request_attach => {
+                self.runPodAttach() catch |err| {
+                    Logger.err("attach failed: {any}", .{err});
+                };
+            },
+            .request_show_node => {
+                self.showSelectedNode() catch |err| {
+                    Logger.err("show-node failed: {any}", .{err});
+                };
+            },
+            .request_aliases => {
+                self.toggleAliases() catch |err| {
+                    Logger.err("Failed to toggle aliases: {any}", .{err});
+                };
+            },
+            .request_kill_finalizers => self.doKillFinalizers() catch |e| Logger.err("kill-finalizers failed: {any}", .{e}),
+            .request_set_image => self.promptSetImage() catch |e| Logger.err("set-image prompt: {any}", .{e}),
+            .request_port_forward => self.promptPortForward() catch |e| Logger.err("port-forward prompt: {any}", .{e}),
+            .request_transfer => self.promptTransfer() catch |e| Logger.err("transfer prompt: {any}", .{e}),
+            .request_sanitize => self.promptSanitize(),
+            .request_traffic => self.showTrafficView() catch |e| Logger.err("traffic view failed: {any}", .{e}),
         }
+    }
+
+    fn showTrafficView(self: *App) !void {
+        const info = self.getSelectedResourceFromCurrentView() orelse return;
+        self.traffic_view.setTarget(info.name, info.namespace);
+        self.traffic_view.setWake(&self.redraw_request);
+        try self.view_manager.pushView(self.traffic_view.createView());
+        self.dirty = true;
+    }
+
+    /// Suspend the TUI (leave raw mode + alternate screen), run an interactive
+    /// command with the inherited terminal (so $EDITOR / shell work), then
+    /// restore the TUI and refresh. Used by edit/shell/attach.
+    fn runInteractive(self: *App, argv: []const []const u8) !void {
+        // Pin kubectl to the app's active context: after an in-app context
+        // switch, the shell kubeconfig's current-context may point at a
+        // different cluster than the one the user is looking at.
+        var pinned = std.ArrayListUnmanaged([]const u8).empty;
+        defer pinned.deinit(self.allocator);
+        const ctx_name = self.k8s_service.context_name;
+        const final_argv = if (argv.len > 0 and
+            std.mem.eql(u8, argv[0], "kubectl") and
+            !std.mem.eql(u8, ctx_name, "unknown"))
+        blk: {
+            try pinned.append(self.allocator, "kubectl");
+            try pinned.append(self.allocator, "--context");
+            try pinned.append(self.allocator, ctx_name);
+            try pinned.appendSlice(self.allocator, argv[1..]);
+            break :blk pinned.items;
+        } else argv;
+
+        self.terminal.disableRawMode();
+        _ = self.terminal.exitAlternateScreen() catch {};
+
+        var child = std.process.spawn(runtime.io(), .{ .argv = final_argv }) catch |err| {
+            Logger.err("spawn failed: {any}", .{err});
+            // Restore TUI even on spawn failure.
+            try self.terminal.enterAlternateScreen();
+            try self.terminal.enableRawMode();
+            self.dirty = true;
+            return;
+        };
+        _ = child.wait(runtime.io()) catch {};
+
+        try self.terminal.enterAlternateScreen();
+        try self.terminal.enableRawMode();
+        self.dirty = true;
+        self.prev_width = 0; // force a full redraw
+        self.prev_height = 0;
+    }
+
+    fn runResourceEdit(self: *App) !void {
+        const rt = self.currentResourceType() orelse return;
+        const info = self.getSelectedResourceFromCurrentView() orelse return;
+        const target = try std.fmt.allocPrint(self.allocator, "{s}/{s}", .{ rt.resourceName(), info.name });
+        defer self.allocator.free(target);
+        try self.runInteractive(&.{ "kubectl", "edit", target, "-n", info.namespace });
+    }
+
+    fn runPodShell(self: *App) !void {
+        if (!std.mem.eql(u8, self.current_view_name, "pods")) return;
+        const info = self.pods_view.getSelectedResourceInfo() orelse return;
+        try self.runInteractive(&.{ "kubectl", "exec", "-it", info.name, "-n", info.namespace, "--", "sh", "-c", "bash || sh" });
+    }
+
+    fn runPodAttach(self: *App) !void {
+        if (!std.mem.eql(u8, self.current_view_name, "pods")) return;
+        const info = self.pods_view.getSelectedResourceInfo() orelse return;
+        try self.runInteractive(&.{ "kubectl", "attach", "-it", info.name, "-n", info.namespace });
+    }
+
+    fn showSelectedNode(self: *App) !void {
+        // Switch to the nodes view (focusing the pod's node would need a node
+        // filter; for now just open nodes).
+        if (self.view_manager.getDepth() == 1) {
+            _ = self.view_manager.popView();
+            try self.view_manager.pushView(self.nodes_view.createView());
+            self.current_view_name = "nodes";
+            self.dirty = true;
+        }
+    }
+
+    /// Toggle the aliases view (k9s Ctrl-A). It's a full depth-1 view (replaces
+    /// the current one), so `:` commands work in it and Esc doesn't pop it;
+    /// Ctrl-A again returns to the previous view.
+    fn toggleAliases(self: *App) !void {
+        if (std.mem.eql(u8, self.current_view_name, "aliases")) {
+            try self.switchToView(self.pre_aliases_view);
+            return;
+        }
+        self.pre_aliases_view = self.current_view_name;
+        try self.aliases_view.refresh();
+        // Replace whatever is showing with the aliases view at depth 1.
+        while (self.view_manager.getDepth() > 1) _ = self.view_manager.popView();
+        if (self.view_manager.getDepth() == 1) _ = self.view_manager.popView();
+        try self.view_manager.pushView(self.aliases_view.createView());
+        self.current_view_name = "aliases";
+        self.dirty = true;
+    }
+
+    /// Switch to a view by its registered command alias (handles the depth-1
+    /// pop+push), e.g. returning from the aliases view.
+    fn switchToView(self: *App, name: []const u8) !void {
+        var ctx = Command.CommandContext{
+            .allocator = self.allocator,
+            .view_manager = &self.view_manager,
+            .data = self,
+        };
+        _ = self.command_registry.execute(name, &ctx) catch |err| {
+            Logger.err("switchToView({s}) failed: {any}", .{ name, err });
+        };
+        self.dirty = true;
+    }
+
+    fn clearPendingInput(self: *App) void {
+        self.pending_input = .none;
+        if (self.pending_name) |n| self.allocator.free(n);
+        if (self.pending_namespace) |n| self.allocator.free(n);
+        self.pending_name = null;
+        self.pending_namespace = null;
+        self.pending_type = null;
+    }
+
+    /// Capture the selected resource and open a labelled text-input prompt.
+    fn beginResourcePrompt(self: *App, label: []const u8) !void {
+        const rt = self.currentResourceType() orelse return;
+        const info = self.getSelectedResourceFromCurrentView() orelse return;
+        self.clearPendingInput();
+        self.pending_type = rt;
+        self.pending_name = try self.allocator.dupe(u8, info.name);
+        self.pending_namespace = try self.allocator.dupe(u8, info.namespace);
+        self.command_input.showWithPrompt(label);
+        self.dirty = true;
+    }
+
+    fn promptSetImage(self: *App) !void {
+        try self.beginResourcePrompt("set image (container=image):");
+        if (self.pending_name != null) self.pending_input = .set_image;
+    }
+
+    fn promptPortForward(self: *App) !void {
+        try self.beginResourcePrompt("port-forward (local:remote):");
+        if (self.pending_name != null) self.pending_input = .port_forward;
+    }
+
+    fn promptTransfer(self: *App) !void {
+        try self.beginResourcePrompt("cp (src dst):");
+        if (self.pending_name != null) self.pending_input = .transfer;
+    }
+
+    fn promptSanitize(self: *App) void {
+        // Operates on the visible pods; no target capture needed.
+        if (!std.mem.eql(u8, self.current_view_name, "pods")) return;
+        self.clearPendingInput();
+        self.pending_input = .sanitize;
+        self.command_input.showWithPrompt("Sanitize completed/failed pods? [y/n]:");
+        self.dirty = true;
+    }
+
+    /// Apply the value typed at a pending input prompt.
+    fn dispatchPendingInput(self: *App, value: []const u8) void {
+        switch (self.pending_input) {
+            .set_image => self.doSetImage(value) catch |e| Logger.err("set image failed: {any}", .{e}),
+            .port_forward => self.doPortForward(value) catch |e| Logger.err("port-forward failed: {any}", .{e}),
+            .transfer => self.doTransfer(value) catch |e| Logger.err("transfer failed: {any}", .{e}),
+            .sanitize => {
+                if (std.mem.eql(u8, value, "y") or std.mem.eql(u8, value, "yes")) {
+                    self.doSanitize() catch |e| Logger.err("sanitize failed: {any}", .{e});
+                }
+            },
+            .none => {},
+        }
+        self.clearPendingInput();
+    }
+
+    fn doSetImage(self: *App, value: []const u8) !void {
+        const rt = self.pending_type orelse return;
+        const name = self.pending_name orelse return;
+        const ns = self.pending_namespace orelse return;
+        const target = try std.fmt.allocPrint(self.allocator, "{s}/{s}", .{ rt.resourceName(), name });
+        defer self.allocator.free(target);
+        try self.k8s_service.runKubectl(&.{ "set", "image", target, value, "-n", ns });
+        self.footer.setStatus("image updated");
+        self.refreshCurrentView();
+    }
+
+    fn doPortForward(self: *App, value: []const u8) !void {
+        const rt = self.pending_type orelse return;
+        const name = self.pending_name orelse return;
+        const ns = self.pending_namespace orelse return;
+        const target = try std.fmt.allocPrint(self.allocator, "{s}/{s}", .{ rt.resourceName(), name });
+        defer self.allocator.free(target);
+        const child = try self.k8s_service.spawnKubectl(&.{ "port-forward", target, value, "-n", ns });
+        try self.port_forwards.append(self.allocator, child);
+        self.footer.setStatus("port-forward started");
+    }
+
+    fn doKillFinalizers(self: *App) !void {
+        const rt = self.currentResourceType() orelse return;
+        const info = self.getSelectedResourceFromCurrentView() orelse return;
+        const target = try std.fmt.allocPrint(self.allocator, "{s}/{s}", .{ rt.resourceName(), info.name });
+        defer self.allocator.free(target);
+        try self.k8s_service.runKubectl(&.{ "patch", target, "-n", info.namespace, "--type=merge", "-p", "{\"metadata\":{\"finalizers\":null}}" });
+        self.footer.setStatus("finalizers cleared");
+        self.refreshCurrentView();
+    }
+
+    fn doTransfer(self: *App, value: []const u8) !void {
+        // "src dst" — passed through to `kubectl cp` (e.g. ns/pod:/path ./local).
+        var it = std.mem.tokenizeScalar(u8, value, ' ');
+        const src = it.next() orelse return;
+        const dst = it.next() orelse return;
+        try self.k8s_service.runKubectl(&.{ "cp", src, dst });
+        self.footer.setStatus("cp complete");
+    }
+
+    fn doSanitize(self: *App) !void {
+        const rt = self.currentResourceType() orelse return;
+        var killed: usize = 0;
+        // pods_view rows are generic RowData: columns are namespace(0), name(1),
+        // ready(2), status(3), cpu(4), mem(5), ip(6), node(7), age(8).
+        for (self.pods_view.table.items.items) |pod| {
+            const s = pod.columns[3];
+            const is_terminal = std.mem.eql(u8, s, "Succeeded") or std.mem.eql(u8, s, "Failed") or
+                std.mem.eql(u8, s, "Completed") or std.mem.eql(u8, s, "Error") or
+                std.mem.eql(u8, s, "Evicted");
+            if (!is_terminal) continue;
+            self.k8s_service.deleteResource(rt, pod.columns[1], pod.columns[0], false) catch continue;
+            killed += 1;
+        }
+        const msg = std.fmt.allocPrint(self.allocator, "Sanitized {d} pods", .{killed}) catch "Sanitized pods";
+        defer if (!std.mem.eql(u8, msg, "Sanitized pods")) self.allocator.free(msg);
+        self.footer.setStatus(msg);
+        self.refreshCurrentView();
     }
 
     /// Map current view name to ViewType for context-aware help
@@ -1041,13 +1467,13 @@ pub const App = struct {
     }
 
     /// Show logs view for selected pod
-    fn showLogsView(self: *App) !void {
+    fn showLogsView(self: *App, previous: bool) !void {
         if (!std.mem.eql(u8, self.current_view_name, "pods")) return;
 
         const info = self.pods_view.getSelectedResourceInfo() orelse return;
 
-        // Fetch logs from K8s API
-        const log_data = self.k8s_service.getPodLogs(info.name, info.namespace) catch |err| {
+        // Fetch logs from K8s API (previous = the prior container instance).
+        const log_data = self.k8s_service.getPodLogs(info.name, info.namespace, previous) catch |err| {
             Logger.err("Failed to get pod logs: {any}", .{err});
             return;
         };
@@ -1061,19 +1487,21 @@ pub const App = struct {
     }
 
     /// Handle delete request - enter confirmation mode
-    fn handleDeleteRequest(self: *App) !void {
+    fn handleDeleteRequest(self: *App, force: bool) !void {
         const resource_type = self.currentResourceType() orelse return;
         const info = self.getSelectedResourceFromCurrentView() orelse return;
 
         // Store delete state
         self.clearDeleteState();
         self.delete_pending = true;
+        self.delete_force = force;
         self.delete_resource_name = try self.allocator.dupe(u8, info.name);
         self.delete_resource_namespace = try self.allocator.dupe(u8, info.namespace);
         self.delete_resource_type = resource_type;
 
         // Show confirmation prompt
-        const prompt_text = try std.fmt.allocPrint(self.allocator, "Delete {s}/{s}? [y/n]: ", .{ resource_type.resourceName(), info.name });
+        const verb = if (force) "Kill" else "Delete";
+        const prompt_text = try std.fmt.allocPrint(self.allocator, "{s} {s}/{s}? [y/n]: ", .{ verb, resource_type.resourceName(), info.name });
         defer self.allocator.free(prompt_text);
         self.command_input.showWithPrompt("/");
         self.footer.setStatus(prompt_text);
@@ -1088,7 +1516,7 @@ pub const App = struct {
         const namespace = self.delete_resource_namespace orelse return;
         const resource_type = self.delete_resource_type orelse return;
 
-        self.k8s_service.deleteResource(resource_type, name, namespace) catch |err| {
+        self.k8s_service.deleteResource(resource_type, name, namespace, self.delete_force) catch |err| {
             Logger.err("Failed to delete {s}/{s}: {any}", .{ resource_type.resourceName(), name, err });
             self.footer.setStatus("Delete failed");
             return;
@@ -1105,6 +1533,7 @@ pub const App = struct {
     /// Clear delete confirmation state
     fn clearDeleteState(self: *App) void {
         self.delete_pending = false;
+        self.delete_force = false;
         if (self.delete_resource_name) |n| self.allocator.free(n);
         if (self.delete_resource_namespace) |n| self.allocator.free(n);
         self.delete_resource_name = null;
@@ -1234,6 +1663,7 @@ pub const App = struct {
 /// Used by init/deinit loops and command generation.
 /// All views in this table take (allocator, theme, k8s_service) for init.
 const k8s_view_types = .{
+    .{ "pods_view", PodsView },
     .{ "deployments_view", DeploymentsView },
     .{ "services_view", ServicesView },
     .{ "namespaces_view", NamespacesView },
@@ -1311,6 +1741,13 @@ fn makeViewCommand(comptime field_name: []const u8, comptime view_name: []const 
         fn command(ctx_arg: *Command.CommandContext) anyerror!void {
             const app: *App = @ptrCast(@alignCast(ctx_arg.data.?));
             if (ctx_arg.view_manager.getDepth() == 1) {
+                // Entering the contexts view: remember where we came from so
+                // a context switch can return there (KeyResult.context_switched).
+                if (comptime std.mem.eql(u8, view_name, "contexts")) {
+                    if (!std.mem.eql(u8, app.current_view_name, "contexts")) {
+                        app.pre_contexts_view = app.current_view_name;
+                    }
+                }
                 _ = ctx_arg.view_manager.popView();
                 try ctx_arg.view_manager.pushView(@field(app, field_name).createView());
                 app.current_view_name = view_name;
@@ -1332,6 +1769,14 @@ fn helpCommand(ctx: *Command.CommandContext) !void {
     } else {
         try ctx.view_manager.pushView(app.help_view.createView());
     }
+}
+
+/// `:aliases` / `:al` — open the aliases view. No-op when already showing it
+/// (so re-running from the palette doesn't bounce back to the previous view).
+fn aliasesCommand(ctx: *Command.CommandContext) !void {
+    const app: *App = @ptrCast(@alignCast(ctx.data.?));
+    if (std.mem.eql(u8, app.current_view_name, "aliases")) return;
+    try app.toggleAliases();
 }
 
 fn selectThemeCommand(ctx: *Command.CommandContext) !void {

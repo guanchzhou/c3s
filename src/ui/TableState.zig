@@ -19,18 +19,26 @@ pub fn TableState(comptime ItemType: type) type {
         selected_row: u32 = 0,
         scroll_offset: u32 = 0,
         visible_rows: u32 = 0,
+        /// Active filter text. OWNED by the TableState (duped in applyFilter,
+        /// freed in deinit). Callers pass a transient slice (e.g. a command
+        /// input buffer that is cleared right after); duping here keeps it
+        /// valid for later reads such as the title's filter indicator.
         filter_text: []const u8 = "",
         sort_column: ?u8 = null,
         sort_ascending: bool = true,
         show_all_namespaces: bool = false,
         loading: bool = false,
         error_message: ?[]u8 = null,
+        /// k9s-style multi-select: set of marked row identity keys.
+        /// Keys are owned (duped) by the TableState; values are unit (void).
+        marked: std.StringHashMap(void),
         allocator: std.mem.Allocator,
 
         pub fn init(allocator: std.mem.Allocator) Self {
             return Self{
                 .items = .empty,
                 .filtered_indices = .empty,
+                .marked = std.StringHashMap(void).init(allocator),
                 .allocator = allocator,
             };
         }
@@ -43,9 +51,44 @@ pub fn TableState(comptime ItemType: type) type {
             }
             self.items.deinit(self.allocator);
             self.filtered_indices.deinit(self.allocator);
+            self.clearMarks();
+            self.marked.deinit();
             if (self.error_message) |msg| {
                 self.allocator.free(msg);
             }
+            if (self.filter_text.len > 0) self.allocator.free(self.filter_text);
+        }
+
+        // ====================================================================
+        // Marking (k9s-style multi-select)
+        // ====================================================================
+
+        /// Toggle the marked state of a row identified by `key`.
+        /// The key is duped on insert and freed on removal, so the caller's
+        /// slice (which may be freed on refresh) need not outlive the call.
+        pub fn toggleMark(self: *Self, key: []const u8) !void {
+            if (self.marked.getEntry(key)) |entry| {
+                const owned = entry.key_ptr.*;
+                _ = self.marked.remove(key);
+                self.allocator.free(owned);
+            } else {
+                const owned = try self.allocator.dupe(u8, key);
+                errdefer self.allocator.free(owned);
+                try self.marked.put(owned, {});
+            }
+        }
+
+        pub fn isMarked(self: *const Self, key: []const u8) bool {
+            return self.marked.contains(key);
+        }
+
+        /// Remove all marks, freeing every owned key.
+        pub fn clearMarks(self: *Self) void {
+            var it = self.marked.keyIterator();
+            while (it.next()) |k| {
+                self.allocator.free(k.*);
+            }
+            self.marked.clearRetainingCapacity();
         }
 
         /// Clear all items (calling deinit on each) and reset error state
@@ -208,13 +251,20 @@ pub fn TableState(comptime ItemType: type) type {
         // ====================================================================
 
         pub fn applyFilter(self: *Self, filter: []const u8, comptime matchFn: fn (*const ItemType, []const u8) bool) !void {
-            self.filter_text = filter;
+            // Own the filter text: the caller's slice (often a command-input
+            // buffer) may be cleared/reused right after this returns, but the
+            // title's filter indicator reads filter_text on every later render.
+            // Dupe before freeing the old so a self-referential call (passing
+            // self.filter_text back in) is safe.
+            const new_filter: []const u8 = if (filter.len > 0) try self.allocator.dupe(u8, filter) else "";
+            if (self.filter_text.len > 0) self.allocator.free(self.filter_text);
+            self.filter_text = new_filter;
             try universal_filter.applyFilter(
                 ItemType,
                 self.allocator,
                 self.items.items,
                 &self.filtered_indices,
-                filter,
+                self.filter_text,
                 &self.selected_row,
                 &self.scroll_offset,
                 self.visible_rows,

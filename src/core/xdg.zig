@@ -35,6 +35,14 @@ pub fn getPaths() ?*const Paths {
     return if (cached) |*p| p else null;
 }
 
+/// Test-only: drop the process-wide cached paths so the next ensurePaths()
+/// re-resolves from the current environment. Tests that point
+/// XDG_CONFIG_HOME at a temp tree (e.g. config tests) call this to stay
+/// hermetic regardless of which test pinned the cache first.
+pub fn resetCachedPathsForTests() void {
+    cached = null;
+}
+
 fn computePaths() !Paths {
     const home_dir = try env.getOwned(path_allocator, "HOME");
     if (home_dir.len == 0) return error.MissingHomeDirectory;

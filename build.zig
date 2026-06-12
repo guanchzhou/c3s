@@ -55,6 +55,10 @@ pub fn build(b: *std.Build) void {
     });
     exe.root_module.addImport("klient", klient.module("klient"));
 
+    // Add kubectl-traffic library dependency (local path)
+    const kt = b.dependency("kubectl_traffic", .{ .target = target, .optimize = optimize });
+    exe.root_module.addImport("kubectl_traffic", kt.module("kubectl_traffic"));
+
     // Shared module exposing the c3s source tree (src/index.zig) to tests with
     // klient + build options wired. Reused as both "src" and "c3s" imports so
     // test targets get a consumable module (index.zig imports klient).
@@ -64,6 +68,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     c3s_module.addImport("klient", klient.module("klient"));
+    c3s_module.addImport("kubectl_traffic", kt.module("kubectl_traffic"));
     c3s_module.addOptions("c3s_build", build_opts);
 
     // Bump step: increments .build_number using a small Zig tool
