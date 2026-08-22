@@ -333,45 +333,6 @@ fn loadConfigMapsBindings(allocator: std.mem.Allocator) ![]const KeyBinding {
     return try allocator.dupe(KeyBinding, &bindings);
 }
 
-/// Common general bindings shared by all views
-const common_general_bindings = [_]KeyBinding{
-    .{ .key = "?", .description = "Help", .category = .general, .action = "help" },
-    .{ .key = ":q", .description = "Quit", .category = .general, .action = "quit" },
-    .{ .key = "/term", .description = "Filter mode", .category = .general, .action = "filter_mode" },
-    .{ .key = "esc", .description = "Back/Clear", .category = .general, .action = "back_clear" },
-    .{ .key = "Ctrl-e", .description = "Toggle Header", .category = .general, .action = "toggle_header" },
-};
-
-/// Common navigation bindings shared by all views
-const common_navigation_bindings = [_]KeyBinding{
-    .{ .key = "j", .description = "Down", .category = .navigation, .action = "down" },
-    .{ .key = "k", .description = "Up", .category = .navigation, .action = "up" },
-    .{ .key = "g", .description = "Goto Top", .category = .navigation, .action = "goto_top" },
-    .{ .key = "Shift-g", .description = "Goto Bottom", .category = .navigation, .action = "goto_bottom" },
-    .{ .key = "Ctrl-b", .description = "Page Up", .category = .navigation, .action = "page_up" },
-    .{ .key = "Ctrl-f", .description = "Page Down", .category = .navigation, .action = "page_down" },
-};
-
-/// Merge view-specific bindings with common general + navigation bindings
-fn mergeWithCommon(allocator: std.mem.Allocator, specific: []const KeyBinding) ![]const KeyBinding {
-    const total = specific.len + common_general_bindings.len + common_navigation_bindings.len;
-    const result = try allocator.alloc(KeyBinding, total);
-    var i: usize = 0;
-    for (specific) |b| {
-        result[i] = b;
-        i += 1;
-    }
-    for (&common_general_bindings) |b| {
-        result[i] = b;
-        i += 1;
-    }
-    for (&common_navigation_bindings) |b| {
-        result[i] = b;
-        i += 1;
-    }
-    return result;
-}
-
 // --- Tests ---
 
 test "keybindings_vm: init and deinit for all view types" {
