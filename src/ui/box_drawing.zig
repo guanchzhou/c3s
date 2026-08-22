@@ -72,12 +72,12 @@ pub const Box = struct {
             },
         };
 
-        // Draw horizontal lines (exclude corners)
+        // Draw horizontal lines (exclude corners) as one styled run each, rather
+        // than one styled write per character. See writeRepeatWithTheme.
         if (width > 2) {
-            for (1..width - 1) |i| {
-                try Theme.writeStringWithTheme(terminal, @intCast(x + i), y, Symbols.h_line, line_color, bg);
-                try Theme.writeStringWithTheme(terminal, @intCast(x + i), y + height - 1, Symbols.h_line, line_color, bg);
-            }
+            const span = width - 2;
+            try Theme.writeRepeatWithTheme(terminal, x + 1, y, Symbols.h_line, span, line_color, bg);
+            try Theme.writeRepeatWithTheme(terminal, x + 1, y + height - 1, Symbols.h_line, span, line_color, bg);
         }
 
         // Draw vertical lines and fill interior
@@ -179,4 +179,48 @@ test "Box.createBox function exists and compiles" {
 
 test "Box.createHorizontalDivider function exists" {
     _ = Box.createHorizontalDivider;
+}
+
+test "border bytes scale with lines, not with characters" {
+    // Measurement, not a guess: Terminal.writeAll appends to an in-memory buffer, so
+    // the exact byte cost of a frame element is observable.
+    //
+    // Borders used to be drawn one styled write per character -- setCursor(9) +
+    // fg(17) + bg(5) + glyph(3) + reset(4) ~= 38 bytes to place 3 bytes of glyph.
+    // On a 200-column terminal that made box borders roughly two thirds of every
+    // frame. They are now one styled run per line.
+    const allocator = std.testing.allocator;
+
+    var term = try Terminal.init(allocator);
+    defer term.deinit();
+
+    var theme = try Theme.defaultTheme(allocator);
+    defer Theme.deinitTheme(&theme);
+
+    term.write_buffer.clearRetainingCapacity();
+    try Box.createBox(
+        &term,
+        0,
+        0,
+        200,
+        20,
+        theme.proc_box,
+        null,
+        null,
+        .normal,
+        theme.main_fg,
+        theme.title,
+    );
+    const bytes = term.write_buffer.items.len;
+
+    // The two horizontal runs are 198 glyphs each. Per-character styling cost about
+    // 38 bytes per glyph -- roughly 15,000 bytes for those two lines alone. As runs,
+    // the glyphs dominate and the styling is paid twice, so the whole box must come
+    // in far below that. 6,000 is a deliberately loose ceiling: it fails loudly if
+    // per-character styling ever returns, without being brittle about exact counts.
+    try std.testing.expect(bytes < 6000);
+
+    // And it must still have drawn something the right size: 2 * 198 glyphs * 3 bytes
+    // is already 1,188, so anything tiny means the border silently vanished.
+    try std.testing.expect(bytes > 1200);
 }

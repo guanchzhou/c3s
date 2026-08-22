@@ -291,8 +291,11 @@ pub const NamespacesView = struct {
                     // Switch to selected namespace
                     self.switchNamespace() catch |err| {
                         Logger.err("Failed to switch namespace: {}", .{err});
+                        return .handled;
                     };
-                    return .handled;
+                    // Tell the app to refresh whatever view we return to: its cached
+                    // rows belong to the previous namespace.
+                    return .namespace_switched;
                 },
                 'N' => {
                     self.table.toggleSort(COL_NAME);
@@ -355,3 +358,40 @@ pub const NamespacesView = struct {
         self.deinit();
     }
 };
+
+test "pressing Enter on a namespace signals namespace_switched" {
+    // Behavioural, not structural. An earlier version of this guard only asserted
+    // that the KeyResult variant EXISTED, which passed even with the return value
+    // reverted to .handled -- decorative. This drives the real key handler.
+    //
+    // The bug: switching namespace updated the service and this view's own field but
+    // signalled nothing, so the view returned to kept the PREVIOUS namespace's rows
+    // (its onShow skips the network when rows exist) while getTitle read
+    // current_namespace live. Title and rows disagreed, with nothing on screen saying
+    // so. context_switched already worked; the namespace path never got it.
+    const a = std.testing.allocator;
+
+    var svc = try K8sService.init(a);
+    defer svc.deinit();
+
+    var theme = try theme_loader.defaultTheme(a);
+    defer theme_loader.deinitTheme(&theme);
+
+    var view = try NamespacesView.init(a, &theme, &svc);
+    defer view.deinit();
+
+    try view.table.appendItem(.{
+        .name = try a.dupe(u8, "kube-system"),
+        .status = try a.dupe(u8, "Active"),
+        .age = try a.dupe(u8, "1d"),
+        .allocator = a,
+    });
+    try view.table.filtered_indices.append(a, 0);
+    view.table.selected_row = 0;
+
+    const result = try NamespacesView.handleKey(&view, Key{ .char = 0x0A });
+    try std.testing.expectEqual(KeyResult.namespace_switched, result);
+
+    // And the switch actually took effect, so the signal is not cosmetic.
+    try std.testing.expectEqualStrings("kube-system", svc.getCurrentNamespace());
+}

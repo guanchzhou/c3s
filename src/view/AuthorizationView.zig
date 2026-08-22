@@ -1298,14 +1298,10 @@ test "AuthorizationView clearConditionRows cleans up" {
 
 // Test AuthorizationView initialization and cleanup
 test "authorization_view: init and cleanup" {
-    var gpa = std.heap.DebugAllocator(.{}){};
-    defer {
-        const leaked = gpa.deinit();
-        if (leaked == .leak) {
-            std.debug.print("Memory leak detected in authorization_view init/cleanup test\n", .{});
-        }
-    }
-    const allocator = gpa.allocator();
+    // std.testing.allocator FAILS the test on a leak. The previous form used a
+    // DebugAllocator and printed to stderr without failing, so a leak here was
+    // invisible in CI -- a leak check that cannot fail is not a check.
+    const allocator = std.testing.allocator;
 
     var theme = try theme_loader.loadTheme(allocator, "dracula");
     defer theme_loader.deinitTheme(&theme);
@@ -1331,14 +1327,10 @@ test "authorization_view: init and cleanup" {
 
 // Test view creation
 test "authorization_view: create view interface" {
-    var gpa = std.heap.DebugAllocator(.{}){};
-    defer {
-        const leaked = gpa.deinit();
-        if (leaked == .leak) {
-            std.debug.print("Memory leak detected in authorization_view create view test\n", .{});
-        }
-    }
-    const allocator = gpa.allocator();
+    // std.testing.allocator FAILS the test on a leak. The previous form used a
+    // DebugAllocator and printed to stderr without failing, so a leak here was
+    // invisible in CI -- a leak check that cannot fail is not a check.
+    const allocator = std.testing.allocator;
 
     var theme = try theme_loader.loadTheme(allocator, "dracula");
     defer theme_loader.deinitTheme(&theme);
@@ -1356,14 +1348,10 @@ test "authorization_view: create view interface" {
 
 // Test multiple init/deinit cycles for memory leaks
 test "authorization_view: multiple init/deinit cycles" {
-    var gpa = std.heap.DebugAllocator(.{}){};
-    defer {
-        const leaked = gpa.deinit();
-        if (leaked == .leak) {
-            std.debug.print("Memory leak detected in authorization_view multiple cycles test\n", .{});
-        }
-    }
-    const allocator = gpa.allocator();
+    // std.testing.allocator FAILS the test on a leak. The previous form used a
+    // DebugAllocator and printed to stderr without failing, so a leak here was
+    // invisible in CI -- a leak check that cannot fail is not a check.
+    const allocator = std.testing.allocator;
 
     var theme = try theme_loader.loadTheme(allocator, "dracula");
     defer theme_loader.deinitTheme(&theme);
@@ -1380,14 +1368,10 @@ test "authorization_view: multiple init/deinit cycles" {
 
 // Test tab switching
 test "authorization_view: tab switching via keys" {
-    var gpa = std.heap.DebugAllocator(.{}){};
-    defer {
-        const leaked = gpa.deinit();
-        if (leaked == .leak) {
-            std.debug.print("Memory leak detected in authorization_view tab switching test\n", .{});
-        }
-    }
-    const allocator = gpa.allocator();
+    // std.testing.allocator FAILS the test on a leak. The previous form used a
+    // DebugAllocator and printed to stderr without failing, so a leak here was
+    // invisible in CI -- a leak check that cannot fail is not a check.
+    const allocator = std.testing.allocator;
 
     var theme = try theme_loader.loadTheme(allocator, "dracula");
     defer theme_loader.deinitTheme(&theme);
@@ -1418,14 +1402,10 @@ test "authorization_view: tab switching via keys" {
 
 // Test tab cycling via Tab key
 test "authorization_view: tab cycling" {
-    var gpa = std.heap.DebugAllocator(.{}){};
-    defer {
-        const leaked = gpa.deinit();
-        if (leaked == .leak) {
-            std.debug.print("Memory leak detected in authorization_view tab cycling test\n", .{});
-        }
-    }
-    const allocator = gpa.allocator();
+    // std.testing.allocator FAILS the test on a leak. The previous form used a
+    // DebugAllocator and printed to stderr without failing, so a leak here was
+    // invisible in CI -- a leak check that cannot fail is not a check.
+    const allocator = std.testing.allocator;
 
     var theme = try theme_loader.loadTheme(allocator, "dracula");
     defer theme_loader.deinitTheme(&theme);
@@ -1449,14 +1429,10 @@ test "authorization_view: tab cycling" {
 
 // Test refresh without connection sets error
 test "authorization_view: refresh without connection" {
-    var gpa = std.heap.DebugAllocator(.{}){};
-    defer {
-        const leaked = gpa.deinit();
-        if (leaked == .leak) {
-            std.debug.print("Memory leak detected in authorization_view refresh test\n", .{});
-        }
-    }
-    const allocator = gpa.allocator();
+    // std.testing.allocator FAILS the test on a leak. The previous form used a
+    // DebugAllocator and printed to stderr without failing, so a leak here was
+    // invisible in CI -- a leak check that cannot fail is not a check.
+    const allocator = std.testing.allocator;
 
     var theme = try theme_loader.loadTheme(allocator, "dracula");
     defer theme_loader.deinitTheme(&theme);
@@ -1483,14 +1459,10 @@ test "authorization_view: refresh without connection" {
 
 // Test data row init/deinit
 test "authorization_view: AccessRow memory management" {
-    var gpa = std.heap.DebugAllocator(.{}){};
-    defer {
-        const leaked = gpa.deinit();
-        if (leaked == .leak) {
-            std.debug.print("Memory leak detected in AccessRow test\n", .{});
-        }
-    }
-    const allocator = gpa.allocator();
+    // std.testing.allocator FAILS the test on a leak. The previous form used a
+    // DebugAllocator and printed to stderr without failing, so a leak here was
+    // invisible in CI -- a leak check that cannot fail is not a check.
+    const allocator = std.testing.allocator;
 
     for (0..10) |_| {
         var row = AuthorizationView.AccessRow{
@@ -1511,14 +1483,10 @@ test "authorization_view: AccessRow memory management" {
 
 // Test PolicyRow memory management
 test "authorization_view: PolicyRow memory management" {
-    var gpa = std.heap.DebugAllocator(.{}){};
-    defer {
-        const leaked = gpa.deinit();
-        if (leaked == .leak) {
-            std.debug.print("Memory leak detected in PolicyRow test\n", .{});
-        }
-    }
-    const allocator = gpa.allocator();
+    // std.testing.allocator FAILS the test on a leak. The previous form used a
+    // DebugAllocator and printed to stderr without failing, so a leak here was
+    // invisible in CI -- a leak check that cannot fail is not a check.
+    const allocator = std.testing.allocator;
 
     for (0..10) |_| {
         var row = AuthorizationView.PolicyRow{
@@ -1535,14 +1503,10 @@ test "authorization_view: PolicyRow memory management" {
 
 // Test ConditionRow memory management
 test "authorization_view: ConditionRow memory management" {
-    var gpa = std.heap.DebugAllocator(.{}){};
-    defer {
-        const leaked = gpa.deinit();
-        if (leaked == .leak) {
-            std.debug.print("Memory leak detected in ConditionRow test\n", .{});
-        }
-    }
-    const allocator = gpa.allocator();
+    // std.testing.allocator FAILS the test on a leak. The previous form used a
+    // DebugAllocator and printed to stderr without failing, so a leak here was
+    // invisible in CI -- a leak check that cannot fail is not a check.
+    const allocator = std.testing.allocator;
 
     for (0..10) |_| {
         var row = AuthorizationView.ConditionRow{
@@ -1559,14 +1523,10 @@ test "authorization_view: ConditionRow memory management" {
 
 // Test filter application
 test "authorization_view: filter with data" {
-    var gpa = std.heap.DebugAllocator(.{}){};
-    defer {
-        const leaked = gpa.deinit();
-        if (leaked == .leak) {
-            std.debug.print("Memory leak detected in authorization_view filter test\n", .{});
-        }
-    }
-    const allocator = gpa.allocator();
+    // std.testing.allocator FAILS the test on a leak. The previous form used a
+    // DebugAllocator and printed to stderr without failing, so a leak here was
+    // invisible in CI -- a leak check that cannot fail is not a check.
+    const allocator = std.testing.allocator;
 
     var theme = try theme_loader.loadTheme(allocator, "dracula");
     defer theme_loader.deinitTheme(&theme);
@@ -1613,14 +1573,10 @@ test "authorization_view: filter with data" {
 
 // Test navigation with data
 test "authorization_view: navigation with rows" {
-    var gpa = std.heap.DebugAllocator(.{}){};
-    defer {
-        const leaked = gpa.deinit();
-        if (leaked == .leak) {
-            std.debug.print("Memory leak detected in authorization_view navigation test\n", .{});
-        }
-    }
-    const allocator = gpa.allocator();
+    // std.testing.allocator FAILS the test on a leak. The previous form used a
+    // DebugAllocator and printed to stderr without failing, so a leak here was
+    // invisible in CI -- a leak check that cannot fail is not a check.
+    const allocator = std.testing.allocator;
 
     var theme = try theme_loader.loadTheme(allocator, "dracula");
     defer theme_loader.deinitTheme(&theme);
@@ -1669,14 +1625,10 @@ test "authorization_view: navigation with rows" {
 
 // Test getSelectedResourceInfo
 test "authorization_view: getSelectedResourceInfo returns null" {
-    var gpa = std.heap.DebugAllocator(.{}){};
-    defer {
-        const leaked = gpa.deinit();
-        if (leaked == .leak) {
-            std.debug.print("Memory leak detected in getSelectedResourceInfo test\n", .{});
-        }
-    }
-    const allocator = gpa.allocator();
+    // std.testing.allocator FAILS the test on a leak. The previous form used a
+    // DebugAllocator and printed to stderr without failing, so a leak here was
+    // invisible in CI -- a leak check that cannot fail is not a check.
+    const allocator = std.testing.allocator;
 
     var theme = try theme_loader.loadTheme(allocator, "dracula");
     defer theme_loader.deinitTheme(&theme);
@@ -1724,14 +1676,10 @@ test "authorization_view: PolicyType labels" {
 
 // Test clear operations
 test "authorization_view: clear operations" {
-    var gpa = std.heap.DebugAllocator(.{}){};
-    defer {
-        const leaked = gpa.deinit();
-        if (leaked == .leak) {
-            std.debug.print("Memory leak detected in clear operations test\n", .{});
-        }
-    }
-    const allocator = gpa.allocator();
+    // std.testing.allocator FAILS the test on a leak. The previous form used a
+    // DebugAllocator and printed to stderr without failing, so a leak here was
+    // invisible in CI -- a leak check that cannot fail is not a check.
+    const allocator = std.testing.allocator;
 
     var theme = try theme_loader.loadTheme(allocator, "dracula");
     defer theme_loader.deinitTheme(&theme);
@@ -1781,14 +1729,10 @@ test "authorization_view: clear operations" {
 
 // Test describe/yaml only works on policy tab
 test "authorization_view: describe/yaml tab restriction" {
-    var gpa = std.heap.DebugAllocator(.{}){};
-    defer {
-        const leaked = gpa.deinit();
-        if (leaked == .leak) {
-            std.debug.print("Memory leak detected in describe/yaml test\n", .{});
-        }
-    }
-    const allocator = gpa.allocator();
+    // std.testing.allocator FAILS the test on a leak. The previous form used a
+    // DebugAllocator and printed to stderr without failing, so a leak here was
+    // invisible in CI -- a leak check that cannot fail is not a check.
+    const allocator = std.testing.allocator;
 
     var theme = try theme_loader.loadTheme(allocator, "dracula");
     defer theme_loader.deinitTheme(&theme);
