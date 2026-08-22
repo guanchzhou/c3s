@@ -141,7 +141,9 @@ pub fn TableState(comptime ItemType: type) type {
 
         /// Set a user-friendly error message for common connection/API errors.
         /// Maps raw Zig errors to actionable messages instead of showing internal error names.
-        pub fn setConnectionError(self: *Self, comptime resource: []const u8, err: anyerror) !void {
+        /// `resource` is a runtime string on purpose: as a comptime parameter this
+        /// monomorphized once per view (22 instances) purely to concatenate a literal.
+        pub fn setConnectionError(self: *Self, resource: []const u8, err: anyerror) !void {
             const friendly: ?[]const u8 = switch (err) {
                 error.TlsInitializationFailed => "TLS connection failed. Try: C3S_FORCE_PROXY=1 c3s",
                 error.ConnectionRefused => "Connection refused. Is the cluster reachable?",
@@ -152,7 +154,7 @@ pub fn TableState(comptime ItemType: type) type {
             if (friendly) |msg| {
                 try self.setError(msg);
             } else {
-                try self.setErrorFmt("Failed to list " ++ resource ++ ": {}", .{err});
+                try self.setErrorFmt("Failed to list {s}: {}", .{ resource, err });
             }
         }
 
@@ -298,6 +300,25 @@ pub fn TableState(comptime ItemType: type) type {
 
         pub fn sortBy(self: *Self, comptime getter: fn (*const ItemType) []const u8) void {
             sort_util.sortFilteredIndices(ItemType, self.items.items, &self.filtered_indices, getter, self.sort_ascending);
+        }
+
+        /// Sort by a column chosen at runtime.
+        ///
+        /// Preferred over sortBy where the item type exposes an indexed accessor: the
+        /// comptime-getter form emits one std.sort.pdq per (view, column) pair.
+        pub fn sortByColumn(
+            self: *Self,
+            getter: *const fn (*const ItemType, usize) []const u8,
+            column: usize,
+        ) void {
+            sort_util.sortFilteredIndicesAtColumn(
+                ItemType,
+                self.items.items,
+                &self.filtered_indices,
+                getter,
+                column,
+                self.sort_ascending,
+            );
         }
 
         // ====================================================================

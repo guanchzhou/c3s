@@ -89,6 +89,10 @@ pub const App = struct {
     redraw_request: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     needs_connect: bool = true, // deferred K8s connection on first render
     last_render_time: i128 = 0,
+    /// Milliseconds left in the current frame when the rate limiter dropped a render.
+    /// null when nothing is pending. Keeps a dropped frame from waiting on the full
+    /// resize-poll timeout.
+    pending_frame_ms: ?i32 = null,
     min_frame_time_ns: i128 = 16_666_667, // ~60 FPS (16.67ms)
     current_theme_name: []const u8,
 
@@ -525,8 +529,11 @@ pub const App = struct {
                 posix.pollfd{ .fd = self.terminal.stdin.handle, .events = posix.POLL.IN, .revents = 0 },
             };
 
-            // Poll with timeout to catch resize events via signal
-            const poll_result = posix.poll(&pollfds, 100) catch |err| { // 100ms timeout
+            // Poll for whatever remains of the current frame when a frame was just
+            // dropped by the rate limiter; otherwise the usual 100 ms, which exists
+            // to notice resize signals.
+            const poll_timeout: i32 = self.pending_frame_ms orelse 100;
+            const poll_result = posix.poll(&pollfds, poll_timeout) catch |err| {
                 return err;
             };
 
@@ -558,12 +565,20 @@ pub const App = struct {
         const size_changed = self.prev_width != size.width or self.prev_height != size.height;
         if (!size_changed and !self.dirty) return;
 
-        // Rate limit rendering to prevent excessive updates (60 FPS max)
+        // Rate limit rendering to prevent excessive updates (60 FPS max).
+        //
+        // A dropped frame leaves dirty = true, but the loop then blocked in
+        // poll(..., 100), so a keypress arriving just after a render was not drawn for
+        // up to 100 ms -- visible as the highlight lagging behind a held arrow key.
+        // Record how long is left in the frame so the loop can poll for exactly that.
         const now = clock.nanoTimestamp();
         const elapsed = now - self.last_render_time;
         if (!size_changed and elapsed < self.min_frame_time_ns) {
+            const remaining_ns = self.min_frame_time_ns - elapsed;
+            self.pending_frame_ms = @intCast(@divTrunc(remaining_ns, std.time.ns_per_ms) + 1);
             return;
         }
+        self.pending_frame_ms = null;
         self.last_render_time = now;
 
         // Start DEC synchronized output mode

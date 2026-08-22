@@ -439,12 +439,28 @@ pub const Header = struct {
     }
 
     pub fn updateClusterInfo(self: *Header, context: []const u8, cluster: []const u8, user: []const u8) !void {
+        // Called unconditionally on every repaint, so without this check it cost
+        // three frees and three allocations per frame to store identical strings.
+        // updateK8sVersion immediately below already did this; the pattern was known
+        // and simply not applied here.
+        if (std.mem.eql(u8, self.context, context) and
+            std.mem.eql(u8, self.cluster, cluster) and
+            std.mem.eql(u8, self.user, user)) return;
+
+        // Allocate all three before freeing any: a mid-way failure would otherwise
+        // leave freed pointers in place for deinit to free again.
+        const new_context = try self.allocator.dupe(u8, context);
+        errdefer self.allocator.free(new_context);
+        const new_cluster = try self.allocator.dupe(u8, cluster);
+        errdefer self.allocator.free(new_cluster);
+        const new_user = try self.allocator.dupe(u8, user);
+
         self.allocator.free(self.context);
         self.allocator.free(self.cluster);
         self.allocator.free(self.user);
-        self.context = try self.allocator.dupe(u8, context);
-        self.cluster = try self.allocator.dupe(u8, cluster);
-        self.user = try self.allocator.dupe(u8, user);
+        self.context = new_context;
+        self.cluster = new_cluster;
+        self.user = new_user;
     }
 
     /// Update the displayed Kubernetes server version

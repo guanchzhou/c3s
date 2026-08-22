@@ -102,6 +102,12 @@ pub fn ResourceView(
                     }
                 }.get;
             }
+
+            /// Runtime-indexed accessor, so sorting needs one std.sort.pdq
+            /// instantiation per view rather than one per (view, column).
+            fn getColumnAt(row: *const RowData, idx: usize) []const u8 {
+                return row.columns[idx];
+            }
         };
 
         pub fn init(allocator: std.mem.Allocator, theme: *const theme_loader.ThemeColors, k8s_service: *K8sService) !Self {
@@ -270,12 +276,8 @@ pub fn ResourceView(
 
         fn applySorting(self: *Self) void {
             if (self.table.sort_column) |col| {
-                // Comptime-generated sort dispatch
-                inline for (0..col_count) |idx| {
-                    if (col == idx) {
-                        self.table.sortBy(RowData.getColumn(idx));
-                        return;
-                    }
+                if (col < col_count) {
+                    self.table.sortByColumn(&RowData.getColumnAt, col);
                 }
             }
         }

@@ -171,8 +171,20 @@ fn extractAllYamlValues(content: []const u8) YamlValues {
 
     // --- Pass 2: walk lines, track indent stack, match all keys ---
     // matched_depths[i] = how many path segments matched so far for mapping i
+    // found_count increments once per MAPPING filled, so it must be compared against
+    // the number of mappings -- not the number of unique yaml keys. Three keys each
+    // fill two mappings (frame.menu.keyColor -> hi_fg + key_highlight,
+    // frame.border.fgColor -> proc_box + div_line, status.completedColor ->
+    // status_succeeded + inactive_fg), so with 17 mappings and 14 unique keys the
+    // counter overshot and the line loop broke early -- three mappings short.
+    //
+    // The casualties were always the last three in file order: title_highlight,
+    // selected_fg and selected_bg. So EVERY bundled skin silently fell back to the
+    // hardcoded defaults for the selected-row highlight, which is why the cursor
+    // looked identical in all 35 of them. The existing test only asserted
+    // main_fg.len > 0, so it never noticed.
     var found_count: usize = 0;
-    const total_unique = comptime countUniqueKeys();
+    const total_mappings = theme_mappings.len;
 
     // Indent stack per mapping is wasteful; instead track a global path.
     // Since all skin file keys share a common prefix and the YAML tree is walked linearly,
@@ -183,7 +195,7 @@ fn extractAllYamlValues(content: []const u8) YamlValues {
 
     var lines = mem.splitScalar(u8, content, '\n');
     while (lines.next()) |line| {
-        if (found_count >= total_unique) break;
+        if (found_count >= total_mappings) break;
 
         const stripped = mem.trimEnd(u8, line, "\r");
         if (stripped.len == 0) continue;
@@ -252,17 +264,6 @@ fn extractAllYamlValues(content: []const u8) YamlValues {
     }
 
     return result;
-}
-
-fn countUniqueKeys() usize {
-    var unique: usize = 0;
-    outer: for (theme_mappings, 0..) |m, i| {
-        for (0..i) |j| {
-            if (mem.eql(u8, m.yaml_key, theme_mappings[j].yaml_key)) continue :outer;
-        }
-        unique += 1;
-    }
-    return unique;
 }
 
 /// Validates that a value is safe (only contains color values, no shell commands)
@@ -612,6 +613,45 @@ pub const reset = "\x1b[0m";
 pub const bold = "\x1b[1m";
 
 /// Write text with ANSI escape sequences at a position
+/// Write `glyph` `count` times as ONE styled run.
+///
+/// The per-character alternative costs setCursor(9) + fg(17) + bg(5) + glyph(3) +
+/// reset(4) = ~38 bytes to place a 3-byte border character, and the cursor is already
+/// in position while the colours never change. Box borders were drawn that way, which
+/// made them roughly two thirds of every frame's bytes.
+pub fn writeRepeatWithTheme(
+    terminal: *Terminal,
+    x: u16,
+    y: u16,
+    glyph: []const u8,
+    count: usize,
+    fg_color: []const u8,
+    bg_color: []const u8,
+) !void {
+    if (count == 0 or glyph.len == 0) return;
+
+    try terminal.setCursor(x, y);
+    try terminal.writeAll(fg_color);
+    try terminal.writeAll(bg_color);
+
+    // Chunked so a wide terminal needs no large buffer and no per-cell write.
+    var buf: [256]u8 = undefined;
+    const per_chunk = buf.len / glyph.len;
+    var remaining = count;
+    while (remaining > 0) {
+        const n = @min(per_chunk, remaining);
+        var off: usize = 0;
+        for (0..n) |_| {
+            @memcpy(buf[off..][0..glyph.len], glyph);
+            off += glyph.len;
+        }
+        try terminal.writeAll(buf[0..off]);
+        remaining -= n;
+    }
+
+    try terminal.writeAll(reset);
+}
+
 pub fn writeStringWithTheme(terminal: *Terminal, x: u16, y: u16, text: []const u8, fg_color: []const u8, bg_color: []const u8) !void {
     if (text.len == 0) return;
 
@@ -1026,4 +1066,65 @@ test "theme: buffer size limits" {
     @memset(&huge_text, 'C');
 
     try writeStringWithTheme(&terminal, 0, 0, &huge_text, test_fg, test_bg);
+}
+
+test "the skin parser reaches the last mappings in file order" {
+    // found_count increments once per MAPPING filled (17 of them) but was compared
+    // against the number of UNIQUE yaml keys (14), because three keys each fill two
+    // mappings: frame.menu.keyColor, frame.border.fgColor and
+    // frame.status.completedColor. So the counter hit its limit three mappings early
+    // and the line loop broke, and whatever sat LAST in file order never loaded.
+    //
+    // In every bundled skin that is the table cursor, which is why the selected row
+    // looked identical in all 35 of them -- it always fell back to defaultTheme.
+    //
+    // This fixture is ordered to reproduce that exactly: the eleven keys above fill
+    // 11 + 3 = 14 mappings, which was the old limit, so everything below the marker
+    // used to be unreachable.
+    const skin =
+        \\k9s:
+        \\  body:
+        \\    fgColor: "#aaaaaa"
+        \\    bgColor: "#111111"
+        \\  frame:
+        \\    title:
+        \\      fgColor: "#bbbbbb"
+        \\    menu:
+        \\      keyColor: "#cccccc"
+        \\    border:
+        \\      fgColor: "#dddddd"
+        \\    status:
+        \\      addColor: "#eeeeee"
+        \\      modifyColor: "#ff0000"
+        \\      errorColor: "#00ff00"
+        \\      completedColor: "#0000ff"
+        \\  prompt:
+        \\    fgColor: "#123456"
+        \\    bgColor: "#654321"
+        \\  views:
+        \\    table:
+        \\      cursorFgColor: "#abcdef"
+        \\      cursorBgColor: "#fedcba"
+    ;
+
+    const a = std.testing.allocator;
+
+    var defaults = try defaultTheme(a);
+    defer deinitTheme(&defaults);
+
+    var theme = try parseSkinFile(a, skin);
+    defer deinitTheme(&theme);
+
+    // The three that used to be dropped. Asserting DIFFERENT-FROM-DEFAULT is what
+    // makes this bite; the pre-existing test asserted only main_fg.len > 0, which is
+    // exactly the weak check that let the bug ship.
+    try std.testing.expect(!mem.eql(u8, theme.selected_fg, defaults.selected_fg));
+    try std.testing.expect(!mem.eql(u8, theme.selected_bg, defaults.selected_bg));
+
+    // Sanity: an early mapping still loads, so this is not "everything changed".
+    try std.testing.expect(!mem.eql(u8, theme.main_fg, defaults.main_fg));
+
+    // And a double-mapped key must fill BOTH of its fields.
+    try std.testing.expect(!mem.eql(u8, theme.hi_fg, defaults.hi_fg));
+    try std.testing.expect(!mem.eql(u8, theme.key_highlight, defaults.key_highlight));
 }
