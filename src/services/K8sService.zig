@@ -1128,15 +1128,6 @@ pub const K8sService = struct {
         return try pods_client.client.list(ns);
     }
 
-    /// Get a specific pod
-    pub fn getPod(self: *K8sService, name: []const u8, namespace: ?[]const u8) !klient.Pod {
-        if (!self.isConnected()) return error.NotConnected;
-
-        const pods_client = klient.Pods.init(self.client.?);
-        const ns = namespace orelse self.current_namespace;
-        return try pods_client.get(name, ns);
-    }
-
     /// Delete a pod
     /// Reject a cluster mutation when running with --readonly.
     ///
@@ -1169,21 +1160,11 @@ pub const K8sService = struct {
         return self.listInNsGeneric(klient.types.Deployment, klient.resources.Deployments, namespace);
     }
 
-    /// Scale a deployment
-    pub fn scaleDeployment(self: *K8sService, name: []const u8, replicas: i32, namespace: ?[]const u8) !void {
-        try self.assertMutable();
-        if (!self.isConnected()) return error.NotConnected;
-
-        const client = klient.Deployments.init(self.client.?);
-        const ns = namespace orelse self.current_namespace;
-        try client.scale(name, replicas, ns);
-    }
-
     /// Cordon or uncordon a node (mark it unschedulable, or undo that).
     ///
     /// Goes through kubectl on BOTH transports, deliberately. There is no klient
     /// helper for this -- it is a PATCH of node.spec.unschedulable -- and the
-    /// direct-HTTP path is exactly where scaleDeployment and friends went wrong:
+    /// direct-HTTP path is exactly where the former scale* helpers went wrong:
     /// `self.client.?` is a null-unwrap in kubectl mode, and a missing use_kubectl
     /// branch means silent failure on every TLS-intercepted cluster. One path that
     /// works everywhere beats two where one is broken, and cordon is infrequent
@@ -1274,31 +1255,11 @@ pub const K8sService = struct {
         return self.listAllGeneric(klient.types.StatefulSet, klient.resources.StatefulSets);
     }
 
-    /// List statefulsets in a namespace
-    pub fn listStatefulSets(self: *K8sService, namespace: ?[]const u8) ![]klient.types.StatefulSet {
-        return self.listInNsGeneric(klient.types.StatefulSet, klient.resources.StatefulSets, namespace);
-    }
-
-    /// Scale a statefulset
-    pub fn scaleStatefulSet(self: *K8sService, name: []const u8, replicas: i32, namespace: ?[]const u8) !void {
-        try self.assertMutable();
-        if (!self.isConnected()) return error.NotConnected;
-
-        const client = klient.resources.StatefulSets.init(self.client.?);
-        const ns = namespace orelse self.current_namespace;
-        try client.scale(name, replicas, ns);
-    }
-
     // ===== DaemonSet Operations =====
 
     /// List all daemonsets
     pub fn listAllDaemonSets(self: *K8sService) ![]klient.types.DaemonSet {
         return self.listAllGeneric(klient.types.DaemonSet, klient.resources.DaemonSets);
-    }
-
-    /// List daemonsets in a namespace
-    pub fn listDaemonSets(self: *K8sService, namespace: ?[]const u8) ![]klient.types.DaemonSet {
-        return self.listInNsGeneric(klient.types.DaemonSet, klient.resources.DaemonSets, namespace);
     }
 
     // ===== ReplicaSet Operations =====
@@ -1308,21 +1269,6 @@ pub const K8sService = struct {
         return self.listAllGeneric(klient.types.ReplicaSet, klient.resources.ReplicaSets);
     }
 
-    /// List replicasets in a namespace
-    pub fn listReplicaSets(self: *K8sService, namespace: ?[]const u8) ![]klient.types.ReplicaSet {
-        return self.listInNsGeneric(klient.types.ReplicaSet, klient.resources.ReplicaSets, namespace);
-    }
-
-    /// Scale a replicaset
-    pub fn scaleReplicaSet(self: *K8sService, name: []const u8, replicas: i32, namespace: ?[]const u8) !void {
-        try self.assertMutable();
-        if (!self.isConnected()) return error.NotConnected;
-
-        const client = klient.resources.ReplicaSets.init(self.client.?);
-        const ns = namespace orelse self.current_namespace;
-        try client.scale(name, replicas, ns);
-    }
-
     // ===== Job Operations =====
 
     /// List all jobs
@@ -1330,31 +1276,11 @@ pub const K8sService = struct {
         return self.listAllGeneric(klient.types.Job, klient.resources.Jobs);
     }
 
-    /// List jobs in a namespace
-    pub fn listJobs(self: *K8sService, namespace: ?[]const u8) ![]klient.types.Job {
-        return self.listInNsGeneric(klient.types.Job, klient.resources.Jobs, namespace);
-    }
-
     // ===== CronJob Operations =====
 
     /// List all cronjobs
     pub fn listAllCronJobs(self: *K8sService) ![]klient.types.CronJob {
         return self.listAllGeneric(klient.types.CronJob, klient.resources.CronJobs);
-    }
-
-    /// List cronjobs in a namespace
-    pub fn listCronJobs(self: *K8sService, namespace: ?[]const u8) ![]klient.types.CronJob {
-        return self.listInNsGeneric(klient.types.CronJob, klient.resources.CronJobs, namespace);
-    }
-
-    /// Suspend/resume a cronjob
-    pub fn setCronJobSuspend(self: *K8sService, name: []const u8, should_suspend: bool, namespace: ?[]const u8) !void {
-        try self.assertMutable();
-        if (!self.isConnected()) return error.NotConnected;
-
-        const client = klient.resources.CronJobs.init(self.client.?);
-        const ns = namespace orelse self.current_namespace;
-        try client.setSuspend(name, should_suspend, ns);
     }
 
     // ===== PersistentVolume Operations =====
@@ -1371,21 +1297,11 @@ pub const K8sService = struct {
         return self.listAllGeneric(klient.types.PersistentVolumeClaim, klient.resources.PersistentVolumeClaims);
     }
 
-    /// List persistent volume claims in a namespace
-    pub fn listPersistentVolumeClaims(self: *K8sService, namespace: ?[]const u8) ![]klient.types.PersistentVolumeClaim {
-        return self.listInNsGeneric(klient.types.PersistentVolumeClaim, klient.resources.PersistentVolumeClaims, namespace);
-    }
-
     // ===== Ingress Operations =====
 
     /// List all ingresses across all namespaces
     pub fn listAllIngresses(self: *K8sService) ![]klient.types.Ingress {
         return self.listAllGeneric(klient.types.Ingress, klient.resources.Ingresses);
-    }
-
-    /// List ingresses in a namespace
-    pub fn listIngresses(self: *K8sService, namespace: ?[]const u8) ![]klient.types.Ingress {
-        return self.listInNsGeneric(klient.types.Ingress, klient.resources.Ingresses, namespace);
     }
 
     // ===== NetworkPolicy Operations =====
@@ -1395,21 +1311,11 @@ pub const K8sService = struct {
         return self.listAllGeneric(klient.types.NetworkPolicy, klient.resources.NetworkPolicies);
     }
 
-    /// List network policies in a namespace
-    pub fn listNetworkPolicies(self: *K8sService, namespace: ?[]const u8) ![]klient.types.NetworkPolicy {
-        return self.listInNsGeneric(klient.types.NetworkPolicy, klient.resources.NetworkPolicies, namespace);
-    }
-
     // ===== ServiceAccount Operations =====
 
     /// List all service accounts across all namespaces
     pub fn listAllServiceAccounts(self: *K8sService) ![]klient.types.ServiceAccount {
         return self.listAllGeneric(klient.types.ServiceAccount, klient.resources.ServiceAccounts);
-    }
-
-    /// List service accounts in a namespace
-    pub fn listServiceAccounts(self: *K8sService, namespace: ?[]const u8) ![]klient.types.ServiceAccount {
-        return self.listInNsGeneric(klient.types.ServiceAccount, klient.resources.ServiceAccounts, namespace);
     }
 
     // ===== Role Operations =====
@@ -1419,21 +1325,11 @@ pub const K8sService = struct {
         return self.listAllGeneric(klient.types.Role, klient.resources.Roles);
     }
 
-    /// List roles in a namespace
-    pub fn listRoles(self: *K8sService, namespace: ?[]const u8) ![]klient.types.Role {
-        return self.listInNsGeneric(klient.types.Role, klient.resources.Roles, namespace);
-    }
-
     // ===== RoleBinding Operations =====
 
     /// List all role bindings across all namespaces
     pub fn listAllRoleBindings(self: *K8sService) ![]klient.types.RoleBinding {
         return self.listAllGeneric(klient.types.RoleBinding, klient.resources.RoleBindings);
-    }
-
-    /// List role bindings in a namespace
-    pub fn listRoleBindings(self: *K8sService, namespace: ?[]const u8) ![]klient.types.RoleBinding {
-        return self.listInNsGeneric(klient.types.RoleBinding, klient.resources.RoleBindings, namespace);
     }
 
     // ===== ClusterRole Operations =====
@@ -1457,21 +1353,11 @@ pub const K8sService = struct {
         return self.listAllGeneric(klient.types.Event, klient.resources.Events);
     }
 
-    /// List events in a namespace
-    pub fn listEvents(self: *K8sService, namespace: ?[]const u8) ![]klient.types.Event {
-        return self.listInNsGeneric(klient.types.Event, klient.resources.Events, namespace);
-    }
-
     // ===== ResourceQuota Operations =====
 
     /// List all resource quotas across all namespaces
     pub fn listAllResourceQuotas(self: *K8sService) ![]klient.types.ResourceQuota {
         return self.listAllGeneric(klient.types.ResourceQuota, klient.resources.ResourceQuotas);
-    }
-
-    /// List resource quotas in a namespace
-    pub fn listResourceQuotas(self: *K8sService, namespace: ?[]const u8) ![]klient.types.ResourceQuota {
-        return self.listInNsGeneric(klient.types.ResourceQuota, klient.resources.ResourceQuotas, namespace);
     }
 
     // ===== LimitRange Operations =====
@@ -1481,11 +1367,6 @@ pub const K8sService = struct {
         return self.listAllGeneric(klient.types.LimitRange, klient.resources.LimitRanges);
     }
 
-    /// List limit ranges in a namespace
-    pub fn listLimitRanges(self: *K8sService, namespace: ?[]const u8) ![]klient.types.LimitRange {
-        return self.listInNsGeneric(klient.types.LimitRange, klient.resources.LimitRanges, namespace);
-    }
-
     // ===== PodDisruptionBudget Operations =====
 
     /// List all pod disruption budgets across all namespaces
@@ -1493,10 +1374,6 @@ pub const K8sService = struct {
         return self.listAllGeneric(klient.types.PodDisruptionBudget, klient.resources.PodDisruptionBudgets);
     }
 
-    /// List pod disruption budgets in a namespace
-    pub fn listPodDisruptionBudgets(self: *K8sService, namespace: ?[]const u8) ![]klient.types.PodDisruptionBudget {
-        return self.listInNsGeneric(klient.types.PodDisruptionBudget, klient.resources.PodDisruptionBudgets, namespace);
-    }
     // ===== HorizontalPodAutoscaler Operations =====
 
     /// List all horizontal pod autoscalers across all namespaces
@@ -1504,21 +1381,11 @@ pub const K8sService = struct {
         return self.listAllGeneric(klient.types.HorizontalPodAutoscaler, klient.resources.HorizontalPodAutoscalers);
     }
 
-    /// List horizontal pod autoscalers in a namespace
-    pub fn listHPAs(self: *K8sService, namespace: ?[]const u8) ![]klient.types.HorizontalPodAutoscaler {
-        return self.listInNsGeneric(klient.types.HorizontalPodAutoscaler, klient.resources.HorizontalPodAutoscalers, namespace);
-    }
-
     // ===== Endpoints Operations =====
 
     /// List all endpoints across all namespaces
     pub fn listAllEndpoints(self: *K8sService) ![]klient.types.Endpoints {
         return self.listAllGeneric(klient.types.Endpoints, klient.resources.EndpointsClient);
-    }
-
-    /// List endpoints in a namespace
-    pub fn listEndpoints(self: *K8sService, namespace: ?[]const u8) ![]klient.types.Endpoints {
-        return self.listInNsGeneric(klient.types.Endpoints, klient.resources.EndpointsClient, namespace);
     }
 
     // ===== StorageClass Operations =====
@@ -2441,7 +2308,6 @@ test "readonly is a promise about the cluster, not about which API verbs we call
     // Everything that mutates through the service is refused...
     svc.connected = true;
     try std.testing.expectError(error.ReadOnlyMode, svc.deleteResource(.pods, "p", "default", false));
-    try std.testing.expectError(error.ReadOnlyMode, svc.scaleDeployment("d", 0, "default"));
 
     // ...while reads are not, so the flag cannot be satisfied by simply failing.
     svc.connected = false;

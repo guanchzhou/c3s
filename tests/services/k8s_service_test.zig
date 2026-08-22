@@ -592,10 +592,6 @@ test "readonly: every cluster-mutating method is refused" {
     try std.testing.expectError(error.ReadOnlyMode, svc.deletePod("p", "default"));
     try std.testing.expectError(error.ReadOnlyMode, svc.deleteResource(.pods, "p", "default", false));
     try std.testing.expectError(error.ReadOnlyMode, svc.deleteResource(.pods, "p", "default", true));
-    try std.testing.expectError(error.ReadOnlyMode, svc.scaleDeployment("d", 3, "default"));
-    try std.testing.expectError(error.ReadOnlyMode, svc.scaleStatefulSet("s", 3, "default"));
-    try std.testing.expectError(error.ReadOnlyMode, svc.scaleReplicaSet("r", 3, "default"));
-    try std.testing.expectError(error.ReadOnlyMode, svc.setCronJobSuspend("c", true, "default"));
 }
 
 test "readonly: defaults off, so normal operation is unaffected" {
