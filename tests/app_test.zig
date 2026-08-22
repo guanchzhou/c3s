@@ -47,3 +47,131 @@ test "app memory management" {
         app.deinit();
     }
 }
+
+// ---------------------------------------------------------------------------
+// Key dispatch through App, not through a view directly.
+//
+// These exist because two shipped features -- `x` = Decode on secrets and Ctrl-D =
+// Stop on port-forwards -- were unreachable in the running binary while their tests
+// passed. Both tests called the view's handleKey directly, so neither ever crossed
+// App's global key switch, which claimed those keys first.
+// ---------------------------------------------------------------------------
+
+const Key = @import("src").Terminal.Key;
+
+test "x on the secrets view reaches the view, not App's global filter-clear" {
+    var gpa = std.heap.DebugAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
+    var app = try App.init(allocator, .{});
+    defer app.deinit();
+
+    try app.switchToView("secrets");
+    try testing.expectEqualStrings("secrets", app.current_view_name);
+
+    // Put a filter in place. If App's global 'x' handler wins, the filter is cleared
+    // and the decode never happens -- which is exactly the shipped bug.
+    try app.applyFilterToCurrentView("keep-me");
+    try app.handleKey(.{ .char = 'x' });
+
+    // The filter survived, so 'x' was consumed by the view rather than the global
+    // clear-filter handler. (The decode itself needs a cluster; that it was ATTEMPTED
+    // is what this asserts.)
+    try testing.expect(app.secrets_view.table.filter_text.len > 0);
+}
+
+test "x on a view with no decode still clears the filter" {
+    // The other half of the contract: view-first must not break the global fallback.
+    var gpa = std.heap.DebugAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
+    var app = try App.init(allocator, .{});
+    defer app.deinit();
+
+    try app.switchToView("configmaps");
+    try app.applyFilterToCurrentView("something");
+    try testing.expect(app.configmaps_view.table.filter_text.len > 0);
+
+    try app.handleKey(.{ .char = 'x' });
+    try testing.expectEqual(@as(usize, 0), app.configmaps_view.table.filter_text.len);
+}
+
+test "Ctrl-D on the port-forwards view stops a forward instead of asking to delete" {
+    var gpa = std.heap.DebugAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
+    var app = try App.init(allocator, .{});
+    defer app.deinit();
+
+    try app.switchToView("portforwards");
+    try testing.expectEqualStrings("portforwards", app.current_view_name);
+
+    const child = try std.process.spawn(@import("src").runtime.io(), .{
+        .argv = &.{ "/bin/sh", "-c", "sleep 300" },
+        .stdin = .ignore,
+        .stdout = .ignore,
+        .stderr = .ignore,
+    });
+    try app.port_forward_registry.add("pods/x", "1:1", "default", child);
+    try app.port_forwards_view.refresh();
+    try testing.expectEqual(@as(usize, 1), app.port_forward_registry.count());
+
+    try app.handleKey(.{ .ctrl_d = {} });
+
+    // Stopped, not queued for deletion. Before view-first dispatch, App's global
+    // Ctrl-D ran handleDeleteRequest, which returned immediately because
+    // "portforwards" is not a ResourceType -- so the key did nothing at all.
+    try testing.expectEqual(@as(usize, 0), app.port_forward_registry.count());
+    try testing.expect(!app.delete_pending);
+}
+
+test "Ctrl-D on a resource view still starts a delete confirmation" {
+    var gpa = std.heap.DebugAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
+    var app = try App.init(allocator, .{});
+    defer app.deinit();
+
+    try app.switchToView("pods");
+    // No selection without a cluster, so this asserts the key still reaches the
+    // global delete path rather than being swallowed by the view.
+    try app.handleKey(.{ .ctrl_d = {} });
+    try testing.expect(!app.delete_pending); // nothing selected, so nothing pending
+}
+
+test "Shift-G goes to the bottom of a table-backed view" {
+    // Terminal.readKey maps a raw 'G' to Key.shift_g. TableState only matched
+    // .char='G', so Goto Bottom was dead on ~30 views while its unit test passed a
+    // character the terminal never emits.
+    //
+    // Driven on namespaces because its row type is a plain struct -- the point is
+    // TableState's key handling, which every table-backed view shares.
+    var gpa = std.heap.DebugAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
+    var app = try App.init(allocator, .{});
+    defer app.deinit();
+
+    try app.switchToView("namespaces");
+    const t = &app.namespaces_view.table;
+    for ([_][]const u8{ "one", "two", "three" }) |name| {
+        try t.appendItem(.{
+            .name = try allocator.dupe(u8, name),
+            .status = try allocator.dupe(u8, "Active"),
+            .age = try allocator.dupe(u8, "1d"),
+            .allocator = allocator,
+        });
+    }
+    t.filtered_indices.clearRetainingCapacity();
+    for (0..3) |i| try t.filtered_indices.append(allocator, i);
+    t.visible_rows = 2;
+    t.selected_row = 0;
+
+    try app.handleKey(.{ .shift_g = {} });
+    try testing.expectEqual(@as(u32, 2), t.selected_row);
+}

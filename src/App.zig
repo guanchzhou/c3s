@@ -840,7 +840,9 @@ pub const App = struct {
         }
     }
 
-    fn handleKey(self: *App, key: Key) !void {
+    /// pub so tests can drive the REAL dispatch path. Both previous key features
+    /// shipped unreachable because their tests called the view directly.
+    pub fn handleKey(self: *App, key: Key) !void {
         // Handle command input first
         if (self.command_input.visible) {
             switch (key) {
@@ -943,6 +945,35 @@ pub const App = struct {
                 else => {},
             }
             return;
+        }
+
+        // View-first dispatch.
+        //
+        // The global switch below claims specific keys ('x', '/', ':', '?', Ctrl-D,
+        // ...) and only its `else` arm ever reaches the current view. So any
+        // view-specific binding that collided with a global one was silently dead.
+        //
+        // That is not hypothetical. `x` = Decode on secrets and Ctrl-D = Stop on
+        // port-forwards both SHIPPED unreachable, each with a passing test -- because
+        // the tests called the view's handleKey directly and never went through App.
+        // Verifying the ends and not the join, twice.
+        //
+        // Offering the key to the view first and falling through only on .not_handled
+        // fixes the class rather than those two keys. Deliberately scoped to .char and
+        // .ctrl_d: Escape and Enter carry App-level meaning (pop a sub-view, clear a
+        // pending delete, push pods after a namespace switch) that a view returning
+        // .handled must not be able to swallow.
+        switch (key) {
+            .char, .ctrl_d => {
+                if (self.view_manager.getCurrentView()) |current_view| {
+                    const result = try current_view.handleKey(key);
+                    if (result != .not_handled) {
+                        try self.handleViewResult(result, current_view, key);
+                        return;
+                    }
+                }
+            },
+            else => {},
         }
 
         // Handle global keys
@@ -1412,7 +1443,7 @@ pub const App = struct {
 
     /// Switch to a view by its registered command alias (handles the depth-1
     /// pop+push), e.g. returning from the aliases view.
-    fn switchToView(self: *App, name: []const u8) !void {
+    pub fn switchToView(self: *App, name: []const u8) !void {
         var ctx = Command.CommandContext{
             .allocator = self.allocator,
             .view_manager = &self.view_manager,
@@ -1767,7 +1798,7 @@ pub const App = struct {
         return true;
     }
 
-    fn applyFilterToCurrentView(self: *App, filter: []const u8) !void {
+    pub fn applyFilterToCurrentView(self: *App, filter: []const u8) !void {
         if (self.view_manager.getCurrentView()) |current| {
             try current.applyFilter(filter);
         }
