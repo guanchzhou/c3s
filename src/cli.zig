@@ -199,6 +199,39 @@ fn printInfoLine(label: []const u8, value: []const u8, color: []const u8) void {
     std.debug.print("{s}{s:<27}\x1b[0m {s}\n", .{ color, padded_label, value });
 }
 
+const InfoPath = struct { label: []const u8, value: []const u8 };
+
+/// Paths c3s advertises on the splash screen -- and this list is exactly the set it
+/// actually reads.
+///
+/// It used to list ten. Seven of them ("Custom Views", "Plugins", "Hotkeys",
+/// "Aliases", "Context Configs", "Benchmarks", "ScreenDumps") had no reader anywhere
+/// in the codebase: c3s printed a path, the user put a file there, and nothing ever
+/// opened it. That is the same defect as a help screen advertising an unimplemented
+/// key, except the user has to write a whole config file before discovering it.
+///
+/// Add a line here in the commit that implements the reader, not before.
+/// `unread_path_labels` below is the tripwire that enforces it.
+fn advertisedPaths(paths: *const xdg.Paths) [3]InfoPath {
+    return .{
+        .{ .label = "Config", .value = paths.config_file },
+        .{ .label = "Skins", .value = paths.skins_dir },
+        .{ .label = "Logs", .value = paths.log_file },
+    };
+}
+
+/// Labels whose backing path has no reader. Advertising one is a lie; the test below
+/// fails if any reappears in `advertisedPaths`.
+const unread_path_labels = [_][]const u8{
+    "Custom Views",
+    "Plugins",
+    "Hotkeys",
+    "Aliases",
+    "Context Configs",
+    "Benchmarks",
+    "ScreenDumps",
+};
+
 fn printInfo() void {
     const paths = xdg.ensurePaths() catch {
         std.log.err("Failed to resolve XDG paths", .{});
@@ -215,16 +248,7 @@ fn printInfo() void {
 
     // Print info lines
     printInfoLine("Version", ver, cyan);
-    printInfoLine("Config", paths.config_file, cyan);
-    printInfoLine("Custom Views", paths.views_file, cyan);
-    printInfoLine("Plugins", paths.plugins_file, cyan);
-    printInfoLine("Hotkeys", paths.hotkeys_file, cyan);
-    printInfoLine("Aliases", paths.aliases_file, cyan);
-    printInfoLine("Skins", paths.skins_dir, cyan);
-    printInfoLine("Context Configs", paths.contexts_dir, cyan);
-    printInfoLine("Logs", paths.log_file, cyan);
-    printInfoLine("Benchmarks", paths.benchmarks_dir, cyan);
-    printInfoLine("ScreenDumps", paths.dumps_dir, cyan);
+    for (advertisedPaths(paths)) |entry| printInfoLine(entry.label, entry.value, cyan);
 }
 
 const testing = std.testing;
@@ -293,4 +317,38 @@ test "CLI Config with custom values" {
     try testing.expect(std.mem.eql(u8, config.log_level, "debug"));
     try testing.expect(std.mem.eql(u8, config.context.?, "test-context"));
     try testing.expect(std.mem.eql(u8, config.namespace.?, "test-namespace"));
+}
+
+test "cli: the splash advertises only config paths c3s actually reads" {
+    // Regression guard. The splash used to promise ten config paths, seven of which
+    // nothing in the codebase ever opened -- so a user could write a views.yaml or a
+    // plugins file and watch it be silently ignored. If a label from
+    // unread_path_labels shows up in advertisedPaths again, either the reader landed
+    // in the same commit (delete it from unread_path_labels) or this is a
+    // re-introduction of the bug.
+    xdg.resetCachedPathsForTests();
+    const paths = try xdg.ensurePaths();
+    const advertised = advertisedPaths(paths);
+
+    for (advertised) |entry| {
+        for (unread_path_labels) |bad| {
+            try std.testing.expect(!std.mem.eql(u8, entry.label, bad));
+        }
+        // A blank path would render as a dangling label.
+        try std.testing.expect(entry.value.len > 0);
+    }
+
+    // The three that ARE read must all still be there -- omitting a real path is as
+    // wrong as inventing a fake one.
+    var has_config = false;
+    var has_skins = false;
+    var has_logs = false;
+    for (advertised) |entry| {
+        if (std.mem.eql(u8, entry.label, "Config")) has_config = true;
+        if (std.mem.eql(u8, entry.label, "Skins")) has_skins = true;
+        if (std.mem.eql(u8, entry.label, "Logs")) has_logs = true;
+    }
+    try std.testing.expect(has_config);
+    try std.testing.expect(has_skins);
+    try std.testing.expect(has_logs);
 }
