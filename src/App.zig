@@ -1585,8 +1585,18 @@ pub const App = struct {
     }
 
     /// Map current view name to ViewType for context-aware help
+    /// Test seam for currentViewType, which is private.
+    pub fn currentViewTypeForTest(self: *App) ViewType {
+        return self.currentViewType();
+    }
+
     fn currentViewType(self: *App) ViewType {
-        return std.meta.stringToEnum(ViewType, self.current_view_name) orelse .pods;
+        // Falls back to .generic, NOT .pods. Nine resource types (Ingresses,
+        // NetworkPolicies, ResourceQuotas, LimitRanges, PDBs, HPA, PersistentVolumes,
+        // Endpoints, StorageClasses) have no ViewType, and falling back to pods meant
+        // `?` on an Ingress listed Shell, Logs, Attach and Sanitize -- none of which do
+        // anything there. .generic lists only what is true on any resource view.
+        return std.meta.stringToEnum(ViewType, self.current_view_name) orelse .generic;
     }
 
     /// Map current view name to ResourceType for describe/delete

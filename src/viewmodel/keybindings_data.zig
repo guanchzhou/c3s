@@ -540,3 +540,49 @@ test "keybindings_data: secrets advertise decode, which is now implemented" {
     }
     try std.testing.expect(has_decode);
 }
+
+/// Bindings that are true on ANY table-backed resource view.
+///
+/// This exists because nine resource types (Ingresses, NetworkPolicies, ResourceQuotas,
+/// LimitRanges, PodDisruptionBudgets, HPA, PersistentVolumes, Endpoints, StorageClasses)
+/// have no ViewType of their own, so App.currentViewType() fell back to `.pods` and `?`
+/// showed PODS' help under their own name -- advertising Shell, Logs, Attach and
+/// Sanitize on an Ingress, none of which do anything there.
+///
+/// Every entry here is verified reachable for a generic ResourceView: describe/yaml via
+/// TableState.handleNavigationKey, delete via App's global Ctrl-D (all nine ARE
+/// ResourceType members, so it resolves), refresh via resource_view's generic switch,
+/// and the mark family via the same switch.
+///
+/// Deliberately omitted: per-view sort keys (they differ per config, and this table
+/// cannot see which), and `0` = All Namespaces (meaningless on the cluster-scoped
+/// members like PersistentVolumes and StorageClasses).
+pub fn loadGenericResourceBindings(allocator: std.mem.Allocator) ![]const KeyBinding {
+    const bindings = [_]KeyBinding{
+        .{ .key = "d", .description = "Describe", .category = .resource, .action = "describe" },
+        .{ .key = "y", .description = "YAML", .category = .resource, .action = "yaml" },
+        .{ .key = "r", .description = "Refresh", .category = .resource, .action = "refresh" },
+        .{ .key = "Ctrl-d", .description = "Delete", .category = .resource, .action = "delete" },
+
+        .{ .key = "j", .description = "Down", .category = .navigation, .action = "down" },
+        .{ .key = "k", .description = "Up", .category = .navigation, .action = "up" },
+        .{ .key = "g", .description = "Goto Top", .category = .navigation, .action = "goto_top" },
+        .{ .key = "Shift-g", .description = "Goto Bottom", .category = .navigation, .action = "goto_bottom" },
+        .{ .key = "Ctrl-b", .description = "Page Up", .category = .navigation, .action = "page_up" },
+
+        .{ .key = "space", .description = "Mark", .category = .general, .action = "mark" },
+        .{ .key = "*", .description = "Mark All", .category = .general, .action = "mark_all" },
+        .{ .key = "^", .description = "Invert Marks", .category = .general, .action = "mark_invert" },
+        .{ .key = "\\", .description = "Mark Clear", .category = .general, .action = "mark_clear" },
+
+        .{ .key = "/term", .description = "Filter mode", .category = .general, .action = "filter_mode" },
+        .{ .key = "x", .description = "Clear Filter", .category = .general, .action = "clear_filter" },
+        .{ .key = ":cmd", .description = "Command mode", .category = .general, .action = "command_mode" },
+        .{ .key = "?", .description = "Help", .category = .general, .action = "help" },
+        .{ .key = "Ctrl-a", .description = "Aliases", .category = .general, .action = "aliases" },
+        .{ .key = "Ctrl-e", .description = "Toggle Header", .category = .general, .action = "toggle_header" },
+        .{ .key = "esc", .description = "Back/Clear", .category = .general, .action = "back_clear" },
+        .{ .key = ":q", .description = "Quit", .category = .general, .action = "quit" },
+    };
+    return try allocator.dupe(KeyBinding, &bindings);
+}
