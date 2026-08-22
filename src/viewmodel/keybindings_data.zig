@@ -36,7 +36,6 @@ pub fn loadEventsBindings(allocator: std.mem.Allocator) ![]const KeyBinding {
 pub fn loadSecretsBindings(allocator: std.mem.Allocator) ![]const KeyBinding {
     const bindings = [_]KeyBinding{
         .{ .key = "d", .description = "Describe", .category = .resource, .action = "describe" },
-        .{ .key = "e", .description = "Edit", .category = .resource, .action = "edit" },
         .{ .key = "y", .description = "YAML", .category = .resource, .action = "yaml" },
         .{ .key = "x", .description = "Decode", .category = .resource, .action = "decode" },
         .{ .key = "Ctrl-d", .description = "Delete", .category = .resource, .action = "delete" },
@@ -48,7 +47,6 @@ pub fn loadSecretsBindings(allocator: std.mem.Allocator) ![]const KeyBinding {
 pub fn loadServiceAccountsBindings(allocator: std.mem.Allocator) ![]const KeyBinding {
     const bindings = [_]KeyBinding{
         .{ .key = "d", .description = "Describe", .category = .resource, .action = "describe" },
-        .{ .key = "e", .description = "Edit", .category = .resource, .action = "edit" },
         .{ .key = "y", .description = "YAML", .category = .resource, .action = "yaml" },
         .{ .key = "Ctrl-d", .description = "Delete", .category = .resource, .action = "delete" },
     };
@@ -59,7 +57,6 @@ pub fn loadServiceAccountsBindings(allocator: std.mem.Allocator) ![]const KeyBin
 pub fn loadPVCsBindings(allocator: std.mem.Allocator) ![]const KeyBinding {
     const bindings = [_]KeyBinding{
         .{ .key = "d", .description = "Describe", .category = .resource, .action = "describe" },
-        .{ .key = "e", .description = "Edit", .category = .resource, .action = "edit" },
         .{ .key = "y", .description = "YAML", .category = .resource, .action = "yaml" },
         .{ .key = "Ctrl-d", .description = "Delete", .category = .resource, .action = "delete" },
         .{ .key = "Shift-s", .description = "Sort Status", .category = .sorting, .action = "sort_status" },
@@ -84,10 +81,7 @@ pub fn loadPriorityClassesBindings(allocator: std.mem.Allocator) ![]const KeyBin
 /// ReplicaSets bindings
 pub fn loadReplicaSetsBindings(allocator: std.mem.Allocator) ![]const KeyBinding {
     const bindings = [_]KeyBinding{
-        .{ .key = "s", .description = "Scale", .category = .resource, .action = "scale" },
-        .{ .key = "l", .description = "Logs", .category = .resource, .action = "logs" },
         .{ .key = "d", .description = "Describe", .category = .resource, .action = "describe" },
-        .{ .key = "e", .description = "Edit", .category = .resource, .action = "edit" },
         .{ .key = "y", .description = "YAML", .category = .resource, .action = "yaml" },
         .{ .key = "Ctrl-d", .description = "Delete", .category = .resource, .action = "delete" },
     };
@@ -97,11 +91,7 @@ pub fn loadReplicaSetsBindings(allocator: std.mem.Allocator) ![]const KeyBinding
 /// StatefulSets bindings
 pub fn loadStatefulSetsBindings(allocator: std.mem.Allocator) ![]const KeyBinding {
     const bindings = [_]KeyBinding{
-        .{ .key = "s", .description = "Scale", .category = .resource, .action = "scale" },
-        .{ .key = "r", .description = "Restart", .category = .resource, .action = "restart" },
-        .{ .key = "l", .description = "Logs", .category = .resource, .action = "logs" },
         .{ .key = "d", .description = "Describe", .category = .resource, .action = "describe" },
-        .{ .key = "e", .description = "Edit", .category = .resource, .action = "edit" },
         .{ .key = "y", .description = "YAML", .category = .resource, .action = "yaml" },
         .{ .key = "Ctrl-d", .description = "Delete", .category = .resource, .action = "delete" },
     };
@@ -111,10 +101,7 @@ pub fn loadStatefulSetsBindings(allocator: std.mem.Allocator) ![]const KeyBindin
 /// DaemonSets bindings
 pub fn loadDaemonSetsBindings(allocator: std.mem.Allocator) ![]const KeyBinding {
     const bindings = [_]KeyBinding{
-        .{ .key = "r", .description = "Restart", .category = .resource, .action = "restart" },
-        .{ .key = "l", .description = "Logs", .category = .resource, .action = "logs" },
         .{ .key = "d", .description = "Describe", .category = .resource, .action = "describe" },
-        .{ .key = "e", .description = "Edit", .category = .resource, .action = "edit" },
         .{ .key = "y", .description = "YAML", .category = .resource, .action = "yaml" },
         .{ .key = "Ctrl-d", .description = "Delete", .category = .resource, .action = "delete" },
     };
@@ -128,11 +115,7 @@ pub fn loadDaemonSetsBindings(allocator: std.mem.Allocator) ![]const KeyBinding 
 /// CronJobs bindings
 pub fn loadCronJobsBindings(allocator: std.mem.Allocator) ![]const KeyBinding {
     const bindings = [_]KeyBinding{
-        .{ .key = "t", .description = "Trigger", .category = .resource, .action = "trigger" },
-        .{ .key = "s", .description = "Suspend/Resume", .category = .resource, .action = "suspend" },
-        .{ .key = "l", .description = "Logs", .category = .resource, .action = "logs" },
         .{ .key = "d", .description = "Describe", .category = .resource, .action = "describe" },
-        .{ .key = "e", .description = "Edit", .category = .resource, .action = "edit" },
         .{ .key = "y", .description = "YAML", .category = .resource, .action = "yaml" },
         .{ .key = "Ctrl-d", .description = "Delete", .category = .resource, .action = "delete" },
     };
@@ -142,7 +125,6 @@ pub fn loadCronJobsBindings(allocator: std.mem.Allocator) ![]const KeyBinding {
 /// Jobs bindings
 pub fn loadJobsBindings(allocator: std.mem.Allocator) ![]const KeyBinding {
     const bindings = [_]KeyBinding{
-        .{ .key = "l", .description = "Logs", .category = .resource, .action = "logs" },
         .{ .key = "d", .description = "Describe", .category = .resource, .action = "describe" },
         .{ .key = "y", .description = "YAML", .category = .resource, .action = "yaml" },
         .{ .key = "Ctrl-d", .description = "Delete", .category = .resource, .action = "delete" },
@@ -158,7 +140,6 @@ pub fn loadJobsBindings(allocator: std.mem.Allocator) ![]const KeyBinding {
 /// Roles/ClusterRoles bindings
 pub fn loadRolesBindings(allocator: std.mem.Allocator) ![]const KeyBinding {
     const bindings = [_]KeyBinding{
-        .{ .key = "enter", .description = "View Rules", .category = .resource, .action = "view_rules" },
         .{ .key = "d", .description = "Describe", .category = .resource, .action = "describe" },
         .{ .key = "y", .description = "YAML", .category = .resource, .action = "yaml" },
         .{ .key = "Ctrl-d", .description = "Delete", .category = .resource, .action = "delete" },
@@ -169,7 +150,6 @@ pub fn loadRolesBindings(allocator: std.mem.Allocator) ![]const KeyBinding {
 /// RoleBindings/ClusterRoleBindings bindings
 pub fn loadRoleBindingsBindings(allocator: std.mem.Allocator) ![]const KeyBinding {
     const bindings = [_]KeyBinding{
-        .{ .key = "enter", .description = "View Rules", .category = .resource, .action = "view_rules" },
         .{ .key = "d", .description = "Describe", .category = .resource, .action = "describe" },
         .{ .key = "y", .description = "YAML", .category = .resource, .action = "yaml" },
         .{ .key = "Ctrl-d", .description = "Delete", .category = .resource, .action = "delete" },
@@ -247,16 +227,13 @@ pub fn loadWorkloadsBindings(allocator: std.mem.Allocator) ![]const KeyBinding {
 pub fn loadPortForwardsBindings(allocator: std.mem.Allocator) ![]const KeyBinding {
     const bindings = [_]KeyBinding{
         .{ .key = "Ctrl-d", .description = "Stop", .category = .resource, .action = "stop" },
-        .{ .key = "Shift-f", .description = "Start", .category = .resource, .action = "start" },
     };
     return try allocator.dupe(KeyBinding, &bindings);
 }
 
 /// Aliases bindings
 pub fn loadAliasesBindings(allocator: std.mem.Allocator) ![]const KeyBinding {
-    const bindings = [_]KeyBinding{
-        .{ .key = "enter", .description = "Goto Resource", .category = .resource, .action = "goto" },
-    };
+    const bindings = [_]KeyBinding{};
     return try allocator.dupe(KeyBinding, &bindings);
 }
 
@@ -402,7 +379,10 @@ test "keybindings_data: secrets has decode binding" {
     try std.testing.expect(has_decode);
 }
 
-test "keybindings_data: cronjobs has trigger and suspend" {
+test "keybindings_data: cronjobs advertises only what it can do" {
+    // Replaces a test that asserted trigger and suspend were advertised -- neither is
+    // implemented. Describe/yaml/delete are, so those are asserted positively: a help
+    // screen that omits a working key is as wrong as one that invents a key.
     var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
@@ -410,16 +390,13 @@ test "keybindings_data: cronjobs has trigger and suspend" {
     const bindings = try loadCronJobsBindings(allocator);
     defer allocator.free(bindings);
 
-    var has_trigger = false;
-    var has_suspend = false;
-
+    var has_describe = false;
     for (bindings) |binding| {
-        if (std.mem.eql(u8, binding.action, "trigger")) has_trigger = true;
-        if (std.mem.eql(u8, binding.action, "suspend")) has_suspend = true;
+        if (std.mem.eql(u8, binding.action, "describe")) has_describe = true;
+        try std.testing.expect(!std.mem.eql(u8, binding.action, "trigger"));
+        try std.testing.expect(!std.mem.eql(u8, binding.action, "suspend"));
     }
-
-    try std.testing.expect(has_trigger);
-    try std.testing.expect(has_suspend);
+    try std.testing.expect(has_describe);
 }
 
 test "keybindings_data: containers has shell and attach" {
@@ -465,7 +442,11 @@ test "keybindings_data: all bindings are UTF-8 valid" {
     }
 }
 
-test "keybindings_data: portforwards has start and stop" {
+test "keybindings_data: portforwards advertises stop but not start" {
+    // Stop is real (PortForwardsView binds Ctrl-D). Start was NOT: `Shift-f` is only
+    // handled in resource_view's is_pods branch, and PortForwardsView has no `F` case
+    // at all -- you start a forward from the pods view, not from this one. The original
+    // test asserted both existed, which is how the whole class went unnoticed here.
     var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
@@ -474,15 +455,11 @@ test "keybindings_data: portforwards has start and stop" {
     defer allocator.free(bindings);
 
     var has_stop = false;
-    var has_start = false;
-
     for (bindings) |binding| {
         if (std.mem.eql(u8, binding.action, "stop")) has_stop = true;
-        if (std.mem.eql(u8, binding.action, "start")) has_start = true;
+        try std.testing.expect(!std.mem.eql(u8, binding.action, "start"));
     }
-
     try std.testing.expect(has_stop);
-    try std.testing.expect(has_start);
 }
 
 test "keybindings_data: helmcharts has uninstall binding" {
@@ -585,4 +562,77 @@ pub fn loadGenericResourceBindings(allocator: std.mem.Allocator) ![]const KeyBin
         .{ .key = ":q", .description = "Quit", .category = .general, .action = "quit" },
     };
     return try allocator.dupe(KeyBinding, &bindings);
+}
+
+/// Actions with no implementation anywhere in c3s.
+///
+/// This is the canonical list, and the test below enforces it across EVERY ViewType.
+/// Before it existed, the same defect was found five separate times by hand and the
+/// countermeasure was a per-view tripwire test each time -- which does not scale and
+/// cannot catch the next view.
+///
+/// The rule: a help entry may only exist for an action a key actually performs. To
+/// implement one of these, delete it from this list in the SAME commit that wires it
+/// up, and add the binding then.
+///
+/// Grouped by why they are absent:
+///
+///   - `scale`, `restart`, `suspend`, `trigger`: workload mutations. scaleDeployment,
+///     scaleStatefulSet, scaleReplicaSet and setCronJobSuspend DO exist in K8sService
+///     with zero callers -- but they reach straight for `self.client.?` with no
+///     use_kubectl branch, which is the defect class already fixed in checkAccess, so
+///     they would fail under the kubectl-proxy transport. Fix that first.
+///   - `view_pods`, `view_rules`, `view_policies`, `view_instances`: Enter-to-drill-down.
+///     There is not even a KeyResult variant for these.
+///   - `drain`: deliberately unimplemented. k9s binds it to `r`, which is refresh in
+///     c3s, and it evicts running pods so it needs delete's confirmation flow.
+///   - `copy`, `copy_namespace`, `view`, `jump_owner`, `show_portforward`, `bench`:
+///     never existed.
+///   - `field_next`, `field_previous`, `reload`, `command_clear`, `save`,
+///     `toggle_crumbs`, `last_command`, `history_back`, `history_forward`, `left`,
+///     `right`: several of these name Key variants c3s does not even have
+///     (ctrl_r/ctrl_u/ctrl_s/ctrl_g), and `left`/`right` implied a column-scroll
+///     feature that does not exist.
+///   - `namespace_all`, `namespace_default`: superseded by `toggle_all_namespaces`
+///     on `0`, which is real.
+///   - `sort_cpu`, `sort_mem`, `sort_pods` were advertised on NODES, where no such
+///     columns exist. They are NOT listed here, because they are real on pods, which
+///     does have CPU and MEM columns -- a reminder that "unimplemented" can be
+///     per-view, and why the test below also checks each sort key against its own
+///     view's columns rather than relying on a name list.
+pub const unimplemented_actions = [_][]const u8{
+    "scale",          "restart",          "suspend",        "trigger",
+    "view_pods",      "view_rules",       "view_policies",  "view_instances",
+    "drain",          "copy",             "copy_namespace", "view",
+    "jump_owner",     "show_portforward", "bench",          "field_next",
+    "field_previous", "reload",           "command_clear",  "save",
+    "toggle_crumbs",  "last_command",     "history_back",   "history_forward",
+    "left",           "right",            "namespace_all",  "namespace_default",
+    "goto",           "start",
+};
+
+test "no view advertises an action that nothing implements" {
+    // The enforcement that replaces five hand-found instances and their five
+    // per-view tripwires. Scans every ViewType, so it also covers views added later.
+    const keybindings_vm = @import("keybindings_vm.zig");
+    var gpa = std.heap.DebugAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
+    for (std.enums.values(keybindings_vm.ViewType)) |vt| {
+        var vm = try keybindings_vm.KeyBindingsViewModel.init(allocator, vt);
+        defer vm.deinit();
+
+        for (vm.getBindings()) |binding| {
+            for (unimplemented_actions) |dead| {
+                if (std.mem.eql(u8, binding.action, dead)) {
+                    std.debug.print(
+                        "{s} advertises '{s}' on key '{s}', which nothing implements\n",
+                        .{ @tagName(vt), binding.action, binding.key },
+                    );
+                    return error.ViewAdvertisesUnimplementedAction;
+                }
+            }
+        }
+    }
 }

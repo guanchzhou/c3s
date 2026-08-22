@@ -152,8 +152,6 @@ fn loadPodsBindings(allocator: std.mem.Allocator) ![]const KeyBinding {
 
     const bindings = [_]KeyBinding{
         // RESOURCE COMMANDS (sorted alphabetically)
-        .{ .key = "0", .description = "all", .category = .resource, .action = "namespace_all" },
-        .{ .key = "1", .description = "default", .category = .resource, .action = "namespace_default" },
         .{ .key = "a", .description = "Attach", .category = .resource, .action = "attach" },
         // `c` = "Copy" was advertised here with no implementation anywhere in the
         // codebase -- pressing it on the pods view did nothing. Same defect class as
@@ -164,21 +162,17 @@ fn loadPodsBindings(allocator: std.mem.Allocator) ![]const KeyBinding {
         .{ .key = "Ctrl-k", .description = "Kill", .category = .resource, .action = "kill" },
         .{ .key = "d", .description = "Describe", .category = .resource, .action = "describe" },
         .{ .key = "e", .description = "Edit", .category = .resource, .action = "edit" },
-        .{ .key = "f", .description = "Show PortForward", .category = .resource, .action = "show_portforward" },
         .{ .key = "i", .description = "Set Image", .category = .resource, .action = "set_image" },
         .{ .key = "l", .description = "Logs", .category = .resource, .action = "logs" },
-        .{ .key = "n", .description = "Copy Namespace", .category = .resource, .action = "copy_namespace" },
         .{ .key = "o", .description = "Show Node", .category = .resource, .action = "show_node" },
         .{ .key = "p", .description = "Logs Previous", .category = .resource, .action = "logs_previous" },
         .{ .key = "Shift-f", .description = "Port-Forward", .category = .resource, .action = "port_forward" },
-        .{ .key = "Shift-j", .description = "Jump Owner", .category = .resource, .action = "jump_owner" },
         // `Shift-r` = Refresh was a contradiction: the same list advertises Shift-r as
         // the READY sort, and the sort wins in resource_view.handleKey. The real
         // refresh is lowercase `r`, which was advertised nowhere at all.
         .{ .key = "r", .description = "Refresh", .category = .resource, .action = "refresh" },
         .{ .key = "s", .description = "Shell", .category = .resource, .action = "shell" },
         .{ .key = "t", .description = "Transfer", .category = .resource, .action = "transfer" },
-        .{ .key = "v", .description = "View", .category = .resource, .action = "view" },
         .{ .key = "y", .description = "YAML", .category = .resource, .action = "yaml" },
         .{ .key = "z", .description = "Sanitize", .category = .resource, .action = "sanitize" },
 
@@ -188,36 +182,25 @@ fn loadPodsBindings(allocator: std.mem.Allocator) ![]const KeyBinding {
         .{ .key = ":cmd", .description = "Command mode", .category = .general, .action = "command_mode" },
         .{ .key = "/term", .description = "Filter mode", .category = .general, .action = "filter_mode" },
         .{ .key = "esc", .description = "Back/Clear", .category = .general, .action = "back_clear" },
-        .{ .key = "tab", .description = "Field Next", .category = .general, .action = "field_next" },
-        .{ .key = "backtab", .description = "Field Previous", .category = .general, .action = "field_previous" },
-        .{ .key = "Ctrl-r", .description = "Reload", .category = .general, .action = "reload" },
-        .{ .key = "Ctrl-u", .description = "Command Clear", .category = .general, .action = "command_clear" },
         .{ .key = "Ctrl-e", .description = "Toggle Header", .category = .general, .action = "toggle_header" },
-        .{ .key = "Ctrl-g", .description = "Toggle Crumbs", .category = .general, .action = "toggle_crumbs" },
         .{ .key = ":q", .description = "Quit", .category = .general, .action = "quit" },
         .{ .key = "space", .description = "Mark", .category = .general, .action = "mark" },
         .{ .key = "*", .description = "Mark All", .category = .general, .action = "mark_all" },
         .{ .key = "^", .description = "Invert Marks", .category = .general, .action = "mark_invert" },
         .{ .key = "\\", .description = "Mark Clear", .category = .general, .action = "mark_clear" },
-        .{ .key = "Ctrl-s", .description = "Save", .category = .general, .action = "save" },
 
         // NAVIGATION COMMANDS
-        .{ .key = "-", .description = "Last Command", .category = .navigation, .action = "last_command" },
         // `0` is the all-namespaces toggle (resource_view.zig), not "Down" -- this
         // entry contradicted the j/Down entries in the same list.
         .{ .key = "0", .description = "All Namespaces", .category = .navigation, .action = "toggle_all_namespaces" },
-        .{ .key = "[", .description = "History Back", .category = .navigation, .action = "history_back" },
-        .{ .key = "]", .description = "History Forward", .category = .navigation, .action = "history_forward" },
         .{ .key = "Ctrl-b", .description = "Page Up", .category = .navigation, .action = "page_up" },
         // `Ctrl-f` = Page Down removed: this same list advertises Ctrl-f as Kill
         // Finalizers, and is_pods claims it first. PageDown itself works.
         .{ .key = "pgdn", .description = "Page Down", .category = .navigation, .action = "page_down" },
         .{ .key = "g", .description = "Goto Top", .category = .navigation, .action = "goto_top" },
         .{ .key = "Shift-g", .description = "Goto Bottom", .category = .navigation, .action = "goto_bottom" },
-        .{ .key = "h", .description = "Left", .category = .navigation, .action = "left" },
         .{ .key = "j", .description = "Down", .category = .navigation, .action = "down" },
         .{ .key = "k", .description = "Up", .category = .navigation, .action = "up" },
-        .{ .key = "l", .description = "Right", .category = .navigation, .action = "right" },
 
         // SORTING COMMANDS
         .{ .key = "Shift-a", .description = "Age", .category = .sorting, .action = "sort_age" },
@@ -250,16 +233,11 @@ fn loadNodesBindings(allocator: std.mem.Allocator) ![]const KeyBinding {
         // delete has. Re-add it here in the commit that implements it, not before.
         .{ .key = "c", .description = "Cordon", .category = .resource, .action = "cordon" },
         .{ .key = "u", .description = "Uncordon", .category = .resource, .action = "uncordon" },
-        .{ .key = "s", .description = "Shell", .category = .resource, .action = "shell" },
         .{ .key = "y", .description = "YAML", .category = .resource, .action = "yaml" },
         .{ .key = "d", .description = "Describe", .category = .resource, .action = "describe" },
-        .{ .key = "enter", .description = "View Pods", .category = .resource, .action = "view_pods" },
 
         // Sorting
         .{ .key = "Shift-r", .description = "Sort ROLE", .category = .sorting, .action = "sort_role" },
-        .{ .key = "Shift-c", .description = "Sort CPU", .category = .sorting, .action = "sort_cpu" },
-        .{ .key = "Shift-m", .description = "Sort MEM", .category = .sorting, .action = "sort_mem" },
-        .{ .key = "Shift-o", .description = "Sort Pods", .category = .sorting, .action = "sort_pods" },
 
         // General and navigation commands are shared (could extract to common)
         .{ .key = "?", .description = "Help", .category = .general, .action = "help" },
@@ -275,7 +253,6 @@ fn loadNodesBindings(allocator: std.mem.Allocator) ![]const KeyBinding {
 fn loadDeploymentsBindings(allocator: std.mem.Allocator) ![]const KeyBinding {
     // Similar to pods but with deployment-specific commands
     const bindings = [_]KeyBinding{
-        .{ .key = "s", .description = "Scale", .category = .resource, .action = "scale" },
         // `r` was advertised as "Restart" while resource_view's generic switch binds
         // lowercase `r` to refresh -- so pressing it refreshed instead. Worse than a
         // missing feature: the user gets a different action from the one promised.
@@ -285,12 +262,9 @@ fn loadDeploymentsBindings(allocator: std.mem.Allocator) ![]const KeyBinding {
         // (resource_view -> request_traffic -> App.showTrafficView) but advertised
         // nowhere, so nobody could discover it.
         .{ .key = "t", .description = "Traffic", .category = .resource, .action = "traffic" },
-        .{ .key = "l", .description = "Logs", .category = .resource, .action = "logs" },
         .{ .key = "d", .description = "Describe", .category = .resource, .action = "describe" },
-        .{ .key = "e", .description = "Edit", .category = .resource, .action = "edit" },
         .{ .key = "y", .description = "YAML", .category = .resource, .action = "yaml" },
         .{ .key = "Ctrl-d", .description = "Delete", .category = .resource, .action = "delete" },
-        .{ .key = "enter", .description = "View Pods", .category = .resource, .action = "view_pods" },
 
         .{ .key = "?", .description = "Help", .category = .general, .action = "help" },
         .{ .key = ":q", .description = "Quit", .category = .general, .action = "quit" },
@@ -302,12 +276,8 @@ fn loadDeploymentsBindings(allocator: std.mem.Allocator) ![]const KeyBinding {
 /// Load services-specific key bindings
 fn loadServicesBindings(allocator: std.mem.Allocator) ![]const KeyBinding {
     const bindings = [_]KeyBinding{
-        .{ .key = "b", .description = "Bench Run/Stop", .category = .resource, .action = "bench" },
-        .{ .key = "l", .description = "Logs", .category = .resource, .action = "logs" },
         .{ .key = "d", .description = "Describe", .category = .resource, .action = "describe" },
         .{ .key = "y", .description = "YAML", .category = .resource, .action = "yaml" },
-        .{ .key = "enter", .description = "View Pods", .category = .resource, .action = "view_pods" },
-        .{ .key = "Shift-f", .description = "Port-Forward", .category = .resource, .action = "port_forward" },
 
         .{ .key = "Shift-t", .description = "Sort Type", .category = .sorting, .action = "sort_type" },
 
@@ -322,7 +292,6 @@ fn loadServicesBindings(allocator: std.mem.Allocator) ![]const KeyBinding {
 fn loadConfigMapsBindings(allocator: std.mem.Allocator) ![]const KeyBinding {
     const bindings = [_]KeyBinding{
         .{ .key = "d", .description = "Describe", .category = .resource, .action = "describe" },
-        .{ .key = "e", .description = "Edit", .category = .resource, .action = "edit" },
         .{ .key = "y", .description = "YAML", .category = .resource, .action = "yaml" },
         .{ .key = "Ctrl-d", .description = "Delete", .category = .resource, .action = "delete" },
 
@@ -516,7 +485,15 @@ test "keybindings_vm: multiple init calls return same data" {
     try std.testing.expectEqual(bindings1.len, bindings2.len);
 }
 
-test "keybindings_vm: services view has port-forward binding" {
+test "keybindings_vm: services does NOT advertise port-forward" {
+    // This test used to assert services advertised port-forward. It was enforcing a
+    // lie: `F` -> request_port_forward exists only in resource_view's is_pods branch,
+    // so pressing it on a service did nothing. Inverted, and now also covered globally
+    // by keybindings_data's unimplemented-action scan.
+    //
+    // Port-forwarding a Service is a genuinely useful thing k9s supports; implement it
+    // by adding an is_services branch (or widening is_pods) and re-add the hint in the
+    // same commit.
     var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
@@ -524,18 +501,17 @@ test "keybindings_vm: services view has port-forward binding" {
     var vm = try KeyBindingsViewModel.init(allocator, .services);
     defer vm.deinit();
 
-    const bindings = vm.getBindings();
-
-    var has_port_forward = false;
-
-    for (bindings) |binding| {
-        if (std.mem.eql(u8, binding.action, "port_forward")) has_port_forward = true;
+    for (vm.getBindings()) |binding| {
+        try std.testing.expect(!std.mem.eql(u8, binding.action, "port_forward"));
+        try std.testing.expect(!std.mem.eql(u8, binding.action, "logs"));
+        try std.testing.expect(!std.mem.eql(u8, binding.action, "bench"));
     }
-
-    try std.testing.expect(has_port_forward);
 }
 
-test "keybindings_vm: cronjobs has trigger binding" {
+test "keybindings_vm: cronjobs does NOT advertise trigger or suspend" {
+    // Was asserting cronjobs advertised trigger. Nothing triggers a cronjob run
+    // anywhere in c3s, and setCronJobSuspend exists with zero callers (and would fail
+    // under the kubectl-proxy transport, since it reaches straight for self.client.?).
     var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
@@ -543,13 +519,8 @@ test "keybindings_vm: cronjobs has trigger binding" {
     var vm = try KeyBindingsViewModel.init(allocator, .cronjobs);
     defer vm.deinit();
 
-    const bindings = vm.getBindings();
-
-    var has_trigger = false;
-
-    for (bindings) |binding| {
-        if (std.mem.eql(u8, binding.action, "trigger")) has_trigger = true;
+    for (vm.getBindings()) |binding| {
+        try std.testing.expect(!std.mem.eql(u8, binding.action, "trigger"));
+        try std.testing.expect(!std.mem.eql(u8, binding.action, "suspend"));
     }
-
-    try std.testing.expect(has_trigger);
 }
