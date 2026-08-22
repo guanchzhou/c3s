@@ -636,3 +636,54 @@ test "withTheme writes the theme exactly once, even with a misleading key and an
     // And the value we replaced is gone.
     try testing.expect(std.mem.indexOf(u8, out, "dracula") == null);
 }
+
+test "writing the theme to a real file on disk, then loading it back" {
+    // The join, not the ends. Every other test here calls withTheme directly; this one
+    // writes an actual config.yaml with the buggy layout, applies withTheme through the
+    // same read/transform/write shape App.saveThemeToConfig uses, and then loads it with
+    // the real `load()`. Testing the pure function alone would have passed even while
+    // the wiring around it was wrong -- a mistake made twice already in this codebase
+    // (`x` = Decode and Ctrl-D = Stop both shipped unreachable behind passing tests).
+    const a = testing.allocator;
+
+    // Exactly the layout c3s itself writes, and the one the bug reproduced on.
+    try SharedEnv.writeConfig("c3s:\n  ui:\n    compact: false\n    theme: dracula\n");
+
+    {
+        const cfg = try load(a);
+        defer cfg.deinit();
+        try testing.expectEqualStrings("dracula", cfg.ui.theme);
+    }
+
+    // Read -> transform -> write, as App does.
+    const paths = try xdg.ensurePaths();
+    const existing = std.Io.Dir.cwd().readFileAlloc(
+        testing.io,
+        paths.config_file,
+        a,
+        .limited(1024 * 1024),
+    ) catch "";
+    defer if (existing.len > 0) a.free(existing);
+
+    const updated = try withTheme(a, existing, "gruvbox");
+    defer a.free(updated);
+    try std.Io.Dir.cwd().writeFile(testing.io, .{
+        .sub_path = paths.config_file,
+        .data = updated,
+    });
+
+    // The whole point: after a restart, load() must see the NEW theme. Before the fix
+    // it saw "dracula", because the stale line survived and the parser takes the last.
+    {
+        const cfg = try load(a);
+        defer cfg.deinit();
+        try testing.expectEqualStrings("gruvbox", cfg.ui.theme);
+    }
+
+    // Sibling settings are preserved through the rewrite.
+    {
+        const cfg = try load(a);
+        defer cfg.deinit();
+        try testing.expectEqual(false, cfg.ui.compact);
+    }
+}
