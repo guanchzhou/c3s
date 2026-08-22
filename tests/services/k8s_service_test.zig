@@ -697,3 +697,49 @@ test "a metav1.Status body has a STRING status field, which .object would panic 
     try testing.expect(status == .string);
     try testing.expectEqualStrings("Failure", status.string);
 }
+
+// --- Phase 4: the two views that looked functional and were not ---------------
+
+test "endpoints and storageclasses resolve through ResourceType" {
+    // resource_configs.zig defined EndpointsView and StorageClassesView, but
+    // ResourceType had neither member -- so stringToEnum returned null and describe,
+    // yaml and delete were all dead in both views. They rendered rows and then
+    // silently ignored every action key.
+    //
+    // Values cross-checked against zig-klient's own resource_registry rather than
+    // derived from memory: Endpoints is core /api/v1 and namespaced;
+    // StorageClass is /apis/storage.k8s.io/v1 and CLUSTER-scoped.
+    const RT = c3s.k8s_service_types.ResourceType;
+
+    const ep = std.meta.stringToEnum(RT, "endpoints") orelse return error.EndpointsMissing;
+    try testing.expectEqualStrings("/api/v1", ep.apiPath());
+    try testing.expectEqualStrings("endpoints", ep.resourceName());
+    try testing.expect(!ep.isClusterScoped());
+
+    const sc = std.meta.stringToEnum(RT, "storageclasses") orelse return error.StorageClassesMissing;
+    try testing.expectEqualStrings("/apis/storage.k8s.io/v1", sc.apiPath());
+    try testing.expectEqualStrings("storageclasses", sc.resourceName());
+    try testing.expect(sc.isClusterScoped());
+}
+
+test "every view name in resource_configs resolves to a ResourceType" {
+    // The general form of the bug above: a view whose name does not resolve gets
+    // dead action keys, silently. Rather than spot-check, assert the whole set --
+    // this is the check that would have caught endpoints/storageclasses.
+    const RT = c3s.k8s_service_types.ResourceType;
+    const names = [_][]const u8{
+        "pods",                 "deployments",            "services",       "namespaces",
+        "nodes",                "statefulsets",           "daemonsets",     "replicasets",
+        "jobs",                 "cronjobs",               "configmaps",     "secrets",
+        "persistentvolumes",    "persistentvolumeclaims", "ingresses",      "networkpolicies",
+        "serviceaccounts",      "roles",                  "rolebindings",   "clusterroles",
+        "clusterrolebindings",  "events",                 "resourcequotas", "limitranges",
+        "poddisruptionbudgets", "endpoints",              "storageclasses",
+    };
+    for (names) |n| {
+        if (std.meta.stringToEnum(RT, n) == null) {
+            std.debug.print("view name does not resolve to a ResourceType: {s}\n", .{n});
+            return error.UnresolvedViewName;
+        }
+    }
+}
