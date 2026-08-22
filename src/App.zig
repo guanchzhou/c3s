@@ -28,6 +28,8 @@ const AliasesView = @import("view/AliasesView.zig").AliasesView;
 const DeploymentsView = rc.DeploymentsView;
 const ServicesView = rc.ServicesView;
 const NamespacesView = @import("view/NamespacesView.zig").NamespacesView;
+const PortForwardsView = @import("view/PortForwardsView.zig").PortForwardsView;
+const PortForwardRegistry = @import("services/PortForwardRegistry.zig").PortForwardRegistry;
 const secret_decode = @import("viewmodel/secret_decode.zig");
 const NodesView = rc.NodesView;
 const StatefulSetsView = rc.StatefulSetsView;
@@ -152,6 +154,7 @@ pub const App = struct {
     help_view: *HelpView,
     detail_view: *DetailView,
     aliases_view: *AliasesView,
+    port_forwards_view: *PortForwardsView,
     logs_view: *LogsView,
     authorization_view: *AuthorizationView,
     traffic_view: *TrafficView,
@@ -168,8 +171,10 @@ pub const App = struct {
     pending_name: ?[]u8 = null,
     pending_namespace: ?[]u8 = null,
     pending_type: ?ResourceType = null,
-    /// Active background `kubectl port-forward` children, killed on exit.
-    port_forwards: std.ArrayListUnmanaged(std.process.Child) = .empty,
+    /// Active `kubectl port-forward` children. Heap-allocated so the view can hold a
+    /// stable pointer: App is returned by value from init(), so &app.field would
+    /// dangle (same reason k8s_service is a pointer).
+    port_forward_registry: *PortForwardRegistry,
 
     // Track which primary view is active (matches view getName() return value)
     current_view_name: []const u8 = "pods",
@@ -255,6 +260,16 @@ pub const App = struct {
         }
 
         // Initialize UI views (these don't need k8s_service)
+
+        // The registry outlives the view and owns the child processes; the view is
+        // only a window onto it.
+        const port_forward_registry = try allocator.create(PortForwardRegistry);
+        port_forward_registry.* = PortForwardRegistry.init(allocator);
+        errdefer port_forward_registry.deinit();
+
+        const port_forwards_view = try allocator.create(PortForwardsView);
+        port_forwards_view.* = try PortForwardsView.init(allocator, theme, port_forward_registry);
+        errdefer port_forwards_view.deinit();
 
         const themes_view = try allocator.create(ThemesView);
         themes_view.* = try ThemesView.init(allocator, ui_config.ui.theme, theme);
@@ -343,6 +358,8 @@ pub const App = struct {
             .help_view = help_view,
             .detail_view = detail_view,
             .aliases_view = aliases_view,
+            .port_forwards_view = port_forwards_view,
+            .port_forward_registry = port_forward_registry,
             .logs_view = logs_view,
             .authorization_view = app_views.authorization_view,
             .traffic_view = traffic_view,
@@ -371,9 +388,6 @@ pub const App = struct {
     }
 
     pub fn deinit(self: *App) void {
-        // Kill any background port-forwards we spawned.
-        for (self.port_forwards.items) |*child| child.kill(runtime.io());
-        self.port_forwards.deinit(self.allocator);
         self.clearPendingInput();
 
         // Tear down the view manager BEFORE destroying the view objects it
@@ -397,6 +411,12 @@ pub const App = struct {
         self.allocator.destroy(self.detail_view);
         self.aliases_view.deinit();
         self.allocator.destroy(self.aliases_view);
+        // View before registry: the view only holds a table, while the registry kills
+        // and reaps the children.
+        self.port_forwards_view.deinit();
+        self.allocator.destroy(self.port_forwards_view);
+        self.port_forward_registry.deinit();
+        self.allocator.destroy(self.port_forward_registry);
         self.logs_view.deinit();
         self.allocator.destroy(self.logs_view);
         self.traffic_view.deinit();
@@ -1483,8 +1503,15 @@ pub const App = struct {
         const target = try std.fmt.allocPrint(self.allocator, "{s}/{s}", .{ rt.resourceName(), name });
         defer self.allocator.free(target);
         const child = try self.k8s_service.spawnKubectl(&.{ "port-forward", target, value, "-n", ns });
-        try self.port_forwards.append(self.allocator, child);
-        self.footer.setStatus("port-forward started");
+        // The registry copies the strings, so `target` is safe to free on return.
+        self.port_forward_registry.add(target, value, ns, child) catch |err| {
+            // Do not leak an untracked child: if we cannot record it, we can never
+            // stop it either.
+            var orphan = child;
+            orphan.kill(runtime.io());
+            return err;
+        };
+        self.footer.setStatus("port-forward started (:pf to list)");
     }
 
     fn doKillFinalizers(self: *App) !void {
@@ -1962,6 +1989,7 @@ const ViewCommandEntry = struct {
 
 const view_commands = [_]ViewCommandEntry{
     .{ .field = "pods_view", .view_name = "pods", .aliases = &.{ "pods", "po" } },
+    .{ .field = "port_forwards_view", .view_name = "portforwards", .aliases = &.{ "portforwards", "port-forwards", "pf" } },
     .{ .field = "deployments_view", .view_name = "deployments", .aliases = &.{ "deployments", "deploy", "dp" } },
     .{ .field = "services_view", .view_name = "services", .aliases = &.{ "services", "svc" } },
     .{ .field = "namespaces_view", .view_name = "namespaces", .aliases = &.{ "namespaces", "namespace", "ns" } },
