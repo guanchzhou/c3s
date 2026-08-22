@@ -500,6 +500,8 @@ pub fn ResourceView(
         // ====================================================================
 
         const is_pods = std.mem.eql(u8, config.name, "pods");
+        // Node-specific keys, mirroring the is_pods branch below.
+        const is_nodes = std.mem.eql(u8, config.name, "nodes");
 
         fn handleKey(ptr: *anyopaque, key: Key) !KeyResult {
             const self: *Self = @ptrCast(@alignCast(ptr));
@@ -509,6 +511,22 @@ pub fn ResourceView(
             // Pod-specific action keys (comptime-gated; inert for every other
             // view). Mirrors the action map of the former bespoke PodsView so
             // logs/shell/exec/etc. keep working through the generic engine.
+            if (is_nodes) {
+                switch (key) {
+                    .char => |c| switch (c) {
+                        // Cordon / uncordon only. Drain is deliberately NOT bound
+                        // here: k9s uses `r`, which in c3s is refresh -- binding a
+                        // workload-evicting operation to the key users press to
+                        // refresh is an accident generator. It also needs a
+                        // confirmation flow, like delete has.
+                        'c' => return .request_cordon,
+                        'u' => return .request_uncordon,
+                        else => {},
+                    },
+                    else => {},
+                }
+            }
+
             if (is_pods) {
                 switch (key) {
                     .ctrl_k => return .request_kill,

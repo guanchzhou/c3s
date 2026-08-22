@@ -150,7 +150,10 @@ fn loadPodsBindings(allocator: std.mem.Allocator) ![]const KeyBinding {
         .{ .key = "0", .description = "all", .category = .resource, .action = "namespace_all" },
         .{ .key = "1", .description = "default", .category = .resource, .action = "namespace_default" },
         .{ .key = "a", .description = "Attach", .category = .resource, .action = "attach" },
-        .{ .key = "c", .description = "Copy", .category = .resource, .action = "copy" },
+        // `c` = "Copy" was advertised here with no implementation anywhere in the
+        // codebase -- pressing it on the pods view did nothing. Same defect class as
+        // the cordon/drain hints. Re-add it in the commit that implements a real copy
+        // action, not before.
         .{ .key = "Ctrl-d", .description = "Delete", .category = .resource, .action = "delete" },
         .{ .key = "Ctrl-f", .description = "Kill Finalizers", .category = .resource, .action = "kill_finalizers" },
         .{ .key = "Ctrl-k", .description = "Kill", .category = .resource, .action = "kill" },
@@ -226,12 +229,15 @@ fn loadNodesBindings(allocator: std.mem.Allocator) ![]const KeyBinding {
     const bindings = [_]KeyBinding{
         // Node-specific commands.
         //
-        // Cordon / Uncordon / Drain were advertised here with NO implementation
-        // anywhere in the codebase -- the help screen promised actions that did
-        // nothing. tasks/lessons.md already records the rule: "Hints/help must not
-        // advertise unimplemented actions -- wire every key or remove the hint."
-        // They are on the Phase 4 list in docs/design/2026-08-22-c3s-roadmap.md;
-        // re-add each one in the same commit that implements it.
+        // Cordon and Uncordon are re-added here in the same commit that implements
+        // them, per the rule in tasks/lessons.md: "wire every key or remove the hint".
+        //
+        // DRAIN IS STILL ABSENT, on purpose. k9s binds it to `r`, which in c3s is
+        // refresh -- binding a workload-evicting operation to the key users press to
+        // refresh is an accident generator -- and it needs the same confirmation flow
+        // delete has. Re-add it here in the commit that implements it, not before.
+        .{ .key = "c", .description = "Cordon", .category = .resource, .action = "cordon" },
+        .{ .key = "u", .description = "Uncordon", .category = .resource, .action = "uncordon" },
         .{ .key = "s", .description = "Shell", .category = .resource, .action = "shell" },
         .{ .key = "y", .description = "YAML", .category = .resource, .action = "yaml" },
         .{ .key = "d", .description = "Describe", .category = .resource, .action = "describe" },
@@ -406,6 +412,9 @@ test "keybindings_vm: pods view has expected bindings" {
         if (std.mem.eql(u8, binding.action, "attach")) has_attach = true;
         if (std.mem.eql(u8, binding.action, "logs")) has_logs = true;
         if (std.mem.eql(u8, binding.action, "describe")) has_describe = true;
+        // Same tripwire as the nodes one: `c` = "Copy" was advertised here with no
+        // implementation anywhere. Re-add the hint only alongside a real action.
+        try std.testing.expect(!std.mem.eql(u8, binding.action, "copy"));
     }
 
     try std.testing.expect(has_attach);
@@ -423,17 +432,18 @@ test "keybindings_vm: nodes view has specific bindings" {
 
     const bindings = vm.getBindings();
 
-    // Tripwire, deliberately inverted.
-    //
-    // This test used to assert that cordon and drain WERE advertised -- enforcing a
-    // lie, since neither has any implementation. It now asserts the opposite, so the
-    // suite fails if an unimplemented action is advertised again. When Phase 4
-    // implements them, flip these back in the same commit as the implementation.
+    // Cordon and uncordon are implemented now, so they must BE advertised -- the help
+    // screen is as wrong when it omits a working key as when it invents one.
+    var has_cordon = false;
+    var has_uncordon = false;
     for (bindings) |binding| {
-        try std.testing.expect(!std.mem.eql(u8, binding.action, "cordon"));
-        try std.testing.expect(!std.mem.eql(u8, binding.action, "uncordon"));
+        if (std.mem.eql(u8, binding.action, "cordon")) has_cordon = true;
+        if (std.mem.eql(u8, binding.action, "uncordon")) has_uncordon = true;
+        // Drain is still unimplemented, so the tripwire stays armed for it alone.
         try std.testing.expect(!std.mem.eql(u8, binding.action, "drain"));
     }
+    try std.testing.expect(has_cordon);
+    try std.testing.expect(has_uncordon);
 
     // The node bindings that ARE implemented must still be present.
     var has_yaml = false;

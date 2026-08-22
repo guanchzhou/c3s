@@ -743,3 +743,24 @@ test "every view name in resource_configs resolves to a ResourceType" {
         }
     }
 }
+
+test "setNodeSchedulable respects --readonly and the connection check" {
+    // cordon/uncordon are mutations, so they must be refused under --readonly like
+    // every other. Worth an explicit test because this method takes the kubectl path
+    // on BOTH transports rather than the direct-HTTP one, and it would be easy to add
+    // a mutation there that forgot the guard entirely.
+    const allocator = std.testing.allocator;
+    var svc = try K8sService.init(allocator);
+    defer svc.deinit();
+
+    svc.readonly = true;
+    svc.connected = true;
+    try std.testing.expectError(error.ReadOnlyMode, svc.setNodeSchedulable("node-1", false));
+    try std.testing.expectError(error.ReadOnlyMode, svc.setNodeSchedulable("node-1", true));
+
+    // With readonly off, the connection check rejects instead -- so the guard is not
+    // simply refusing unconditionally.
+    svc.readonly = false;
+    svc.connected = false;
+    try std.testing.expectError(error.NotConnected, svc.setNodeSchedulable("node-1", false));
+}
