@@ -1179,6 +1179,40 @@ pub const K8sService = struct {
         try client.scale(name, replicas, ns);
     }
 
+    /// Cordon or uncordon a node (mark it unschedulable, or undo that).
+    ///
+    /// Goes through kubectl on BOTH transports, deliberately. There is no klient
+    /// helper for this -- it is a PATCH of node.spec.unschedulable -- and the
+    /// direct-HTTP path is exactly where scaleDeployment and friends went wrong:
+    /// `self.client.?` is a null-unwrap in kubectl mode, and a missing use_kubectl
+    /// branch means silent failure on every TLS-intercepted cluster. One path that
+    /// works everywhere beats two where one is broken, and cordon is infrequent
+    /// enough that a ~1.5s subprocess is irrelevant.
+    ///
+    /// buildKubectlArgv pins --context, so this cannot cordon a node in the cluster
+    /// the user is NOT looking at -- the same hazard that made deleteResource
+    /// dangerous.
+    pub fn setNodeSchedulable(self: *K8sService, node_name: []const u8, schedulable: bool) !void {
+        try self.assertMutable();
+        if (!self.isConnected()) return error.NotConnected;
+
+        const verb = if (schedulable) "uncordon" else "cordon";
+        const argv = try self.buildKubectlArgv(&.{ verb, node_name });
+        defer self.allocator.free(argv);
+
+        const result = std.process.run(self.allocator, runtime.io(), .{
+            .argv = argv,
+            .stdout_limit = .limited(64 * 1024),
+        }) catch return error.KubectlFailed;
+        defer self.allocator.free(result.stdout);
+        defer self.allocator.free(result.stderr);
+
+        if (result.term != .exited or result.term.exited != 0) {
+            Logger.warn("kubectl {s} {s} failed: {s}", .{ verb, node_name, result.stderr });
+            return error.KubectlFailed;
+        }
+    }
+
     // ===== Service Operations =====
 
     /// List all services

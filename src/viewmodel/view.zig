@@ -87,6 +87,10 @@ pub const View = struct {
         /// screen while getTitle -- which reads current_namespace live -- displayed
         /// the NEW one. The title contradicted the rows.
         namespace_switched,
+        /// Mark the selected node unschedulable (`c` on the nodes view).
+        request_cordon,
+        /// Undo a cordon (`u` on the nodes view).
+        request_uncordon,
         /// Open the traffic view for the selected resource.
         request_traffic,
     };

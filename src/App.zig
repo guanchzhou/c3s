@@ -1188,6 +1188,16 @@ pub const App = struct {
                 }
                 self.dirty = true;
             },
+            .request_cordon => {
+                self.setSelectedNodeSchedulable(false) catch |err| {
+                    Logger.err("cordon failed: {any}", .{err});
+                };
+            },
+            .request_uncordon => {
+                self.setSelectedNodeSchedulable(true) catch |err| {
+                    Logger.err("uncordon failed: {any}", .{err});
+                };
+            },
             .request_quit => {
                 self.running = false;
             },
@@ -1746,6 +1756,28 @@ pub const App = struct {
         if (now_ns <= last_ns) return false; // clock went backwards; wait it out
         const interval_ns: i128 = @intFromFloat(@as(f64, interval_s) * @as(f64, std.time.ns_per_s));
         return now_ns - last_ns >= interval_ns;
+    }
+
+    /// Cordon or uncordon the selected node.
+    ///
+    /// No confirmation prompt: cordon is reversible and affects no running workload
+    /// (it only stops NEW pods being scheduled). Drain, which evicts, would need the
+    /// same confirmation flow delete has -- which is why it is not bound.
+    fn setSelectedNodeSchedulable(self: *App, schedulable: bool) !void {
+        if (!std.mem.eql(u8, self.current_view_name, "nodes")) return;
+        const info = self.getSelectedResourceFromCurrentView() orelse return;
+
+        self.k8s_service.setNodeSchedulable(info.name, schedulable) catch |err| {
+            self.footer.setStatus(if (err == error.ReadOnlyMode)
+                "Read-only mode: cordon refused"
+            else
+                "Cordon failed");
+            self.dirty = true;
+            return err;
+        };
+
+        self.footer.setStatus(if (schedulable) "Node uncordoned" else "Node cordoned");
+        self.refreshCurrentView();
     }
 
     fn refreshCurrentView(self: *App) void {
