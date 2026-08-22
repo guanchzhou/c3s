@@ -93,6 +93,14 @@ pub const App = struct {
     /// null when nothing is pending. Keeps a dropped frame from waiting on the full
     /// resize-poll timeout.
     pending_frame_ms: ?i32 = null,
+    /// Wall-clock nanos of the last automatic refresh.
+    ///
+    /// --refresh was parsed, unit-tested, and read NOWHERE, while --help advertised a
+    /// 2-second default that did not exist: data only updated on `r`, `0`, connect,
+    /// context switch, or onShow-when-empty. So a pod going CrashLoopBackOff never
+    /// appeared until the user pressed a key -- the opposite of what a cluster monitor
+    /// is for.
+    last_auto_refresh_ns: i128 = 0,
     min_frame_time_ns: i128 = 16_666_667, // ~60 FPS (16.67ms)
     current_theme_name: []const u8,
 
@@ -538,7 +546,8 @@ pub const App = struct {
             };
 
             if (poll_result == 0) {
-                // Timeout - check if terminal size changed (fallback)
+                // Timeout: no input. This is where periodic work belongs.
+                self.maybeAutoRefresh();
                 continue;
             }
 
@@ -1625,6 +1634,45 @@ pub const App = struct {
     }
 
     /// Refresh the current view
+    /// Refresh the current view when the --refresh interval has elapsed.
+    ///
+    /// Called from the poll-timeout branch, which fires at least every 100 ms, so the
+    /// interval is honoured without adding a timer or a thread.
+    ///
+    /// Deliberately skipped while a prompt is open or a delete confirmation is
+    /// pending: refreshing under the user's cursor would move the selection out from
+    /// under a `y/n` they are about to answer, and a destructive confirmation must
+    /// stay pinned to the row it was opened for.
+    fn maybeAutoRefresh(self: *App) void {
+        if (!self.k8s_service.isConnected()) return;
+        // Never refresh under an open prompt or a pending delete confirmation:
+        // moving the selection while the user is answering y/n could retarget a
+        // destructive action at a different row.
+        if (self.command_input.visible or self.delete_pending) return;
+
+        const now = clock.nanoTimestamp();
+        if (!shouldAutoRefresh(self.config.refresh_rate, self.last_auto_refresh_ns, now)) return;
+
+        self.last_auto_refresh_ns = now;
+        self.refreshCurrentView();
+    }
+
+    /// Whether the auto-refresh interval has elapsed.
+    ///
+    /// Split out as a pure function so the timing rules are unit-testable; the rest of
+    /// maybeAutoRefresh needs a live App and a cluster, and an untestable branch is
+    /// how --refresh came to be parsed-but-never-read in the first place.
+    ///
+    /// `interval_s <= 0` disables refreshing. `last_ns == 0` means "never refreshed",
+    /// which refreshes immediately rather than waiting out one interval first.
+    fn shouldAutoRefresh(interval_s: f32, last_ns: i128, now_ns: i128) bool {
+        if (!(interval_s > 0)) return false; // also rejects NaN
+        if (last_ns == 0) return true;
+        if (now_ns <= last_ns) return false; // clock went backwards; wait it out
+        const interval_ns: i128 = @intFromFloat(@as(f64, interval_s) * @as(f64, std.time.ns_per_s));
+        return now_ns - last_ns >= interval_ns;
+    }
+
     fn refreshCurrentView(self: *App) void {
         if (self.view_manager.getCurrentView()) |current| {
             current.refresh() catch |err| {
@@ -1885,4 +1933,31 @@ fn setupResizeHandler() !void {
         .flags = posix.SA.RESTART,
     };
     posix.sigaction(posix.SIG.WINCH, &sa, null);
+}
+
+test "shouldAutoRefresh: interval, disabling, and clock sanity" {
+    const ns = std.time.ns_per_s;
+
+    // Never refreshed yet -> refresh now, rather than waiting out one interval.
+    try std.testing.expect(App.shouldAutoRefresh(2.0, 0, 12345));
+
+    // Inside the interval -> no.
+    try std.testing.expect(!App.shouldAutoRefresh(2.0, 1000 * ns, 1001 * ns));
+    // Exactly at the interval -> yes.
+    try std.testing.expect(App.shouldAutoRefresh(2.0, 1000 * ns, 1002 * ns));
+    // Past it -> yes.
+    try std.testing.expect(App.shouldAutoRefresh(2.0, 1000 * ns, 1005 * ns));
+
+    // Sub-second intervals must work; truncating to whole seconds would silently
+    // turn --refresh 0.5 into "never".
+    try std.testing.expect(App.shouldAutoRefresh(0.5, 1000 * ns, 1000 * ns + 600_000_000));
+    try std.testing.expect(!App.shouldAutoRefresh(0.5, 1000 * ns, 1000 * ns + 400_000_000));
+
+    // 0 is the documented way to disable it; negatives and NaN must not enable it.
+    try std.testing.expect(!App.shouldAutoRefresh(0, 1000 * ns, 9999 * ns));
+    try std.testing.expect(!App.shouldAutoRefresh(-1, 1000 * ns, 9999 * ns));
+    try std.testing.expect(!App.shouldAutoRefresh(std.math.nan(f32), 1000 * ns, 9999 * ns));
+
+    // A backwards clock must not trigger a refresh storm.
+    try std.testing.expect(!App.shouldAutoRefresh(2.0, 1000 * ns, 900 * ns));
 }
