@@ -417,8 +417,6 @@ pub fn loadGenericResourceBindings(allocator: std.mem.Allocator) ![]const KeyBin
 ///     they would fail under the kubectl-proxy transport. Fix that first.
 ///   - `view_pods`, `view_rules`, `view_policies`, `view_instances`: Enter-to-drill-down.
 ///     There is not even a KeyResult variant for these.
-///   - `drain`: deliberately unimplemented. k9s binds it to `r`, which is refresh in
-///     c3s, and it evicts running pods so it needs delete's confirmation flow.
 ///   - `copy`, `copy_namespace`, `view`, `jump_owner`, `show_portforward`, `bench`:
 ///     never existed.
 ///   - `field_next`, `field_previous`, `reload`, `command_clear`, `save`,
@@ -434,14 +432,14 @@ pub fn loadGenericResourceBindings(allocator: std.mem.Allocator) ![]const KeyBin
 ///     per-view, and why the test below also checks each sort key against its own
 ///     view's columns rather than relying on a name list.
 pub const unimplemented_actions = [_][]const u8{
-    "scale",          "restart",          "suspend",        "trigger",
-    "view_pods",      "view_rules",       "view_policies",  "view_instances",
-    "drain",          "copy",             "copy_namespace", "view",
-    "jump_owner",     "show_portforward", "bench",          "field_next",
-    "field_previous", "reload",           "command_clear",  "save",
-    "toggle_crumbs",  "last_command",     "history_back",   "history_forward",
-    "left",           "right",            "namespace_all",  "namespace_default",
-    "goto",           "start",
+    "scale",            "restart",        "suspend",           "trigger",
+    "view_pods",        "view_rules",     "view_policies",     "view_instances",
+    "copy",             "copy_namespace", "view",              "jump_owner",
+    "show_portforward", "bench",          "field_next",        "field_previous",
+    "reload",           "command_clear",  "save",              "toggle_crumbs",
+    "last_command",     "history_back",   "history_forward",   "left",
+    "right",            "namespace_all",  "namespace_default", "goto",
+    "start",
 };
 
 test "no view advertises an action that nothing implements" {
@@ -497,7 +495,7 @@ const view_scoped_actions = [_]OwnedActions{
         },
     },
     // resource_view.zig `is_nodes` branch.
-    .{ .views = &.{"nodes"}, .actions = &.{ "cordon", "uncordon" } },
+    .{ .views = &.{"nodes"}, .actions = &.{ "cordon", "uncordon", "drain" } },
     // resource_view.zig `is_secrets` branch.
     .{ .views = &.{"secrets"}, .actions = &.{"decode"} },
     // resource_view.zig generic switch, gated on config.name == "deployments".

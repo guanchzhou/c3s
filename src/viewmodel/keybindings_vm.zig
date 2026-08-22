@@ -195,11 +195,12 @@ fn loadNodesBindings(allocator: std.mem.Allocator) ![]const KeyBinding {
         // Cordon and Uncordon are re-added here in the same commit that implements
         // them, per the rule in tasks/lessons.md: "wire every key or remove the hint".
         //
-        // DRAIN IS STILL ABSENT, on purpose. k9s binds it to `r`, which in c3s is
-        // refresh -- binding a workload-evicting operation to the key users press to
-        // refresh is an accident generator -- and it needs the same confirmation flow
-        // delete has. Re-add it here in the commit that implements it, not before.
+        // Drain is implemented now, and re-added here in the same commit -- the
+        // protocol this file's tripwires exist to enforce. It is on `D`, NOT k9s's
+        // `r`: `r` is refresh in c3s, and binding an eviction to the refresh key would
+        // be an accident generator. It confirms first, like delete.
         .{ .key = "c", .description = "Cordon", .category = .resource, .action = "cordon" },
+        .{ .key = "D", .description = "Drain", .category = .resource, .action = "drain" },
         .{ .key = "u", .description = "Uncordon", .category = .resource, .action = "uncordon" },
         .{ .key = "y", .description = "YAML", .category = .resource, .action = "yaml" },
         .{ .key = "d", .description = "Describe", .category = .resource, .action = "describe" },
@@ -350,14 +351,19 @@ test "keybindings_vm: nodes view has specific bindings" {
     // screen is as wrong when it omits a working key as when it invents one.
     var has_cordon = false;
     var has_uncordon = false;
+    var has_drain = false;
     for (bindings) |binding| {
         if (std.mem.eql(u8, binding.action, "cordon")) has_cordon = true;
         if (std.mem.eql(u8, binding.action, "uncordon")) has_uncordon = true;
-        // Drain is still unimplemented, so the tripwire stays armed for it alone.
-        try std.testing.expect(!std.mem.eql(u8, binding.action, "drain"));
+        if (std.mem.eql(u8, binding.action, "drain")) {
+            has_drain = true;
+            // On `D`, deliberately not k9s's `r`, which is refresh here.
+            try std.testing.expectEqualStrings("D", binding.key);
+        }
     }
     try std.testing.expect(has_cordon);
     try std.testing.expect(has_uncordon);
+    try std.testing.expect(has_drain);
 
     // The node bindings that ARE implemented must still be present.
     var has_yaml = false;

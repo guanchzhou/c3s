@@ -167,7 +167,7 @@ pub const App = struct {
     delete_resource_type: ?ResourceType = null,
 
     // Generic text-input prompt (set-image / port-forward / transfer / sanitize).
-    pending_input: enum { none, set_image, port_forward, transfer, sanitize } = .none,
+    pending_input: enum { none, set_image, port_forward, transfer, sanitize, drain } = .none,
     pending_name: ?[]u8 = null,
     pending_namespace: ?[]u8 = null,
     pending_type: ?ResourceType = null,
@@ -1241,6 +1241,7 @@ pub const App = struct {
                 self.dirty = true;
             },
             .request_decode => self.showDecodedSecret() catch |e| Logger.err("decode secret: {any}", .{e}),
+            .request_drain => self.promptDrain(),
             .request_cordon => {
                 self.setSelectedNodeSchedulable(false) catch |err| {
                     Logger.err("cordon failed: {any}", .{err});
@@ -1491,6 +1492,59 @@ pub const App = struct {
         if (self.pending_name != null) self.pending_input = .transfer;
     }
 
+    /// Ask before draining. Cordon needs no prompt -- it is reversible and evicts
+    /// nothing -- but drain evicts running pods, so it gets the same y/n treatment
+    /// sanitize has.
+    fn promptDrain(self: *App) void {
+        if (!std.mem.eql(u8, self.current_view_name, "nodes")) return;
+        const info = self.getSelectedResourceFromCurrentView() orelse return;
+
+        // Refuse early, so --readonly never even shows a confirmation it will not honour.
+        if (self.k8s_service.readonly) {
+            self.footer.setStatus("Read-only mode: drain refused");
+            self.dirty = true;
+            return;
+        }
+
+        self.clearPendingInput();
+        self.pending_name = self.allocator.dupe(u8, info.name) catch return;
+        self.pending_input = .drain;
+        var buf: [128]u8 = undefined;
+        const label = std.fmt.bufPrint(&buf, "Drain {s}? [y/n]:", .{info.name}) catch "Drain node? [y/n]:";
+        self.command_input.showWithPrompt(label);
+        self.dirty = true;
+    }
+
+    /// Run `kubectl drain` with the TUI suspended, so the user sees eviction progress
+    /// live and can Ctrl-C it.
+    ///
+    /// Drain can take minutes, so running it synchronously inside the render loop would
+    /// freeze the UI with nothing on screen explaining why. runInteractive is the same
+    /// mechanism edit/shell/attach use, and it inherits the terminal.
+    ///
+    /// Flag choices, both deliberate:
+    ///   --ignore-daemonsets: without it drain fails on any cluster that runs a
+    ///     DaemonSet, which is all of them.
+    ///   --delete-emptydir-data: without it drain refuses pods with an emptyDir volume.
+    /// `--force` is deliberately NOT passed: it deletes bare pods nothing will recreate,
+    /// which is data loss rather than rescheduling. Without it kubectl refuses and says
+    /// so, which is the right outcome for the user to decide on.
+    fn doDrain(self: *App) !void {
+        const name = self.pending_name orelse return;
+        if (self.k8s_service.readonly) {
+            self.footer.setStatus("Read-only mode: drain refused");
+            self.dirty = true;
+            return;
+        }
+        try self.runInteractive(&.{
+            "kubectl",                "drain",
+            name,                     "--ignore-daemonsets",
+            "--delete-emptydir-data",
+        });
+        self.footer.setStatus("Drain finished");
+        self.refreshCurrentView();
+    }
+
     fn promptSanitize(self: *App) void {
         // Operates on the visible pods; no target capture needed.
         if (!std.mem.eql(u8, self.current_view_name, "pods")) return;
@@ -1506,6 +1560,11 @@ pub const App = struct {
             .set_image => self.doSetImage(value) catch |e| Logger.err("set image failed: {any}", .{e}),
             .port_forward => self.doPortForward(value) catch |e| Logger.err("port-forward failed: {any}", .{e}),
             .transfer => self.doTransfer(value) catch |e| Logger.err("transfer failed: {any}", .{e}),
+            .drain => {
+                if (std.mem.eql(u8, value, "y") or std.mem.eql(u8, value, "yes")) {
+                    self.doDrain() catch |e| Logger.err("drain failed: {any}", .{e});
+                }
+            },
             .sanitize => {
                 if (std.mem.eql(u8, value, "y") or std.mem.eql(u8, value, "yes")) {
                     self.doSanitize() catch |e| Logger.err("sanitize failed: {any}", .{e});
