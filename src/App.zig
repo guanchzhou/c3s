@@ -843,6 +843,7 @@ pub const App = struct {
                     }
                     if (c >= 32 and c <= 126) {
                         try self.command_input.addChar(c);
+                        self.liveFilterIfActive();
                         self.dirty = true;
                     }
                 },
@@ -853,18 +854,22 @@ pub const App = struct {
                 // While a prompt is open these are ordinary text.
                 .colon => {
                     try self.command_input.addChar(':');
+                    self.liveFilterIfActive();
                     self.dirty = true;
                 },
                 .question_mark => {
                     try self.command_input.addChar('?');
+                    self.liveFilterIfActive();
                     self.dirty = true;
                 },
                 .shift_g => {
                     try self.command_input.addChar('G');
+                    self.liveFilterIfActive();
                     self.dirty = true;
                 },
                 .backspace => {
                     self.command_input.backspace();
+                    self.liveFilterIfActive();
                     self.dirty = true;
                 },
                 .enter => {
@@ -1642,6 +1647,52 @@ pub const App = struct {
     }
 
     /// Apply filter to the current view
+    /// Apply the in-progress filter text while the `/` prompt is being typed.
+    ///
+    /// k9s filters as you type; c3s only filtered on Enter, so you could not see what
+    /// a pattern matched until you committed it.
+    ///
+    /// Three guards, and they are not optional:
+    /// - only for the `/` prompt, since `:` is the command palette and filtering on
+    ///   each keystroke of a command name is meaningless;
+    /// - NOT while a delete confirmation is pending -- that reuses the same `/` prompt
+    ///   for its y/n, so live-filtering there would rewrite the row list underneath a
+    ///   destructive confirmation;
+    /// - NOT while pending_input is set (set-image, port-forward, transfer,
+    ///   sanitize), which also borrows the prompt for a value.
+    fn liveFilterIfActive(self: *App) void {
+        if (!shouldLiveFilter(
+            self.command_input.visible,
+            self.command_input.prompt,
+            self.delete_pending,
+            self.pending_input == .none,
+        )) return;
+
+        self.applyFilterToCurrentView(self.command_input.getCommand()) catch |err| {
+            // A failed filter must not eat the keystroke; the Enter path will retry.
+            Logger.warn("live filter failed: {any}", .{err});
+        };
+    }
+
+    /// Whether an in-progress prompt keystroke should re-filter the current view.
+    ///
+    /// Pure so the guards are testable. The delete case is the one that matters: a
+    /// pending confirmation borrows the SAME "/" prompt for its y/n, so getting this
+    /// wrong would rewrite the row list under a destructive confirmation. That is not
+    /// something to leave to an untested inline condition.
+    fn shouldLiveFilter(
+        visible: bool,
+        prompt: []const u8,
+        delete_pending: bool,
+        pending_input_is_none: bool,
+    ) bool {
+        if (!visible) return false;
+        if (!std.mem.eql(u8, prompt, "/")) return false;
+        if (delete_pending) return false;
+        if (!pending_input_is_none) return false;
+        return true;
+    }
+
     fn applyFilterToCurrentView(self: *App, filter: []const u8) !void {
         if (self.view_manager.getCurrentView()) |current| {
             try current.applyFilter(filter);
@@ -1984,4 +2035,26 @@ test "shouldAutoRefresh: interval, disabling, and clock sanity" {
 
     // A backwards clock must not trigger a refresh storm.
     try std.testing.expect(!App.shouldAutoRefresh(2.0, 1000 * ns, 900 * ns));
+}
+
+test "shouldLiveFilter refuses every prompt that is not a live filter" {
+    // Filtering as you type is only correct for the "/" filter prompt. The same
+    // prompt is reused for a delete confirmation's y/n and for value prompts
+    // (set-image, port-forward, transfer, sanitize); re-filtering during those would
+    // rewrite the row list underneath the answer -- and for a delete confirmation
+    // that means the "yes" could land on a different row than the one the user saw.
+    try std.testing.expect(App.shouldLiveFilter(true, "/", false, true));
+
+    // Not visible -> nothing to filter with.
+    try std.testing.expect(!App.shouldLiveFilter(false, "/", false, true));
+
+    // The command palette is not a filter.
+    try std.testing.expect(!App.shouldLiveFilter(true, ":", false, true));
+
+    // The two that would be actively dangerous.
+    try std.testing.expect(!App.shouldLiveFilter(true, "/", true, true));
+    try std.testing.expect(!App.shouldLiveFilter(true, "/", false, false));
+
+    // Both at once is still refused.
+    try std.testing.expect(!App.shouldLiveFilter(true, "/", true, false));
 }
