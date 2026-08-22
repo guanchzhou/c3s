@@ -85,6 +85,17 @@ pub fn ResourceView(
         /// Cached widths bake in whether NAMESPACE is hidden, so the cache is
         /// only valid while the namespace scope is unchanged.
         cached_show_all: bool = false,
+        /// Column display order, and how many of them are shown.
+        ///
+        /// Populated once at init from views.yaml. `column_order[0..visible_columns]`
+        /// are the indices to render, in order; anything not listed is hidden by being
+        /// excluded here AND force-hidden in the width calc, so its space is handed to
+        /// the remaining columns rather than left blank.
+        ///
+        /// Defaults to identity order with everything visible, so an absent views.yaml
+        /// changes nothing.
+        column_order: [col_count]u8 = undefined,
+        visible_columns: u8 = col_count,
         /// Scratch buffer for the decorated box title ("pods(default)[8]").
         title_buf: [192]u8 = undefined,
 
@@ -115,14 +126,95 @@ pub fn ResourceView(
             }
         };
 
+        /// Build column_order / visible_columns from views.yaml, if it names this view.
+        ///
+        /// Unknown column names are skipped with a warning rather than being an error:
+        /// a stale views.yaml naming a column that was renamed must not blank the view.
+        /// The name column is always included, wherever the user put it -- it is the
+        /// row identity used by describe, delete and marks, and a table of unlabelled
+        /// rows is useless.
+        /// Which columns the width calculator must give zero width to.
+        ///
+        /// Two sources: the NAMESPACE column in single-namespace scope (every row shares
+        /// the value, so showing it wastes a column), and any column views.yaml left
+        /// out. Both go through force-hiding rather than being skipped at draw time,
+        /// because that is what hands their width budget to the columns that ARE shown
+        /// -- skipping later would leave a gap and needlessly drop a low-priority column
+        /// to make room for one that is never drawn.
+        ///
+        /// pub so a test can assert the mask rather than infer it from rendered output.
+        pub fn hiddenMask(self: *const Self) [col_count]bool {
+            var mask = [_]bool{false} ** col_count;
+
+            if (config.is_namespaced and !self.table.show_all_namespaces) {
+                if (config.namespace_column) |ns_col| mask[ns_col] = true;
+            }
+
+            if (self.visible_columns < col_count) {
+                var listed = [_]bool{false} ** col_count;
+                for (self.column_order[0..self.visible_columns]) |ci| listed[ci] = true;
+                for (0..col_count) |ci| {
+                    if (!listed[ci]) mask[ci] = true;
+                }
+            }
+            return mask;
+        }
+
+        pub fn applyViewsConfig(self: *Self) void {
+            for (0..col_count) |i| self.column_order[i] = @intCast(i);
+            self.visible_columns = col_count;
+
+            const views_config = @import("../model/views_config.zig");
+            const cfg = views_config.get() orelse return;
+            const wanted = cfg.forView(config.name) orelse return;
+
+            var order: [col_count]u8 = undefined;
+            var n: u8 = 0;
+            var used = [_]bool{false} ** col_count;
+
+            for (wanted) |want| {
+                var found = false;
+                inline for (config.columns, 0..) |cd, ci| {
+                    if (!used[ci] and std.ascii.eqlIgnoreCase(cd.name, want)) {
+                        order[n] = @intCast(ci);
+                        used[ci] = true;
+                        n += 1;
+                        found = true;
+                    }
+                }
+                if (!found) {
+                    Logger.warn("views.yaml: {s} has no column '{s}'", .{ config.name, want });
+                }
+            }
+
+            if (n == 0) {
+                Logger.warn("views.yaml: {s} listed no known columns; using defaults", .{config.name});
+                return;
+            }
+
+            // Always keep the name column: it is the row identity for describe, delete
+            // and marks, and rows without it cannot be told apart.
+            if (!used[config.name_column]) {
+                Logger.warn("views.yaml: {s} omitted the name column; keeping it", .{config.name});
+                order[n] = @intCast(config.name_column);
+                n += 1;
+            }
+
+            self.column_order = order;
+            self.visible_columns = n;
+        }
+
         pub fn init(allocator: std.mem.Allocator, theme: *const theme_loader.ThemeColors, k8s_service: *K8sService) !Self {
             var tbl = TableState(RowData).init(allocator);
             if (config.default_all_namespaces) tbl.show_all_namespaces = true;
-            return Self{
+            var self = Self{
                 .theme = theme,
                 .k8s_service = k8s_service,
                 .table = tbl,
             };
+            // Read views.yaml once, here, rather than per frame.
+            self.applyViewsConfig();
+            return self;
         }
 
         pub fn deinit(self: *Self) void {
@@ -348,12 +440,7 @@ pub fn ResourceView(
             // than zeroing it after the fact) is what keeps a low-priority column
             // like CPU from being needlessly dropped to make room for a NAMESPACE
             // column that is not even shown. Mirrors k9s.
-            var force_hidden: [col_count]bool = undefined;
-            @memset(&force_hidden, false);
-            const hide_ns = config.is_namespaced and !self.table.show_all_namespaces;
-            if (hide_ns) {
-                if (config.namespace_column) |ns_col| force_hidden[ns_col] = true;
-            }
+            const force_hidden = self.hiddenMask();
 
             const use_cache = self.cached_col_widths != null and
                 self.cached_terminal_width == available_width and
@@ -418,7 +505,10 @@ pub fn ResourceView(
 
                 var col_x = x;
                 const hdr_max_x = x + width;
-                for (col_defs, eff_widths[0..]) |cd, w| {
+                // Iterate in views.yaml order (identity by default), not config order.
+                for (self.column_order[0..self.visible_columns]) |ci| {
+                    const cd = col_defs[ci];
+                    const w = eff_widths[ci];
                     if (w == 0) continue;
                     if (col_x >= hdr_max_x) break;
                     const hdr_avail = hdr_max_x - col_x;
@@ -470,7 +560,9 @@ pub fn ResourceView(
 
                 var rx = x;
                 const max_x = x + width;
-                for (&item.columns, eff_widths[0..]) |cell, w| {
+                for (self.column_order[0..self.visible_columns]) |ci| {
+                    const cell = item.columns[ci];
+                    const w = eff_widths[ci];
                     if (w == 0) continue;
                     if (rx >= max_x) break;
                     const avail = max_x - rx;
