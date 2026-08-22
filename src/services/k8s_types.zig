@@ -41,6 +41,11 @@ pub const ResourceType = enum {
     limitranges,
     poddisruptionbudgets,
     hpa,
+    // Views for these two existed in resource_configs.zig with no ResourceType
+    // member, so stringToEnum returned null and describe / yaml / delete were dead
+    // in both -- views that looked functional and were not.
+    endpoints,
+    storageclasses,
     contexts,
 
     pub fn apiPath(self: ResourceType) []const u8 {
@@ -57,6 +62,7 @@ pub const ResourceType = enum {
             .events,
             .resourcequotas,
             .limitranges,
+            .endpoints,
             => "/api/v1",
             .deployments, .statefulsets, .daemonsets, .replicasets => "/apis/apps/v1",
             .jobs, .cronjobs => "/apis/batch/v1",
@@ -64,6 +70,7 @@ pub const ResourceType = enum {
             .roles, .rolebindings, .clusterroles, .clusterrolebindings => "/apis/rbac.authorization.k8s.io/v1",
             .poddisruptionbudgets => "/apis/policy/v1",
             .hpa => "/apis/autoscaling/v2",
+            .storageclasses => "/apis/storage.k8s.io/v1",
             .contexts => "/api/v1", // not a real K8s resource
         };
     }
@@ -96,13 +103,15 @@ pub const ResourceType = enum {
             .limitranges => "limitranges",
             .poddisruptionbudgets => "poddisruptionbudgets",
             .hpa => "horizontalpodautoscalers",
+            .endpoints => "endpoints",
+            .storageclasses => "storageclasses",
             .contexts => "contexts",
         };
     }
 
     pub fn isClusterScoped(self: ResourceType) bool {
         return switch (self) {
-            .namespaces, .nodes, .persistentvolumes, .clusterroles, .clusterrolebindings => true,
+            .namespaces, .nodes, .persistentvolumes, .clusterroles, .clusterrolebindings, .storageclasses => true,
             else => false,
         };
     }
