@@ -62,6 +62,7 @@ pub const ContextsView = struct {
         self.items.deinit(self.allocator);
         self.filtered_indices.deinit(self.allocator);
         if (self.error_message) |msg| self.allocator.free(msg);
+        if (self.filter_text.len > 0) self.allocator.free(self.filter_text);
     }
 
     pub fn refresh(self: *ContextsView) !void {
@@ -102,7 +103,19 @@ pub const ContextsView = struct {
     }
 
     pub fn applyFilter(self: *ContextsView, filter: []const u8) !void {
-        self.filter_text = filter;
+        // Own the filter text. The caller's slice is usually command_input's buffer,
+        // which is cleared with clearRetainingCapacity() immediately after this
+        // returns -- so keeping the borrow meant filter_text aliased whatever the
+        // user typed next while retaining its old length, and became a true
+        // use-after-free once the buffer grew past its capacity. Reads happen on
+        // every later render, not just here.
+        //
+        // Dupe BEFORE freeing the old: applyFilter is called with self.filter_text
+        // itself (refresh paths pass the current filter back in), so freeing first
+        // would read freed memory. TableState.applyFilter documents the same hazard.
+        const new_filter: []const u8 = if (filter.len > 0) try self.allocator.dupe(u8, filter) else "";
+        if (self.filter_text.len > 0) self.allocator.free(self.filter_text);
+        self.filter_text = new_filter;
         self.filtered_indices.clearRetainingCapacity();
         for (self.items.items, 0..) |item, i| {
             if (filter.len == 0 or std.mem.indexOf(u8, item.name, filter) != null or

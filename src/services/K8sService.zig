@@ -1698,17 +1698,87 @@ pub const K8sService = struct {
 
     /// Get pod logs
     pub fn getPodLogs(self: *K8sService, name: []const u8, namespace: ?[]const u8, previous: bool) ![]u8 {
+        return self.getPodLogsForContainer(name, namespace, previous, null);
+    }
+
+    /// Fetch pod logs, optionally for a named container.
+    ///
+    /// `container == null` asks the API server to choose, which it only does for
+    /// single-container pods; for anything with a sidecar (Istio, log shippers,
+    /// init-heavy workloads) it answers 400 "a container name must be specified".
+    /// That is why logs simply failed on those pods.
+    ///
+    /// Rather than guess, the null case falls back to reading the pod and using its
+    /// first container. The extra GET is only paid when the first attempt fails, and
+    /// only on pods that would otherwise show nothing at all. A container picker is
+    /// Phase 4 work; this makes the default case work in the meantime.
+    pub fn getPodLogsForContainer(
+        self: *K8sService,
+        name: []const u8,
+        namespace: ?[]const u8,
+        previous: bool,
+        container: ?[]const u8,
+    ) ![]u8 {
         if (!self.isConnected()) return error.NotConnected;
 
         const ns = namespace orelse "default";
-        const path = if (previous)
-            try std.fmt.allocPrint(self.allocator, "/api/v1/namespaces/{s}/pods/{s}/log?tailLines=1000&previous=true", .{ ns, name })
-        else
-            try std.fmt.allocPrint(self.allocator, "/api/v1/namespaces/{s}/pods/{s}/log?tailLines=1000", .{ ns, name });
+
+        if (self.logRequest(name, ns, previous, container)) |body| return body else |err| {
+            // Only the ambiguous-container case is worth a retry; a real failure
+            // (missing pod, forbidden, transport down) must surface as itself.
+            if (container != null) return err;
+
+            const first = self.firstContainerName(name, ns) catch return err;
+            defer self.allocator.free(first);
+            Logger.info("pod {s} has multiple containers; showing logs for '{s}'", .{ name, first });
+            return self.logRequest(name, ns, previous, first);
+        }
+    }
+
+    fn logRequest(self: *K8sService, name: []const u8, ns: []const u8, previous: bool, container: ?[]const u8) ![]u8 {
+        var query: std.ArrayListUnmanaged(u8) = .empty;
+        defer query.deinit(self.allocator);
+        try query.appendSlice(self.allocator, "tailLines=1000");
+        if (previous) try query.appendSlice(self.allocator, "&previous=true");
+        if (container) |c| {
+            try query.appendSlice(self.allocator, "&container=");
+            try query.appendSlice(self.allocator, c);
+        }
+
+        const path = try std.fmt.allocPrint(
+            self.allocator,
+            "/api/v1/namespaces/{s}/pods/{s}/log?{s}",
+            .{ ns, name, query.items },
+        );
         defer self.allocator.free(path);
 
         if (self.use_kubectl) return try self.kubectlRequest(path);
-        return try self.client.?.request(.GET, path, null);
+        if (self.client) |c| return try c.request(.GET, path, null);
+        return error.NotConnected;
+    }
+
+    /// Name of the pod's first container. Caller owns the result.
+    fn firstContainerName(self: *K8sService, name: []const u8, ns: []const u8) ![]u8 {
+        const raw = try self.getRawJson(.pods, name, ns);
+        defer self.allocator.free(raw);
+
+        var parsed = try std.json.parseFromSlice(std.json.Value, self.allocator, raw, .{
+            .ignore_unknown_fields = true,
+        });
+        defer parsed.deinit();
+
+        if (parsed.value != .object) return error.UnexpectedResponse;
+        const spec = parsed.value.object.get("spec") orelse return error.UnexpectedResponse;
+        if (spec != .object) return error.UnexpectedResponse;
+        const containers = spec.object.get("containers") orelse return error.UnexpectedResponse;
+        if (containers != .array or containers.array.items.len == 0) return error.UnexpectedResponse;
+
+        const first = containers.array.items[0];
+        if (first != .object) return error.UnexpectedResponse;
+        const cname = first.object.get("name") orelse return error.UnexpectedResponse;
+        if (cname != .string) return error.UnexpectedResponse;
+
+        return self.allocator.dupe(u8, cname.string);
     }
 
     // ===== Authorization Methods =====

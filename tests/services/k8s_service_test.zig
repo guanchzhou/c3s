@@ -620,3 +620,54 @@ test "readonly: the guard precedes the connection check" {
     svc.connected = false;
     try std.testing.expectError(error.ReadOnlyMode, svc.deleteResource(.pods, "p", "default", false));
 }
+
+// --- Phase 1: pod log container handling ------------------------------------
+
+test "getPodLogs: the container-aware entry point exists and stays NotConnected-safe" {
+    // getPodLogs sent no container= parameter, so the API answered 400
+    // "a container name must be specified" for any pod with a sidecar -- logs simply
+    // failed on Istio-injected or init-heavy workloads. It now delegates to a
+    // container-aware variant that falls back to the pod's first container.
+    const allocator = std.testing.allocator;
+    var svc = try K8sService.init(allocator);
+    defer svc.deinit();
+
+    // Both entry points must still reject cleanly when disconnected, and the
+    // fallback must not be attempted in that state.
+    try std.testing.expectError(error.NotConnected, svc.getPodLogs("p", "default", false));
+    try std.testing.expectError(error.NotConnected, svc.getPodLogsForContainer("p", "default", false, null));
+    try std.testing.expectError(error.NotConnected, svc.getPodLogsForContainer("p", "default", false, "istio-proxy"));
+}
+
+test "readonly does not block reading logs" {
+    // Guard against over-broad guarding: --readonly must refuse mutations only.
+    // A read path that started failing under --readonly would be a regression.
+    const allocator = std.testing.allocator;
+    var svc = try K8sService.init(allocator);
+    defer svc.deinit();
+
+    svc.readonly = true;
+    // NotConnected, not ReadOnlyMode -- the guard is not on this path.
+    try std.testing.expectError(error.NotConnected, svc.getPodLogs("p", "default", false));
+
+    // listContexts reads the kubeconfig from disk, so it needs no cluster and may
+    // legitimately succeed here. Whatever it returns, it must never be refused for
+    // being read-only. Asserting the invariant rather than a specific outcome keeps
+    // this from depending on whether the machine has a kubeconfig.
+    if (svc.listContexts()) |ctxs| {
+        // listContexts hands ownership of each field to the caller and only the
+        // slice back; production moves the strings into its item list and frees the
+        // slice. A test that keeps nothing must free both.
+        defer {
+            for (ctxs) |c| {
+                allocator.free(c.name);
+                allocator.free(c.cluster);
+                allocator.free(c.user);
+                if (c.namespace) |ns| allocator.free(ns);
+            }
+            allocator.free(ctxs);
+        }
+    } else |err| {
+        try std.testing.expect(err != error.ReadOnlyMode);
+    }
+}
