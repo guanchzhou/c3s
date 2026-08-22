@@ -81,6 +81,12 @@ pub const View = struct {
         /// returns to the view that was active before entering contexts,
         /// refreshed against the new cluster (k9s behavior).
         context_switched,
+        /// A namespace was switched (namespaces view, Enter). Handled exactly like
+        /// context_switched: the previous view's onShow skips a network refresh when
+        /// rows already exist, so without this the OLD namespace's rows stayed on
+        /// screen while getTitle -- which reads current_namespace live -- displayed
+        /// the NEW one. The title contradicted the rows.
+        namespace_switched,
         /// Open the traffic view for the selected resource.
         request_traffic,
     };

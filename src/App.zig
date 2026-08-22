@@ -1163,6 +1163,17 @@ pub const App = struct {
                 }
                 self.dirty = true;
             },
+            .namespace_switched => {
+                // Same shape as context_switched: the view we return to holds rows
+                // from the previous namespace, and its onShow deliberately skips the
+                // network when rows exist, so the refresh has to be forced here.
+                if (self.view_manager.getCurrentView()) |v| {
+                    v.refresh() catch |err| {
+                        Logger.err("Refresh after namespace switch failed: {any}", .{err});
+                    };
+                }
+                self.dirty = true;
+            },
             .request_quit => {
                 self.running = false;
             },
