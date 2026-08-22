@@ -424,3 +424,29 @@ test "pressing an advertised sort key actually sorts" {
     try testing.expectEqual(c3s.View.KeyResult.handled, result);
     try testing.expect(view.table.sort_column != null);
 }
+
+test "D on the nodes view requests a drain, and only on nodes" {
+    const allocator = testing.allocator;
+    var svc = try c3s.K8sService.init(allocator);
+    defer svc.deinit();
+    var theme = try c3s.theme_loader.defaultTheme(allocator);
+    defer c3s.theme_loader.deinitTheme(&theme);
+
+    var nodes = try c3s.NodesView.init(allocator, &theme, &svc);
+    defer nodes.deinit();
+    try testing.expectEqual(
+        c3s.View.KeyResult.request_drain,
+        try c3s.NodesView.handleKey(&nodes, .{ .char = 'D' }),
+    );
+
+    // `r` must still refresh rather than drain -- that collision is the whole reason
+    // drain is on D and not on k9s's key.
+    try testing.expectEqual(
+        c3s.View.KeyResult.handled,
+        try c3s.NodesView.handleKey(&nodes, .{ .char = 'r' }),
+    );
+
+    var pods = try c3s.PodsView.init(allocator, &theme, &svc);
+    defer pods.deinit();
+    try testing.expect(try c3s.PodsView.handleKey(&pods, .{ .char = 'D' }) != c3s.View.KeyResult.request_drain);
+}

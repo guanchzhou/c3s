@@ -89,6 +89,8 @@ pub const View = struct {
         namespace_switched,
         /// Base64-decode the selected Secret's data (`x` on the secrets view).
         request_decode,
+        /// Evict the selected node's pods (`D` on the nodes view). Confirmed first.
+        request_drain,
         /// Mark the selected node unschedulable (`c` on the nodes view).
         request_cordon,
         /// Undo a cordon (`u` on the nodes view).

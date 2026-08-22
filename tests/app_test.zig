@@ -255,3 +255,33 @@ test "? on a view with no ViewType shows generic help, not Pods' help" {
     try testing.expect(has_delete);
     try testing.expect(has_refresh);
 }
+
+test "drain refuses under --readonly without even prompting" {
+    // Cordon is refused at the service boundary, but drain runs through
+    // runInteractive, which spawns kubectl directly and bypasses K8sService entirely --
+    // the exact hole found in the Phase 4 audit for edit/shell/attach. So the check has
+    // to live at the call site, and it must happen BEFORE the confirmation prompt: a
+    // prompt that cannot be honoured is worse than no prompt.
+    var gpa = std.heap.DebugAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
+    var app = try App.init(allocator, .{ .readonly = true });
+    defer app.deinit();
+    try testing.expect(app.k8s_service.readonly);
+
+    try app.switchToView("nodes");
+    const t = &app.nodes_view.table;
+    try t.appendItem(.{ .columns = .{
+        try allocator.dupe(u8, "node-1"),   try allocator.dupe(u8, "Ready"),
+        try allocator.dupe(u8, "worker"),   try allocator.dupe(u8, "v1.33.0"),
+        try allocator.dupe(u8, "10.0.0.1"), try allocator.dupe(u8, "1d"),
+    }, .allocator = allocator });
+    try t.filtered_indices.append(allocator, 0);
+    t.selected_row = 0;
+
+    try app.handleKey(.{ .char = 'D' });
+
+    // No confirmation was armed, so pressing y next cannot drain anything.
+    try testing.expect(app.pending_input == .none);
+}

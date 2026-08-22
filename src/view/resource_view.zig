@@ -538,6 +538,12 @@ pub fn ResourceView(
                         // confirmation flow, like delete has.
                         'c' => return .request_cordon,
                         'u' => return .request_uncordon,
+                        // Uppercase D, NOT k9s's `r`: `r` is refresh in c3s, and
+                        // binding an eviction to the key users press to refresh would
+                        // be an accident generator. Only 'G' is remapped by
+                        // Terminal.readKey, so 'D' arrives as a plain char, and nodes
+                        // has no 'D' sort key.
+                        'D' => return .request_drain,
                         else => {},
                     },
                     else => {},
