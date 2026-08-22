@@ -38,6 +38,10 @@ pub const ViewType = enum {
     // CRD resources
     customresourcedefinitions,
 
+    /// Fallback for any resource view with no ViewType of its own. Before this,
+    /// currentViewType() fell back to `.pods`, so `?` on an Ingress showed PODS' help.
+    generic,
+
     // Misc views
     contexts,
     containers,
@@ -125,6 +129,7 @@ fn loadBindingsForView(allocator: std.mem.Allocator, view_type: ViewType) ![]con
         .contexts => try bindings_data.loadContextsBindings(allocator),
         .containers => try bindings_data.loadContainersBindings(allocator),
         .workloads => try bindings_data.loadWorkloadsBindings(allocator),
+        .generic => try bindings_data.loadGenericResourceBindings(allocator),
         .portforwards => try bindings_data.loadPortForwardsBindings(allocator),
         .aliases => try bindings_data.loadAliasesBindings(allocator),
         .benchmarks => try bindings_data.loadBenchmarksBindings(allocator),

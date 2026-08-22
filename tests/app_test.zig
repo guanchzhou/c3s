@@ -175,3 +175,48 @@ test "Shift-G goes to the bottom of a table-backed view" {
     try app.handleKey(.{ .shift_g = {} });
     try testing.expectEqual(@as(u32, 2), t.selected_row);
 }
+
+test "? on a view with no ViewType shows generic help, not Pods' help" {
+    // Nine resource types have no ViewType of their own, so currentViewType() used to
+    // fall back to .pods -- meaning `?` on an Ingress advertised Shell, Logs, Attach
+    // and Sanitize, none of which do anything on an Ingress.
+    var gpa = std.heap.DebugAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
+    const KeyBindingsViewModel = @import("src").KeyBindingsViewModel;
+    const ViewType = @import("src").ViewType;
+
+    var app = try App.init(allocator, .{});
+    defer app.deinit();
+
+    for ([_][]const u8{
+        "ingresses",      "networkpolicies",   "resourcequotas",
+        "limitranges",    "persistentvolumes", "endpoints",
+        "storageclasses",
+    }) |name| {
+        app.current_view_name = name;
+        try testing.expectEqual(ViewType.generic, app.currentViewTypeForTest());
+    }
+
+    // And the generic set must not carry pods-only actions.
+    var vm = try KeyBindingsViewModel.init(allocator, .generic);
+    defer vm.deinit();
+    for (vm.getBindings()) |b| {
+        for ([_][]const u8{ "shell", "attach", "logs", "sanitize", "set_image", "port_forward", "transfer" }) |pods_only| {
+            try testing.expect(!std.mem.eql(u8, b.action, pods_only));
+        }
+    }
+    // But it must carry the ones that ARE universally real.
+    var has_describe = false;
+    var has_delete = false;
+    var has_refresh = false;
+    for (vm.getBindings()) |b| {
+        if (std.mem.eql(u8, b.action, "describe")) has_describe = true;
+        if (std.mem.eql(u8, b.action, "delete")) has_delete = true;
+        if (std.mem.eql(u8, b.action, "refresh")) has_refresh = true;
+    }
+    try testing.expect(has_describe);
+    try testing.expect(has_delete);
+    try testing.expect(has_refresh);
+}
