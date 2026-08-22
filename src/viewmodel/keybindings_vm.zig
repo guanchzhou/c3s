@@ -172,7 +172,10 @@ fn loadPodsBindings(allocator: std.mem.Allocator) ![]const KeyBinding {
         .{ .key = "p", .description = "Logs Previous", .category = .resource, .action = "logs_previous" },
         .{ .key = "Shift-f", .description = "Port-Forward", .category = .resource, .action = "port_forward" },
         .{ .key = "Shift-j", .description = "Jump Owner", .category = .resource, .action = "jump_owner" },
-        .{ .key = "Shift-r", .description = "Refresh", .category = .resource, .action = "refresh" },
+        // `Shift-r` = Refresh was a contradiction: the same list advertises Shift-r as
+        // the READY sort, and the sort wins in resource_view.handleKey. The real
+        // refresh is lowercase `r`, which was advertised nowhere at all.
+        .{ .key = "r", .description = "Refresh", .category = .resource, .action = "refresh" },
         .{ .key = "s", .description = "Shell", .category = .resource, .action = "shell" },
         .{ .key = "t", .description = "Transfer", .category = .resource, .action = "transfer" },
         .{ .key = "v", .description = "View", .category = .resource, .action = "view" },
@@ -200,11 +203,15 @@ fn loadPodsBindings(allocator: std.mem.Allocator) ![]const KeyBinding {
 
         // NAVIGATION COMMANDS
         .{ .key = "-", .description = "Last Command", .category = .navigation, .action = "last_command" },
-        .{ .key = "0", .description = "Down", .category = .navigation, .action = "down" },
+        // `0` is the all-namespaces toggle (resource_view.zig), not "Down" -- this
+        // entry contradicted the j/Down entries in the same list.
+        .{ .key = "0", .description = "All Namespaces", .category = .navigation, .action = "toggle_all_namespaces" },
         .{ .key = "[", .description = "History Back", .category = .navigation, .action = "history_back" },
         .{ .key = "]", .description = "History Forward", .category = .navigation, .action = "history_forward" },
         .{ .key = "Ctrl-b", .description = "Page Up", .category = .navigation, .action = "page_up" },
-        .{ .key = "Ctrl-f", .description = "Page Down", .category = .navigation, .action = "page_down" },
+        // `Ctrl-f` = Page Down removed: this same list advertises Ctrl-f as Kill
+        // Finalizers, and is_pods claims it first. PageDown itself works.
+        .{ .key = "pgdn", .description = "Page Down", .category = .navigation, .action = "page_down" },
         .{ .key = "g", .description = "Goto Top", .category = .navigation, .action = "goto_top" },
         .{ .key = "Shift-g", .description = "Goto Bottom", .category = .navigation, .action = "goto_bottom" },
         .{ .key = "h", .description = "Left", .category = .navigation, .action = "left" },
@@ -269,7 +276,15 @@ fn loadDeploymentsBindings(allocator: std.mem.Allocator) ![]const KeyBinding {
     // Similar to pods but with deployment-specific commands
     const bindings = [_]KeyBinding{
         .{ .key = "s", .description = "Scale", .category = .resource, .action = "scale" },
-        .{ .key = "r", .description = "Restart", .category = .resource, .action = "restart" },
+        // `r` was advertised as "Restart" while resource_view's generic switch binds
+        // lowercase `r` to refresh -- so pressing it refreshed instead. Worse than a
+        // missing feature: the user gets a different action from the one promised.
+        // A rollout restart is unimplemented; see the roadmap.
+        .{ .key = "r", .description = "Refresh", .category = .resource, .action = "refresh" },
+        // Traffic is the reverse of every other defect here: implemented and reachable
+        // (resource_view -> request_traffic -> App.showTrafficView) but advertised
+        // nowhere, so nobody could discover it.
+        .{ .key = "t", .description = "Traffic", .category = .resource, .action = "traffic" },
         .{ .key = "l", .description = "Logs", .category = .resource, .action = "logs" },
         .{ .key = "d", .description = "Describe", .category = .resource, .action = "describe" },
         .{ .key = "e", .description = "Edit", .category = .resource, .action = "edit" },
@@ -461,7 +476,15 @@ test "keybindings_vm: nodes view has specific bindings" {
     try std.testing.expect(has_describe);
 }
 
-test "keybindings_vm: deployments view has scale and restart" {
+test "keybindings_vm: deployments advertise traffic, and no longer advertise restart" {
+    // This test used to assert deployments advertised "restart". That was enforcing a
+    // lie with a sting in it: nothing implements a rollout restart, and the key it was
+    // advertised on -- lowercase `r` -- is bound to refresh in resource_view's generic
+    // switch. So the help promised Restart and the key delivered Refresh.
+    //
+    // Now inverted for restart, and positive for traffic, which is implemented and
+    // reachable but had been advertised nowhere. Flip the restart half back in the
+    // same commit that implements a rollout restart on a key that is actually free.
     var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
@@ -471,16 +494,22 @@ test "keybindings_vm: deployments view has scale and restart" {
 
     const bindings = vm.getBindings();
 
-    var has_scale = false;
-    var has_restart = false;
-
+    var has_traffic = false;
+    var has_refresh = false;
     for (bindings) |binding| {
-        if (std.mem.eql(u8, binding.action, "scale")) has_scale = true;
-        if (std.mem.eql(u8, binding.action, "restart")) has_restart = true;
+        if (std.mem.eql(u8, binding.action, "traffic")) {
+            has_traffic = true;
+            try std.testing.expectEqualStrings("t", binding.key);
+        }
+        if (std.mem.eql(u8, binding.action, "refresh")) {
+            has_refresh = true;
+            try std.testing.expectEqualStrings("r", binding.key);
+        }
+        try std.testing.expect(!std.mem.eql(u8, binding.action, "restart"));
     }
 
-    try std.testing.expect(has_scale);
-    try std.testing.expect(has_restart);
+    try std.testing.expect(has_traffic);
+    try std.testing.expect(has_refresh);
 }
 
 test "keybindings_vm: all bindings have valid enum values" {

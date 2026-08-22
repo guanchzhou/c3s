@@ -357,3 +357,70 @@ test "c and u on the nodes view request cordon and uncordon" {
         try c3s.NodesView.handleKey(&view, .{ .char = 'u' }),
     );
 }
+
+test "every advertised sort key maps to a column that can actually sort" {
+    // ~14 advertised sort keys pointed at columns with no `sort_key`, so pressing them
+    // did nothing. Rather than delete the hints, the columns gained the keys -- which
+    // only helps if something checks the two sides still agree.
+    //
+    // This asserts the CONFIG side: each key a view advertises for sorting exists as a
+    // sort_key on one of that view's columns. The key-press side is covered below.
+    const Case = struct { name: []const u8, keys: []const u8 };
+    const cases = [_]Case{
+        // pods advertises Shift- A C I M N O P R S T
+        .{ .name = "pods", .keys = "ACIMNOPRST" },
+        .{ .name = "nodes", .keys = "ANRS" },
+        .{ .name = "services", .keys = "ANT" },
+        .{ .name = "jobs", .keys = "ACN" },
+        .{ .name = "persistentvolumeclaims", .keys = "ACNS" },
+    };
+
+    inline for (cases) |case| {
+        const cfg = @field(c3s, blk: {
+            // "pods" -> "PodsView" style lookup is not derivable, so map explicitly.
+            break :blk if (std.mem.eql(u8, case.name, "pods"))
+                "PodsView"
+            else if (std.mem.eql(u8, case.name, "nodes"))
+                "NodesView"
+            else if (std.mem.eql(u8, case.name, "services"))
+                "ServicesView"
+            else if (std.mem.eql(u8, case.name, "jobs"))
+                "JobsView"
+            else
+                "PersistentVolumeClaimsView";
+        }).view_config;
+
+        for (case.keys) |want| {
+            var found = false;
+            for (cfg.columns) |col| {
+                if (col.sort_key) |sk| {
+                    if (sk == want) found = true;
+                }
+            }
+            if (!found) {
+                std.debug.print("{s} advertises sort key '{c}' with no column for it\n", .{ case.name, want });
+                return error.AdvertisedSortKeyHasNoColumn;
+            }
+        }
+    }
+}
+
+test "pressing an advertised sort key actually sorts" {
+    // The key-press half. Before this, a sort key could be present in the config and
+    // still unreachable -- App's global switch used to eat view keys.
+    const allocator = testing.allocator;
+
+    var svc = try c3s.K8sService.init(allocator);
+    defer svc.deinit();
+    var theme = try c3s.theme_loader.defaultTheme(allocator);
+    defer c3s.theme_loader.deinitTheme(&theme);
+
+    var view = try c3s.ServicesView.init(allocator, &theme, &svc);
+    defer view.deinit();
+
+    // TYPE gained sort_key 'T' in this commit; Shift-t was advertised and did nothing.
+    try testing.expectEqual(@as(?u8, null), view.table.sort_column);
+    const result = try c3s.ServicesView.handleKey(&view, .{ .char = 'T' });
+    try testing.expectEqual(c3s.View.KeyResult.handled, result);
+    try testing.expect(view.table.sort_column != null);
+}

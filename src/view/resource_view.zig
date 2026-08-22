@@ -72,6 +72,11 @@ pub fn ResourceView(
     return struct {
         const Self = @This();
 
+        /// The view's Config, exposed so tests can check that what a view advertises
+        /// (sort keys, columns) matches what it can actually do. ~14 advertised sort
+        /// keys pointed at columns with no sort_key and nothing noticed.
+        pub const view_config = config;
+
         theme: *const theme_loader.ThemeColors,
         k8s_service: *K8sService,
         table: TableState(RowData),
