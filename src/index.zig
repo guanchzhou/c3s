@@ -17,6 +17,7 @@ pub const PodsView = rc.PodsView;
 pub const DeploymentsView = rc.DeploymentsView;
 pub const ServicesView = rc.ServicesView;
 pub const NamespacesView = @import("view/NamespacesView.zig").NamespacesView;
+pub const PortForwardsView = @import("view/PortForwardsView.zig").PortForwardsView;
 pub const NodesView = rc.NodesView;
 pub const StatefulSetsView = rc.StatefulSetsView;
 pub const DaemonSetsView = rc.DaemonSetsView;
@@ -88,6 +89,7 @@ pub const cli = @import("cli.zig");
 // Services
 pub const K8sService = @import("services/K8sService.zig").K8sService;
 pub const ClusterInfo = @import("services/K8sService.zig").ClusterInfo;
+pub const PortForwardRegistry = @import("services/PortForwardRegistry.zig").PortForwardRegistry;
 pub const K9sMigration = @import("services/K9sMigration.zig");
 pub const k8s_service_types = @import("services/k8s_types.zig");
 
