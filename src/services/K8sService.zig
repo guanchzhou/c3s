@@ -2366,3 +2366,30 @@ test "cacheVersionFromResponse tolerates a non-object body" {
     svc.cacheVersionFromResponse("{\"gitVersion\":\"v1.36.4\"}");
     try std.testing.expectEqualStrings("v1.36.4", svc.cached_k8s_version.?);
 }
+
+test "readonly is a promise about the cluster, not about which API verbs we call" {
+    // Documents the invariant that the App-level gates exist to uphold.
+    //
+    // The service guard added in Phase 0 only sees calls that go THROUGH the service.
+    // c3s also spawns kubectl directly for edit / shell / attach (App.runInteractive),
+    // which bypasses it entirely -- so `--readonly` still permitted `kubectl edit`
+    // until those call sites were gated too. A guard at one layer is not a guard.
+    //
+    // This test pins the flag's meaning; the App-side refusals are asserted where
+    // they live. Kept here because this is where the flag is owned.
+    const allocator = std.testing.allocator;
+    var svc = try K8sService.init(allocator);
+    defer svc.deinit();
+
+    try std.testing.expect(!svc.readonly);
+    svc.readonly = true;
+
+    // Everything that mutates through the service is refused...
+    svc.connected = true;
+    try std.testing.expectError(error.ReadOnlyMode, svc.deleteResource(.pods, "p", "default", false));
+    try std.testing.expectError(error.ReadOnlyMode, svc.scaleDeployment("d", 0, "default"));
+
+    // ...while reads are not, so the flag cannot be satisfied by simply failing.
+    svc.connected = false;
+    try std.testing.expectError(error.NotConnected, svc.getPodLogs("p", "default", false));
+}
