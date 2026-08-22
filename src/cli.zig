@@ -212,9 +212,13 @@ const InfoPath = struct { label: []const u8, value: []const u8 };
 ///
 /// Add a line here in the commit that implements the reader, not before.
 /// `unread_path_labels` below is the tripwire that enforces it.
-fn advertisedPaths(paths: *const xdg.Paths) [3]InfoPath {
+fn advertisedPaths(paths: *const xdg.Paths) [4]InfoPath {
     return .{
         .{ .label = "Config", .value = paths.config_file },
+        // Re-added in the commit that implemented the reader, exactly as the comment
+        // above required. views_config.get() reads this file to select and reorder each
+        // view's columns.
+        .{ .label = "Custom Views", .value = paths.views_file },
         .{ .label = "Skins", .value = paths.skins_dir },
         .{ .label = "Logs", .value = paths.log_file },
     };
@@ -223,7 +227,9 @@ fn advertisedPaths(paths: *const xdg.Paths) [3]InfoPath {
 /// Labels whose backing path has no reader. Advertising one is a lie; the test below
 /// fails if any reappears in `advertisedPaths`.
 const unread_path_labels = [_][]const u8{
-    "Custom Views",
+    // "Custom Views" was removed from this list when views_config landed -- that is the
+    // sanctioned way to advertise a path: implement the reader, then delete the label
+    // from here, in the same commit.
     "Plugins",
     "Hotkeys",
     "Aliases",
@@ -343,12 +349,16 @@ test "cli: the splash advertises only config paths c3s actually reads" {
     var has_config = false;
     var has_skins = false;
     var has_logs = false;
+    var has_views = false;
     for (advertised) |entry| {
         if (std.mem.eql(u8, entry.label, "Config")) has_config = true;
         if (std.mem.eql(u8, entry.label, "Skins")) has_skins = true;
         if (std.mem.eql(u8, entry.label, "Logs")) has_logs = true;
+        if (std.mem.eql(u8, entry.label, "Custom Views")) has_views = true;
     }
     try std.testing.expect(has_config);
     try std.testing.expect(has_skins);
     try std.testing.expect(has_logs);
+    // Custom Views is real now: views_config reads it.
+    try std.testing.expect(has_views);
 }
