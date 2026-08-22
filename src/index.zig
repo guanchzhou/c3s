@@ -19,6 +19,7 @@ pub const ServicesView = rc.ServicesView;
 pub const NamespacesView = @import("view/NamespacesView.zig").NamespacesView;
 pub const PortForwardsView = @import("view/PortForwardsView.zig").PortForwardsView;
 pub const log_text = @import("view/log_text.zig");
+pub const views_config = @import("model/views_config.zig");
 pub const NodesView = rc.NodesView;
 pub const StatefulSetsView = rc.StatefulSetsView;
 pub const DaemonSetsView = rc.DaemonSetsView;

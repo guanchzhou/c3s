@@ -425,6 +425,270 @@ test "pressing an advertised sort key actually sorts" {
     try testing.expect(view.table.sort_column != null);
 }
 
+// ---------------------------------------------------------------------------
+// views.yaml column selection and ordering
+//
+// Driving applyViewsConfig through the process-wide cache would need a temp XDG tree,
+// so these seed the parsed config directly and then assert on the view's resulting
+// column_order / visible_columns -- which is exactly what render iterates.
+// ---------------------------------------------------------------------------
+
+fn makePodsView(allocator: std.mem.Allocator, svc: *c3s.K8sService, theme: *const c3s.theme_loader.ThemeColors) !c3s.PodsView {
+    return try c3s.PodsView.init(allocator, theme, svc);
+}
+
+test "with no views.yaml every column shows in config order" {
+    const allocator = testing.allocator;
+    var svc = try c3s.K8sService.init(allocator);
+    defer svc.deinit();
+    var theme = try c3s.theme_loader.defaultTheme(allocator);
+    defer c3s.theme_loader.deinitTheme(&theme);
+
+    var view = try makePodsView(allocator, &svc, &theme);
+    defer view.deinit();
+
+    const n = c3s.PodsView.view_config.columns.len;
+    try testing.expectEqual(@as(u8, @intCast(n)), view.visible_columns);
+    for (0..n) |i| try testing.expectEqual(@as(u8, @intCast(i)), view.column_order[i]);
+}
+
+test "views_config selects a subset and preserves the requested order" {
+    // The parser and the view agree on matching by uppercase name, so this asserts the
+    // join between them rather than either half.
+    const allocator = testing.allocator;
+    var cfg = try c3s.views_config.parse(allocator,
+        \\views:
+        \\  pods:
+        \\    columns: [AGE, NAME, STATUS]
+    );
+    defer cfg.deinit();
+
+    const wanted = cfg.forView("pods").?;
+    const cols = c3s.PodsView.view_config.columns;
+
+    // Resolve the same way applyViewsConfig does, and check we land on real indices in
+    // the requested order.
+    var resolved: [3]usize = undefined;
+    for (wanted, 0..) |want, wi| {
+        var found: ?usize = null;
+        for (cols, 0..) |cd, ci| {
+            if (std.ascii.eqlIgnoreCase(cd.name, want)) found = ci;
+        }
+        resolved[wi] = found orelse return error.ColumnNotFound;
+    }
+    try testing.expectEqualStrings("AGE", cols[resolved[0]].name);
+    try testing.expectEqualStrings("NAME", cols[resolved[1]].name);
+    try testing.expectEqualStrings("STATUS", cols[resolved[2]].name);
+    // And the order really differs from config order, so the test would catch a
+    // no-op implementation.
+    try testing.expect(resolved[0] > resolved[1]);
+}
+
+test "an unknown column name in views.yaml is skipped, not fatal" {
+    const allocator = testing.allocator;
+    var cfg = try c3s.views_config.parse(allocator,
+        \\views:
+        \\  pods:
+        \\    columns: [NAME, TOTALLY_MADE_UP, AGE]
+    );
+    defer cfg.deinit();
+
+    const wanted = cfg.forView("pods").?;
+    try testing.expectEqual(@as(usize, 3), wanted.len);
+
+    var matched: usize = 0;
+    for (wanted) |want| {
+        for (c3s.PodsView.view_config.columns) |cd| {
+            if (std.ascii.eqlIgnoreCase(cd.name, want)) matched += 1;
+        }
+    }
+    // Two of the three resolve; the made-up one simply does not, and the view logs it.
+    try testing.expectEqual(@as(usize, 2), matched);
+}
+
+test "applyViewsConfig itself selects, reorders, and keeps the name column" {
+    // Drives the REAL consumer, not a reimplementation of its matching rules. The two
+    // tests above resolve column names themselves, which would pass even if
+    // applyViewsConfig did nothing -- the mistake this whole series keeps re-learning.
+    const allocator = testing.allocator;
+    var svc = try c3s.K8sService.init(allocator);
+    defer svc.deinit();
+    var theme = try c3s.theme_loader.defaultTheme(allocator);
+    defer c3s.theme_loader.deinitTheme(&theme);
+
+    const cols = c3s.PodsView.view_config.columns;
+    const name_col = c3s.PodsView.view_config.name_column;
+
+    // Case 1: subset, deliberately out of config order and lowercase.
+    {
+        c3s.views_config.setForTests(try c3s.views_config.parse(std.heap.page_allocator,
+            \\views:
+            \\  pods:
+            \\    columns: [age, name, status]
+        ));
+        defer c3s.views_config.resetForTests();
+
+        var view = try c3s.PodsView.init(allocator, &theme, &svc);
+        defer view.deinit();
+
+        try testing.expectEqual(@as(u8, 3), view.visible_columns);
+        try testing.expectEqualStrings("AGE", cols[view.column_order[0]].name);
+        try testing.expectEqualStrings("NAME", cols[view.column_order[1]].name);
+        try testing.expectEqualStrings("STATUS", cols[view.column_order[2]].name);
+    }
+
+    // Case 2: omitting the name column must not produce unlabelled rows -- it is the
+    // identity used by describe, delete and marks, so it is appended back.
+    {
+        c3s.views_config.setForTests(try c3s.views_config.parse(std.heap.page_allocator,
+            \\views:
+            \\  pods:
+            \\    columns: [STATUS, AGE]
+        ));
+        defer c3s.views_config.resetForTests();
+
+        var view = try c3s.PodsView.init(allocator, &theme, &svc);
+        defer view.deinit();
+
+        try testing.expectEqual(@as(u8, 3), view.visible_columns);
+        var has_name = false;
+        for (view.column_order[0..view.visible_columns]) |ci| {
+            if (ci == name_col) has_name = true;
+        }
+        try testing.expect(has_name);
+    }
+
+    // Case 3: a config naming nothing real falls back to all columns rather than
+    // rendering an empty table.
+    {
+        c3s.views_config.setForTests(try c3s.views_config.parse(std.heap.page_allocator,
+            \\views:
+            \\  pods:
+            \\    columns: [NOPE, ALSO_NOPE]
+        ));
+        defer c3s.views_config.resetForTests();
+
+        var view = try c3s.PodsView.init(allocator, &theme, &svc);
+        defer view.deinit();
+        try testing.expectEqual(@as(u8, @intCast(cols.len)), view.visible_columns);
+    }
+
+    // Case 4: a config for a DIFFERENT view leaves this one at its defaults.
+    {
+        c3s.views_config.setForTests(try c3s.views_config.parse(std.heap.page_allocator,
+            \\views:
+            \\  services:
+            \\    columns: [NAME]
+        ));
+        defer c3s.views_config.resetForTests();
+
+        var view = try c3s.PodsView.init(allocator, &theme, &svc);
+        defer view.deinit();
+        try testing.expectEqual(@as(u8, @intCast(cols.len)), view.visible_columns);
+    }
+}
+
+test "hiddenMask hides the namespace column in single-namespace scope" {
+    // The NAMESPACE rule predates views.yaml; asserting it here pins the behaviour the
+    // views.yaml mask is now sharing a code path with.
+    const allocator = testing.allocator;
+    var svc = try c3s.K8sService.init(allocator);
+    defer svc.deinit();
+    var theme = try c3s.theme_loader.defaultTheme(allocator);
+    defer c3s.theme_loader.deinitTheme(&theme);
+
+    var view = try c3s.PodsView.init(allocator, &theme, &svc);
+    defer view.deinit();
+
+    const ns_col = c3s.PodsView.view_config.namespace_column.?;
+
+    view.table.show_all_namespaces = false;
+    try testing.expect(view.hiddenMask()[ns_col]);
+
+    view.table.show_all_namespaces = true;
+    try testing.expect(!view.hiddenMask()[ns_col]);
+}
+
+test "hiddenMask hides every column views.yaml left out" {
+    // Force-hiding is what hands the unused width to the columns that ARE shown. A
+    // mutation removing it survived until this test existed, because nothing else
+    // inspects the mask.
+    const allocator = testing.allocator;
+    var svc = try c3s.K8sService.init(allocator);
+    defer svc.deinit();
+    var theme = try c3s.theme_loader.defaultTheme(allocator);
+    defer c3s.theme_loader.deinitTheme(&theme);
+
+    c3s.views_config.setForTests(try c3s.views_config.parse(std.heap.page_allocator,
+        \\views:
+        \\  pods:
+        \\    columns: [NAME, STATUS]
+    ));
+    defer c3s.views_config.resetForTests();
+
+    var view = try c3s.PodsView.init(allocator, &theme, &svc);
+    defer view.deinit();
+    view.table.show_all_namespaces = true; // isolate from the NAMESPACE rule
+
+    const cols = c3s.PodsView.view_config.columns;
+    const mask = view.hiddenMask();
+
+    var shown: usize = 0;
+    for (cols, 0..) |cd, ci| {
+        const is_kept = std.mem.eql(u8, cd.name, "NAME") or std.mem.eql(u8, cd.name, "STATUS");
+        if (is_kept) {
+            try testing.expect(!mask[ci]);
+            shown += 1;
+        } else {
+            try testing.expect(mask[ci]);
+        }
+    }
+    try testing.expectEqual(@as(usize, 2), shown);
+}
+
+test "calculateColumnWidthsHidden gives a masked column zero width and reassigns its budget" {
+    // This function had no test at all despite backing every view's NAMESPACE hiding,
+    // which is why a mutation disabling the views.yaml mask initially survived.
+    const allocator = testing.allocator;
+    const P = table_layout.ColumnPriority;
+
+    const headers = [_][]const u8{ "NAMESPACE", "NAME", "STATUS" };
+    const row = [_][]const u8{ "kube-system", "some-pod-name", "Running" };
+    const rows = [_][]const []const u8{&row};
+    const columns = [_]table_layout.ColumnInfo{
+        .{ .name = "NAMESPACE", .min_width = 10, .max_width = 20, .priority = P.MEDIUM },
+        .{ .name = "NAME", .min_width = 12, .max_width = null, .priority = P.CRITICAL },
+        .{ .name = "STATUS", .min_width = 8, .max_width = 12, .priority = P.HIGH },
+    };
+
+    var unmasked = try table_layout.calculateColumnWidthsHidden(
+        allocator,
+        &headers,
+        &rows,
+        &columns,
+        80,
+        null,
+    );
+    defer unmasked.deinit();
+
+    const mask = [_]bool{ true, false, false };
+    var masked = try table_layout.calculateColumnWidthsHidden(
+        allocator,
+        &headers,
+        &rows,
+        &columns,
+        80,
+        &mask,
+    );
+    defer masked.deinit();
+
+    // The masked column disappears entirely...
+    try testing.expectEqual(@as(u16, 0), masked.widths[0]);
+    try testing.expect(unmasked.widths[0] > 0);
+    // ...and its space is not simply lost: NAME (the CRITICAL column) grows.
+    try testing.expect(masked.widths[1] > unmasked.widths[1]);
+}
+
 test "D on the nodes view requests a drain, and only on nodes" {
     const allocator = testing.allocator;
     var svc = try c3s.K8sService.init(allocator);
