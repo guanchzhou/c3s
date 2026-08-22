@@ -175,3 +175,38 @@ test "Shift-G goes to the bottom of a table-backed view" {
     try app.handleKey(.{ .shift_g = {} });
     try testing.expectEqual(@as(u32, 2), t.selected_row);
 }
+
+test "Ctrl-b pages up in a table-backed view" {
+    // Ctrl-b was advertised as "Page Up" on every view while nothing handled it: App
+    // forwards it to the view, and neither TableState nor resource_view had a case.
+    // Same shape as the .shift_g bug, found in the same audit.
+    var gpa = std.heap.DebugAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
+    var app = try App.init(allocator, .{});
+    defer app.deinit();
+
+    try app.switchToView("namespaces");
+    const t = &app.namespaces_view.table;
+    for (0..10) |i| {
+        var buf: [8]u8 = undefined;
+        const name = try std.fmt.bufPrint(&buf, "ns-{d}", .{i});
+        try t.appendItem(.{
+            .name = try allocator.dupe(u8, name),
+            .status = try allocator.dupe(u8, "Active"),
+            .age = try allocator.dupe(u8, "1d"),
+            .allocator = allocator,
+        });
+    }
+    t.filtered_indices.clearRetainingCapacity();
+    for (0..10) |i| try t.filtered_indices.append(allocator, i);
+    t.visible_rows = 3;
+
+    // Start at the bottom, then page up.
+    try app.handleKey(.{ .shift_g = {} });
+    try testing.expectEqual(@as(u32, 9), t.selected_row);
+
+    try app.handleKey(.{ .ctrl_b = {} });
+    try testing.expect(t.selected_row < 9);
+}

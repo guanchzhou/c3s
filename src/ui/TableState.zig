@@ -258,6 +258,19 @@ pub fn TableState(comptime ItemType: type) type {
                     self.pageDown();
                     return .handled;
                 },
+                // Ctrl-b / Ctrl-f are the vi page keys, and Ctrl-b was advertised as
+                // "Page Up" on every view while nothing handled it -- App forwards it
+                // to the view, and neither TableState nor resource_view had a case.
+                // Same shape as the .shift_g bug.
+                //
+                // Ctrl-f is deliberately NOT added here: handleNavigationKey runs
+                // BEFORE the is_pods branch, so claiming it would shadow pods'
+                // working Kill Finalizers. The false "Page Down" hint is removed
+                // instead.
+                .ctrl_b => {
+                    self.pageUp();
+                    return .handled;
+                },
                 .page_up => {
                     self.pageUp();
                     return .handled;
