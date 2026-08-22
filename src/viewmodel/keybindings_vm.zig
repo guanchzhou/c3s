@@ -15,7 +15,6 @@ pub const ViewType = enum {
     configmaps,
     serviceaccounts,
     persistentvolumeclaims,
-    priorityclasses,
 
     // Apps resources
     deployments,
@@ -32,11 +31,6 @@ pub const ViewType = enum {
     clusterrolebindings,
     roles,
     rolebindings,
-    users,
-    groups,
-
-    // CRD resources
-    customresourcedefinitions,
 
     /// Fallback for any resource view with no ViewType of its own. Before this,
     /// currentViewType() fell back to `.pods`, so `?` on an Ingress showed PODS' help.
@@ -44,18 +38,8 @@ pub const ViewType = enum {
 
     // Misc views
     contexts,
-    containers,
-    workloads,
     portforwards,
     aliases,
-    benchmarks,
-    imagescans,
-    references,
-    screendumps,
-    pulse,
-
-    // Helm
-    helmcharts,
 };
 
 /// KeyBindingsViewModel - provides key bindings for any view type
@@ -104,7 +88,6 @@ fn loadBindingsForView(allocator: std.mem.Allocator, view_type: ViewType) ![]con
         .configmaps => try loadConfigMapsBindings(allocator),
         .serviceaccounts => try bindings_data.loadServiceAccountsBindings(allocator),
         .persistentvolumeclaims => try bindings_data.loadPVCsBindings(allocator),
-        .priorityclasses => try bindings_data.loadPriorityClassesBindings(allocator),
 
         // Apps resources
         .deployments => try loadDeploymentsBindings(allocator),
@@ -119,27 +102,12 @@ fn loadBindingsForView(allocator: std.mem.Allocator, view_type: ViewType) ![]con
         // RBAC resources (most use generic bindings)
         .clusterroles, .roles => try bindings_data.loadRolesBindings(allocator),
         .clusterrolebindings, .rolebindings => try bindings_data.loadRoleBindingsBindings(allocator),
-        .users => try bindings_data.loadUsersBindings(allocator),
-        .groups => try bindings_data.loadGroupsBindings(allocator),
-
-        // CRD resources
-        .customresourcedefinitions => try bindings_data.loadCRDBindings(allocator),
 
         // Misc views (use generic or specific bindings)
         .contexts => try bindings_data.loadContextsBindings(allocator),
-        .containers => try bindings_data.loadContainersBindings(allocator),
-        .workloads => try bindings_data.loadWorkloadsBindings(allocator),
         .generic => try bindings_data.loadGenericResourceBindings(allocator),
         .portforwards => try bindings_data.loadPortForwardsBindings(allocator),
         .aliases => try bindings_data.loadAliasesBindings(allocator),
-        .benchmarks => try bindings_data.loadBenchmarksBindings(allocator),
-        .imagescans => try bindings_data.loadImageScansBindings(allocator),
-        .references => try bindings_data.loadReferencesBindings(allocator),
-        .screendumps => try bindings_data.loadScreenDumpsBindings(allocator),
-        .pulse => try bindings_data.loadPulseBindings(allocator),
-
-        // Helm
-        .helmcharts => try bindings_data.loadHelmChartsBindings(allocator),
     };
 }
 
@@ -309,25 +277,21 @@ test "keybindings_vm: init and deinit for all view types" {
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    // Test all 44 view types can be initialized
+    // Test all 22 view types can be initialized
     const view_types = [_]ViewType{
         // Core resources
-        .pods,            .nodes,                     .services,        .namespaces,          .events,      .secrets,      .configmaps,
-        .serviceaccounts, .persistentvolumeclaims,    .priorityclasses,
+        .pods,            .nodes,                  .services,            .namespaces,  .events,       .secrets,    .configmaps,
+        .serviceaccounts, .persistentvolumeclaims,
         // Apps resources
         .deployments,         .replicasets, .statefulsets, .daemonsets,
         // Batch resources
-        .cronjobs,        .jobs,
+        .cronjobs,
+        .jobs,
         // RBAC resources
-                             .clusterroles,    .clusterrolebindings, .roles,       .rolebindings, .users,
-        .groups,
-        // CRD resources
-                 .customresourcedefinitions,
+                   .clusterroles,           .clusterrolebindings, .roles,       .rolebindings,
         // Misc views
-        .contexts,        .containers,          .workloads,   .portforwards, .aliases,
-        .benchmarks,      .imagescans,                .references,      .screendumps,         .pulse,
-        // Helm
-              .helmcharts,
+        .contexts,   .portforwards,
+        .aliases,
     };
 
     for (view_types) |view_type| {
