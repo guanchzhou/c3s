@@ -110,19 +110,32 @@ pub fn calculateMaxColumnWidths(
     return max_widths;
 }
 
-/// Determine which columns should be visible based on priority and available width
+/// Determine which columns should be visible based on priority and available width.
+///
+/// `force_hidden`, when non-null, marks columns that will not be displayed at all
+/// (e.g. the NAMESPACE column when the view is scoped to a single namespace). Such
+/// columns are hidden up front AND excluded from the width budget — otherwise we
+/// would reserve space for a column that is about to be dropped and needlessly
+/// eliminate a lower-priority visible column (was silently hiding CPU on pods).
 fn determineVisibleColumns(
     allocator: std.mem.Allocator,
     max_widths: []const u16,
     columns: []const ColumnInfo,
     available_width: u16,
+    force_hidden: ?[]const bool,
 ) ![]bool {
     var visible = try allocator.alloc(bool, columns.len);
     @memset(visible, true);
+    if (force_hidden) |fh| {
+        for (fh, 0..) |hidden, i| {
+            if (hidden) visible[i] = false;
+        }
+    }
 
-    // Calculate total width needed
+    // Calculate total width needed — count only columns still visible.
     var total_width: u16 = 0;
-    for (max_widths) |w| {
+    for (max_widths, visible) |w, vis| {
+        if (!vis) continue;
         const new_width = @addWithOverflow(total_width, w);
         if (new_width[1] != 0) {
             total_width = std.math.maxInt(u16);
@@ -143,16 +156,23 @@ fn determineVisibleColumns(
         idx.* = i;
     }
 
-    // Sort by priority descending (highest priority last)
+    // Order columns for elimination: least-important priority tier first, and
+    // within a tier the rightmost column first. The index tie-break makes the
+    // drop deterministic — without it the unstable sort could keep %MEM/R while
+    // dropping CPU/MEM, which reads as broken. Columns are laid out left→right
+    // in descending importance, so "rightmost first" drops the least useful
+    // metric (%MEM/R, then %CPU/R, then MEM, then CPU) the way k9s does.
     std.mem.sort(usize, indices, columns, struct {
         fn lessThan(cols: []const ColumnInfo, a: usize, b: usize) bool {
-            return cols[a].priority > cols[b].priority;
+            if (cols[a].priority != cols[b].priority) return cols[a].priority > cols[b].priority;
+            return a > b;
         }
     }.lessThan);
 
     // Hide columns starting from lowest priority
     for (indices) |idx| {
         if (total_width <= available_width) break;
+        if (!visible[idx]) continue; // already force-hidden
 
         visible[idx] = false;
         if (total_width >= max_widths[idx]) {
@@ -313,7 +333,7 @@ fn distributeWidth(
     return final_widths;
 }
 
-/// Main function to calculate column widths for rendering
+/// Main function to calculate column widths for rendering.
 pub fn calculateColumnWidths(
     allocator: std.mem.Allocator,
     headers: []const []const u8,
@@ -321,12 +341,27 @@ pub fn calculateColumnWidths(
     columns: []const ColumnInfo,
     available_width: u16,
 ) !ColumnWidths {
+    return calculateColumnWidthsHidden(allocator, headers, rows, columns, available_width, null);
+}
+
+/// Like `calculateColumnWidths`, but `force_hidden` marks columns that are not
+/// displayed in this render (e.g. NAMESPACE in single-namespace scope). They get
+/// width 0 and are excluded from the width budget; their freed space is absorbed
+/// by the highest-priority visible column (NAME), so the table still fills.
+pub fn calculateColumnWidthsHidden(
+    allocator: std.mem.Allocator,
+    headers: []const []const u8,
+    rows: []const []const []const u8,
+    columns: []const ColumnInfo,
+    available_width: u16,
+    force_hidden: ?[]const bool,
+) !ColumnWidths {
     // Calculate maximum natural widths
     const max_widths = try calculateMaxColumnWidths(allocator, headers, rows);
     defer allocator.free(max_widths);
 
     // Determine which columns should be visible
-    const visible = try determineVisibleColumns(allocator, max_widths, columns, available_width);
+    const visible = try determineVisibleColumns(allocator, max_widths, columns, available_width, force_hidden);
     defer allocator.free(visible);
 
     // Distribute width among visible columns

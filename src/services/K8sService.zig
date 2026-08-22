@@ -1539,7 +1539,12 @@ pub const K8sService = struct {
             const key = try std.fmt.allocPrint(self.allocator, "{s}/{s}", .{ ns, pod_metric.metadata.name });
             errdefer self.allocator.free(key);
 
-            try result.put(key, PodMetric{ .cpu = cpu_display, .mem = mem_display });
+            try result.put(key, PodMetric{
+                .cpu = cpu_display,
+                .mem = mem_display,
+                .cpu_milli = total_cpu_millicores,
+                .mem_bytes = total_mem_bytes,
+            });
         }
 
         Logger.info("Fetched metrics for {d} pods", .{result.count()});
@@ -1792,25 +1797,44 @@ pub const K8sService = struct {
         return results.toOwnedSlice(self.allocator);
     }
 
-    /// Detect if Cedar authorization CRDs are available
+    /// Cedar's Kubernetes API group.
+    ///
+    /// The group NAME is the API's identity, so naming it is unavoidable -- but the
+    /// version and plural are asked of the server rather than assumed. The previous
+    /// code hardcoded all three and got two of them wrong
+    /// (`cedar.k8s.io/v1alpha1/cedarpolicies` instead of
+    /// `cedar.k8s.aws/<served>/policies`), and because the failure was swallowed the
+    /// Cedar rows silently never appeared. Verified against
+    /// cedar-policy/cedar-access-control-for-k8s (+groupName=cedar.k8s.aws).
+    const cedar_group = "cedar.k8s.aws";
+
+    /// Detect if Cedar authorization CRDs are available.
+    ///
+    /// Discovery-driven: present in the cluster means supported, absent means there is
+    /// nothing to show. No version or plural is compiled in.
     pub fn detectCedarAuth(self: *K8sService) !bool {
         if (!self.isConnected()) return false;
-
-        const response = self.client.?.request(.GET, "/apis/cedar.k8s.io/v1alpha1", null) catch {
-            return false;
-        };
-        defer self.allocator.free(response);
-
-        // Check for a valid API group response (not a 404 status)
-        return std.mem.indexOf(u8, response, "cedar.k8s.io") != null;
+        return klient.Discovery.init(self.client.?).hasGroup(cedar_group);
     }
 
     /// List Cedar policies from CRDs
     pub fn listCedarPolicies(self: *K8sService) ![]PolicyInfo {
         if (!self.isConnected()) return error.NotConnected;
 
-        const response = self.client.?.request(.GET, "/apis/cedar.k8s.io/v1alpha1/cedarpolicies", null) catch |err| {
-            Logger.warn("listCedarPolicies failed: {}", .{err});
+        // Ask the server where Cedar policies live instead of assuming.
+        const disco = klient.Discovery.init(self.client.?);
+        const info = (disco.findResource(cedar_group, "Policy") catch |err| {
+            Logger.warn("Cedar discovery failed: {}", .{err});
+            return error.RequestFailed;
+        }) orelse return &.{};
+        defer disco.freeResource(info);
+
+        // Policy is cluster-scoped, which discovery reports via info.namespaced.
+        const path = try info.resourcePath(self.allocator, null, null);
+        defer self.allocator.free(path);
+
+        const response = self.client.?.request(.GET, path, null) catch |err| {
+            Logger.warn("listCedarPolicies failed for {s}: {}", .{ path, err });
             return error.RequestFailed;
         };
         defer self.allocator.free(response);
@@ -1843,20 +1867,39 @@ pub const K8sService = struct {
             const spec = item.object.get("spec") orelse continue;
             if (spec != .object) continue;
 
-            const resource_str = if (spec.object.get("resource")) |v|
-                if (v == .string) v.string else "*"
+            // The Cedar Policy CRD has `spec.content` (the policy text) and
+            // `spec.validation`. It has no resource/actions/principal fields -- the
+            // previous code read those and so every row rendered "*", which in an RBAC
+            // table reads as "all resources". That is not a cosmetic defect: it
+            // overstates the reach of every Cedar policy in a security view.
+            //
+            // Cedar policy text does not decompose into RBAC's resource/verbs/subjects
+            // without a Cedar parser, so show what is actually known and mark the rest
+            // not-applicable rather than inventing a wildcard.
+            const content = if (spec.object.get("content")) |v|
+                if (v == .string) v.string else ""
             else
-                "*";
+                "";
 
-            const verbs_str = if (spec.object.get("actions")) |v|
-                if (v == .string) v.string else "*"
+            // Effect is the leading keyword of a Cedar policy and is genuinely the
+            // action semantics, so it belongs in the verbs column.
+            const trimmed = std.mem.trim(u8, content, " \t\r\n");
+            const verbs_str = if (std.mem.startsWith(u8, trimmed, "permit"))
+                "permit"
+            else if (std.mem.startsWith(u8, trimmed, "forbid"))
+                "forbid"
             else
-                "*";
+                "—";
 
-            const subjects_str = if (spec.object.get("principal")) |v|
-                if (v == .string) v.string else "*"
-            else
-                "*";
+            // First line of the policy, truncated -- the most informative single field.
+            const first_line = blk: {
+                const line_end = std.mem.indexOfScalar(u8, trimmed, '\n') orelse trimmed.len;
+                const line = trimmed[0..line_end];
+                break :blk if (line.len > 60) line[0..60] else line;
+            };
+            const resource_str = if (first_line.len > 0) first_line else "(empty policy)";
+
+            const subjects_str = "—";
 
             try results.append(self.allocator, PolicyInfo{
                 .source = try self.allocator.dupe(u8, name),

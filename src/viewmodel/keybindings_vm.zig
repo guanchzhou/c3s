@@ -185,8 +185,9 @@ fn loadPodsBindings(allocator: std.mem.Allocator) ![]const KeyBinding {
         .{ .key = "Ctrl-g", .description = "Toggle Crumbs", .category = .general, .action = "toggle_crumbs" },
         .{ .key = ":q", .description = "Quit", .category = .general, .action = "quit" },
         .{ .key = "space", .description = "Mark", .category = .general, .action = "mark" },
-        .{ .key = "Ctrl-space", .description = "Mark Range", .category = .general, .action = "mark_range" },
-        .{ .key = "Ctrl-\\", .description = "Mark Clear", .category = .general, .action = "mark_clear" },
+        .{ .key = "*", .description = "Mark All", .category = .general, .action = "mark_all" },
+        .{ .key = "^", .description = "Invert Marks", .category = .general, .action = "mark_invert" },
+        .{ .key = "\\", .description = "Mark Clear", .category = .general, .action = "mark_clear" },
         .{ .key = "Ctrl-s", .description = "Save", .category = .general, .action = "save" },
 
         // NAVIGATION COMMANDS

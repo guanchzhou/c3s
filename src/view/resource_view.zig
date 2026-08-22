@@ -17,6 +17,7 @@ const sort_util = @import("../viewmodel/sort.zig");
 const age_util = @import("../viewmodel/age.zig");
 const TableState = @import("../ui/TableState.zig").TableState;
 const table_layout = @import("../ui/table_layout.zig");
+const PodMetric = @import("../services/k8s_types.zig").PodMetric;
 
 /// Column definition for a resource view
 pub const ColumnDef = struct {
@@ -39,7 +40,18 @@ pub const Config = struct {
     /// When set, after the transform loop the cpu/mem columns at these indices
     /// are overwritten with live pod metrics from the metrics server (keyed
     /// "<namespace>/<name>"). Inert for every view that leaves this null.
-    metrics_columns: ?struct { cpu: u8, mem: u8 } = null,
+    ///
+    /// `cpu_pct`/`mem_pct`, when set, are %-of-request columns (k9s %CPU/R,
+    /// %MEM/R). The transform writes the summed container request into these
+    /// cells as a plain integer (millicores / bytes); the metrics hook then
+    /// rewrites each cell to "<pct>" (usage*100/request) when metrics exist, or
+    /// "n/a" otherwise — so the raw request integer never reaches the display.
+    metrics_columns: ?struct {
+        cpu: u8,
+        mem: u8,
+        cpu_pct: ?u8 = null,
+        mem_pct: ?u8 = null,
+    } = null,
 };
 
 /// Generate a complete View type for a Kubernetes resource.
@@ -65,6 +77,9 @@ pub fn ResourceView(
         table: TableState(RowData),
         cached_col_widths: ?table_layout.ColumnWidths = null,
         cached_terminal_width: u16 = 0,
+        /// Cached widths bake in whether NAMESPACE is hidden, so the cache is
+        /// only valid while the namespace scope is unchanged.
+        cached_show_all: bool = false,
         /// Scratch buffer for the decorated box title ("pods(default)[8]").
         title_buf: [192]u8 = undefined,
 
@@ -153,26 +168,50 @@ pub fn ResourceView(
 
             // Overwrite the cpu/mem placeholder columns with live metrics, when
             // the config opts in. The metrics server is optional: on any error
-            // (or a null map) the placeholders are left untouched.
+            // the map is treated as absent. cpu/mem placeholders are left as-is
+            // when a pod has no metrics; %-of-request cells are always rewritten
+            // (to "<pct>" or "n/a") so the raw request integer the transform
+            // stored there never reaches the display.
             if (config.metrics_columns) |mc| {
-                if (self.k8s_service.getPodMetrics(self.table.show_all_namespaces)) |maybe_map| {
-                    if (maybe_map) |map_val| {
-                        var map = map_val;
-                        defer self.k8s_service.freePodMetrics(&map);
-                        for (self.table.items.items) |*row| {
-                            const ns = row.columns[config.namespace_column.?];
-                            const nm = row.columns[config.name_column];
-                            var keybuf: [512]u8 = undefined;
-                            const key = std.fmt.bufPrint(&keybuf, "{s}/{s}", .{ ns, nm }) catch continue;
-                            if (map.get(key)) |pm| {
-                                self.table.allocator.free(row.columns[mc.cpu]);
-                                self.table.allocator.free(row.columns[mc.mem]);
-                                row.columns[mc.cpu] = try self.table.allocator.dupe(u8, pm.cpu);
-                                row.columns[mc.mem] = try self.table.allocator.dupe(u8, pm.mem);
-                            }
-                        }
+                var maybe_map: ?std.StringHashMap(PodMetric) =
+                    self.k8s_service.getPodMetrics(self.table.show_all_namespaces) catch null;
+                defer if (maybe_map) |*m| self.k8s_service.freePodMetrics(m);
+
+                const alloc = self.table.allocator;
+                for (self.table.items.items) |*row| {
+                    const ns = row.columns[config.namespace_column.?];
+                    const nm = row.columns[config.name_column];
+                    var keybuf: [512]u8 = undefined;
+                    const key = std.fmt.bufPrint(&keybuf, "{s}/{s}", .{ ns, nm }) catch continue;
+                    const pm: ?PodMetric =
+                        if (maybe_map) |*m| m.get(key) else null;
+
+                    if (pm) |metric| {
+                        alloc.free(row.columns[mc.cpu]);
+                        alloc.free(row.columns[mc.mem]);
+                        row.columns[mc.cpu] = try alloc.dupe(u8, metric.cpu);
+                        row.columns[mc.mem] = try alloc.dupe(u8, metric.mem);
                     }
-                } else |_| {}
+
+                    if (mc.cpu_pct) |ci| {
+                        const req = std.fmt.parseInt(u64, row.columns[ci], 10) catch 0;
+                        const cell = if (pm != null and req > 0)
+                            try std.fmt.allocPrint(alloc, "{d}", .{pm.?.cpu_milli * 100 / req})
+                        else
+                            try alloc.dupe(u8, "n/a");
+                        alloc.free(row.columns[ci]);
+                        row.columns[ci] = cell;
+                    }
+                    if (mc.mem_pct) |mi| {
+                        const req = std.fmt.parseInt(u64, row.columns[mi], 10) catch 0;
+                        const cell = if (pm != null and req > 0)
+                            try std.fmt.allocPrint(alloc, "{d}", .{pm.?.mem_bytes * 100 / req})
+                        else
+                            try alloc.dupe(u8, "n/a");
+                        alloc.free(row.columns[mi]);
+                        row.columns[mi] = cell;
+                    }
+                }
             }
 
             try self.applyFilter(self.table.filter_text);
@@ -197,6 +236,27 @@ pub fn ResourceView(
             }
             try self.table.applyFilter(filter, matchFn);
             self.applySorting();
+        }
+
+        /// Bulk mark operations over the currently-filtered rows.
+        /// `.all` marks every filtered row (idempotent); `.invert` toggles each.
+        /// Clearing is `table.clearMarks()` directly. toggleMark dupes the key,
+        /// so reusing one stack buffer across rows is safe.
+        const MarkOp = enum { all, invert };
+        fn applyMarkOp(self: *Self, op: MarkOp) void {
+            var key_buf: [512]u8 = undefined;
+            for (self.table.filtered_indices.items) |idx| {
+                const item: *const RowData = &self.table.items.items[idx];
+                const key = rowKey(item, &key_buf);
+                switch (op) {
+                    .all => if (!self.table.isMarked(key)) {
+                        self.table.toggleMark(key) catch |err|
+                            Logger.err("Failed to mark row in {s}: {}", .{ config.name, err });
+                    },
+                    .invert => self.table.toggleMark(key) catch |err|
+                        Logger.err("Failed to invert mark in {s}: {}", .{ config.name, err }),
+                }
+            }
         }
 
         fn applySorting(self: *Self) void {
@@ -264,7 +324,24 @@ pub fn ResourceView(
             }
 
             const available_width = width;
-            const use_cache = self.cached_col_widths != null and self.cached_terminal_width == available_width;
+
+            // When scoped to a single namespace the NAMESPACE column is redundant
+            // (every row shares it), so mark it force-hidden: the width calc gives
+            // it 0 and excludes it from the budget — its space is absorbed by the
+            // highest-priority column (NAME). Excluding it from the budget (rather
+            // than zeroing it after the fact) is what keeps a low-priority column
+            // like CPU from being needlessly dropped to make room for a NAMESPACE
+            // column that is not even shown. Mirrors k9s.
+            var force_hidden: [col_count]bool = undefined;
+            @memset(&force_hidden, false);
+            const hide_ns = config.is_namespaced and !self.table.show_all_namespaces;
+            if (hide_ns) {
+                if (config.namespace_column) |ns_col| force_hidden[ns_col] = true;
+            }
+
+            const use_cache = self.cached_col_widths != null and
+                self.cached_terminal_width == available_width and
+                self.cached_show_all == self.table.show_all_namespaces;
 
             const col_widths = if (use_cache) blk: {
                 break :blk &self.cached_col_widths.?;
@@ -286,29 +363,23 @@ pub fn ResourceView(
                     old_widths.deinit();
                 }
 
-                self.cached_col_widths = try table_layout.calculateColumnWidths(
+                self.cached_col_widths = try table_layout.calculateColumnWidthsHidden(
                     allocator,
                     &col_names,
                     rows_data.items,
                     &layout_columns,
                     available_width,
+                    &force_hidden,
                 );
                 self.cached_terminal_width = available_width;
+                self.cached_show_all = self.table.show_all_namespaces;
                 break :blk &self.cached_col_widths.?;
             };
 
-            // Effective widths for THIS render. When scoped to a single
-            // namespace the NAMESPACE column is redundant (every row shares it),
-            // so hide it and hand its width to the NAME column — the table still
-            // fills, just like k9s drops NAMESPACE in single-namespace views.
-            var eff_widths: [col_count]u16 = undefined;
-            @memcpy(eff_widths[0..col_count], col_widths.widths[0..col_count]);
-            if (config.is_namespaced and !self.table.show_all_namespaces) {
-                if (config.namespace_column) |ns_col| {
-                    eff_widths[config.name_column] += eff_widths[ns_col];
-                    eff_widths[ns_col] = 0;
-                }
-            }
+            // The masked width calc already gave NAMESPACE width 0 (in single-ns
+            // scope) and handed its space to NAME, so the rendered widths are the
+            // computed widths verbatim.
+            const eff_widths = col_widths.widths;
 
             // Render header using runtime loop (widths are runtime values)
             {
@@ -454,6 +525,22 @@ pub fn ResourceView(
                             self.table.toggleMark(mark_key) catch |err|
                                 Logger.err("Failed to toggle mark in {s}: {}", .{ config.name, err });
                         }
+                        return .handled;
+                    }
+
+                    // Bulk mark manipulation over the currently-filtered rows
+                    // (k9s-style multi-select): '*' mark all, '\' clear, '^'
+                    // invert. Acts on the visible/filtered set, like the filter.
+                    if (c == '*') {
+                        self.applyMarkOp(.all);
+                        return .handled;
+                    }
+                    if (c == '\\') {
+                        self.table.clearMarks();
+                        return .handled;
+                    }
+                    if (c == '^') {
+                        self.applyMarkOp(.invert);
                         return .handled;
                     }
 
