@@ -358,7 +358,7 @@ test "k8s_service: deleteResource returns NotConnected" {
     var service = try K8sService.init(allocator);
     defer service.deinit();
 
-    try testing.expectError(error.NotConnected, service.deleteResource(.pods, "test", "default"));
+    try testing.expectError(error.NotConnected, service.deleteResource(.pods, "test", "default", false));
 }
 
 test "k8s_service: getPodLogs returns NotConnected" {
@@ -367,7 +367,7 @@ test "k8s_service: getPodLogs returns NotConnected" {
     var service = try K8sService.init(allocator);
     defer service.deinit();
 
-    try testing.expectError(error.NotConnected, service.getPodLogs("test", null));
+    try testing.expectError(error.NotConnected, service.getPodLogs("test", null, false));
 }
 
 // =========================================================================
@@ -571,4 +571,52 @@ test "k8s_service: TLS data defaults to null" {
     try testing.expect(service.tls_ca_data == null);
     try testing.expect(service.tls_cert_data == null);
     try testing.expect(service.tls_key_data == null);
+}
+
+// --- Phase 0: --readonly must actually block mutations (2026-08-22) ----------
+//
+// `--readonly` used to be parsed, advertised in --help, covered by two cli tests,
+// and consulted NOWHERE outside cli.zig -- so `c3s --readonly` happily deleted.
+// These assert the guard at the service boundary, which is where a new caller
+// cannot forget it.
+
+test "readonly: every cluster-mutating method is refused" {
+    const allocator = std.testing.allocator;
+    var svc = try K8sService.init(allocator);
+    defer svc.deinit();
+
+    svc.readonly = true;
+    // connected=true so the guard, not the connection check, is what rejects.
+    svc.connected = true;
+
+    try std.testing.expectError(error.ReadOnlyMode, svc.deletePod("p", "default"));
+    try std.testing.expectError(error.ReadOnlyMode, svc.deleteResource(.pods, "p", "default", false));
+    try std.testing.expectError(error.ReadOnlyMode, svc.deleteResource(.pods, "p", "default", true));
+    try std.testing.expectError(error.ReadOnlyMode, svc.scaleDeployment("d", 3, "default"));
+    try std.testing.expectError(error.ReadOnlyMode, svc.scaleStatefulSet("s", 3, "default"));
+    try std.testing.expectError(error.ReadOnlyMode, svc.scaleReplicaSet("r", 3, "default"));
+    try std.testing.expectError(error.ReadOnlyMode, svc.setCronJobSuspend("c", true, "default"));
+}
+
+test "readonly: defaults off, so normal operation is unaffected" {
+    const allocator = std.testing.allocator;
+    var svc = try K8sService.init(allocator);
+    defer svc.deinit();
+
+    try std.testing.expect(!svc.readonly);
+    // With readonly off and no connection, the connection check rejects instead --
+    // proving the guard is not simply refusing everything unconditionally.
+    try std.testing.expectError(error.NotConnected, svc.deleteResource(.pods, "p", "default", false));
+}
+
+test "readonly: the guard precedes the connection check" {
+    // Ordering matters for the message the user sees: a readonly refusal must not be
+    // reported as a connection problem.
+    const allocator = std.testing.allocator;
+    var svc = try K8sService.init(allocator);
+    defer svc.deinit();
+
+    svc.readonly = true;
+    svc.connected = false;
+    try std.testing.expectError(error.ReadOnlyMode, svc.deleteResource(.pods, "p", "default", false));
 }

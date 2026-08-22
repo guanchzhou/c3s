@@ -45,6 +45,13 @@ pub const K8sService = struct {
     connect_attempted: bool = false,
     // When true, use `kubectl get --raw` for API calls instead of klient's HTTP client
     use_kubectl: bool = false,
+    /// When true, every cluster-mutating method fails with error.ReadOnlyMode.
+    ///
+    /// Set from `--readonly`. Enforced HERE rather than in the UI: the flag was
+    /// previously parsed, advertised in --help, and consulted nowhere, so
+    /// `c3s --readonly` permitted deletion. Guarding at the service boundary means
+    /// a new caller cannot forget it, and Phase 4's mutations inherit it for free.
+    readonly: bool = false,
 
     // TLS certificate data (decoded from base64) - needs cleanup
     tls_ca_data: ?[]const u8 = null,
@@ -1094,12 +1101,23 @@ pub const K8sService = struct {
     }
 
     /// Delete a pod
+    /// Reject a cluster mutation when running with --readonly.
+    ///
+    /// Called by every mutating method. Read paths deliberately do not call this.
+    fn assertMutable(self: *K8sService) !void {
+        if (self.readonly) return error.ReadOnlyMode;
+    }
+
     pub fn deletePod(self: *K8sService, name: []const u8, namespace: ?[]const u8) !void {
+        try self.assertMutable();
         if (!self.isConnected()) return error.NotConnected;
 
         const pods_client = klient.Pods.init(self.client.?);
         const ns = namespace orelse self.current_namespace;
-        try pods_client.delete(name, ns, null);
+        // klient.Pods wraps a ResourceClient in `.client`; delete takes (name, ns).
+        // This body never compiled -- Zig analyses a function only when it is
+        // referenced, and nothing referenced it, so the arity error stayed hidden.
+        try pods_client.client.delete(name, ns);
     }
 
     // ===== Deployment Operations =====
@@ -1116,6 +1134,7 @@ pub const K8sService = struct {
 
     /// Scale a deployment
     pub fn scaleDeployment(self: *K8sService, name: []const u8, replicas: i32, namespace: ?[]const u8) !void {
+        try self.assertMutable();
         if (!self.isConnected()) return error.NotConnected;
 
         const client = klient.Deployments.init(self.client.?);
@@ -1191,6 +1210,7 @@ pub const K8sService = struct {
 
     /// Scale a statefulset
     pub fn scaleStatefulSet(self: *K8sService, name: []const u8, replicas: i32, namespace: ?[]const u8) !void {
+        try self.assertMutable();
         if (!self.isConnected()) return error.NotConnected;
 
         const client = klient.resources.StatefulSets.init(self.client.?);
@@ -1224,6 +1244,7 @@ pub const K8sService = struct {
 
     /// Scale a replicaset
     pub fn scaleReplicaSet(self: *K8sService, name: []const u8, replicas: i32, namespace: ?[]const u8) !void {
+        try self.assertMutable();
         if (!self.isConnected()) return error.NotConnected;
 
         const client = klient.resources.ReplicaSets.init(self.client.?);
@@ -1257,6 +1278,7 @@ pub const K8sService = struct {
 
     /// Suspend/resume a cronjob
     pub fn setCronJobSuspend(self: *K8sService, name: []const u8, should_suspend: bool, namespace: ?[]const u8) !void {
+        try self.assertMutable();
         if (!self.isConnected()) return error.NotConnected;
 
         const client = klient.resources.CronJobs.init(self.client.?);
@@ -1604,6 +1626,7 @@ pub const K8sService = struct {
 
     /// Delete any resource by type, name, namespace
     pub fn deleteResource(self: *K8sService, resource_type: ResourceType, name: []const u8, namespace: []const u8, force: bool) !void {
+        try self.assertMutable();
         if (!self.isConnected()) return error.NotConnected;
 
         const path = if (resource_type.isClusterScoped())
@@ -1616,10 +1639,18 @@ pub const K8sService = struct {
             // Use kubectl delete for kubectl mode. Zig 0.16: std.process.run
             // spawns + waits + collects output in one call (output discarded).
             // force adds --grace-period=0 --force (Ctrl-K kill vs Ctrl-D delete).
-            const base = [_][]const u8{ "kubectl", "delete", resource_type.resourceName(), name, "-n", namespace };
-            const forced = base ++ [_][]const u8{ "--grace-period=0", "--force" };
+            // MUST go through buildKubectlArgv: it pins --context to the cluster
+            // c3s is connected to. A hand-built argv inherits kubectl's own
+            // current-context, so after an in-app context switch this deleted from
+            // the PREVIOUS cluster. Every other kubectl call in this file already
+            // routed through it; this one did not.
+            const sub = [_][]const u8{ "delete", resource_type.resourceName(), name, "-n", namespace };
+            const sub_forced = sub ++ [_][]const u8{ "--grace-period=0", "--force" };
+            const argv = try self.buildKubectlArgv(if (force) &sub_forced else &sub);
+            defer self.allocator.free(argv);
+
             const result = std.process.run(self.allocator, runtime.io(), .{
-                .argv = if (force) &forced else &base,
+                .argv = argv,
                 .stdout_limit = .limited(64 * 1024),
             }) catch return error.KubectlFailed;
             self.allocator.free(result.stdout);
@@ -2126,4 +2157,48 @@ test "hintsContainFresh matches only fresh entries for the exact server" {
     try testing.expect(!K8sService.hintsContainFresh(content, "https://missing.example.com", 1001, ttl));
     // Malformed lines are skipped.
     try testing.expect(!K8sService.hintsContainFresh("garbage\nx y\n", "y", 0, ttl));
+}
+
+test "buildKubectlArgv pins --context so mutations cannot hit the wrong cluster" {
+    // deleteResource used to hand-build {"kubectl","delete",...} with no --context,
+    // so after an in-app context switch it deleted from whatever cluster the SHELL's
+    // kubeconfig pointed at. It now routes through this builder; this pins the
+    // builder's contract.
+    const allocator = std.testing.allocator;
+    var svc = try K8sService.init(allocator);
+    defer svc.deinit();
+
+    svc.allocator.free(svc.context_name);
+    svc.context_name = try allocator.dupe(u8, "prod-cluster");
+
+    const argv = try svc.buildKubectlArgv(&.{ "delete", "pods", "doomed", "-n", "default" });
+    defer allocator.free(argv);
+
+    try std.testing.expectEqualStrings("kubectl", argv[0]);
+
+    var saw_context = false;
+    for (argv, 0..) |a, i| {
+        if (std.mem.eql(u8, a, "--context")) {
+            saw_context = true;
+            try std.testing.expectEqualStrings("prod-cluster", argv[i + 1]);
+        }
+    }
+    try std.testing.expect(saw_context);
+
+    // and the subcommand survives intact after the injected flags
+    try std.testing.expectEqualStrings("delete", argv[argv.len - 5]);
+    try std.testing.expectEqualStrings("doomed", argv[argv.len - 3]);
+}
+
+test "buildKubectlArgv omits --context when the context is unknown" {
+    // Guards the other direction: an "unknown" context must not be passed to kubectl
+    // as a literal, which would fail every call.
+    const allocator = std.testing.allocator;
+    var svc = try K8sService.init(allocator);
+    defer svc.deinit();
+
+    const argv = try svc.buildKubectlArgv(&.{"version"});
+    defer allocator.free(argv);
+
+    for (argv) |a| try std.testing.expect(!std.mem.eql(u8, a, "--context"));
 }
