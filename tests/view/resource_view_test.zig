@@ -293,3 +293,67 @@ test "resource_configs: StorageClassesView config is valid" {
     const T = c3s.StorageClassesView;
     _ = T;
 }
+
+// ---------------------------------------------------------------------------
+// Per-view action keys
+//
+// These press the key and assert the KeyResult, rather than asserting a config
+// property. That distinction matters: a mutation that deleted the `x` -> decode
+// mapping in resource_view.zig survived the whole suite, because every existing test
+// here inspects configs and none drives handleKey.
+// ---------------------------------------------------------------------------
+
+test "x on the secrets view requests a decode" {
+    const allocator = testing.allocator;
+
+    var svc = try c3s.K8sService.init(allocator);
+    defer svc.deinit();
+    var theme = try c3s.theme_loader.defaultTheme(allocator);
+    defer c3s.theme_loader.deinitTheme(&theme);
+
+    var view = try c3s.SecretsView.init(allocator, &theme, &svc);
+    defer view.deinit();
+
+    const result = try c3s.SecretsView.handleKey(&view, .{ .char = 'x' });
+    try testing.expectEqual(c3s.View.KeyResult.request_decode, result);
+}
+
+test "x on a non-secrets view is not a decode" {
+    // The branch is comptime-gated on config.name, so this proves the gate works
+    // rather than 'x' being globally bound.
+    const allocator = testing.allocator;
+
+    var svc = try c3s.K8sService.init(allocator);
+    defer svc.deinit();
+    var theme = try c3s.theme_loader.defaultTheme(allocator);
+    defer c3s.theme_loader.deinitTheme(&theme);
+
+    var view = try c3s.ConfigMapsView.init(allocator, &theme, &svc);
+    defer view.deinit();
+
+    const result = try c3s.ConfigMapsView.handleKey(&view, .{ .char = 'x' });
+    try testing.expect(result != c3s.View.KeyResult.request_decode);
+}
+
+test "c and u on the nodes view request cordon and uncordon" {
+    // Same gap: the cordon/uncordon PR verified the help entries by mutation but never
+    // drove the keys themselves.
+    const allocator = testing.allocator;
+
+    var svc = try c3s.K8sService.init(allocator);
+    defer svc.deinit();
+    var theme = try c3s.theme_loader.defaultTheme(allocator);
+    defer c3s.theme_loader.deinitTheme(&theme);
+
+    var view = try c3s.NodesView.init(allocator, &theme, &svc);
+    defer view.deinit();
+
+    try testing.expectEqual(
+        c3s.View.KeyResult.request_cordon,
+        try c3s.NodesView.handleKey(&view, .{ .char = 'c' }),
+    );
+    try testing.expectEqual(
+        c3s.View.KeyResult.request_uncordon,
+        try c3s.NodesView.handleKey(&view, .{ .char = 'u' }),
+    );
+}

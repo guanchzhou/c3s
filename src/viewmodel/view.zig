@@ -87,6 +87,8 @@ pub const View = struct {
         /// screen while getTitle -- which reads current_namespace live -- displayed
         /// the NEW one. The title contradicted the rows.
         namespace_switched,
+        /// Base64-decode the selected Secret's data (`x` on the secrets view).
+        request_decode,
         /// Mark the selected node unschedulable (`c` on the nodes view).
         request_cordon,
         /// Undo a cordon (`u` on the nodes view).

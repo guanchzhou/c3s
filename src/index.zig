@@ -92,6 +92,7 @@ pub const ClusterInfo = @import("services/K8sService.zig").ClusterInfo;
 pub const PortForwardRegistry = @import("services/PortForwardRegistry.zig").PortForwardRegistry;
 pub const K9sMigration = @import("services/K9sMigration.zig");
 pub const k8s_service_types = @import("services/k8s_types.zig");
+pub const secret_decode = @import("viewmodel/secret_decode.zig");
 
 // K8s module exports (from zig-klient library)
 pub const klient = @import("klient");
