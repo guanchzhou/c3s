@@ -465,3 +465,20 @@ test "CommandInput suggestions: no suggestion for slash prompt" {
 
     try testing.expect(cmd_input.currentSuggestion() == null);
 }
+
+test "addChar accepts the characters Terminal routes as separate key variants" {
+    // ':' '?' and 'G' are all printable ASCII, so addChar always accepted them --
+    // the bug was upstream in App, which never called it for those keys because
+    // Terminal.readKey converts them to .colon / .question_mark / .shift_g before
+    // App's dispatch sees them. This pins the low-level contract App now relies on:
+    // filtering for a pod named "Gateway" must be expressible.
+    var theme = try theme_loader.defaultTheme(std.testing.allocator);
+    defer theme_loader.deinitTheme(&theme);
+
+    var ci = try CommandInput.init(std.testing.allocator, &theme);
+    defer ci.deinit();
+
+    ci.showWithPrompt("/");
+    for ("Gateway:?") |c| try ci.addChar(c);
+    try std.testing.expectEqualStrings("Gateway:?", ci.getCommand());
+}

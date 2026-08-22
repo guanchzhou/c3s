@@ -224,10 +224,14 @@ fn loadPodsBindings(allocator: std.mem.Allocator) ![]const KeyBinding {
 fn loadNodesBindings(allocator: std.mem.Allocator) ![]const KeyBinding {
     // Node-specific key bindings
     const bindings = [_]KeyBinding{
-        // Node-specific commands
-        .{ .key = "c", .description = "Cordon", .category = .resource, .action = "cordon" },
-        .{ .key = "u", .description = "Uncordon", .category = .resource, .action = "uncordon" },
-        .{ .key = "r", .description = "Drain", .category = .resource, .action = "drain" },
+        // Node-specific commands.
+        //
+        // Cordon / Uncordon / Drain were advertised here with NO implementation
+        // anywhere in the codebase -- the help screen promised actions that did
+        // nothing. tasks/lessons.md already records the rule: "Hints/help must not
+        // advertise unimplemented actions -- wire every key or remove the hint."
+        // They are on the Phase 4 list in docs/design/2026-08-22-c3s-roadmap.md;
+        // re-add each one in the same commit that implements it.
         .{ .key = "s", .description = "Shell", .category = .resource, .action = "shell" },
         .{ .key = "y", .description = "YAML", .category = .resource, .action = "yaml" },
         .{ .key = "d", .description = "Describe", .category = .resource, .action = "describe" },
@@ -419,17 +423,27 @@ test "keybindings_vm: nodes view has specific bindings" {
 
     const bindings = vm.getBindings();
 
-    // Check for node-specific bindings
-    var has_cordon = false;
-    var has_drain = false;
-
+    // Tripwire, deliberately inverted.
+    //
+    // This test used to assert that cordon and drain WERE advertised -- enforcing a
+    // lie, since neither has any implementation. It now asserts the opposite, so the
+    // suite fails if an unimplemented action is advertised again. When Phase 4
+    // implements them, flip these back in the same commit as the implementation.
     for (bindings) |binding| {
-        if (std.mem.eql(u8, binding.action, "cordon")) has_cordon = true;
-        if (std.mem.eql(u8, binding.action, "drain")) has_drain = true;
+        try std.testing.expect(!std.mem.eql(u8, binding.action, "cordon"));
+        try std.testing.expect(!std.mem.eql(u8, binding.action, "uncordon"));
+        try std.testing.expect(!std.mem.eql(u8, binding.action, "drain"));
     }
 
-    try std.testing.expect(has_cordon);
-    try std.testing.expect(has_drain);
+    // The node bindings that ARE implemented must still be present.
+    var has_yaml = false;
+    var has_describe = false;
+    for (bindings) |binding| {
+        if (std.mem.eql(u8, binding.action, "yaml")) has_yaml = true;
+        if (std.mem.eql(u8, binding.action, "describe")) has_describe = true;
+    }
+    try std.testing.expect(has_yaml);
+    try std.testing.expect(has_describe);
 }
 
 test "keybindings_vm: deployments view has scale and restart" {

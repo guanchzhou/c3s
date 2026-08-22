@@ -30,6 +30,7 @@ pub const LogsView = struct {
     }
 
     pub fn deinit(self: *LogsView) void {
+        // clearContent frees filter_text as well as the lines.
         self.clearContent();
         self.filtered_indices.deinit(self.allocator);
     }
@@ -44,6 +45,7 @@ pub const LogsView = struct {
             self.allocator.free(self.title);
             self.title = "Logs";
         }
+        if (self.filter_text.len > 0) self.allocator.free(self.filter_text);
         self.filter_text = "";
     }
 
@@ -74,7 +76,19 @@ pub const LogsView = struct {
 
     /// Apply a filter to log lines
     pub fn applyFilter(self: *LogsView, filter: []const u8) !void {
-        self.filter_text = filter;
+        // Own the filter text. The caller's slice is usually command_input's buffer,
+        // which is cleared with clearRetainingCapacity() immediately after this
+        // returns -- so keeping the borrow meant filter_text aliased whatever the
+        // user typed next while retaining its old length, and became a true
+        // use-after-free once the buffer grew past its capacity. Reads happen on
+        // every later render, not just here.
+        //
+        // Dupe BEFORE freeing the old: applyFilter is called with self.filter_text
+        // itself (refresh paths pass the current filter back in), so freeing first
+        // would read freed memory. TableState.applyFilter documents the same hazard.
+        const new_filter: []const u8 = if (filter.len > 0) try self.allocator.dupe(u8, filter) else "";
+        if (self.filter_text.len > 0) self.allocator.free(self.filter_text);
+        self.filter_text = new_filter;
         try self.rebuildFilteredIndices();
         self.selected_row = 0;
         self.scroll_offset = 0;

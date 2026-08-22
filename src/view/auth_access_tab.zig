@@ -16,12 +16,19 @@ pub const AccessStatus = enum {
     allowed,
     denied,
     conditional,
+    /// The check did not complete, so we do not know. Distinct from `denied` on
+    /// purpose: this grid used to default every cell to `.denied` and swallow
+    /// failures, so a transport problem rendered as "you have no access to
+    /// anything" -- a confident answer the app had not earned. In a security view
+    /// that is worse than admitting ignorance.
+    unknown,
 
     pub fn symbol(self: AccessStatus) []const u8 {
         return switch (self) {
             .allowed => "\xe2\x9c\x93", // checkmark
             .denied => "\xe2\x9c\x97", // x-mark
             .conditional => "~",
+            .unknown => "?",
         };
     }
 };
@@ -29,12 +36,12 @@ pub const AccessStatus = enum {
 pub const AccessRow = struct {
     resource: []const u8,
     group: []const u8,
-    get: AccessStatus = .denied,
-    list: AccessStatus = .denied,
-    create: AccessStatus = .denied,
-    update: AccessStatus = .denied,
-    delete: AccessStatus = .denied,
-    watch: AccessStatus = .denied,
+    get: AccessStatus = .unknown,
+    list: AccessStatus = .unknown,
+    create: AccessStatus = .unknown,
+    update: AccessStatus = .unknown,
+    delete: AccessStatus = .unknown,
+    watch: AccessStatus = .unknown,
     condition_count: ?u32 = null, // null if conditional auth not available
     allocator: std.mem.Allocator,
 
@@ -108,8 +115,10 @@ pub const AccessReviewTab = struct {
             // Check each verb
             const verbs_to_check = [_][]const u8{ "get", "list", "create", "update", "delete", "watch" };
             for (verbs_to_check, 0..) |verb, i| {
-                const result = self.k8s_service.checkAccess(verb, res.group, res.resource, namespace) catch {
-                    continue;
+                // A failed check must leave the cell `.unknown`, never `.denied`.
+                const result = self.k8s_service.checkAccess(verb, res.group, res.resource, namespace) catch |err| {
+                    Logger.warn("checkAccess {s} {s}: {t}", .{ verb, res.resource, err });
+                    continue; // field keeps its .unknown default
                 };
                 const status: AccessStatus = if (result.conditional)
                     .conditional
@@ -251,6 +260,8 @@ fn renderAccessCell(term: *Terminal, cx: u16, cy: u16, status: AccessStatus, is_
         .allowed => theme.status_running, // green
         .denied => theme.status_failed, // red
         .conditional => theme.status_pending, // yellow
+        // Deliberately NOT red: an unfinished check must not read like a denial.
+        .unknown => theme.inactive_fg,
     };
     try Theme.writeStringWithTheme(term, cx, cy, status.symbol(), fg, bg);
 }

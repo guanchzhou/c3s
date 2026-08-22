@@ -45,6 +45,13 @@ pub const K8sService = struct {
     connect_attempted: bool = false,
     // When true, use `kubectl get --raw` for API calls instead of klient's HTTP client
     use_kubectl: bool = false,
+    /// When true, every cluster-mutating method fails with error.ReadOnlyMode.
+    ///
+    /// Set from `--readonly`. Enforced HERE rather than in the UI: the flag was
+    /// previously parsed, advertised in --help, and consulted nowhere, so
+    /// `c3s --readonly` permitted deletion. Guarding at the service boundary means
+    /// a new caller cannot forget it, and Phase 4's mutations inherit it for free.
+    readonly: bool = false,
 
     // TLS certificate data (decoded from base64) - needs cleanup
     tls_ca_data: ?[]const u8 = null,
@@ -651,6 +658,39 @@ pub const K8sService = struct {
         return result.stdout;
     }
 
+    /// POST a JSON body through the local `kubectl proxy` via curl.
+    ///
+    /// The kubectl transport has no POST path -- `kubectl get --raw` is read-only --
+    /// so SelfSubjectAccessReview could not be issued at all in kubectl mode. Going
+    /// through the proxy keeps it a single fast localhost call and preserves full
+    /// response fidelity (including the KEP-5681 condition chain), which
+    /// `kubectl auth can-i` would discard. It is also the only option that does not
+    /// cost a ~1.5s subprocess per cell: the access grid issues 48 checks.
+    fn proxyPost(self: *K8sService, path: []const u8, body: []const u8) ![]u8 {
+        const port = self.proxy_port orelse return error.ProxyUnavailable;
+        const url = try std.fmt.allocPrint(self.allocator, "http://127.0.0.1:{d}{s}", .{ port, path });
+        defer self.allocator.free(url);
+
+        const result = std.process.run(self.allocator, runtime.io(), .{
+            .argv = &.{
+                "curl",          "-sf",
+                "--max-time",    "8",
+                "-X",            "POST",
+                "-H",            "Content-Type: application/json",
+                "--data-binary", body,
+                url,
+            },
+            .stdout_limit = .limited(1024 * 1024),
+        }) catch return error.KubectlFailed;
+        defer self.allocator.free(result.stderr);
+
+        if (result.term != .exited or result.term.exited != 0) {
+            self.allocator.free(result.stdout);
+            return error.KubectlFailed;
+        }
+        return result.stdout;
+    }
+
     fn kubectlRequestOnceAlloc(self: *K8sService, a: std.mem.Allocator, path: []const u8) ![]u8 {
         const argv = try self.buildKubectlArgv(&.{ "get", "--raw", path });
         defer self.allocator.free(argv);
@@ -867,6 +907,9 @@ pub const K8sService = struct {
         const parsed = std.json.parseFromSlice(std.json.Value, self.allocator, response, .{}) catch return;
         defer parsed.deinit();
 
+        // A non-object body -- an HTML error page from a proxy, or a metav1.Status --
+        // used to panic here rather than degrade to "unknown version".
+        if (parsed.value != .object) return;
         const git_version = if (parsed.value.object.get("gitVersion")) |v|
             if (v == .string) v.string else null
         else
@@ -943,6 +986,7 @@ pub const K8sService = struct {
         };
         defer parsed.deinit();
 
+        if (parsed.value != .object) return "unknown";
         const git_version = if (parsed.value.object.get("gitVersion")) |v|
             if (v == .string) v.string else null
         else
@@ -1094,12 +1138,23 @@ pub const K8sService = struct {
     }
 
     /// Delete a pod
+    /// Reject a cluster mutation when running with --readonly.
+    ///
+    /// Called by every mutating method. Read paths deliberately do not call this.
+    fn assertMutable(self: *K8sService) !void {
+        if (self.readonly) return error.ReadOnlyMode;
+    }
+
     pub fn deletePod(self: *K8sService, name: []const u8, namespace: ?[]const u8) !void {
+        try self.assertMutable();
         if (!self.isConnected()) return error.NotConnected;
 
         const pods_client = klient.Pods.init(self.client.?);
         const ns = namespace orelse self.current_namespace;
-        try pods_client.delete(name, ns, null);
+        // klient.Pods wraps a ResourceClient in `.client`; delete takes (name, ns).
+        // This body never compiled -- Zig analyses a function only when it is
+        // referenced, and nothing referenced it, so the arity error stayed hidden.
+        try pods_client.client.delete(name, ns);
     }
 
     // ===== Deployment Operations =====
@@ -1116,6 +1171,7 @@ pub const K8sService = struct {
 
     /// Scale a deployment
     pub fn scaleDeployment(self: *K8sService, name: []const u8, replicas: i32, namespace: ?[]const u8) !void {
+        try self.assertMutable();
         if (!self.isConnected()) return error.NotConnected;
 
         const client = klient.Deployments.init(self.client.?);
@@ -1191,6 +1247,7 @@ pub const K8sService = struct {
 
     /// Scale a statefulset
     pub fn scaleStatefulSet(self: *K8sService, name: []const u8, replicas: i32, namespace: ?[]const u8) !void {
+        try self.assertMutable();
         if (!self.isConnected()) return error.NotConnected;
 
         const client = klient.resources.StatefulSets.init(self.client.?);
@@ -1224,6 +1281,7 @@ pub const K8sService = struct {
 
     /// Scale a replicaset
     pub fn scaleReplicaSet(self: *K8sService, name: []const u8, replicas: i32, namespace: ?[]const u8) !void {
+        try self.assertMutable();
         if (!self.isConnected()) return error.NotConnected;
 
         const client = klient.resources.ReplicaSets.init(self.client.?);
@@ -1257,6 +1315,7 @@ pub const K8sService = struct {
 
     /// Suspend/resume a cronjob
     pub fn setCronJobSuspend(self: *K8sService, name: []const u8, should_suspend: bool, namespace: ?[]const u8) !void {
+        try self.assertMutable();
         if (!self.isConnected()) return error.NotConnected;
 
         const client = klient.resources.CronJobs.init(self.client.?);
@@ -1604,6 +1663,7 @@ pub const K8sService = struct {
 
     /// Delete any resource by type, name, namespace
     pub fn deleteResource(self: *K8sService, resource_type: ResourceType, name: []const u8, namespace: []const u8, force: bool) !void {
+        try self.assertMutable();
         if (!self.isConnected()) return error.NotConnected;
 
         const path = if (resource_type.isClusterScoped())
@@ -1616,10 +1676,18 @@ pub const K8sService = struct {
             // Use kubectl delete for kubectl mode. Zig 0.16: std.process.run
             // spawns + waits + collects output in one call (output discarded).
             // force adds --grace-period=0 --force (Ctrl-K kill vs Ctrl-D delete).
-            const base = [_][]const u8{ "kubectl", "delete", resource_type.resourceName(), name, "-n", namespace };
-            const forced = base ++ [_][]const u8{ "--grace-period=0", "--force" };
+            // MUST go through buildKubectlArgv: it pins --context to the cluster
+            // c3s is connected to. A hand-built argv inherits kubectl's own
+            // current-context, so after an in-app context switch this deleted from
+            // the PREVIOUS cluster. Every other kubectl call in this file already
+            // routed through it; this one did not.
+            const sub = [_][]const u8{ "delete", resource_type.resourceName(), name, "-n", namespace };
+            const sub_forced = sub ++ [_][]const u8{ "--grace-period=0", "--force" };
+            const argv = try self.buildKubectlArgv(if (force) &sub_forced else &sub);
+            defer self.allocator.free(argv);
+
             const result = std.process.run(self.allocator, runtime.io(), .{
-                .argv = if (force) &forced else &base,
+                .argv = argv,
                 .stdout_limit = .limited(64 * 1024),
             }) catch return error.KubectlFailed;
             self.allocator.free(result.stdout);
@@ -1634,17 +1702,87 @@ pub const K8sService = struct {
 
     /// Get pod logs
     pub fn getPodLogs(self: *K8sService, name: []const u8, namespace: ?[]const u8, previous: bool) ![]u8 {
+        return self.getPodLogsForContainer(name, namespace, previous, null);
+    }
+
+    /// Fetch pod logs, optionally for a named container.
+    ///
+    /// `container == null` asks the API server to choose, which it only does for
+    /// single-container pods; for anything with a sidecar (Istio, log shippers,
+    /// init-heavy workloads) it answers 400 "a container name must be specified".
+    /// That is why logs simply failed on those pods.
+    ///
+    /// Rather than guess, the null case falls back to reading the pod and using its
+    /// first container. The extra GET is only paid when the first attempt fails, and
+    /// only on pods that would otherwise show nothing at all. A container picker is
+    /// Phase 4 work; this makes the default case work in the meantime.
+    pub fn getPodLogsForContainer(
+        self: *K8sService,
+        name: []const u8,
+        namespace: ?[]const u8,
+        previous: bool,
+        container: ?[]const u8,
+    ) ![]u8 {
         if (!self.isConnected()) return error.NotConnected;
 
         const ns = namespace orelse "default";
-        const path = if (previous)
-            try std.fmt.allocPrint(self.allocator, "/api/v1/namespaces/{s}/pods/{s}/log?tailLines=1000&previous=true", .{ ns, name })
-        else
-            try std.fmt.allocPrint(self.allocator, "/api/v1/namespaces/{s}/pods/{s}/log?tailLines=1000", .{ ns, name });
+
+        if (self.logRequest(name, ns, previous, container)) |body| return body else |err| {
+            // Only the ambiguous-container case is worth a retry; a real failure
+            // (missing pod, forbidden, transport down) must surface as itself.
+            if (container != null) return err;
+
+            const first = self.firstContainerName(name, ns) catch return err;
+            defer self.allocator.free(first);
+            Logger.info("pod {s} has multiple containers; showing logs for '{s}'", .{ name, first });
+            return self.logRequest(name, ns, previous, first);
+        }
+    }
+
+    fn logRequest(self: *K8sService, name: []const u8, ns: []const u8, previous: bool, container: ?[]const u8) ![]u8 {
+        var query: std.ArrayListUnmanaged(u8) = .empty;
+        defer query.deinit(self.allocator);
+        try query.appendSlice(self.allocator, "tailLines=1000");
+        if (previous) try query.appendSlice(self.allocator, "&previous=true");
+        if (container) |c| {
+            try query.appendSlice(self.allocator, "&container=");
+            try query.appendSlice(self.allocator, c);
+        }
+
+        const path = try std.fmt.allocPrint(
+            self.allocator,
+            "/api/v1/namespaces/{s}/pods/{s}/log?{s}",
+            .{ ns, name, query.items },
+        );
         defer self.allocator.free(path);
 
         if (self.use_kubectl) return try self.kubectlRequest(path);
-        return try self.client.?.request(.GET, path, null);
+        if (self.client) |c| return try c.request(.GET, path, null);
+        return error.NotConnected;
+    }
+
+    /// Name of the pod's first container. Caller owns the result.
+    fn firstContainerName(self: *K8sService, name: []const u8, ns: []const u8) ![]u8 {
+        const raw = try self.getRawJson(.pods, name, ns);
+        defer self.allocator.free(raw);
+
+        var parsed = try std.json.parseFromSlice(std.json.Value, self.allocator, raw, .{
+            .ignore_unknown_fields = true,
+        });
+        defer parsed.deinit();
+
+        if (parsed.value != .object) return error.UnexpectedResponse;
+        const spec = parsed.value.object.get("spec") orelse return error.UnexpectedResponse;
+        if (spec != .object) return error.UnexpectedResponse;
+        const containers = spec.object.get("containers") orelse return error.UnexpectedResponse;
+        if (containers != .array or containers.array.items.len == 0) return error.UnexpectedResponse;
+
+        const first = containers.array.items[0];
+        if (first != .object) return error.UnexpectedResponse;
+        const cname = first.object.get("name") orelse return error.UnexpectedResponse;
+        if (cname != .string) return error.UnexpectedResponse;
+
+        return self.allocator.dupe(u8, cname.string);
     }
 
     // ===== Authorization Methods =====
@@ -1663,10 +1801,26 @@ pub const K8sService = struct {
             \\{{"apiVersion":"authorization.k8s.io/v1","kind":"SelfSubjectAccessReview","spec":{{"resourceAttributes":{{"namespace":"{s}","verb":"{s}","group":"{s}","resource":"{s}"}}}}}}
         , .{ namespace, verb, group, resource });
 
-        const response = self.client.?.requestWithContentType(.POST, "/apis/authorization.k8s.io/v1/selfsubjectaccessreviews", body, "application/json") catch |err| {
-            Logger.warn("checkAccess failed for {s}/{s}: {}", .{ resource, verb, err });
-            return error.RequestFailed;
-        };
+        const ssar_path = "/apis/authorization.k8s.io/v1/selfsubjectaccessreviews";
+
+        // The kubectl transport is the standard path on clusters where direct TLS
+        // failed (EKS, TLS interception). Without this branch every check errored,
+        // and because the caller swallowed the error the grid rendered as
+        // "denied everywhere" -- an answer the app had not earned.
+        // `self.client` may legitimately be null in kubectl mode (isConnected
+        // permits it), so the HTTP path must not be reached in that case.
+        const response = if (self.use_kubectl)
+            self.proxyPost(ssar_path, body) catch |err| {
+                Logger.warn("checkAccess via proxy failed for {s}/{s}: {t}", .{ resource, verb, err });
+                return error.RequestFailed;
+            }
+        else if (self.client) |c|
+            c.requestWithContentType(.POST, ssar_path, body, "application/json") catch |err| {
+                Logger.warn("checkAccess failed for {s}/{s}: {}", .{ resource, verb, err });
+                return error.RequestFailed;
+            }
+        else
+            return error.NotConnected;
         defer self.allocator.free(response);
 
         // Parse response
@@ -1676,8 +1830,17 @@ pub const K8sService = struct {
         };
         defer parsed.deinit();
 
+        const denied = AccessCheckResult{ .allowed = false, .conditional = false, .condition_count = 0 };
+
         const root = parsed.value;
-        const status = root.object.get("status") orelse return AccessCheckResult{ .allowed = false, .conditional = false, .condition_count = 0 };
+        if (root != .object) return error.UnexpectedResponse;
+        const status = root.object.get("status") orelse return denied;
+
+        // On an error the API server answers with a metav1.Status, whose own `status`
+        // field is the STRING "Failure" -- so `status.object` panicked on exactly the
+        // response most in need of handling. Surface it as an error rather than
+        // reporting "denied", which is the distinction Phase 0 established.
+        if (status != .object) return error.UnexpectedResponse;
 
         const allowed = if (status.object.get("allowed")) |v| v == .bool and v.bool else false;
 
@@ -1741,7 +1904,9 @@ pub const K8sService = struct {
         defer parsed.deinit();
 
         const root = parsed.value;
+        if (root != .object) return &.{};
         const status = root.object.get("status") orelse return &.{};
+        if (status != .object) return &.{}; // metav1.Status: `status` is a string
         const chain = status.object.get("conditionSetChain") orelse return &.{};
 
         if (chain != .array) return &.{};
@@ -1845,6 +2010,7 @@ pub const K8sService = struct {
         defer parsed.deinit();
 
         const root = parsed.value;
+        if (root != .object) return &.{};
         const items = root.object.get("items") orelse return &.{};
         if (items != .array) return &.{};
 
@@ -1956,7 +2122,13 @@ pub const K8sService = struct {
             binding_map.deinit();
         }
 
-        if (crb_parsed.value.object.get("items")) |crb_items| {
+        // A metav1.Status body has no "items"; .object on it would panic, so the
+        // lookup is guarded into an optional rather than nesting another block.
+        const crb_items_opt = if (crb_parsed.value == .object)
+            crb_parsed.value.object.get("items")
+        else
+            null;
+        if (crb_items_opt) |crb_items| {
             if (crb_items == .array) {
                 for (crb_items.array.items) |binding| {
                     if (binding != .object) continue;
@@ -1990,7 +2162,11 @@ pub const K8sService = struct {
         }
 
         // Process ClusterRoles
-        if (cr_parsed.value.object.get("items")) |cr_items| {
+        const cr_items_opt = if (cr_parsed.value == .object)
+            cr_parsed.value.object.get("items")
+        else
+            null;
+        if (cr_items_opt) |cr_items| {
             if (cr_items == .array) {
                 for (cr_items.array.items) |role| {
                     if (role != .object) continue;
@@ -2126,4 +2302,67 @@ test "hintsContainFresh matches only fresh entries for the exact server" {
     try testing.expect(!K8sService.hintsContainFresh(content, "https://missing.example.com", 1001, ttl));
     // Malformed lines are skipped.
     try testing.expect(!K8sService.hintsContainFresh("garbage\nx y\n", "y", 0, ttl));
+}
+
+test "buildKubectlArgv pins --context so mutations cannot hit the wrong cluster" {
+    // deleteResource used to hand-build {"kubectl","delete",...} with no --context,
+    // so after an in-app context switch it deleted from whatever cluster the SHELL's
+    // kubeconfig pointed at. It now routes through this builder; this pins the
+    // builder's contract.
+    const allocator = std.testing.allocator;
+    var svc = try K8sService.init(allocator);
+    defer svc.deinit();
+
+    svc.allocator.free(svc.context_name);
+    svc.context_name = try allocator.dupe(u8, "prod-cluster");
+
+    const argv = try svc.buildKubectlArgv(&.{ "delete", "pods", "doomed", "-n", "default" });
+    defer allocator.free(argv);
+
+    try std.testing.expectEqualStrings("kubectl", argv[0]);
+
+    var saw_context = false;
+    for (argv, 0..) |a, i| {
+        if (std.mem.eql(u8, a, "--context")) {
+            saw_context = true;
+            try std.testing.expectEqualStrings("prod-cluster", argv[i + 1]);
+        }
+    }
+    try std.testing.expect(saw_context);
+
+    // and the subcommand survives intact after the injected flags
+    try std.testing.expectEqualStrings("delete", argv[argv.len - 5]);
+    try std.testing.expectEqualStrings("doomed", argv[argv.len - 3]);
+}
+
+test "buildKubectlArgv omits --context when the context is unknown" {
+    // Guards the other direction: an "unknown" context must not be passed to kubectl
+    // as a literal, which would fail every call.
+    const allocator = std.testing.allocator;
+    var svc = try K8sService.init(allocator);
+    defer svc.deinit();
+
+    const argv = try svc.buildKubectlArgv(&.{"version"});
+    defer allocator.free(argv);
+
+    for (argv) |a| try std.testing.expect(!std.mem.eql(u8, a, "--context"));
+}
+
+test "cacheVersionFromResponse tolerates a non-object body" {
+    // An HTML error page from an intercepting proxy, or a bare JSON scalar, reached
+    // parsed.value.object unguarded and panicked instead of degrading to "unknown".
+    // In-file because cacheVersionFromResponse is private: testability is not a
+    // reason to widen the API.
+    var svc = try K8sService.init(std.testing.allocator);
+    defer svc.deinit();
+
+    svc.cacheVersionFromResponse("[]");
+    svc.cacheVersionFromResponse("\"just a string\"");
+    svc.cacheVersionFromResponse("null");
+    svc.cacheVersionFromResponse("<html>503 Service Unavailable</html>");
+    try std.testing.expect(svc.cached_k8s_version == null);
+
+    // A well-formed body still works.
+    svc.cacheVersionFromResponse("{\"gitVersion\":\"v1.36.4\"}");
+    try std.testing.expectEqualStrings("v1.36.4", svc.cached_k8s_version.?);
 }

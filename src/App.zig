@@ -190,6 +190,9 @@ pub const App = struct {
         // Initialize Kubernetes service (heap-allocated so views get a stable pointer)
         const k8s_service = try allocator.create(K8sService);
         k8s_service.* = try K8sService.init(allocator);
+        // --readonly was previously parsed and never consulted, so it blocked nothing.
+        // The service rejects mutations; the UI additionally declines to prompt.
+        k8s_service.readonly = config.readonly;
         errdefer {
             k8s_service.deinit();
             allocator.destroy(k8s_service);
@@ -818,6 +821,23 @@ pub const App = struct {
                         try self.command_input.addChar(c);
                         self.dirty = true;
                     }
+                },
+                // Terminal.readKey turns ':' '?' and 'G' into distinct Key variants
+                // before App sees them, so they never arrive as .char and used to
+                // fall through to `else => {}` -- silently dropped. That made a colon
+                // untypeable in any prompt and a pod named "Gateway" unfilterable.
+                // While a prompt is open these are ordinary text.
+                .colon => {
+                    try self.command_input.addChar(':');
+                    self.dirty = true;
+                },
+                .question_mark => {
+                    try self.command_input.addChar('?');
+                    self.dirty = true;
+                },
+                .shift_g => {
+                    try self.command_input.addChar('G');
+                    self.dirty = true;
                 },
                 .backspace => {
                     self.command_input.backspace();
@@ -1505,6 +1525,12 @@ pub const App = struct {
 
         // Store delete state
         self.clearDeleteState();
+        if (self.k8s_service.readonly) {
+            self.footer.setStatus("Read-only mode: delete refused");
+            self.dirty = true;
+            return;
+        }
+
         self.delete_pending = true;
         self.delete_force = force;
         self.delete_resource_name = try self.allocator.dupe(u8, info.name);
@@ -1530,7 +1556,10 @@ pub const App = struct {
 
         self.k8s_service.deleteResource(resource_type, name, namespace, self.delete_force) catch |err| {
             Logger.err("Failed to delete {s}/{s}: {any}", .{ resource_type.resourceName(), name, err });
-            self.footer.setStatus("Delete failed");
+            self.footer.setStatus(if (err == error.ReadOnlyMode)
+                "Read-only mode: delete refused"
+            else
+                "Delete failed");
             return;
         };
 

@@ -68,15 +68,21 @@ test "K8sService - list namespaces" {
     };
     // Note: Connection cleaned up in service.deinit()
 
-    // List namespaces
-    const namespaces = service.listNamespaces() catch |err| {
+    // List namespaces.
+    //
+    // listNamespaces returns ParsedList(T), not a plain slice: the wrapper owns the
+    // json.Parsed arena its items point into. Returning a bare slice used to mean
+    // memcpy-ing structs containing json.Value out of a Parsed and then deinit-ing
+    // it -- a use-after-free. Hence .items() / .deinit() rather than allocator.free.
+    var namespaces = service.listNamespaces() catch |err| {
         std.debug.print("Failed to list namespaces: {}\n", .{err});
         return err;
     };
-    defer allocator.free(namespaces);
+    defer namespaces.deinit();
 
-    std.debug.print("Found {} namespaces\n", .{namespaces.len});
-    try testing.expect(namespaces.len > 0); // Should have at least default or kube-system
+    const ns_items = namespaces.items();
+    std.debug.print("Found {} namespaces\n", .{ns_items.len});
+    try testing.expect(ns_items.len > 0); // Should have at least default or kube-system
 }
 
 test "K8sService - list nodes" {

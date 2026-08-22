@@ -358,7 +358,7 @@ test "k8s_service: deleteResource returns NotConnected" {
     var service = try K8sService.init(allocator);
     defer service.deinit();
 
-    try testing.expectError(error.NotConnected, service.deleteResource(.pods, "test", "default"));
+    try testing.expectError(error.NotConnected, service.deleteResource(.pods, "test", "default", false));
 }
 
 test "k8s_service: getPodLogs returns NotConnected" {
@@ -367,7 +367,7 @@ test "k8s_service: getPodLogs returns NotConnected" {
     var service = try K8sService.init(allocator);
     defer service.deinit();
 
-    try testing.expectError(error.NotConnected, service.getPodLogs("test", null));
+    try testing.expectError(error.NotConnected, service.getPodLogs("test", null, false));
 }
 
 // =========================================================================
@@ -571,4 +571,129 @@ test "k8s_service: TLS data defaults to null" {
     try testing.expect(service.tls_ca_data == null);
     try testing.expect(service.tls_cert_data == null);
     try testing.expect(service.tls_key_data == null);
+}
+
+// --- Phase 0: --readonly must actually block mutations (2026-08-22) ----------
+//
+// `--readonly` used to be parsed, advertised in --help, covered by two cli tests,
+// and consulted NOWHERE outside cli.zig -- so `c3s --readonly` happily deleted.
+// These assert the guard at the service boundary, which is where a new caller
+// cannot forget it.
+
+test "readonly: every cluster-mutating method is refused" {
+    const allocator = std.testing.allocator;
+    var svc = try K8sService.init(allocator);
+    defer svc.deinit();
+
+    svc.readonly = true;
+    // connected=true so the guard, not the connection check, is what rejects.
+    svc.connected = true;
+
+    try std.testing.expectError(error.ReadOnlyMode, svc.deletePod("p", "default"));
+    try std.testing.expectError(error.ReadOnlyMode, svc.deleteResource(.pods, "p", "default", false));
+    try std.testing.expectError(error.ReadOnlyMode, svc.deleteResource(.pods, "p", "default", true));
+    try std.testing.expectError(error.ReadOnlyMode, svc.scaleDeployment("d", 3, "default"));
+    try std.testing.expectError(error.ReadOnlyMode, svc.scaleStatefulSet("s", 3, "default"));
+    try std.testing.expectError(error.ReadOnlyMode, svc.scaleReplicaSet("r", 3, "default"));
+    try std.testing.expectError(error.ReadOnlyMode, svc.setCronJobSuspend("c", true, "default"));
+}
+
+test "readonly: defaults off, so normal operation is unaffected" {
+    const allocator = std.testing.allocator;
+    var svc = try K8sService.init(allocator);
+    defer svc.deinit();
+
+    try std.testing.expect(!svc.readonly);
+    // With readonly off and no connection, the connection check rejects instead --
+    // proving the guard is not simply refusing everything unconditionally.
+    try std.testing.expectError(error.NotConnected, svc.deleteResource(.pods, "p", "default", false));
+}
+
+test "readonly: the guard precedes the connection check" {
+    // Ordering matters for the message the user sees: a readonly refusal must not be
+    // reported as a connection problem.
+    const allocator = std.testing.allocator;
+    var svc = try K8sService.init(allocator);
+    defer svc.deinit();
+
+    svc.readonly = true;
+    svc.connected = false;
+    try std.testing.expectError(error.ReadOnlyMode, svc.deleteResource(.pods, "p", "default", false));
+}
+
+// --- Phase 1: pod log container handling ------------------------------------
+
+test "getPodLogs: the container-aware entry point exists and stays NotConnected-safe" {
+    // getPodLogs sent no container= parameter, so the API answered 400
+    // "a container name must be specified" for any pod with a sidecar -- logs simply
+    // failed on Istio-injected or init-heavy workloads. It now delegates to a
+    // container-aware variant that falls back to the pod's first container.
+    const allocator = std.testing.allocator;
+    var svc = try K8sService.init(allocator);
+    defer svc.deinit();
+
+    // Both entry points must still reject cleanly when disconnected, and the
+    // fallback must not be attempted in that state.
+    try std.testing.expectError(error.NotConnected, svc.getPodLogs("p", "default", false));
+    try std.testing.expectError(error.NotConnected, svc.getPodLogsForContainer("p", "default", false, null));
+    try std.testing.expectError(error.NotConnected, svc.getPodLogsForContainer("p", "default", false, "istio-proxy"));
+}
+
+test "readonly does not block reading logs" {
+    // Guard against over-broad guarding: --readonly must refuse mutations only.
+    // A read path that started failing under --readonly would be a regression.
+    const allocator = std.testing.allocator;
+    var svc = try K8sService.init(allocator);
+    defer svc.deinit();
+
+    svc.readonly = true;
+    // NotConnected, not ReadOnlyMode -- the guard is not on this path.
+    try std.testing.expectError(error.NotConnected, svc.getPodLogs("p", "default", false));
+
+    // listContexts reads the kubeconfig from disk, so it needs no cluster and may
+    // legitimately succeed here. Whatever it returns, it must never be refused for
+    // being read-only. Asserting the invariant rather than a specific outcome keeps
+    // this from depending on whether the machine has a kubeconfig.
+    if (svc.listContexts()) |ctxs| {
+        // listContexts hands ownership of each field to the caller and only the
+        // slice back; production moves the strings into its item list and frees the
+        // slice. A test that keeps nothing must free both.
+        defer {
+            for (ctxs) |c| {
+                allocator.free(c.name);
+                allocator.free(c.cluster);
+                allocator.free(c.user);
+                if (c.namespace) |ns| allocator.free(ns);
+            }
+            allocator.free(ctxs);
+        }
+    } else |err| {
+        try std.testing.expect(err != error.ReadOnlyMode);
+    }
+}
+
+// --- Phase 1: unvalidated JSON must not panic ---------------------------------
+
+test "a metav1.Status body has a STRING status field, which .object would panic on" {
+    // This pins the shape, not our parser. When the API server rejects a request it
+    // answers with metav1.Status, whose own `status` field is the string "Failure" --
+    // not an object. checkAccess and getAuthorizationConditions both did
+    // `status.object.get(...)` unguarded, so the panic happened on exactly the
+    // response most in need of handling. The guards now test the tag first.
+    const body =
+        \\{"kind":"Status","apiVersion":"v1","metadata":{},"status":"Failure",
+        \\ "message":"selfsubjectaccessreviews.authorization.k8s.io is forbidden",
+        \\ "reason":"Forbidden","code":403}
+    ;
+    var parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, body, .{});
+    defer parsed.deinit();
+
+    try testing.expect(parsed.value == .object);
+    const status = parsed.value.object.get("status").?;
+
+    // The crux: a Status's `status` is a string. Any code reaching for .object here
+    // panics, which is why every such access is now tag-checked.
+    try testing.expect(status != .object);
+    try testing.expect(status == .string);
+    try testing.expectEqualStrings("Failure", status.string);
 }
