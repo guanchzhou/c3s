@@ -187,10 +187,19 @@ pub fn ResourceView(
                         if (maybe_map) |*m| m.get(key) else null;
 
                     if (pm) |metric| {
+                        // Both cells are duped before either old value is freed: the
+                        // previous order freed cpu AND mem up front, so a failure on
+                        // the first dupe left two dangling column pointers that the
+                        // row's own cleanup would free again. The %-columns just below
+                        // already got this ordering right.
+                        const new_cpu = try alloc.dupe(u8, metric.cpu);
+                        errdefer alloc.free(new_cpu);
+                        const new_mem = try alloc.dupe(u8, metric.mem);
+
                         alloc.free(row.columns[mc.cpu]);
                         alloc.free(row.columns[mc.mem]);
-                        row.columns[mc.cpu] = try alloc.dupe(u8, metric.cpu);
-                        row.columns[mc.mem] = try alloc.dupe(u8, metric.mem);
+                        row.columns[mc.cpu] = new_cpu;
+                        row.columns[mc.mem] = new_mem;
                     }
 
                     if (mc.cpu_pct) |ci| {
@@ -359,11 +368,10 @@ pub fn ResourceView(
                     try rows_data.append(allocator, &item.columns);
                 }
 
-                if (self.cached_col_widths) |*old_widths| {
-                    old_widths.deinit();
-                }
-
-                self.cached_col_widths = try table_layout.calculateColumnWidthsHidden(
+                // Compute the new widths first. Deinit-ing the cache and then hitting
+                // a failure left cached_col_widths pointing at freed memory, and the
+                // use_cache check above would hand that back on the next redraw.
+                const new_widths = try table_layout.calculateColumnWidthsHidden(
                     allocator,
                     &col_names,
                     rows_data.items,
@@ -371,6 +379,12 @@ pub fn ResourceView(
                     available_width,
                     &force_hidden,
                 );
+
+                // Swap only after the new value exists.
+                if (self.cached_col_widths) |*old_widths| {
+                    old_widths.deinit();
+                }
+                self.cached_col_widths = new_widths;
                 self.cached_terminal_width = available_width;
                 self.cached_show_all = self.table.show_all_namespaces;
                 break :blk &self.cached_col_widths.?;

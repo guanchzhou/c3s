@@ -822,6 +822,23 @@ pub const App = struct {
                         self.dirty = true;
                     }
                 },
+                // Terminal.readKey turns ':' '?' and 'G' into distinct Key variants
+                // before App sees them, so they never arrive as .char and used to
+                // fall through to `else => {}` -- silently dropped. That made a colon
+                // untypeable in any prompt and a pod named "Gateway" unfilterable.
+                // While a prompt is open these are ordinary text.
+                .colon => {
+                    try self.command_input.addChar(':');
+                    self.dirty = true;
+                },
+                .question_mark => {
+                    try self.command_input.addChar('?');
+                    self.dirty = true;
+                },
+                .shift_g => {
+                    try self.command_input.addChar('G');
+                    self.dirty = true;
+                },
                 .backspace => {
                     self.command_input.backspace();
                     self.dirty = true;

@@ -55,8 +55,12 @@ pub const ConditionInspectorTab = struct {
 
         self.table.clearItems();
 
+        // Dupe before freeing: `resource` is sometimes self.condition_resource
+        // itself on a refresh, and a failed dupe would otherwise leave the field
+        // dangling for the next call to free again.
+        const new_resource = try self.allocator.dupe(u8, resource);
         if (self.condition_resource) |r| self.allocator.free(r);
-        self.condition_resource = try self.allocator.dupe(u8, resource);
+        self.condition_resource = new_resource;
 
         if (!self.k8s_service.isConnected()) {
             try self.table.setError("Not connected to Kubernetes cluster");

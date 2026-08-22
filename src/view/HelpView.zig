@@ -39,15 +39,21 @@ pub const HelpView = struct {
     pub fn setViewType(self: *HelpView, view_type: ViewType) !void {
         if (self.bindings_vm.view_type == view_type) return;
 
-        // Clean up old bindings and help lines
+        // Build the replacement BEFORE tearing anything down. Deinit-ing first and
+        // then calling a fallible init left BOTH bindings_vm and help_lines holding
+        // deinit-ed values on failure: deinit would double-free them and render would
+        // read freed memory.
+        var new_vm = try KeyBindingsViewModel.init(self.allocator, view_type);
+        errdefer new_vm.deinit();
+
+        // Only now release the old state.
         self.bindings_vm.deinit();
         for (self.help_lines.items) |line| {
             self.allocator.free(line);
         }
         self.help_lines.deinit(self.allocator);
 
-        // Reinitialize with new view type
-        self.bindings_vm = try KeyBindingsViewModel.init(self.allocator, view_type);
+        self.bindings_vm = new_vm;
         self.help_lines = .empty;
         try self.loadHelpContent();
 

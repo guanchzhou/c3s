@@ -121,14 +121,22 @@ pub fn TableState(comptime ItemType: type) type {
             try self.items.append(self.allocator, item);
         }
 
+        /// Allocate the new message BEFORE releasing the old one.
+        ///
+        /// Freeing first left error_message pointing at freed memory whenever the
+        /// allocation failed, so the next setError freed it again -- a double free,
+        /// and a dangling read from render in between. Same idiom applies to every
+        /// replace-an-owned-field site.
         pub fn setError(self: *Self, msg: []const u8) !void {
+            const new_msg = try self.allocator.dupe(u8, msg);
             if (self.error_message) |old| self.allocator.free(old);
-            self.error_message = try self.allocator.dupe(u8, msg);
+            self.error_message = new_msg;
         }
 
         pub fn setErrorFmt(self: *Self, comptime fmt: []const u8, args: anytype) !void {
+            const new_msg = try std.fmt.allocPrint(self.allocator, fmt, args);
             if (self.error_message) |old| self.allocator.free(old);
-            self.error_message = try std.fmt.allocPrint(self.allocator, fmt, args);
+            self.error_message = new_msg;
         }
 
         /// Set a user-friendly error message for common connection/API errors.
@@ -1363,4 +1371,63 @@ test "getSelectedItem refuses a stale index even if filtered_indices survives" {
     t.items.clearRetainingCapacity();
     try std.testing.expectEqual(@as(usize, 1), t.filtered_indices.items.len);
     try std.testing.expect(t.getSelectedItem() == null);
+}
+
+test "setError allocates before freeing, so a replace cannot dangle" {
+    // setError used to free the old message and THEN allocate. On failure that left
+    // error_message pointing at freed memory, which the next setError freed again.
+    // Replacing repeatedly under testing.allocator proves the ordering holds and
+    // nothing leaks or double-frees.
+    const Row = struct { name: []const u8 };
+    var t = TableState(Row).init(std.testing.allocator);
+    defer t.deinit();
+
+    try t.setError("first");
+    try std.testing.expectEqualStrings("first", t.error_message.?);
+    try t.setError("second");
+    try std.testing.expectEqualStrings("second", t.error_message.?);
+    try t.setErrorFmt("count {d}", .{7});
+    try std.testing.expectEqualStrings("count 7", t.error_message.?);
+
+    // clearItems releases it; doing so twice must be safe.
+    t.clearItems();
+    try std.testing.expect(t.error_message == null);
+    t.clearItems();
+    try std.testing.expect(t.error_message == null);
+}
+
+test "setError: a failed allocation leaves the previous message intact, not dangling" {
+    // This is the assertion the plain replace-twice test CANNOT make: the
+    // free-then-allocate ordering bug only manifests when the allocation fails.
+    // FailingAllocator makes that reachable, so the ordering is genuinely pinned
+    // rather than merely described in a comment.
+    //
+    // Old order: free(old) then allocate. On failure error_message pointed at freed
+    // memory, and the NEXT setError freed it again -- a double free. New order
+    // allocates first, so a failure leaves the old message untouched and valid.
+    const Row = struct { name: []const u8 };
+
+    var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 3 });
+    const a = failing.allocator();
+
+    var t = TableState(Row).init(a);
+    defer t.deinit();
+
+    try t.setError("keep me");
+    try std.testing.expectEqualStrings("keep me", t.error_message.?);
+
+    // Burn remaining budget until a replace fails.
+    var saw_failure = false;
+    for (0..8) |_| {
+        t.setError("replacement") catch {
+            saw_failure = true;
+            break;
+        };
+    }
+    try std.testing.expect(saw_failure);
+
+    // The critical assertion: whatever is held is still readable and still owned by
+    // us. Under the old ordering this slice was freed memory.
+    try std.testing.expect(t.error_message != null);
+    try std.testing.expect(t.error_message.?.len > 0);
 }
