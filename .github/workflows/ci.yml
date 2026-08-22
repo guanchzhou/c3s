@@ -72,11 +72,14 @@ jobs:
         run: zig version
       - name: Build
         run: zig build
-      # Unit tests only. `zig build test-all` is intentionally NOT run here:
-      # tests/integration/k8s_service_integration_test.zig and
-      # tests/services/k8s_service_test.zig are stale against the in-flight
-      # K8sService changes and currently fail to compile. `zig build` +
-      # `zig build test` are green; re-enable test-all once those integration
-      # tests are updated.
-      - name: Unit tests
-        run: zig build test
+      # test-all, not just test. The stale specs that forced `test` alone are
+      # repaired: k8s_service_test drifted when deleteResource gained `force` and
+      # getPodLogs gained `previous`; the integration test used listNamespaces as a
+      # plain slice after it became an owning ParsedList; advanced_features tested
+      # klient's validateCertKeyPair, deleted in klient 0.4.0.
+      #
+      # Running test-all here is the point: those files rotted precisely BECAUSE
+      # nothing compiled them. Cluster-dependent tests return error.SkipZigTest, so
+      # they skip cleanly without a cluster (13 skips at time of writing).
+      - name: Tests
+        run: zig build test-all

@@ -21,38 +21,12 @@ test "TLS Config - Basic structure" {
     std.debug.print("✅ TLS Config structure test passed\n", .{});
 }
 
-test "TLS - PEM validation" {
-    const valid_cert =
-        \\-----BEGIN CERTIFICATE-----
-        \\MIIDXTCCAkWgAwIBAgIJAKL0UG+mRkSsMA0GCSqGSIb3DQEBCwUAMEUxCzAJBgNV
-        \\-----END CERTIFICATE-----
-    ;
-
-    const valid_key =
-        \\-----BEGIN PRIVATE KEY-----
-        \\MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7VJTUt9Us8cKj
-        \\-----END PRIVATE KEY-----
-    ;
-
-    const invalid_cert = "This is not a certificate";
-    const invalid_key = "This is not a key";
-
-    // Valid pair should pass
-    tls.validateCertKeyPair(valid_cert, valid_key) catch |err| {
-        std.debug.print("Unexpected error for valid pair: {}\n", .{err});
-        return err;
-    };
-
-    // Invalid cert should fail
-    const invalid_cert_result = tls.validateCertKeyPair(invalid_cert, valid_key);
-    try std.testing.expectError(error.InvalidCertificate, invalid_cert_result);
-
-    // Invalid key should fail
-    const invalid_key_result = tls.validateCertKeyPair(valid_cert, invalid_key);
-    try std.testing.expectError(error.InvalidPrivateKey, invalid_key_result);
-
-    std.debug.print("✅ TLS PEM validation test passed\n", .{});
-}
+// The "TLS - PEM validation" test was removed here: it exercised
+// klient.tls.validateCertKeyPair, which zig-klient deleted in 0.4.0 when the
+// mTLS-only TLS helpers were dropped (tls.zig went 201 -> 80 lines). A test for a
+// function that no longer exists cannot be repaired, only deleted. klient's tls
+// surface is now addCaCertData + decodeBase64Cert; the latter is covered by the
+// Base64 test below.
 
 test "TLS - Base64 decoding" {
     const allocator = std.testing.allocator;
