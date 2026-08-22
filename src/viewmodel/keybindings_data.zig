@@ -68,15 +68,6 @@ pub fn loadPVCsBindings(allocator: std.mem.Allocator) ![]const KeyBinding {
     return try allocator.dupe(KeyBinding, &bindings);
 }
 
-/// PriorityClasses bindings
-pub fn loadPriorityClassesBindings(allocator: std.mem.Allocator) ![]const KeyBinding {
-    const bindings = [_]KeyBinding{
-        .{ .key = "d", .description = "Describe", .category = .resource, .action = "describe" },
-        .{ .key = "y", .description = "YAML", .category = .resource, .action = "yaml" },
-    };
-    return try allocator.dupe(KeyBinding, &bindings);
-}
-
 // ============================================================================
 // APPS RESOURCES
 // ============================================================================
@@ -177,39 +168,6 @@ pub fn loadRoleBindingsBindings(allocator: std.mem.Allocator) ![]const KeyBindin
     return try allocator.dupe(KeyBinding, &bindings);
 }
 
-/// Users bindings (RBAC subjects)
-pub fn loadUsersBindings(allocator: std.mem.Allocator) ![]const KeyBinding {
-    const bindings = [_]KeyBinding{
-        .{ .key = "enter", .description = "View Policies", .category = .resource, .action = "view_policies" },
-        .{ .key = "p", .description = "Policies", .category = .resource, .action = "policies" },
-    };
-    return try allocator.dupe(KeyBinding, &bindings);
-}
-
-/// Groups bindings (RBAC subjects)
-pub fn loadGroupsBindings(allocator: std.mem.Allocator) ![]const KeyBinding {
-    const bindings = [_]KeyBinding{
-        .{ .key = "enter", .description = "View Policies", .category = .resource, .action = "view_policies" },
-        .{ .key = "p", .description = "Policies", .category = .resource, .action = "policies" },
-    };
-    return try allocator.dupe(KeyBinding, &bindings);
-}
-
-// ============================================================================
-// CRD RESOURCES
-// ============================================================================
-
-/// CustomResourceDefinitions bindings
-pub fn loadCRDBindings(allocator: std.mem.Allocator) ![]const KeyBinding {
-    const bindings = [_]KeyBinding{
-        .{ .key = "enter", .description = "View Instances", .category = .resource, .action = "view_instances" },
-        .{ .key = "d", .description = "Describe", .category = .resource, .action = "describe" },
-        .{ .key = "y", .description = "YAML", .category = .resource, .action = "yaml" },
-        .{ .key = "Ctrl-d", .description = "Delete", .category = .resource, .action = "delete" },
-    };
-    return try allocator.dupe(KeyBinding, &bindings);
-}
-
 // ============================================================================
 // MISC VIEWS
 // ============================================================================
@@ -219,26 +177,6 @@ pub fn loadContextsBindings(allocator: std.mem.Allocator) ![]const KeyBinding {
     const bindings = [_]KeyBinding{
         .{ .key = "enter", .description = "Switch", .category = .resource, .action = "switch" },
         .{ .key = "d", .description = "Delete", .category = .resource, .action = "delete" },
-    };
-    return try allocator.dupe(KeyBinding, &bindings);
-}
-
-/// Containers bindings (inside pod)
-pub fn loadContainersBindings(allocator: std.mem.Allocator) ![]const KeyBinding {
-    const bindings = [_]KeyBinding{
-        .{ .key = "enter", .description = "Logs", .category = .resource, .action = "logs" },
-        .{ .key = "s", .description = "Shell", .category = .resource, .action = "shell" },
-        .{ .key = "a", .description = "Attach", .category = .resource, .action = "attach" },
-    };
-    return try allocator.dupe(KeyBinding, &bindings);
-}
-
-/// Workloads bindings (aggregated view)
-pub fn loadWorkloadsBindings(allocator: std.mem.Allocator) ![]const KeyBinding {
-    const bindings = [_]KeyBinding{
-        .{ .key = "enter", .description = "View Details", .category = .resource, .action = "view" },
-        .{ .key = "d", .description = "Describe", .category = .resource, .action = "describe" },
-        .{ .key = "y", .description = "YAML", .category = .resource, .action = "yaml" },
     };
     return try allocator.dupe(KeyBinding, &bindings);
 }
@@ -260,62 +198,6 @@ pub fn loadAliasesBindings(allocator: std.mem.Allocator) ![]const KeyBinding {
     return try allocator.dupe(KeyBinding, &bindings);
 }
 
-/// Benchmarks bindings
-pub fn loadBenchmarksBindings(allocator: std.mem.Allocator) ![]const KeyBinding {
-    const bindings = [_]KeyBinding{
-        .{ .key = "Ctrl-d", .description = "Stop", .category = .resource, .action = "stop" },
-    };
-    return try allocator.dupe(KeyBinding, &bindings);
-}
-
-/// ImageScans bindings (vulnerability scanning)
-pub fn loadImageScansBindings(allocator: std.mem.Allocator) ![]const KeyBinding {
-    const bindings = [_]KeyBinding{
-        .{ .key = "enter", .description = "View Details", .category = .resource, .action = "view" },
-        .{ .key = "Shift-s", .description = "Sort Severity", .category = .sorting, .action = "sort_severity" },
-    };
-    return try allocator.dupe(KeyBinding, &bindings);
-}
-
-/// References bindings (shows what references a resource)
-pub fn loadReferencesBindings(allocator: std.mem.Allocator) ![]const KeyBinding {
-    const bindings = [_]KeyBinding{
-        .{ .key = "enter", .description = "Goto Reference", .category = .resource, .action = "goto" },
-    };
-    return try allocator.dupe(KeyBinding, &bindings);
-}
-
-/// ScreenDumps bindings
-pub fn loadScreenDumpsBindings(allocator: std.mem.Allocator) ![]const KeyBinding {
-    const bindings = [_]KeyBinding{
-        .{ .key = "enter", .description = "View Dump", .category = .resource, .action = "view" },
-        .{ .key = "Ctrl-d", .description = "Delete", .category = .resource, .action = "delete" },
-    };
-    return try allocator.dupe(KeyBinding, &bindings);
-}
-
-/// Pulse bindings (live metrics)
-pub fn loadPulseBindings(allocator: std.mem.Allocator) ![]const KeyBinding {
-    const bindings = [_]KeyBinding{
-        .{ .key = "p", .description = "Pause/Resume", .category = .resource, .action = "pause" },
-    };
-    return try allocator.dupe(KeyBinding, &bindings);
-}
-
-// ============================================================================
-// HELM
-// ============================================================================
-
-/// HelmCharts bindings
-pub fn loadHelmChartsBindings(allocator: std.mem.Allocator) ![]const KeyBinding {
-    const bindings = [_]KeyBinding{
-        .{ .key = "enter", .description = "View Chart", .category = .resource, .action = "view" },
-        .{ .key = "u", .description = "Uninstall", .category = .resource, .action = "uninstall" },
-        .{ .key = "d", .description = "Describe", .category = .resource, .action = "describe" },
-    };
-    return try allocator.dupe(KeyBinding, &bindings);
-}
-
 // --- Tests ---
 
 test "keybindings_data: all load functions return valid bindings" {
@@ -323,14 +205,13 @@ test "keybindings_data: all load functions return valid bindings" {
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    // Test all 24 binding load functions
+    // Test all 15 binding load functions
     const load_functions = .{
         loadNamespacesBindings,
         loadEventsBindings,
         loadSecretsBindings,
         loadServiceAccountsBindings,
         loadPVCsBindings,
-        loadPriorityClassesBindings,
         loadReplicaSetsBindings,
         loadStatefulSetsBindings,
         loadDaemonSetsBindings,
@@ -338,20 +219,9 @@ test "keybindings_data: all load functions return valid bindings" {
         loadJobsBindings,
         loadRolesBindings,
         loadRoleBindingsBindings,
-        loadUsersBindings,
-        loadGroupsBindings,
-        loadCRDBindings,
         loadContextsBindings,
-        loadContainersBindings,
-        loadWorkloadsBindings,
         loadPortForwardsBindings,
         loadAliasesBindings,
-        loadBenchmarksBindings,
-        loadImageScansBindings,
-        loadReferencesBindings,
-        loadScreenDumpsBindings,
-        loadPulseBindings,
-        loadHelmChartsBindings,
     };
 
     inline for (load_functions) |load_fn| {
@@ -422,26 +292,6 @@ test "keybindings_data: cronjobs has trigger and suspend" {
     try std.testing.expect(has_suspend);
 }
 
-test "keybindings_data: containers has shell and attach" {
-    var gpa = std.heap.DebugAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
-
-    const bindings = try loadContainersBindings(allocator);
-    defer allocator.free(bindings);
-
-    var has_shell = false;
-    var has_attach = false;
-
-    for (bindings) |binding| {
-        if (std.mem.eql(u8, binding.action, "shell")) has_shell = true;
-        if (std.mem.eql(u8, binding.action, "attach")) has_attach = true;
-    }
-
-    try std.testing.expect(has_shell);
-    try std.testing.expect(has_attach);
-}
-
 test "keybindings_data: all bindings are UTF-8 valid" {
     var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
@@ -483,23 +333,6 @@ test "keybindings_data: portforwards has start and stop" {
 
     try std.testing.expect(has_stop);
     try std.testing.expect(has_start);
-}
-
-test "keybindings_data: helmcharts has uninstall binding" {
-    var gpa = std.heap.DebugAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
-
-    const bindings = try loadHelmChartsBindings(allocator);
-    defer allocator.free(bindings);
-
-    var has_uninstall = false;
-
-    for (bindings) |binding| {
-        if (std.mem.eql(u8, binding.action, "uninstall")) has_uninstall = true;
-    }
-
-    try std.testing.expect(has_uninstall);
 }
 
 test "keybindings_data: pvcs has capacity sorting" {
