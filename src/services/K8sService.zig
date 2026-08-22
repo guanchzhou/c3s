@@ -1539,7 +1539,12 @@ pub const K8sService = struct {
             const key = try std.fmt.allocPrint(self.allocator, "{s}/{s}", .{ ns, pod_metric.metadata.name });
             errdefer self.allocator.free(key);
 
-            try result.put(key, PodMetric{ .cpu = cpu_display, .mem = mem_display });
+            try result.put(key, PodMetric{
+                .cpu = cpu_display,
+                .mem = mem_display,
+                .cpu_milli = total_cpu_millicores,
+                .mem_bytes = total_mem_bytes,
+            });
         }
 
         Logger.info("Fetched metrics for {d} pods", .{result.count()});

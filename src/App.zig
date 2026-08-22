@@ -432,6 +432,18 @@ pub const App = struct {
             try self.command_registry.register(alias, Command{ .name = alias, .execute = aliasesCommand });
         }
 
+        // Mark manipulation (k9s-style multi-select), also bound to keys
+        // '*' (all) / '\' (clear) / '^' (invert) in resource views.
+        for ([_][]const u8{ "select-all", "mark-all" }) |alias| {
+            try self.command_registry.register(alias, Command{ .name = alias, .execute = selectAllCommand });
+        }
+        for ([_][]const u8{ "clear-marks", "unmark-all", "clear-selection" }) |alias| {
+            try self.command_registry.register(alias, Command{ .name = alias, .execute = clearMarksCommand });
+        }
+        for ([_][]const u8{ "invert-marks", "invert-selection" }) |alias| {
+            try self.command_registry.register(alias, Command{ .name = alias, .execute = invertMarksCommand });
+        }
+
         // Internal commands
         try self.command_registry.register("select_theme", Command{ .name = "select_theme", .execute = selectThemeCommand });
     }
@@ -1784,6 +1796,24 @@ fn selectThemeCommand(ctx: *Command.CommandContext) !void {
     const selected_theme = app.themes_view.getSelectedThemeName();
     try app.saveThemeToConfig(selected_theme);
     try app.themes_view.setCurrentTheme(selected_theme);
+}
+
+/// Mark-manipulation palette commands. They drive the current view's existing
+/// key handler so there is a single source of truth for the operation.
+fn markChar(app: *App, c: u8) !void {
+    if (app.view_manager.getCurrentView()) |v| {
+        _ = try v.handleKey(.{ .char = c });
+        app.dirty = true;
+    }
+}
+fn selectAllCommand(ctx: *Command.CommandContext) !void {
+    try markChar(@ptrCast(@alignCast(ctx.data.?)), '*');
+}
+fn clearMarksCommand(ctx: *Command.CommandContext) !void {
+    try markChar(@ptrCast(@alignCast(ctx.data.?)), '\\');
+}
+fn invertMarksCommand(ctx: *Command.CommandContext) !void {
+    try markChar(@ptrCast(@alignCast(ctx.data.?)), '^');
 }
 
 // SIGWINCH signal handler for terminal resize.

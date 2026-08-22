@@ -118,6 +118,8 @@ pub const ResourceInfo = struct {
 pub const PodMetric = struct {
     cpu: []const u8, // e.g. "100m", "2", "n/a"
     mem: []const u8, // e.g. "45Mi", "1Gi", "n/a"
+    cpu_milli: u64 = 0, // raw usage in millicores, for %-of-request math
+    mem_bytes: u64 = 0, // raw usage in bytes, for %-of-request math
 };
 
 /// Context information structure

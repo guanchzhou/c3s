@@ -149,28 +149,43 @@ fn formatMatchLabels(alloc: std.mem.Allocator, selector: ?std.json.Value) ![]con
 // ============================================================================
 // === Pods ===
 // ============================================================================
-fn transformPod(pod: klient.types.Pod, alloc: std.mem.Allocator) ![9][]const u8 {
-    // Phase + podIP live under status.object; mirror the bespoke PodsView.
-    const phase = if (pod.status) |status_json|
-        if (status_json.object.get("phase")) |p| p.string else "Unknown"
-    else
-        "Unknown";
+fn transformPod(pod: klient.types.Pod, alloc: std.mem.Allocator) ![12][]const u8 {
+    // klient 0.4.0 types PodStatus, so these are plain field reads.
+    const phase = if (pod.status) |status| status.phase orelse "Unknown" else "Unknown";
+    const pod_ip = if (pod.status) |status| status.podIP orelse "-" else "-";
 
-    const pod_ip = if (pod.status) |status_json|
-        if (status_json.object.get("podIP")) |ip| ip.string else "-"
-    else
-        "-";
-
-    // ready/total from status.containerStatuses (count .ready==true / array len).
+    // ready/total + restart total from status.containerStatuses.
     var ready_count: u32 = 0;
     var total_count: u32 = 0;
-    if (pod.status) |status_json| {
-        if (status_json.object.get("containerStatuses")) |cs| {
-            if (cs == .array) {
-                total_count = @intCast(cs.array.items.len);
-                for (cs.array.items) |container_status| {
-                    if (container_status.object.get("ready")) |r| {
-                        if (r.bool) ready_count += 1;
+    var restarts: i64 = 0;
+    if (pod.status) |status| {
+        if (status.containerStatuses) |container_statuses| {
+            total_count = @intCast(container_statuses.len);
+            for (container_statuses) |container_status| {
+                if (container_status.ready) ready_count += 1;
+                restarts += container_status.restartCount;
+            }
+        }
+    }
+
+    // Sum container resource requests so the metrics hook can compute %CPU/R and
+    // %MEM/R. Stored as raw millicores / bytes integers; the hook rewrites these
+    // two cells to "<pct>" or "n/a" before they are ever displayed.
+    var req_cpu_milli: u64 = 0;
+    var req_mem_bytes: u64 = 0;
+    if (pod.spec) |spec| {
+        if (spec.containers) |containers| {
+            for (containers) |container| {
+                const reqs = (container.resources orelse continue).requests orelse continue;
+                if (reqs != .object) continue;
+                if (reqs.object.get("cpu")) |c| {
+                    if (c == .string) {
+                        if (klient.MetricsClient.parseCpuMillicores(c.string)) |mc| req_cpu_milli += mc;
+                    }
+                }
+                if (reqs.object.get("memory")) |m| {
+                    if (m == .string) {
+                        if (klient.MetricsClient.parseMemoryBytes(m.string)) |b| req_mem_bytes += b;
                     }
                 }
             }
@@ -184,8 +199,11 @@ fn transformPod(pod: klient.types.Pod, alloc: std.mem.Allocator) ![9][]const u8 
         try alloc.dupe(u8, pod.metadata.name),
         try std.fmt.allocPrint(alloc, "{d}/{d}", .{ ready_count, total_count }),
         try alloc.dupe(u8, phase),
+        try std.fmt.allocPrint(alloc, "{d}", .{restarts}),
         try alloc.dupe(u8, "-"), // CPU placeholder; filled by metrics_columns hook
         try alloc.dupe(u8, "-"), // MEM placeholder; filled by metrics_columns hook
+        try std.fmt.allocPrint(alloc, "{d}", .{req_cpu_milli}), // %CPU/R request; hook converts
+        try std.fmt.allocPrint(alloc, "{d}", .{req_mem_bytes}), // %MEM/R request; hook converts
         try alloc.dupe(u8, pod_ip),
         try alloc.dupe(u8, node),
         try age_util.calculateAge(alloc, pod.metadata.creationTimestamp),
@@ -197,14 +215,17 @@ pub const PodsView = ResourceView(klient.types.Pod, klient.resources.Pods, .{
     .is_namespaced = true,
     .name_column = 1,
     .namespace_column = 0,
-    .metrics_columns = .{ .cpu = 4, .mem = 5 },
+    .metrics_columns = .{ .cpu = 5, .mem = 6, .cpu_pct = 7, .mem_pct = 8 },
     .columns = &.{
         .{ .name = "NAMESPACE", .min_width = 10, .max_width = 24, .priority = P.MEDIUM, .searchable = true },
         .{ .name = "NAME", .min_width = 15, .max_width = null, .priority = P.CRITICAL, .sort_key = 'N', .searchable = true },
         .{ .name = "READY", .min_width = 6, .max_width = 8, .priority = P.HIGH, .sort_key = 'R' },
         .{ .name = "STATUS", .min_width = 8, .max_width = 12, .priority = P.HIGH, .sort_key = 'S' },
+        .{ .name = "RESTARTS", .min_width = 8, .max_width = 10, .priority = P.LOW },
         .{ .name = "CPU", .min_width = 6, .max_width = 10, .priority = P.VERY_LOW, .sort_key = 'C' },
         .{ .name = "MEM", .min_width = 6, .max_width = 10, .priority = P.VERY_LOW, .sort_key = 'M' },
+        .{ .name = "%CPU/R", .min_width = 7, .max_width = 9, .priority = P.VERY_LOW },
+        .{ .name = "%MEM/R", .min_width = 7, .max_width = 9, .priority = P.VERY_LOW },
         .{ .name = "IP", .min_width = 10, .max_width = null, .priority = P.LOW, .sort_key = 'I' },
         .{ .name = "NODE", .min_width = 10, .max_width = null, .priority = P.LOW },
         .{ .name = "AGE", .min_width = 5, .max_width = 8, .priority = P.MEDIUM, .sort_key = 'A' },
@@ -321,12 +342,12 @@ pub const ServicesView = ResourceView(klient.types.Service, klient.resources.Ser
 // === ConfigMaps ===
 // ============================================================================
 fn transformConfigMap(cm: klient.types.ConfigMap, alloc: std.mem.Allocator) ![4][]const u8 {
-    const keys: usize = if (cm.spec) |spec| blk: {
-        if (spec.data) |data_json| {
-            if (data_json == .object) break :blk data_json.object.count();
-        }
-        break :blk 0;
-    } else 0;
+    // ConfigMap has no `spec` — `data` is top-level. Reading it through the old
+    // `cm.spec` always yielded null, so this column showed 0 for every ConfigMap.
+    const keys: usize = if (cm.data) |data_json|
+        (if (data_json == .object) data_json.object.count() else 0)
+    else
+        0;
 
     return .{
         try alloc.dupe(u8, cm.metadata.namespace orelse "default"),
@@ -832,36 +853,15 @@ pub const EventsView = ResourceView(klient.types.Event, klient.resources.Events,
 // === Nodes ===
 // ============================================================================
 fn transformNode(node: klient.types.Node, alloc: std.mem.Allocator) ![6][]const u8 {
-    // Determine node status from conditions array
+    // Determine node status from the Ready condition. klient 0.4.0 types
+    // NodeStatus.conditions, so this is a walk over structs rather than a DOM.
     const status = blk: {
-        if (node.status) |status_json| {
-            if (status_json == .object) {
-                if (status_json.object.get("conditions")) |conditions| {
-                    if (conditions == .array) {
-                        for (conditions.array.items) |condition| {
-                            if (condition == .object) {
-                                const cond_type = if (condition.object.get("type")) |t|
-                                    (if (t == .string) t.string else null)
-                                else
-                                    null;
-                                if (cond_type) |ct| {
-                                    if (std.mem.eql(u8, ct, "Ready")) {
-                                        const cond_status = if (condition.object.get("status")) |s|
-                                            (if (s == .string) s.string else null)
-                                        else
-                                            null;
-                                        if (cond_status) |cs| {
-                                            if (std.mem.eql(u8, cs, "True")) {
-                                                break :blk try alloc.dupe(u8, "Ready");
-                                            } else {
-                                                break :blk try alloc.dupe(u8, "NotReady");
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
+        if (node.status) |node_status| {
+            if (node_status.conditions) |conditions| {
+                for (conditions) |condition| {
+                    if (!std.mem.eql(u8, condition.type, "Ready")) continue;
+                    const ready = std.mem.eql(u8, condition.status, "True");
+                    break :blk try alloc.dupe(u8, if (ready) "Ready" else "NotReady");
                 }
             }
         }
@@ -901,29 +901,13 @@ fn transformNode(node: klient.types.Node, alloc: std.mem.Allocator) ![6][]const 
         break :blk try alloc.dupe(u8, "<none>");
     };
 
-    // Extract internal IP from status.addresses array
+    // Extract internal IP from status.addresses
     const internal_ip = blk: {
-        if (node.status) |status_json| {
-            if (status_json == .object) {
-                if (status_json.object.get("addresses")) |addresses| {
-                    if (addresses == .array) {
-                        for (addresses.array.items) |addr| {
-                            if (addr == .object) {
-                                const addr_type = if (addr.object.get("type")) |t|
-                                    (if (t == .string) t.string else null)
-                                else
-                                    null;
-                                if (addr_type) |at| {
-                                    if (std.mem.eql(u8, at, "InternalIP")) {
-                                        if (addr.object.get("address")) |a| {
-                                            if (a == .string) {
-                                                break :blk try alloc.dupe(u8, a.string);
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
+        if (node.status) |node_status| {
+            if (node_status.addresses) |addresses| {
+                for (addresses) |addr| {
+                    if (std.mem.eql(u8, addr.type, "InternalIP")) {
+                        break :blk try alloc.dupe(u8, addr.address);
                     }
                 }
             }
@@ -933,17 +917,9 @@ fn transformNode(node: klient.types.Node, alloc: std.mem.Allocator) ![6][]const 
 
     // Extract version from status.nodeInfo.kubeletVersion
     const version = blk: {
-        if (node.status) |status_json| {
-            if (status_json == .object) {
-                if (status_json.object.get("nodeInfo")) |node_info| {
-                    if (node_info == .object) {
-                        if (node_info.object.get("kubeletVersion")) |v| {
-                            if (v == .string) {
-                                break :blk try alloc.dupe(u8, v.string);
-                            }
-                        }
-                    }
-                }
+        if (node.status) |node_status| {
+            if (node_status.nodeInfo) |node_info| {
+                if (node_info.kubeletVersion) |v| break :blk try alloc.dupe(u8, v);
             }
         }
         break :blk try alloc.dupe(u8, "unknown");
@@ -1244,14 +1220,12 @@ pub const PersistentVolumeClaimsView = ResourceView(klient.types.PersistentVolum
 // === Endpoints ===
 // ============================================================================
 fn transformEndpoints(ep: klient.types.Endpoints, alloc: std.mem.Allocator) ![4][]const u8 {
-    const endpoints_str = if (ep.spec) |spec| blk: {
-        if (spec.subsets) |subsets| {
-            var buf: [32]u8 = undefined;
-            const count_str = try std.fmt.bufPrint(&buf, "{d}", .{subsets.len});
-            break :blk try alloc.dupe(u8, count_str);
-        }
-        break :blk try alloc.dupe(u8, "<none>");
-    } else try alloc.dupe(u8, "<none>");
+    // Endpoints has no `spec` — `subsets` is top-level. Reading it through the old
+    // `ep.spec` always yielded null, so this column showed <none> for every row.
+    const endpoints_str = if (ep.subsets) |subsets|
+        try std.fmt.allocPrint(alloc, "{d}", .{subsets.len})
+    else
+        try alloc.dupe(u8, "<none>");
 
     return .{
         try alloc.dupe(u8, if (ep.metadata.namespace) |ns| ns else "default"),
