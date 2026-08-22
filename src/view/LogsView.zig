@@ -30,8 +30,13 @@ pub const LogsView = struct {
     }
 
     pub fn deinit(self: *LogsView) void {
-        // clearContent frees filter_text as well as the lines.
+        // clearContent frees the line strings, the title and filter_text -- but it
+        // uses clearRetainingCapacity, so the lines ArrayList's own backing buffer
+        // survives. It was never freed: a real leak, sized by the largest log ever
+        // viewed. Surfaced by the first test to populate a LogsView and destroy it
+        // under testing.allocator.
         self.clearContent();
+        self.lines.deinit(self.allocator);
         self.filtered_indices.deinit(self.allocator);
     }
 
@@ -47,6 +52,14 @@ pub const LogsView = struct {
         }
         if (self.filter_text.len > 0) self.allocator.free(self.filter_text);
         self.filter_text = "";
+    }
+
+    /// Whether new content jumps to the tail. Toggled with `s`.
+    ///
+    /// Exposed so the header can show it: a toggle the user cannot see the state of is
+    /// nearly as unhelpful as no toggle at all.
+    pub fn isFollowing(self: *const LogsView) bool {
+        return self.auto_scroll;
     }
 
     /// Set log content from raw text
@@ -265,6 +278,14 @@ pub const LogsView = struct {
                     return .handled;
                 },
                 '/' => return .request_filter,
+                's' => {
+                    // Toggle follow. auto_scroll was read by setContent but no key
+                    // could change it, so it was a knob permanently stuck on: every
+                    // refresh yanked you back to the bottom, which makes reading
+                    // anything above the tail impossible on a chatty pod.
+                    self.auto_scroll = !self.auto_scroll;
+                    return .handled;
+                },
                 else => return .not_handled,
             },
             .up => {
@@ -364,3 +385,40 @@ pub const LogsView = struct {
         self.deinit();
     }
 };
+
+test "s toggles follow, and follow controls whether new content jumps to the tail" {
+    // auto_scroll was read by setContent and reachable from no key -- a knob stuck
+    // on. On a chatty pod that means every refresh yanks you back to the bottom, so
+    // reading anything above the tail is impossible.
+    const a = std.testing.allocator;
+
+    var theme = try theme_loader.defaultTheme(a);
+    defer theme_loader.deinitTheme(&theme);
+
+    var view = try LogsView.init(a, &theme);
+    defer view.deinit();
+    view.visible_rows = 2;
+
+    // Default is follow-on, matching prior behaviour.
+    try std.testing.expect(view.isFollowing());
+
+    try view.setContent("one\ntwo\nthree\nfour", "pod-a");
+    // Following: parked at the last line.
+    try std.testing.expectEqual(@as(u32, 3), view.selected_row);
+
+    // Toggle off via the key, then move up and confirm new content leaves us alone.
+    const r = try LogsView.handleKey(&view, Key{ .char = 's' });
+    try std.testing.expectEqual(View.KeyResult.handled, r);
+    try std.testing.expect(!view.isFollowing());
+
+    view.selected_row = 0;
+    view.scroll_offset = 0;
+    try view.setContent("one\ntwo\nthree\nfour\nfive", "pod-a");
+    try std.testing.expectEqual(@as(u32, 0), view.selected_row);
+
+    // Toggling back on resumes jumping to the tail.
+    _ = try LogsView.handleKey(&view, Key{ .char = 's' });
+    try std.testing.expect(view.isFollowing());
+    try view.setContent("one\ntwo\nthree", "pod-a");
+    try std.testing.expectEqual(@as(u32, 2), view.selected_row);
+}
