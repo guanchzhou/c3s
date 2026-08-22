@@ -1266,6 +1266,15 @@ pub const App = struct {
     }
 
     fn runResourceEdit(self: *App) !void {
+        // `kubectl edit` is a mutation, and it does NOT go through K8sService -- it
+        // spawns kubectl directly, so the service-level --readonly guard never sees
+        // it. Without this check `c3s --readonly` still let you edit live objects,
+        // which is a hole in that guard rather than a separate feature gap.
+        if (self.k8s_service.readonly) {
+            self.footer.setStatus("Read-only mode: edit refused");
+            self.dirty = true;
+            return;
+        }
         const rt = self.currentResourceType() orelse return;
         const info = self.getSelectedResourceFromCurrentView() orelse return;
         const target = try std.fmt.allocPrint(self.allocator, "{s}/{s}", .{ rt.resourceName(), info.name });
@@ -1274,12 +1283,27 @@ pub const App = struct {
     }
 
     fn runPodShell(self: *App) !void {
+        // An interactive shell can do anything the container can, so --readonly
+        // refuses it. Read-only is a promise about the cluster, not merely about
+        // which API verbs this process happens to call.
+        if (self.k8s_service.readonly) {
+            self.footer.setStatus("Read-only mode: shell refused");
+            self.dirty = true;
+            return;
+        }
         if (!std.mem.eql(u8, self.current_view_name, "pods")) return;
         const info = self.pods_view.getSelectedResourceInfo() orelse return;
         try self.runInteractive(&.{ "kubectl", "exec", "-it", info.name, "-n", info.namespace, "--", "sh", "-c", "bash || sh" });
     }
 
     fn runPodAttach(self: *App) !void {
+        // attach gives stdin to the container's main process -- same reasoning as
+        // runPodShell.
+        if (self.k8s_service.readonly) {
+            self.footer.setStatus("Read-only mode: attach refused");
+            self.dirty = true;
+            return;
+        }
         if (!std.mem.eql(u8, self.current_view_name, "pods")) return;
         const info = self.pods_view.getSelectedResourceInfo() orelse return;
         try self.runInteractive(&.{ "kubectl", "attach", "-it", info.name, "-n", info.namespace });
