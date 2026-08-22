@@ -764,3 +764,28 @@ test "setNodeSchedulable respects --readonly and the connection check" {
     svc.connected = false;
     try std.testing.expectError(error.NotConnected, svc.setNodeSchedulable("node-1", false));
 }
+
+test "the pod-log query asks for timestamps, previous and container" {
+    // Regression guard with real teeth: LogsView always fetches with timestamps and
+    // strips them for display, so losing `timestamps=true` here silently turns the `t`
+    // toggle into a no-op -- there would be no timestamps to reveal and nothing would
+    // fail. A mutation deleting it survived the entire suite before this test existed.
+    const allocator = std.testing.allocator;
+
+    const plain = try K8sService.logQuery(allocator, false, null);
+    defer allocator.free(plain);
+    try std.testing.expect(std.mem.indexOf(u8, plain, "timestamps=true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, plain, "tailLines=1000") != null);
+    try std.testing.expect(std.mem.indexOf(u8, plain, "previous") == null);
+    try std.testing.expect(std.mem.indexOf(u8, plain, "container") == null);
+
+    const prev = try K8sService.logQuery(allocator, true, "sidecar");
+    defer allocator.free(prev);
+    try std.testing.expect(std.mem.indexOf(u8, prev, "timestamps=true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prev, "previous=true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prev, "container=sidecar") != null);
+
+    // Parameters must be & separated after the first, or the API server sees one
+    // malformed key.
+    try std.testing.expect(std.mem.indexOf(u8, prev, "&timestamps=true") != null);
+}
