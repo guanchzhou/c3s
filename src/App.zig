@@ -1953,92 +1953,38 @@ pub const App = struct {
         self.dirty = true;
     }
 
+    /// Persist the selected theme.
+    ///
+    /// The rewriting itself is config.withTheme -- a pure function, so its edge cases
+    /// (no `ui:` section, a commented-out `theme:`, CRLF, no trailing newline) are
+    /// testable without an App. It used to be ~100 lines inlined here, and it was
+    /// wrong: it emitted the new theme line and then let the OLD one through, and
+    /// parseUiConfig takes the LAST match -- so choosing a theme applied for the
+    /// session and silently reverted on restart, leaving a stale line behind each time.
     fn saveThemeToConfig(self: *App, theme_name: []const u8) !void {
-        Logger.info("Changing theme to: {s}", .{theme_name});
-
         const xdg = @import("core/xdg.zig");
         const paths = try xdg.ensurePaths();
 
-        // Read existing config or create new one
-        const existing_content = std.Io.Dir.cwd().readFileAlloc(
+        const existing = std.Io.Dir.cwd().readFileAlloc(
             runtime.io(),
             paths.config_file,
             self.allocator,
             .limited(1024 * 1024),
         ) catch "";
-        defer if (existing_content.len > 0) self.allocator.free(existing_content);
+        defer if (existing.len > 0) self.allocator.free(existing);
 
-        // Build new config with updated theme
-        var new_config = try std.ArrayList(u8).initCapacity(self.allocator, 1024);
-        defer new_config.deinit(self.allocator);
+        const updated = try Config.withTheme(self.allocator, existing, theme_name);
+        defer self.allocator.free(updated);
 
-        var found_theme_line = false;
-        var in_ui_section = false;
-
-        var lines = std.mem.splitScalar(u8, existing_content, '\n');
-        while (lines.next()) |line| {
-            const trimmed = std.mem.trim(u8, line, " \t\r");
-
-            // Check for ui section
-            if (std.mem.indexOf(u8, trimmed, "ui:")) |_| {
-                in_ui_section = true;
-                try new_config.appendSlice(self.allocator, line);
-                try new_config.append(self.allocator, '\n');
-                continue;
-            }
-
-            // Update theme line if in ui section
-            if (in_ui_section) {
-                if (std.mem.indexOf(u8, trimmed, "theme:")) |_| {
-                    const theme_line = try std.fmt.allocPrint(self.allocator, "    theme: {s}\n", .{theme_name});
-                    defer self.allocator.free(theme_line);
-                    try new_config.appendSlice(self.allocator, theme_line);
-                    found_theme_line = true;
-                    continue;
-                }
-            }
-
-            // Check if we left ui section
-            if (in_ui_section and trimmed.len > 0 and trimmed[0] != ' ') {
-                // Add theme line if not found yet
-                if (!found_theme_line) {
-                    const theme_line = try std.fmt.allocPrint(self.allocator, "    theme: {s}\n", .{theme_name});
-                    defer self.allocator.free(theme_line);
-                    try new_config.appendSlice(self.allocator, theme_line);
-                    found_theme_line = true;
-                }
-                in_ui_section = false;
-            }
-
-            try new_config.appendSlice(self.allocator, line);
-            try new_config.append(self.allocator, '\n');
-        }
-
-        // If no config existed, create minimal one
-        if (existing_content.len == 0) {
-            const default_config = try std.fmt.allocPrint(self.allocator, "c3s:\n  ui:\n    compact: false\n    theme: {s}\n", .{theme_name});
-            defer self.allocator.free(default_config);
-            try new_config.appendSlice(self.allocator, default_config);
-        } else if (!found_theme_line) {
-            // Config exists but no theme line, append it
-            const theme_line = try std.fmt.allocPrint(self.allocator, "    theme: {s}\n", .{theme_name});
-            defer self.allocator.free(theme_line);
-            try new_config.appendSlice(self.allocator, theme_line);
-        }
-
-        // Write config file
         try std.Io.Dir.cwd().writeFile(runtime.io(), .{
             .sub_path = paths.config_file,
-            .data = new_config.items,
+            .data = updated,
         });
 
-        Logger.info("Theme saved to config successfully: {s}", .{theme_name});
-
-        // Update current theme name
+        // Keep the in-memory name in step with what was just written.
         self.allocator.free(self.current_theme_name);
         self.current_theme_name = try self.allocator.dupe(u8, theme_name);
-
-        Logger.info("Current theme updated in memory: {s}", .{self.current_theme_name});
+        Logger.info("Theme saved: {s}", .{theme_name});
     }
 };
 
