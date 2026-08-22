@@ -92,6 +92,15 @@ pub fn TableState(comptime ItemType: type) type {
         }
 
         /// Clear all items (calling deinit on each) and reset error state
+        /// Drop every item and reset the derived view state.
+        ///
+        /// `filtered_indices`, `selected_row` and `scroll_offset` MUST be reset here.
+        /// They index into `items`, so leaving them behind means the next
+        /// getSelectedItem() indexes a cleared list. That was reachable without OOM:
+        /// AuthorizationView's refresh clears items and returns early before
+        /// applyFilter when the cluster is unreachable, so a cursor parked on row 3
+        /// then read freed memory on Enter -- a panic in Debug, a silent
+        /// out-of-bounds read in ReleaseFast.
         pub fn clearItems(self: *Self) void {
             if (@hasDecl(ItemType, "deinit")) {
                 for (self.items.items) |*item| {
@@ -99,6 +108,9 @@ pub fn TableState(comptime ItemType: type) type {
                 }
             }
             self.items.clearRetainingCapacity();
+            self.filtered_indices.clearRetainingCapacity();
+            self.selected_row = 0;
+            self.scroll_offset = 0;
             if (self.error_message) |msg| {
                 self.allocator.free(msg);
                 self.error_message = null;
@@ -288,6 +300,12 @@ pub fn TableState(comptime ItemType: type) type {
             if (self.filtered_indices.items.len == 0) return null;
             if (self.selected_row >= self.filtered_indices.items.len) return null;
             const idx = self.filtered_indices.items[self.selected_row];
+            // Belt as well as braces. clearItems now resets filtered_indices, but a
+            // stale index is a silent OOB read rather than a loud failure, so the
+            // bound is checked here too: any future path that mutates `items` without
+            // refreshing the filter degrades to "no selection" instead of reading
+            // out of bounds.
+            if (idx >= self.items.items.len) return null;
             return &self.items.items[idx];
         }
 
@@ -1286,4 +1304,63 @@ test "loading can be set" {
     try testing.expect(ts.loading);
     ts.loading = false;
     try testing.expect(!ts.loading);
+}
+
+test "clearItems resets the derived view state, so a parked cursor cannot read OOB" {
+    // Reproduces the reachable out-of-bounds: populate, move the cursor down, then
+    // clear WITHOUT re-filtering (what AuthorizationView does when a refresh fails
+    // against an unreachable cluster). getSelectedItem previously bounds-checked
+    // selected_row against filtered_indices but never the resulting index against
+    // items, so it returned a pointer into a cleared list.
+    const Row = struct { name: []const u8 };
+    const match = struct {
+        fn f(_: *const Row, _: []const u8) bool {
+            return true;
+        }
+    }.f;
+    const T = TableState(Row);
+
+    var t = T.init(std.testing.allocator);
+    defer t.deinit();
+
+    try t.appendItem(.{ .name = "a" });
+    try t.appendItem(.{ .name = "b" });
+    try t.appendItem(.{ .name = "c" });
+    try t.applyFilter("", match);
+
+    t.selected_row = 2;
+    try std.testing.expect(t.getSelectedItem() != null);
+
+    t.clearItems();
+
+    // The derived state must be gone, not merely the items.
+    try std.testing.expectEqual(@as(usize, 0), t.filtered_indices.items.len);
+    try std.testing.expectEqual(@as(u32, 0), t.selected_row);
+    try std.testing.expectEqual(@as(u32, 0), t.scroll_offset);
+    try std.testing.expect(t.getSelectedItem() == null);
+}
+
+test "getSelectedItem refuses a stale index even if filtered_indices survives" {
+    // Directly exercises the defensive bound: hand-craft the exact state clearItems
+    // used to leave behind, and assert we degrade to "no selection" rather than
+    // reading past the end of items.
+    const Row = struct { name: []const u8 };
+    const match = struct {
+        fn f(_: *const Row, _: []const u8) bool {
+            return true;
+        }
+    }.f;
+    const T = TableState(Row);
+
+    var t = T.init(std.testing.allocator);
+    defer t.deinit();
+
+    try t.appendItem(.{ .name = "a" });
+    try t.applyFilter("", match);
+    try std.testing.expect(t.getSelectedItem() != null);
+
+    // items emptied, filtered_indices deliberately left pointing at index 0
+    t.items.clearRetainingCapacity();
+    try std.testing.expectEqual(@as(usize, 1), t.filtered_indices.items.len);
+    try std.testing.expect(t.getSelectedItem() == null);
 }

@@ -68,9 +68,11 @@ fn parseUiConfig(allocator: std.mem.Allocator, content: []const u8) !UiConfig {
     while (lines.next()) |line| {
         const trimmed = std.mem.trim(u8, line, " \t\r");
 
-        // Look for "compact:" line
-        if (std.mem.indexOf(u8, trimmed, "compact:")) |_| {
-            // Check if it's set to true
+        // Keys are matched with startsWith, not indexOf. `trimmed` has already lost
+        // its indentation, so nested YAML keys still match -- but a commented-out
+        // line no longer does. With indexOf, "# theme: dracula" was parsed as live
+        // config, which is the opposite of what commenting a line out means.
+        if (std.mem.startsWith(u8, trimmed, "compact:")) {
             if (std.mem.indexOf(u8, trimmed, "true")) |_| {
                 ui_config.compact = true;
             } else if (std.mem.indexOf(u8, trimmed, "false")) |_| {
@@ -79,7 +81,7 @@ fn parseUiConfig(allocator: std.mem.Allocator, content: []const u8) !UiConfig {
         }
 
         // Look for "footer:" line
-        if (std.mem.indexOf(u8, trimmed, "footer:")) |_| {
+        if (std.mem.startsWith(u8, trimmed, "footer:")) {
             // Check if it's set to true or false
             if (std.mem.indexOf(u8, trimmed, "true")) |_| {
                 ui_config.footer = true;
@@ -89,16 +91,23 @@ fn parseUiConfig(allocator: std.mem.Allocator, content: []const u8) !UiConfig {
         }
 
         // Look for "theme:" line
-        if (std.mem.indexOf(u8, trimmed, "theme:")) |pos| {
-            const after_colon = std.mem.trim(u8, trimmed[pos + 6 ..], " \t");
+        if (std.mem.startsWith(u8, trimmed, "theme:")) {
+            const after_colon = std.mem.trim(u8, trimmed["theme:".len..], " \t");
             if (after_colon.len > 0) {
-                // Remove quotes if present
+                // Strip surrounding quotes. The length check MUST be >= 2: with only
+                // `len > 0`, a single `"` satisfied both the first- and last-byte
+                // tests (they are the same byte), and the slice below became [1..0] --
+                // start > end, which panics. A config line of `theme: "` therefore
+                // killed the app at launch, and not behind any catch.
                 var theme_name = after_colon;
-                if (theme_name.len > 0 and theme_name[0] == '"' and theme_name[theme_name.len - 1] == '"') {
+                if (theme_name.len >= 2 and theme_name[0] == '"' and theme_name[theme_name.len - 1] == '"') {
                     theme_name = theme_name[1 .. theme_name.len - 1];
                 }
-                // Allocate the theme name since it points into content buffer
+                // Allocate the theme name since it points into content buffer.
+                // Free any previous value first: a file with two theme: lines used to
+                // leak the first one by overwriting theme_allocated.
                 const owned = try allocator.dupe(u8, theme_name);
+                if (ui_config.theme_allocated) |prev| allocator.free(prev);
                 ui_config.theme = owned;
                 ui_config.theme_allocated = owned;
             }
@@ -229,4 +238,68 @@ test "config ignores malformed YAML gracefully" {
     defer config.deinit();
 
     try testing.expectEqual(false, config.ui.compact);
+}
+
+test "config: a lone quote does not panic at startup" {
+    // `theme: "` used to kill the app on launch. theme_name[0] and
+    // theme_name[len-1] are the same byte when len == 1, so both quote checks
+    // passed with no pair present and the slice became [1..0] -- start > end.
+    const cfg = try parseUiConfig(std.testing.allocator, "theme: \"\n");
+    defer if (cfg.theme_allocated) |t| std.testing.allocator.free(t);
+
+    // The value survives as-is; the point is that we get here at all.
+    try std.testing.expectEqualStrings("\"", cfg.theme);
+}
+
+test "config: quotes are stripped only when they are a pair" {
+    const a = std.testing.allocator;
+
+    const quoted = try parseUiConfig(a, "theme: \"dracula\"\n");
+    defer if (quoted.theme_allocated) |t| a.free(t);
+    try std.testing.expectEqualStrings("dracula", quoted.theme);
+
+    const bare = try parseUiConfig(a, "theme: dracula\n");
+    defer if (bare.theme_allocated) |t| a.free(t);
+    try std.testing.expectEqualStrings("dracula", bare.theme);
+
+    // One leading quote is not a pair and must be left alone, not sliced.
+    const half = try parseUiConfig(a, "theme: \"dracula\n");
+    defer if (half.theme_allocated) |t| a.free(t);
+    try std.testing.expectEqualStrings("\"dracula", half.theme);
+}
+
+test "config: a commented-out key is not live config" {
+    // indexOf matched "theme:" anywhere in the line, so a commented line was applied.
+    // Commenting a setting out is how a user disables it.
+    const a = std.testing.allocator;
+
+    const commented = try parseUiConfig(a, "# theme: dracula\n");
+    defer if (commented.theme_allocated) |t| a.free(t);
+    try std.testing.expect(commented.theme_allocated == null);
+    try std.testing.expect(!std.mem.eql(u8, commented.theme, "dracula"));
+
+    // Same for the booleans.
+    const c2 = try parseUiConfig(a, "# compact: true\n# footer: false\n");
+    defer if (c2.theme_allocated) |t| a.free(t);
+    const defaults = UiConfig{};
+    try std.testing.expectEqual(defaults.compact, c2.compact);
+    try std.testing.expectEqual(defaults.footer, c2.footer);
+}
+
+test "config: indented keys still parse" {
+    // startsWith operates on the already-trimmed line, so nested YAML keeps working.
+    const a = std.testing.allocator;
+    const nested = try parseUiConfig(a, "ui:\n  theme: nord\n  compact: true\n");
+    defer if (nested.theme_allocated) |t| a.free(t);
+    try std.testing.expectEqualStrings("nord", nested.theme);
+    try std.testing.expect(nested.compact);
+}
+
+test "config: a second theme line does not leak the first" {
+    // theme_allocated was overwritten without freeing. testing.allocator fails the
+    // test on any leak, so this assertion is the leak check.
+    const a = std.testing.allocator;
+    const cfg = try parseUiConfig(a, "theme: first\ntheme: second\n");
+    defer if (cfg.theme_allocated) |t| a.free(t);
+    try std.testing.expectEqualStrings("second", cfg.theme);
 }
