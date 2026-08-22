@@ -1773,20 +1773,40 @@ pub const K8sService = struct {
         }
     }
 
-    fn logRequest(self: *K8sService, name: []const u8, ns: []const u8, previous: bool, container: ?[]const u8) ![]u8 {
+    /// Build the query string for a pod-log request. Caller owns the result.
+    ///
+    /// Pulled out of logRequest so it can be tested: a mutation deleting
+    /// `timestamps=true` survived the whole suite, and losing that parameter silently
+    /// turns the `t` toggle in LogsView into a no-op -- there would be no timestamps
+    /// to reveal, and nothing anywhere would fail.
+    pub fn logQuery(allocator: std.mem.Allocator, previous: bool, container: ?[]const u8) ![]u8 {
         var query: std.ArrayListUnmanaged(u8) = .empty;
-        defer query.deinit(self.allocator);
-        try query.appendSlice(self.allocator, "tailLines=1000");
-        if (previous) try query.appendSlice(self.allocator, "&previous=true");
+        errdefer query.deinit(allocator);
+        try query.appendSlice(allocator, "tailLines=1000");
+        // Always ask for timestamps, and let the view strip them for display.
+        //
+        // The alternative -- refetching when the user toggles `t` -- means a round trip
+        // per keypress and a window where the toggle is on but the buffer predates it,
+        // so the first screen after toggling shows the wrong thing. Fetching once costs
+        // ~31 bytes per line and makes the toggle instant. The view strips by default,
+        // so output is unchanged until the user asks for timestamps.
+        try query.appendSlice(allocator, "&timestamps=true");
+        if (previous) try query.appendSlice(allocator, "&previous=true");
         if (container) |c| {
-            try query.appendSlice(self.allocator, "&container=");
-            try query.appendSlice(self.allocator, c);
+            try query.appendSlice(allocator, "&container=");
+            try query.appendSlice(allocator, c);
         }
+        return query.toOwnedSlice(allocator);
+    }
+
+    fn logRequest(self: *K8sService, name: []const u8, ns: []const u8, previous: bool, container: ?[]const u8) ![]u8 {
+        const query = try logQuery(self.allocator, previous, container);
+        defer self.allocator.free(query);
 
         const path = try std.fmt.allocPrint(
             self.allocator,
             "/api/v1/namespaces/{s}/pods/{s}/log?{s}",
-            .{ ns, name, query.items },
+            .{ ns, name, query },
         );
         defer self.allocator.free(path);
 
