@@ -502,8 +502,12 @@ pub fn ResourceView(
         const is_pods = std.mem.eql(u8, config.name, "pods");
         // Node-specific keys, mirroring the is_pods branch below.
         const is_nodes = std.mem.eql(u8, config.name, "nodes");
+        const is_secrets = std.mem.eql(u8, config.name, "secrets");
 
-        fn handleKey(ptr: *anyopaque, key: Key) !KeyResult {
+        /// pub so tests can drive the real key handler. It is already reachable
+        /// through the vtable; a mutation that deleted the secrets `x` mapping survived
+        /// the whole suite because every test here inspected configs instead.
+        pub fn handleKey(ptr: *anyopaque, key: Key) !KeyResult {
             const self: *Self = @ptrCast(@alignCast(ptr));
 
             if (self.table.handleNavigationKey(key)) |result| return result;
@@ -511,6 +515,14 @@ pub fn ResourceView(
             // Pod-specific action keys (comptime-gated; inert for every other
             // view). Mirrors the action map of the former bespoke PodsView so
             // logs/shell/exec/etc. keep working through the generic engine.
+            if (is_secrets) {
+                switch (key) {
+                    // `x` = Decode, which loadSecretsBindings has always advertised.
+                    .char => |c| if (c == 'x') return .request_decode,
+                    else => {},
+                }
+            }
+
             if (is_nodes) {
                 switch (key) {
                     .char => |c| switch (c) {

@@ -28,6 +28,7 @@ const AliasesView = @import("view/AliasesView.zig").AliasesView;
 const DeploymentsView = rc.DeploymentsView;
 const ServicesView = rc.ServicesView;
 const NamespacesView = @import("view/NamespacesView.zig").NamespacesView;
+const secret_decode = @import("viewmodel/secret_decode.zig");
 const NodesView = rc.NodesView;
 const StatefulSetsView = rc.StatefulSetsView;
 const DaemonSetsView = rc.DaemonSetsView;
@@ -1188,6 +1189,7 @@ pub const App = struct {
                 }
                 self.dirty = true;
             },
+            .request_decode => self.showDecodedSecret() catch |e| Logger.err("decode secret: {any}", .{e}),
             .request_cordon => {
                 self.setSelectedNodeSchedulable(false) catch |err| {
                     Logger.err("cordon failed: {any}", .{err});
@@ -1568,6 +1570,41 @@ pub const App = struct {
         }
 
         // Push detail view as sub-view
+        try self.view_manager.pushView(self.detail_view.createView());
+        self.dirty = true;
+    }
+
+    /// Base64-decode the selected Secret and show it in the detail view.
+    ///
+    /// Not gated by --readonly: this reads, it does not mutate. RBAC still applies --
+    /// the GET fails on its own if the user cannot read secrets.
+    fn showDecodedSecret(self: *App) !void {
+        if (!std.mem.eql(u8, self.current_view_name, "secrets")) return;
+        const info = self.getSelectedResourceFromCurrentView() orelse return;
+
+        const json_data = self.k8s_service.getRawJson(.secrets, info.name, info.namespace) catch |err| {
+            Logger.err("Failed to get secret JSON: {any}", .{err});
+            self.footer.setStatus("Could not read secret");
+            self.dirty = true;
+            return;
+        };
+        defer self.allocator.free(json_data);
+
+        const decoded = secret_decode.decodeSecretData(self.allocator, json_data) catch |err| {
+            // NotAnObject means the body was not a Secret at all -- an HTML error page
+            // from a TLS-intercepting proxy, or a metav1.Status. Saying "empty" here
+            // would be a lie about the user's cluster.
+            Logger.err("Failed to decode secret: {any}", .{err});
+            self.footer.setStatus("Secret response was not valid JSON");
+            self.dirty = true;
+            return;
+        };
+        defer self.allocator.free(decoded);
+
+        const title = try std.fmt.allocPrint(self.allocator, "Decoded secret/{s}", .{info.name});
+        defer self.allocator.free(title);
+
+        try self.detail_view.setContentText(decoded, title);
         try self.view_manager.pushView(self.detail_view.createView());
         self.dirty = true;
     }

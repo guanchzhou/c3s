@@ -518,3 +518,25 @@ test "keybindings_data: pvcs has capacity sorting" {
 
     try std.testing.expect(has_sort_capacity);
 }
+
+test "keybindings_data: secrets advertise decode, which is now implemented" {
+    // `x` = "Decode" was advertised here with no implementation anywhere -- the fifth
+    // instance of that defect class in this codebase. It is real now (request_decode ->
+    // App.showDecodedSecret), so this asserts the hint is present rather than absent.
+    // If decode is ever removed, remove the hint in the same commit.
+    var gpa = std.heap.DebugAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
+    const bindings = try loadSecretsBindings(allocator);
+    defer allocator.free(bindings);
+
+    var has_decode = false;
+    for (bindings) |binding| {
+        if (std.mem.eql(u8, binding.action, "decode")) {
+            has_decode = true;
+            try std.testing.expectEqualStrings("x", binding.key);
+        }
+    }
+    try std.testing.expect(has_decode);
+}
