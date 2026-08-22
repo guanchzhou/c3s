@@ -230,15 +230,21 @@ pub fn TableState(comptime ItemType: type) type {
                         self.gotoTop();
                         return .handled;
                     },
-                    'G' => {
-                        self.gotoBottom();
-                        return .handled;
-                    },
                     'd' => return .request_describe,
                     'y' => return .request_yaml,
                     ':' => return .request_command_palette,
                     '/' => return .request_filter,
                     else => return null,
+                },
+                // Terminal.readKey maps a raw 'G' byte to Key.shift_g, never to
+                // .char='G' -- so matching on the character meant "Goto Bottom" was
+                // dead on every view backed by TableState, which is nearly all of
+                // them. The old test passed `.char = 'G'`, a value the real terminal
+                // cannot produce, so it enforced the wrong contract and the bug
+                // survived with a green suite.
+                .shift_g => {
+                    self.gotoBottom();
+                    return .handled;
                 },
                 .down => {
                     self.navigateDown();
@@ -1219,9 +1225,17 @@ test "handleNavigationKey: G goes to bottom" {
 
     try populateTable(&ts, allocator, 20);
 
-    const result = ts.handleNavigationKey(.{ .char = 'G' });
+    // .shift_g, not .char='G': that is what Terminal.readKey actually emits for a
+    // raw 'G'. This test used to pass the character and therefore proved nothing.
+    const result = ts.handleNavigationKey(.{ .shift_g = {} });
     try testing.expect(result != null);
     try testing.expectEqual(@as(u32, 19), ts.selected_row);
+
+    // And the character form must NOT work, since nothing produces it -- if someone
+    // re-adds a .char='G' case, this catches the duplicate contract.
+    ts.selected_row = 0;
+    _ = ts.handleNavigationKey(.{ .char = 'G' });
+    try testing.expectEqual(@as(u32, 0), ts.selected_row);
 }
 
 test "handleNavigationKey: unhandled key returns null" {
