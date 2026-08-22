@@ -907,6 +907,9 @@ pub const K8sService = struct {
         const parsed = std.json.parseFromSlice(std.json.Value, self.allocator, response, .{}) catch return;
         defer parsed.deinit();
 
+        // A non-object body -- an HTML error page from a proxy, or a metav1.Status --
+        // used to panic here rather than degrade to "unknown version".
+        if (parsed.value != .object) return;
         const git_version = if (parsed.value.object.get("gitVersion")) |v|
             if (v == .string) v.string else null
         else
@@ -983,6 +986,7 @@ pub const K8sService = struct {
         };
         defer parsed.deinit();
 
+        if (parsed.value != .object) return "unknown";
         const git_version = if (parsed.value.object.get("gitVersion")) |v|
             if (v == .string) v.string else null
         else
@@ -1826,8 +1830,17 @@ pub const K8sService = struct {
         };
         defer parsed.deinit();
 
+        const denied = AccessCheckResult{ .allowed = false, .conditional = false, .condition_count = 0 };
+
         const root = parsed.value;
-        const status = root.object.get("status") orelse return AccessCheckResult{ .allowed = false, .conditional = false, .condition_count = 0 };
+        if (root != .object) return error.UnexpectedResponse;
+        const status = root.object.get("status") orelse return denied;
+
+        // On an error the API server answers with a metav1.Status, whose own `status`
+        // field is the STRING "Failure" -- so `status.object` panicked on exactly the
+        // response most in need of handling. Surface it as an error rather than
+        // reporting "denied", which is the distinction Phase 0 established.
+        if (status != .object) return error.UnexpectedResponse;
 
         const allowed = if (status.object.get("allowed")) |v| v == .bool and v.bool else false;
 
@@ -1891,7 +1904,9 @@ pub const K8sService = struct {
         defer parsed.deinit();
 
         const root = parsed.value;
+        if (root != .object) return &.{};
         const status = root.object.get("status") orelse return &.{};
+        if (status != .object) return &.{}; // metav1.Status: `status` is a string
         const chain = status.object.get("conditionSetChain") orelse return &.{};
 
         if (chain != .array) return &.{};
@@ -1995,6 +2010,7 @@ pub const K8sService = struct {
         defer parsed.deinit();
 
         const root = parsed.value;
+        if (root != .object) return &.{};
         const items = root.object.get("items") orelse return &.{};
         if (items != .array) return &.{};
 
@@ -2106,7 +2122,13 @@ pub const K8sService = struct {
             binding_map.deinit();
         }
 
-        if (crb_parsed.value.object.get("items")) |crb_items| {
+        // A metav1.Status body has no "items"; .object on it would panic, so the
+        // lookup is guarded into an optional rather than nesting another block.
+        const crb_items_opt = if (crb_parsed.value == .object)
+            crb_parsed.value.object.get("items")
+        else
+            null;
+        if (crb_items_opt) |crb_items| {
             if (crb_items == .array) {
                 for (crb_items.array.items) |binding| {
                     if (binding != .object) continue;
@@ -2140,7 +2162,11 @@ pub const K8sService = struct {
         }
 
         // Process ClusterRoles
-        if (cr_parsed.value.object.get("items")) |cr_items| {
+        const cr_items_opt = if (cr_parsed.value == .object)
+            cr_parsed.value.object.get("items")
+        else
+            null;
+        if (cr_items_opt) |cr_items| {
             if (cr_items == .array) {
                 for (cr_items.array.items) |role| {
                     if (role != .object) continue;
@@ -2320,4 +2346,23 @@ test "buildKubectlArgv omits --context when the context is unknown" {
     defer allocator.free(argv);
 
     for (argv) |a| try std.testing.expect(!std.mem.eql(u8, a, "--context"));
+}
+
+test "cacheVersionFromResponse tolerates a non-object body" {
+    // An HTML error page from an intercepting proxy, or a bare JSON scalar, reached
+    // parsed.value.object unguarded and panicked instead of degrading to "unknown".
+    // In-file because cacheVersionFromResponse is private: testability is not a
+    // reason to widen the API.
+    var svc = try K8sService.init(std.testing.allocator);
+    defer svc.deinit();
+
+    svc.cacheVersionFromResponse("[]");
+    svc.cacheVersionFromResponse("\"just a string\"");
+    svc.cacheVersionFromResponse("null");
+    svc.cacheVersionFromResponse("<html>503 Service Unavailable</html>");
+    try std.testing.expect(svc.cached_k8s_version == null);
+
+    // A well-formed body still works.
+    svc.cacheVersionFromResponse("{\"gitVersion\":\"v1.36.4\"}");
+    try std.testing.expectEqualStrings("v1.36.4", svc.cached_k8s_version.?);
 }

@@ -671,3 +671,29 @@ test "readonly does not block reading logs" {
         try std.testing.expect(err != error.ReadOnlyMode);
     }
 }
+
+// --- Phase 1: unvalidated JSON must not panic ---------------------------------
+
+test "a metav1.Status body has a STRING status field, which .object would panic on" {
+    // This pins the shape, not our parser. When the API server rejects a request it
+    // answers with metav1.Status, whose own `status` field is the string "Failure" --
+    // not an object. checkAccess and getAuthorizationConditions both did
+    // `status.object.get(...)` unguarded, so the panic happened on exactly the
+    // response most in need of handling. The guards now test the tag first.
+    const body =
+        \\{"kind":"Status","apiVersion":"v1","metadata":{},"status":"Failure",
+        \\ "message":"selfsubjectaccessreviews.authorization.k8s.io is forbidden",
+        \\ "reason":"Forbidden","code":403}
+    ;
+    var parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, body, .{});
+    defer parsed.deinit();
+
+    try testing.expect(parsed.value == .object);
+    const status = parsed.value.object.get("status").?;
+
+    // The crux: a Status's `status` is a string. Any code reaching for .object here
+    // panics, which is why every such access is now tag-checked.
+    try testing.expect(status != .object);
+    try testing.expect(status == .string);
+    try testing.expectEqualStrings("Failure", status.string);
+}
