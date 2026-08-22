@@ -469,3 +469,79 @@ test "no view advertises an action that nothing implements" {
         }
     }
 }
+
+/// Actions that ARE implemented, but only for specific views.
+///
+/// The `unimplemented_actions` scan above cannot catch these: `edit` and `logs` are
+/// real, so they are absent from that list, yet advertising them on configmaps is just
+/// as false as inventing an action -- resource_view only wires them inside its `is_pods`
+/// branch. That gap was found by a mutation surviving: re-advertising `edit` on
+/// configmaps passed the whole suite.
+///
+/// This is the audit's largest category by count, so it gets its own check.
+///
+/// To widen one of these, add the branch in resource_view.zig and add the view here in
+/// the same commit.
+const OwnedActions = struct { views: []const []const u8, actions: []const []const u8 };
+
+const view_scoped_actions = [_]OwnedActions{
+    // resource_view.zig `is_pods` branch. Several are pod-specific by nature (attach,
+    // logs, shell); edit and logs on a Deployment or Service would be genuinely useful
+    // and are simply not wired.
+    .{
+        .views = &.{"pods"},
+        .actions = &.{
+            "edit",      "logs",          "shell",           "attach",
+            "show_node", "logs_previous", "set_image",       "sanitize",
+            "transfer",  "kill",          "kill_finalizers", "port_forward",
+        },
+    },
+    // resource_view.zig `is_nodes` branch.
+    .{ .views = &.{"nodes"}, .actions = &.{ "cordon", "uncordon" } },
+    // resource_view.zig `is_secrets` branch.
+    .{ .views = &.{"secrets"}, .actions = &.{"decode"} },
+    // resource_view.zig generic switch, gated on config.name == "deployments".
+    .{ .views = &.{"deployments"}, .actions = &.{"traffic"} },
+    // PortForwardsView's own handleKey.
+    .{ .views = &.{"portforwards"}, .actions = &.{"stop"} },
+};
+
+test "no view advertises an action implemented only for a different view" {
+    var gpa = std.heap.DebugAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
+    const keybindings_vm = @import("keybindings_vm.zig");
+
+    for (std.enums.values(keybindings_vm.ViewType)) |vt| {
+        var vm = try keybindings_vm.KeyBindingsViewModel.init(allocator, vt);
+        defer vm.deinit();
+
+        for (vm.getBindings()) |binding| {
+            for (view_scoped_actions) |scope| {
+                var owns = false;
+                for (scope.views) |v| {
+                    if (std.mem.eql(u8, v, @tagName(vt))) owns = true;
+                }
+                if (owns) continue;
+                for (scope.actions) |action| {
+                    if (std.mem.eql(u8, binding.action, action)) {
+                        std.debug.print(
+                            "{s} advertises '{s}' on key '{s}', which is only wired for {s}\n",
+                            .{ @tagName(vt), binding.action, binding.key, scope.views[0] },
+                        );
+                        return error.ViewAdvertisesForeignAction;
+                    }
+                }
+            }
+        }
+    }
+}
+
+test "the unimplemented-action list is not empty" {
+    // A list-driven scan is vacuous if the list is emptied, and an empty list would let
+    // every dead hint back in silently. Confirmed by mutation: emptying the list makes
+    // the scan above pass.
+    try std.testing.expect(unimplemented_actions.len > 20);
+    try std.testing.expect(view_scoped_actions.len > 0);
+}
