@@ -658,6 +658,39 @@ pub const K8sService = struct {
         return result.stdout;
     }
 
+    /// POST a JSON body through the local `kubectl proxy` via curl.
+    ///
+    /// The kubectl transport has no POST path -- `kubectl get --raw` is read-only --
+    /// so SelfSubjectAccessReview could not be issued at all in kubectl mode. Going
+    /// through the proxy keeps it a single fast localhost call and preserves full
+    /// response fidelity (including the KEP-5681 condition chain), which
+    /// `kubectl auth can-i` would discard. It is also the only option that does not
+    /// cost a ~1.5s subprocess per cell: the access grid issues 48 checks.
+    fn proxyPost(self: *K8sService, path: []const u8, body: []const u8) ![]u8 {
+        const port = self.proxy_port orelse return error.ProxyUnavailable;
+        const url = try std.fmt.allocPrint(self.allocator, "http://127.0.0.1:{d}{s}", .{ port, path });
+        defer self.allocator.free(url);
+
+        const result = std.process.run(self.allocator, runtime.io(), .{
+            .argv = &.{
+                "curl",          "-sf",
+                "--max-time",    "8",
+                "-X",            "POST",
+                "-H",            "Content-Type: application/json",
+                "--data-binary", body,
+                url,
+            },
+            .stdout_limit = .limited(1024 * 1024),
+        }) catch return error.KubectlFailed;
+        defer self.allocator.free(result.stderr);
+
+        if (result.term != .exited or result.term.exited != 0) {
+            self.allocator.free(result.stdout);
+            return error.KubectlFailed;
+        }
+        return result.stdout;
+    }
+
     fn kubectlRequestOnceAlloc(self: *K8sService, a: std.mem.Allocator, path: []const u8) ![]u8 {
         const argv = try self.buildKubectlArgv(&.{ "get", "--raw", path });
         defer self.allocator.free(argv);
@@ -1694,10 +1727,26 @@ pub const K8sService = struct {
             \\{{"apiVersion":"authorization.k8s.io/v1","kind":"SelfSubjectAccessReview","spec":{{"resourceAttributes":{{"namespace":"{s}","verb":"{s}","group":"{s}","resource":"{s}"}}}}}}
         , .{ namespace, verb, group, resource });
 
-        const response = self.client.?.requestWithContentType(.POST, "/apis/authorization.k8s.io/v1/selfsubjectaccessreviews", body, "application/json") catch |err| {
-            Logger.warn("checkAccess failed for {s}/{s}: {}", .{ resource, verb, err });
-            return error.RequestFailed;
-        };
+        const ssar_path = "/apis/authorization.k8s.io/v1/selfsubjectaccessreviews";
+
+        // The kubectl transport is the standard path on clusters where direct TLS
+        // failed (EKS, TLS interception). Without this branch every check errored,
+        // and because the caller swallowed the error the grid rendered as
+        // "denied everywhere" -- an answer the app had not earned.
+        // `self.client` may legitimately be null in kubectl mode (isConnected
+        // permits it), so the HTTP path must not be reached in that case.
+        const response = if (self.use_kubectl)
+            self.proxyPost(ssar_path, body) catch |err| {
+                Logger.warn("checkAccess via proxy failed for {s}/{s}: {t}", .{ resource, verb, err });
+                return error.RequestFailed;
+            }
+        else if (self.client) |c|
+            c.requestWithContentType(.POST, ssar_path, body, "application/json") catch |err| {
+                Logger.warn("checkAccess failed for {s}/{s}: {}", .{ resource, verb, err });
+                return error.RequestFailed;
+            }
+        else
+            return error.NotConnected;
         defer self.allocator.free(response);
 
         // Parse response
