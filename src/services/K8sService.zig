@@ -869,7 +869,12 @@ pub const K8sService = struct {
 
     /// Run a one-shot kubectl command (e.g. `set image`, `cp`, `delete`).
     /// Returns error.KubectlFailed on non-zero exit.
+    ///
+    /// Every caller is a mutation (`set image`, `patch` finalizers, `cp`). The
+    /// guard lives here so a new caller cannot forget `--readonly` the way the
+    /// original delete path did.
     pub fn runKubectl(self: *K8sService, args: []const []const u8) !void {
+        try self.assertMutable();
         const argv = try self.buildKubectlArgv(args);
         defer self.allocator.free(argv);
         const result = std.process.run(self.allocator, runtime.io(), .{
@@ -884,7 +889,13 @@ pub const K8sService = struct {
     /// Spawn a long-running kubectl command detached from the TUI terminal
     /// (stdio → /dev/null), e.g. `port-forward`. Caller owns the returned Child
     /// and must kill/wait it.
+    ///
+    /// Port-forward is a local tunnel into the cluster, so `--readonly` refuses
+    /// it the same way it refuses mutations. The only current caller is
+    /// port-forward; if a read-only spawn is ever needed, give it a separate
+    /// method that does not call assertMutable.
     pub fn spawnKubectl(self: *K8sService, args: []const []const u8) !std.process.Child {
+        try self.assertMutable();
         const argv = try self.buildKubectlArgv(args);
         defer self.allocator.free(argv);
         return std.process.spawn(runtime.io(), .{

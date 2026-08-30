@@ -1,5 +1,6 @@
-/// Resource Configs - Declarative definitions for all 25 K8s resource views.
+/// Resource Configs - Declarative definitions for Kubernetes resource views.
 /// Each resource defines a transform function and a ResourceView instantiation.
+/// Kubernetes 1.33–1.37 + Gateway API views are re-exported from modern_resources.zig.
 const std = @import("std");
 const klient = @import("klient");
 const resource_view = @import("resource_view.zig");
@@ -1275,3 +1276,36 @@ pub const StorageClassesView = ResourceView(klient.types.StorageClass, klient.re
         .{ .name = "AGE", .min_width = 6, .max_width = 12, .priority = P.MEDIUM, .sort_key = 'A' },
     },
 }, transformStorageClass);
+
+// Kubernetes 1.33–1.37 + Gateway API views live in modern_resources.zig so this
+// file stays the original 28. Re-exported here so App/index keep a single import.
+const modern = @import("modern_resources.zig");
+pub const GatewayClassesView = modern.GatewayClassesView;
+pub const GatewaysView = modern.GatewaysView;
+pub const HTTPRoutesView = modern.HTTPRoutesView;
+pub const GRPCRoutesView = modern.GRPCRoutesView;
+pub const ReferenceGrantsView = modern.ReferenceGrantsView;
+pub const TCPRoutesView = modern.TCPRoutesView;
+pub const TLSRoutesView = modern.TLSRoutesView;
+pub const UDPRoutesView = modern.UDPRoutesView;
+pub const BackendTLSPoliciesView = modern.BackendTLSPoliciesView;
+pub const ListenerSetsView = modern.ListenerSetsView;
+pub const EndpointSlicesView = modern.EndpointSlicesView;
+pub const IngressClassesView = modern.IngressClassesView;
+pub const IPAddressesView = modern.IPAddressesView;
+pub const ServiceCIDRsView = modern.ServiceCIDRsView;
+pub const VolumeAttributesClassesView = modern.VolumeAttributesClassesView;
+pub const CSIDriversView = modern.CSIDriversView;
+pub const ValidatingAdmissionPoliciesView = modern.ValidatingAdmissionPoliciesView;
+pub const ValidatingAdmissionPolicyBindingsView = modern.ValidatingAdmissionPolicyBindingsView;
+pub const MutatingAdmissionPoliciesView = modern.MutatingAdmissionPoliciesView;
+pub const MutatingAdmissionPolicyBindingsView = modern.MutatingAdmissionPolicyBindingsView;
+pub const ValidatingWebhookConfigurationsView = modern.ValidatingWebhookConfigurationsView;
+pub const MutatingWebhookConfigurationsView = modern.MutatingWebhookConfigurationsView;
+pub const ResourceClaimsView = modern.ResourceClaimsView;
+pub const DeviceClassesView = modern.DeviceClassesView;
+pub const PriorityClassesView = modern.PriorityClassesView;
+pub const RuntimeClassesView = modern.RuntimeClassesView;
+pub const LeasesView = modern.LeasesView;
+pub const CertificateSigningRequestsView = modern.CertificateSigningRequestsView;
+pub const StorageVersionMigrationsView = modern.StorageVersionMigrationsView;

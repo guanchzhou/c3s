@@ -371,6 +371,7 @@ pub fn loadGenericResourceBindings(allocator: std.mem.Allocator) ![]const KeyBin
     const bindings = [_]KeyBinding{
         .{ .key = "d", .description = "Describe", .category = .resource, .action = "describe" },
         .{ .key = "y", .description = "YAML", .category = .resource, .action = "yaml" },
+        .{ .key = "e", .description = "Edit", .category = .resource, .action = "edit" },
         .{ .key = "r", .description = "Refresh", .category = .resource, .action = "refresh" },
         .{ .key = "Ctrl-d", .description = "Delete", .category = .resource, .action = "delete" },
 
@@ -470,30 +471,31 @@ test "no view advertises an action that nothing implements" {
 
 /// Actions that ARE implemented, but only for specific views.
 ///
-/// The `unimplemented_actions` scan above cannot catch these: `edit` and `logs` are
-/// real, so they are absent from that list, yet advertising them on configmaps is just
-/// as false as inventing an action -- resource_view only wires them inside its `is_pods`
-/// branch. That gap was found by a mutation surviving: re-advertising `edit` on
-/// configmaps passed the whole suite.
-///
-/// This is the audit's largest category by count, so it gets its own check.
+/// The `unimplemented_actions` scan above cannot catch these: `logs` is real, so
+/// it is absent from that list, yet advertising it on configmaps is just as
+/// false as inventing an action -- resource_view only wires logs inside its
+/// `is_pods` branch. `edit` used to be in that category; it is now on the
+/// generic resource-view switch, so it is advertised on `.generic` (and pods /
+/// services) and must not appear in this list.
 ///
 /// To widen one of these, add the branch in resource_view.zig and add the view here in
 /// the same commit.
 const OwnedActions = struct { views: []const []const u8, actions: []const []const u8 };
 
 const view_scoped_actions = [_]OwnedActions{
-    // resource_view.zig `is_pods` branch. Several are pod-specific by nature (attach,
-    // logs, shell); edit and logs on a Deployment or Service would be genuinely useful
-    // and are simply not wired.
+    // resource_view.zig `is_pods` branch. attach/logs/shell are pod-specific;
+    // edit is generic (see loadGenericResourceBindings) and lives outside this list.
     .{
         .views = &.{"pods"},
         .actions = &.{
-            "edit",      "logs",          "shell",           "attach",
-            "show_node", "logs_previous", "set_image",       "sanitize",
-            "transfer",  "kill",          "kill_finalizers", "port_forward",
+            "logs",            "shell",         "attach",
+            "show_node",       "logs_previous", "set_image",
+            "sanitize",        "transfer",      "kill",
+            "kill_finalizers",
         },
     },
+    // resource_view.zig `is_pods` + `is_services` branches.
+    .{ .views = &.{ "pods", "services" }, .actions = &.{"port_forward"} },
     // resource_view.zig `is_nodes` branch.
     .{ .views = &.{"nodes"}, .actions = &.{ "cordon", "uncordon", "drain" } },
     // resource_view.zig `is_secrets` branch.

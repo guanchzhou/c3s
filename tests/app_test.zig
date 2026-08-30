@@ -228,7 +228,7 @@ test "? on a view with no ViewType shows generic help, not Pods' help" {
     for ([_][]const u8{
         "ingresses",      "networkpolicies",   "resourcequotas",
         "limitranges",    "persistentvolumes", "endpoints",
-        "storageclasses",
+        "storageclasses", "httproutes",        "gateways",
     }) |name| {
         app.current_view_name = name;
         try testing.expectEqual(ViewType.generic, app.currentViewTypeForTest());
@@ -254,6 +254,31 @@ test "? on a view with no ViewType shows generic help, not Pods' help" {
     try testing.expect(has_describe);
     try testing.expect(has_delete);
     try testing.expect(has_refresh);
+}
+
+test "port-forward refuses under --readonly without even prompting" {
+    var gpa = std.heap.DebugAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
+    var app = try App.init(allocator, .{ .readonly = true });
+    defer app.deinit();
+
+    try app.switchToView("pods");
+    const t = &app.pods_view.table;
+    try t.appendItem(.{ .columns = .{
+        try allocator.dupe(u8, "default"), try allocator.dupe(u8, "nginx"),
+        try allocator.dupe(u8, "1/1"),     try allocator.dupe(u8, "Running"),
+        try allocator.dupe(u8, "0"),       try allocator.dupe(u8, "1m"),
+        try allocator.dupe(u8, "2Mi"),     try allocator.dupe(u8, "1"),
+        try allocator.dupe(u8, "1"),       try allocator.dupe(u8, "10.0.0.2"),
+        try allocator.dupe(u8, "node-1"),  try allocator.dupe(u8, "1d"),
+    }, .allocator = allocator });
+    try t.filtered_indices.append(allocator, 0);
+    t.selected_row = 0;
+
+    try app.handleKey(.{ .char = 'F' });
+    try testing.expect(app.pending_input == .none);
 }
 
 test "drain refuses under --readonly without even prompting" {

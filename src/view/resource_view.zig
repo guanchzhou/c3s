@@ -600,6 +600,7 @@ pub fn ResourceView(
         // Node-specific keys, mirroring the is_pods branch below.
         const is_nodes = std.mem.eql(u8, config.name, "nodes");
         const is_secrets = std.mem.eql(u8, config.name, "secrets");
+        const is_services = std.mem.eql(u8, config.name, "services");
 
         /// pub so tests can drive the real key handler. It is already reachable
         /// through the vtable; a mutation that deleted the secrets `x` mapping survived
@@ -663,6 +664,16 @@ pub fn ResourceView(
                 }
             }
 
+            if (is_services) {
+                switch (key) {
+                    .char => |c| switch (c) {
+                        'F' => return .request_port_forward,
+                        else => {},
+                    },
+                    else => {},
+                }
+            }
+
             switch (key) {
                 .char => |c| {
                     // Space toggles a k9s-style mark on the current row. Marks
@@ -691,6 +702,13 @@ pub fn ResourceView(
                     if (c == '^') {
                         self.applyMarkOp(.invert);
                         return .handled;
+                    }
+
+                    // Edit is a generic resource action (`kubectl edit`), not
+                    // pod-specific. Kept out of the is_pods branch so Ingresses,
+                    // ConfigMaps, Gateways, etc. get the same `e` as Pods.
+                    if (c == 'e') {
+                        return .request_edit;
                     }
 
                     // Refresh

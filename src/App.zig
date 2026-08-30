@@ -55,6 +55,35 @@ const PodDisruptionBudgetsView = rc.PodDisruptionBudgetsView;
 const HPAView = rc.HPAView;
 const EndpointsView = rc.EndpointsView;
 const StorageClassesView = rc.StorageClassesView;
+const GatewayClassesView = rc.GatewayClassesView;
+const GatewaysView = rc.GatewaysView;
+const HTTPRoutesView = rc.HTTPRoutesView;
+const GRPCRoutesView = rc.GRPCRoutesView;
+const ReferenceGrantsView = rc.ReferenceGrantsView;
+const TCPRoutesView = rc.TCPRoutesView;
+const TLSRoutesView = rc.TLSRoutesView;
+const UDPRoutesView = rc.UDPRoutesView;
+const BackendTLSPoliciesView = rc.BackendTLSPoliciesView;
+const ListenerSetsView = rc.ListenerSetsView;
+const EndpointSlicesView = rc.EndpointSlicesView;
+const IngressClassesView = rc.IngressClassesView;
+const IPAddressesView = rc.IPAddressesView;
+const ServiceCIDRsView = rc.ServiceCIDRsView;
+const VolumeAttributesClassesView = rc.VolumeAttributesClassesView;
+const CSIDriversView = rc.CSIDriversView;
+const ValidatingAdmissionPoliciesView = rc.ValidatingAdmissionPoliciesView;
+const ValidatingAdmissionPolicyBindingsView = rc.ValidatingAdmissionPolicyBindingsView;
+const MutatingAdmissionPoliciesView = rc.MutatingAdmissionPoliciesView;
+const MutatingAdmissionPolicyBindingsView = rc.MutatingAdmissionPolicyBindingsView;
+const ValidatingWebhookConfigurationsView = rc.ValidatingWebhookConfigurationsView;
+const MutatingWebhookConfigurationsView = rc.MutatingWebhookConfigurationsView;
+const ResourceClaimsView = rc.ResourceClaimsView;
+const DeviceClassesView = rc.DeviceClassesView;
+const PriorityClassesView = rc.PriorityClassesView;
+const RuntimeClassesView = rc.RuntimeClassesView;
+const LeasesView = rc.LeasesView;
+const CertificateSigningRequestsView = rc.CertificateSigningRequestsView;
+const StorageVersionMigrationsView = rc.StorageVersionMigrationsView;
 const ContextsView = @import("view/ContextsView.zig").ContextsView;
 const ThemesView = @import("view/ThemesView.zig").ThemesView;
 const HelpView = @import("view/HelpView.zig").HelpView;
@@ -147,6 +176,35 @@ pub const App = struct {
     hpa_view: *HPAView,
     endpoints_view: *EndpointsView,
     storageclasses_view: *StorageClassesView,
+    gatewayclasses_view: *GatewayClassesView,
+    gateways_view: *GatewaysView,
+    httproutes_view: *HTTPRoutesView,
+    grpcroutes_view: *GRPCRoutesView,
+    referencegrants_view: *ReferenceGrantsView,
+    tcproutes_view: *TCPRoutesView,
+    tlsroutes_view: *TLSRoutesView,
+    udproutes_view: *UDPRoutesView,
+    backendtlspolicies_view: *BackendTLSPoliciesView,
+    listenersets_view: *ListenerSetsView,
+    endpointslices_view: *EndpointSlicesView,
+    ingressclasses_view: *IngressClassesView,
+    ipaddresses_view: *IPAddressesView,
+    servicecidrs_view: *ServiceCIDRsView,
+    volumeattributesclasses_view: *VolumeAttributesClassesView,
+    csidrivers_view: *CSIDriversView,
+    validatingadmissionpolicies_view: *ValidatingAdmissionPoliciesView,
+    validatingadmissionpolicybindings_view: *ValidatingAdmissionPolicyBindingsView,
+    mutatingadmissionpolicies_view: *MutatingAdmissionPoliciesView,
+    mutatingadmissionpolicybindings_view: *MutatingAdmissionPolicyBindingsView,
+    validatingwebhookconfigurations_view: *ValidatingWebhookConfigurationsView,
+    mutatingwebhookconfigurations_view: *MutatingWebhookConfigurationsView,
+    resourceclaims_view: *ResourceClaimsView,
+    deviceclasses_view: *DeviceClassesView,
+    priorityclasses_view: *PriorityClassesView,
+    runtimeclasses_view: *RuntimeClassesView,
+    leases_view: *LeasesView,
+    certificatesigningrequests_view: *CertificateSigningRequestsView,
+    storageversionmigrations_view: *StorageVersionMigrationsView,
     contexts_view: *ContextsView,
 
     // UI views
@@ -252,6 +310,35 @@ pub const App = struct {
             hpa_view: *HPAView = undefined,
             endpoints_view: *EndpointsView = undefined,
             storageclasses_view: *StorageClassesView = undefined,
+            gatewayclasses_view: *GatewayClassesView = undefined,
+            gateways_view: *GatewaysView = undefined,
+            httproutes_view: *HTTPRoutesView = undefined,
+            grpcroutes_view: *GRPCRoutesView = undefined,
+            referencegrants_view: *ReferenceGrantsView = undefined,
+            tcproutes_view: *TCPRoutesView = undefined,
+            tlsroutes_view: *TLSRoutesView = undefined,
+            udproutes_view: *UDPRoutesView = undefined,
+            backendtlspolicies_view: *BackendTLSPoliciesView = undefined,
+            listenersets_view: *ListenerSetsView = undefined,
+            endpointslices_view: *EndpointSlicesView = undefined,
+            ingressclasses_view: *IngressClassesView = undefined,
+            ipaddresses_view: *IPAddressesView = undefined,
+            servicecidrs_view: *ServiceCIDRsView = undefined,
+            volumeattributesclasses_view: *VolumeAttributesClassesView = undefined,
+            csidrivers_view: *CSIDriversView = undefined,
+            validatingadmissionpolicies_view: *ValidatingAdmissionPoliciesView = undefined,
+            validatingadmissionpolicybindings_view: *ValidatingAdmissionPolicyBindingsView = undefined,
+            mutatingadmissionpolicies_view: *MutatingAdmissionPoliciesView = undefined,
+            mutatingadmissionpolicybindings_view: *MutatingAdmissionPolicyBindingsView = undefined,
+            validatingwebhookconfigurations_view: *ValidatingWebhookConfigurationsView = undefined,
+            mutatingwebhookconfigurations_view: *MutatingWebhookConfigurationsView = undefined,
+            resourceclaims_view: *ResourceClaimsView = undefined,
+            deviceclasses_view: *DeviceClassesView = undefined,
+            priorityclasses_view: *PriorityClassesView = undefined,
+            runtimeclasses_view: *RuntimeClassesView = undefined,
+            leases_view: *LeasesView = undefined,
+            certificatesigningrequests_view: *CertificateSigningRequestsView = undefined,
+            storageversionmigrations_view: *StorageVersionMigrationsView = undefined,
             contexts_view: *ContextsView = undefined,
             authorization_view: *AuthorizationView = undefined,
         } = .{};
@@ -353,6 +440,35 @@ pub const App = struct {
             .hpa_view = app_views.hpa_view,
             .endpoints_view = app_views.endpoints_view,
             .storageclasses_view = app_views.storageclasses_view,
+            .gatewayclasses_view = app_views.gatewayclasses_view,
+            .gateways_view = app_views.gateways_view,
+            .httproutes_view = app_views.httproutes_view,
+            .grpcroutes_view = app_views.grpcroutes_view,
+            .referencegrants_view = app_views.referencegrants_view,
+            .tcproutes_view = app_views.tcproutes_view,
+            .tlsroutes_view = app_views.tlsroutes_view,
+            .udproutes_view = app_views.udproutes_view,
+            .backendtlspolicies_view = app_views.backendtlspolicies_view,
+            .listenersets_view = app_views.listenersets_view,
+            .endpointslices_view = app_views.endpointslices_view,
+            .ingressclasses_view = app_views.ingressclasses_view,
+            .ipaddresses_view = app_views.ipaddresses_view,
+            .servicecidrs_view = app_views.servicecidrs_view,
+            .volumeattributesclasses_view = app_views.volumeattributesclasses_view,
+            .csidrivers_view = app_views.csidrivers_view,
+            .validatingadmissionpolicies_view = app_views.validatingadmissionpolicies_view,
+            .validatingadmissionpolicybindings_view = app_views.validatingadmissionpolicybindings_view,
+            .mutatingadmissionpolicies_view = app_views.mutatingadmissionpolicies_view,
+            .mutatingadmissionpolicybindings_view = app_views.mutatingadmissionpolicybindings_view,
+            .validatingwebhookconfigurations_view = app_views.validatingwebhookconfigurations_view,
+            .mutatingwebhookconfigurations_view = app_views.mutatingwebhookconfigurations_view,
+            .resourceclaims_view = app_views.resourceclaims_view,
+            .deviceclasses_view = app_views.deviceclasses_view,
+            .priorityclasses_view = app_views.priorityclasses_view,
+            .runtimeclasses_view = app_views.runtimeclasses_view,
+            .leases_view = app_views.leases_view,
+            .certificatesigningrequests_view = app_views.certificatesigningrequests_view,
+            .storageversionmigrations_view = app_views.storageversionmigrations_view,
             .contexts_view = app_views.contexts_view,
             .themes_view = themes_view,
             .help_view = help_view,
@@ -1478,18 +1594,33 @@ pub const App = struct {
     }
 
     fn promptSetImage(self: *App) !void {
+        if (self.refuseIfReadonly("set-image")) return;
         try self.beginResourcePrompt("set image (container=image):");
         if (self.pending_name != null) self.pending_input = .set_image;
     }
 
     fn promptPortForward(self: *App) !void {
+        if (self.refuseIfReadonly("port-forward")) return;
         try self.beginResourcePrompt("port-forward (local:remote):");
         if (self.pending_name != null) self.pending_input = .port_forward;
     }
 
     fn promptTransfer(self: *App) !void {
+        if (self.refuseIfReadonly("cp")) return;
         try self.beginResourcePrompt("cp (src dst):");
         if (self.pending_name != null) self.pending_input = .transfer;
+    }
+
+    /// Refuse a mutation before any prompt is shown. A confirmation the flag will
+    /// not honour is worse than no prompt -- same hole drain had before the
+    /// call-site check.
+    fn refuseIfReadonly(self: *App, action: []const u8) bool {
+        if (!self.k8s_service.readonly) return false;
+        var buf: [96]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "Read-only mode: {s} refused", .{action}) catch "Read-only mode: refused";
+        self.footer.setStatus(msg);
+        self.dirty = true;
+        return true;
     }
 
     /// Ask before draining. Cordon needs no prompt -- it is reversible and evicts
@@ -1500,11 +1631,7 @@ pub const App = struct {
         const info = self.getSelectedResourceFromCurrentView() orelse return;
 
         // Refuse early, so --readonly never even shows a confirmation it will not honour.
-        if (self.k8s_service.readonly) {
-            self.footer.setStatus("Read-only mode: drain refused");
-            self.dirty = true;
-            return;
-        }
+        if (self.refuseIfReadonly("drain")) return;
 
         self.clearPendingInput();
         self.pending_name = self.allocator.dupe(u8, info.name) catch return;
@@ -1548,6 +1675,7 @@ pub const App = struct {
     fn promptSanitize(self: *App) void {
         // Operates on the visible pods; no target capture needed.
         if (!std.mem.eql(u8, self.current_view_name, "pods")) return;
+        if (self.refuseIfReadonly("sanitize")) return;
         self.clearPendingInput();
         self.pending_input = .sanitize;
         self.command_input.showWithPrompt("Sanitize completed/failed pods? [y/n]:");
@@ -1590,6 +1718,11 @@ pub const App = struct {
         const rt = self.pending_type orelse return;
         const name = self.pending_name orelse return;
         const ns = self.pending_namespace orelse return;
+        if (!PortForwardRegistry.isValidPortForwardSpec(value)) {
+            self.footer.setStatus("invalid port-forward spec");
+            self.dirty = true;
+            return;
+        }
         const target = try std.fmt.allocPrint(self.allocator, "{s}/{s}", .{ rt.resourceName(), name });
         defer self.allocator.free(target);
         const child = try self.k8s_service.spawnKubectl(&.{ "port-forward", target, value, "-n", ns });
@@ -1605,6 +1738,7 @@ pub const App = struct {
     }
 
     fn doKillFinalizers(self: *App) !void {
+        if (self.refuseIfReadonly("kill-finalizers")) return;
         const rt = self.currentResourceType() orelse return;
         const info = self.getSelectedResourceFromCurrentView() orelse return;
         const target = try std.fmt.allocPrint(self.allocator, "{s}/{s}", .{ rt.resourceName(), info.name });
@@ -1683,6 +1817,19 @@ pub const App = struct {
         };
         defer self.allocator.free(json_data);
 
+        // Secrets' `data`/`stringData` are credentials. `y` used to dump them
+        // as raw JSON; `x` is the deliberate decode path. On parse failure we
+        // refuse to show the body at all -- a truncated dump is still a leak.
+        const display = if (resource_type == .secrets)
+            secret_decode.redactSecretJson(self.allocator, json_data) catch {
+                self.footer.setStatus("Secret response was not valid JSON");
+                self.dirty = true;
+                return;
+            }
+        else
+            json_data;
+        defer if (resource_type == .secrets) self.allocator.free(display);
+
         // Set content on detail view
         const title = if (describe)
             try std.fmt.allocPrint(self.allocator, "Describe {s}/{s}", .{ resource_type.resourceName(), info.name })
@@ -1691,9 +1838,9 @@ pub const App = struct {
         defer self.allocator.free(title);
 
         if (describe) {
-            try self.detail_view.setContentDescribe(json_data, title);
+            try self.detail_view.setContentDescribe(display, title);
         } else {
-            try self.detail_view.setContentJson(json_data, title);
+            try self.detail_view.setContentJson(display, title);
         }
 
         // Push detail view as sub-view
@@ -2023,6 +2170,35 @@ const k8s_view_types = .{
     .{ "hpa_view", HPAView },
     .{ "endpoints_view", EndpointsView },
     .{ "storageclasses_view", StorageClassesView },
+    .{ "gatewayclasses_view", GatewayClassesView },
+    .{ "gateways_view", GatewaysView },
+    .{ "httproutes_view", HTTPRoutesView },
+    .{ "grpcroutes_view", GRPCRoutesView },
+    .{ "referencegrants_view", ReferenceGrantsView },
+    .{ "tcproutes_view", TCPRoutesView },
+    .{ "tlsroutes_view", TLSRoutesView },
+    .{ "udproutes_view", UDPRoutesView },
+    .{ "backendtlspolicies_view", BackendTLSPoliciesView },
+    .{ "listenersets_view", ListenerSetsView },
+    .{ "endpointslices_view", EndpointSlicesView },
+    .{ "ingressclasses_view", IngressClassesView },
+    .{ "ipaddresses_view", IPAddressesView },
+    .{ "servicecidrs_view", ServiceCIDRsView },
+    .{ "volumeattributesclasses_view", VolumeAttributesClassesView },
+    .{ "csidrivers_view", CSIDriversView },
+    .{ "validatingadmissionpolicies_view", ValidatingAdmissionPoliciesView },
+    .{ "validatingadmissionpolicybindings_view", ValidatingAdmissionPolicyBindingsView },
+    .{ "mutatingadmissionpolicies_view", MutatingAdmissionPoliciesView },
+    .{ "mutatingadmissionpolicybindings_view", MutatingAdmissionPolicyBindingsView },
+    .{ "validatingwebhookconfigurations_view", ValidatingWebhookConfigurationsView },
+    .{ "mutatingwebhookconfigurations_view", MutatingWebhookConfigurationsView },
+    .{ "resourceclaims_view", ResourceClaimsView },
+    .{ "deviceclasses_view", DeviceClassesView },
+    .{ "priorityclasses_view", PriorityClassesView },
+    .{ "runtimeclasses_view", RuntimeClassesView },
+    .{ "leases_view", LeasesView },
+    .{ "certificatesigningrequests_view", CertificateSigningRequestsView },
+    .{ "storageversionmigrations_view", StorageVersionMigrationsView },
     .{ "contexts_view", ContextsView },
     .{ "authorization_view", AuthorizationView },
 };
@@ -2052,17 +2228,46 @@ const view_commands = [_]ViewCommandEntry{
     .{ .field = "ingresses_view", .view_name = "ingresses", .aliases = &.{ "ingresses", "ing" } },
     .{ .field = "networkpolicies_view", .view_name = "networkpolicies", .aliases = &.{ "networkpolicies", "netpol" } },
     .{ .field = "serviceaccounts_view", .view_name = "serviceaccounts", .aliases = &.{ "serviceaccounts", "sa" } },
-    .{ .field = "roles_view", .view_name = "roles", .aliases = &.{"roles"} },
-    .{ .field = "rolebindings_view", .view_name = "rolebindings", .aliases = &.{"rolebindings"} },
-    .{ .field = "clusterroles_view", .view_name = "clusterroles", .aliases = &.{"clusterroles"} },
-    .{ .field = "clusterrolebindings_view", .view_name = "clusterrolebindings", .aliases = &.{"clusterrolebindings"} },
+    .{ .field = "roles_view", .view_name = "roles", .aliases = &.{ "roles", "role" } },
+    .{ .field = "rolebindings_view", .view_name = "rolebindings", .aliases = &.{ "rolebindings", "rb" } },
+    .{ .field = "clusterroles_view", .view_name = "clusterroles", .aliases = &.{ "clusterroles", "cr" } },
+    .{ .field = "clusterrolebindings_view", .view_name = "clusterrolebindings", .aliases = &.{ "clusterrolebindings", "crb" } },
     .{ .field = "events_view", .view_name = "events", .aliases = &.{ "events", "ev" } },
-    .{ .field = "resourcequotas_view", .view_name = "resourcequotas", .aliases = &.{"resourcequotas"} },
-    .{ .field = "limitranges_view", .view_name = "limitranges", .aliases = &.{"limitranges"} },
+    .{ .field = "resourcequotas_view", .view_name = "resourcequotas", .aliases = &.{ "resourcequotas", "quota" } },
+    .{ .field = "limitranges_view", .view_name = "limitranges", .aliases = &.{ "limitranges", "limits" } },
     .{ .field = "poddisruptionbudgets_view", .view_name = "poddisruptionbudgets", .aliases = &.{ "poddisruptionbudgets", "pdb" } },
     .{ .field = "hpa_view", .view_name = "hpa", .aliases = &.{ "horizontalpodautoscalers", "hpa" } },
     .{ .field = "endpoints_view", .view_name = "endpoints", .aliases = &.{ "endpoints", "ep" } },
     .{ .field = "storageclasses_view", .view_name = "storageclasses", .aliases = &.{ "storageclasses", "sc" } },
+    .{ .field = "gatewayclasses_view", .view_name = "gatewayclasses", .aliases = &.{ "gatewayclasses", "gtwc" } },
+    .{ .field = "gateways_view", .view_name = "gateways", .aliases = &.{ "gateways", "gtw", "gw" } },
+    .{ .field = "httproutes_view", .view_name = "httproutes", .aliases = &.{ "httproutes", "htr" } },
+    .{ .field = "grpcroutes_view", .view_name = "grpcroutes", .aliases = &.{ "grpcroutes", "grpcr" } },
+    .{ .field = "referencegrants_view", .view_name = "referencegrants", .aliases = &.{ "referencegrants", "refgrant" } },
+    .{ .field = "tcproutes_view", .view_name = "tcproutes", .aliases = &.{"tcproutes"} },
+    .{ .field = "tlsroutes_view", .view_name = "tlsroutes", .aliases = &.{"tlsroutes"} },
+    .{ .field = "udproutes_view", .view_name = "udproutes", .aliases = &.{"udproutes"} },
+    .{ .field = "backendtlspolicies_view", .view_name = "backendtlspolicies", .aliases = &.{ "backendtlspolicies", "btlsp" } },
+    .{ .field = "listenersets_view", .view_name = "listenersets", .aliases = &.{"listenersets"} },
+    .{ .field = "endpointslices_view", .view_name = "endpointslices", .aliases = &.{ "endpointslices", "eps" } },
+    .{ .field = "ingressclasses_view", .view_name = "ingressclasses", .aliases = &.{ "ingressclasses", "ic" } },
+    .{ .field = "ipaddresses_view", .view_name = "ipaddresses", .aliases = &.{ "ipaddresses", "ipa" } },
+    .{ .field = "servicecidrs_view", .view_name = "servicecidrs", .aliases = &.{"servicecidrs"} },
+    .{ .field = "volumeattributesclasses_view", .view_name = "volumeattributesclasses", .aliases = &.{ "volumeattributesclasses", "vac" } },
+    .{ .field = "csidrivers_view", .view_name = "csidrivers", .aliases = &.{ "csidrivers", "csi" } },
+    .{ .field = "validatingadmissionpolicies_view", .view_name = "validatingadmissionpolicies", .aliases = &.{ "validatingadmissionpolicies", "vap" } },
+    .{ .field = "validatingadmissionpolicybindings_view", .view_name = "validatingadmissionpolicybindings", .aliases = &.{ "validatingadmissionpolicybindings", "vapb" } },
+    .{ .field = "mutatingadmissionpolicies_view", .view_name = "mutatingadmissionpolicies", .aliases = &.{ "mutatingadmissionpolicies", "mapolicy" } },
+    .{ .field = "mutatingadmissionpolicybindings_view", .view_name = "mutatingadmissionpolicybindings", .aliases = &.{"mutatingadmissionpolicybindings"} },
+    .{ .field = "validatingwebhookconfigurations_view", .view_name = "validatingwebhookconfigurations", .aliases = &.{ "validatingwebhookconfigurations", "vwc" } },
+    .{ .field = "mutatingwebhookconfigurations_view", .view_name = "mutatingwebhookconfigurations", .aliases = &.{ "mutatingwebhookconfigurations", "mwc" } },
+    .{ .field = "resourceclaims_view", .view_name = "resourceclaims", .aliases = &.{ "resourceclaims", "rclaim" } },
+    .{ .field = "deviceclasses_view", .view_name = "deviceclasses", .aliases = &.{ "deviceclasses", "devicec" } },
+    .{ .field = "priorityclasses_view", .view_name = "priorityclasses", .aliases = &.{ "priorityclasses", "pc" } },
+    .{ .field = "runtimeclasses_view", .view_name = "runtimeclasses", .aliases = &.{ "runtimeclasses", "rtc" } },
+    .{ .field = "leases_view", .view_name = "leases", .aliases = &.{"leases"} },
+    .{ .field = "certificatesigningrequests_view", .view_name = "certificatesigningrequests", .aliases = &.{ "certificatesigningrequests", "csr" } },
+    .{ .field = "storageversionmigrations_view", .view_name = "storageversionmigrations", .aliases = &.{"storageversionmigrations"} },
     .{ .field = "contexts_view", .view_name = "contexts", .aliases = &.{ "contexts", "context", "ctx" } },
     .{ .field = "themes_view", .view_name = "themes", .aliases = &.{"themes"} },
     .{ .field = "authorization_view", .view_name = "authorization", .aliases = &.{ "authorization", "auth" } },

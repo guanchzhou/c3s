@@ -5,6 +5,14 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
 
 # c3s has two PATH dependencies declared in build.zig.zon:
 #   .klient          -> ../zig-klient        (github.com/guanchzhou/zig-klient, PUBLIC)
@@ -12,12 +20,18 @@ on:
 # A bare checkout of c3s has neither sibling on disk, so `zig build` would fail
 # for lack of the path deps. We clone both siblings (both public, plain HTTPS,
 # no credentials) next to the checkout before building.
+#
+# This repo is currently private. GitHub Actions minutes for private repos are
+# billed: a push-to-main run that never started (empty steps, no logs) is the
+# spending-limit / payment failure, not a compile error. Making the repo public
+# (like threemf and zig-klient) is the actual CI fix. Until then, PRs run on
+# Ubuntu only; macOS is reserved for main so a PR cannot burn macOS minutes.
 jobs:
   lint:
     name: zig fmt
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Install Zig 0.16.0
         env:
           ZIG_URL: https://ziglang.org/download/0.16.0/zig-x86_64-linux-0.16.0.tar.xz
@@ -32,37 +46,21 @@ jobs:
       - name: Check formatting
         run: zig fmt --check src/ tests/ build.zig build.zig.zon
 
-  build-test:
-    name: Build & Test
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-latest
-            zig_url: https://ziglang.org/download/0.16.0/zig-x86_64-linux-0.16.0.tar.xz
-            zig_sha: 70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00
-            zig_dir: zig-x86_64-linux-0.16.0
-          - os: macos-latest
-            zig_url: https://ziglang.org/download/0.16.0/zig-aarch64-macos-0.16.0.tar.xz
-            zig_sha: b23d70deaa879b5c2d486ed3316f7eaa53e84acf6fc9cc747de152450d401489
-            zig_dir: zig-aarch64-macos-0.16.0
-    runs-on: ${{ matrix.os }}
+  build-linux:
+    name: Build & Test (linux)
+    runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      # Clone the PATH-dependency siblings alongside the c3s checkout so the
-      # build.zig.zon `.path = "../zig-klient"` / "../kubectl-traffic" resolve.
-      # GITHUB_WORKSPACE is the c3s checkout dir; its parent receives the siblings.
+      - uses: actions/checkout@v6
       - name: Clone sibling dependencies
         run: |
           cd "$(dirname "$GITHUB_WORKSPACE")"
-          # Both siblings are public — plain HTTPS clones, no credentials needed.
           git clone --depth 1 https://github.com/guanchzhou/zig-klient zig-klient
           git clone --depth 1 https://github.com/guanchzhou/kubectl-traffic kubectl-traffic
       - name: Install Zig 0.16.0
         env:
-          ZIG_URL: ${{ matrix.zig_url }}
-          ZIG_SHA: ${{ matrix.zig_sha }}
-          ZIG_DIR: ${{ matrix.zig_dir }}
+          ZIG_URL: https://ziglang.org/download/0.16.0/zig-x86_64-linux-0.16.0.tar.xz
+          ZIG_SHA: 70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00
+          ZIG_DIR: zig-x86_64-linux-0.16.0
         run: |
           curl -fsSL "$ZIG_URL" -o zig.tar.xz
           echo "$ZIG_SHA  zig.tar.xz" | shasum -a 256 -c -
@@ -72,14 +70,33 @@ jobs:
         run: zig version
       - name: Build
         run: zig build
-      # test-all, not just test. The stale specs that forced `test` alone are
-      # repaired: k8s_service_test drifted when deleteResource gained `force` and
-      # getPodLogs gained `previous`; the integration test used listNamespaces as a
-      # plain slice after it became an owning ParsedList; advanced_features tested
-      # klient's validateCertKeyPair, deleted in klient 0.4.0.
-      #
-      # Running test-all here is the point: those files rotted precisely BECAUSE
-      # nothing compiled them. Cluster-dependent tests return error.SkipZigTest, so
-      # they skip cleanly without a cluster (13 skips at time of writing).
+      - name: Tests
+        run: zig build test-all
+
+  build-macos:
+    name: Build & Test (macos)
+    if: github.event_name != 'pull_request'
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Clone sibling dependencies
+        run: |
+          cd "$(dirname "$GITHUB_WORKSPACE")"
+          git clone --depth 1 https://github.com/guanchzhou/zig-klient zig-klient
+          git clone --depth 1 https://github.com/guanchzhou/kubectl-traffic kubectl-traffic
+      - name: Install Zig 0.16.0
+        env:
+          ZIG_URL: https://ziglang.org/download/0.16.0/zig-aarch64-macos-0.16.0.tar.xz
+          ZIG_SHA: b23d70deaa879b5c2d486ed3316f7eaa53e84acf6fc9cc747de152450d401489
+          ZIG_DIR: zig-aarch64-macos-0.16.0
+        run: |
+          curl -fsSL "$ZIG_URL" -o zig.tar.xz
+          echo "$ZIG_SHA  zig.tar.xz" | shasum -a 256 -c -
+          tar -xf zig.tar.xz
+          echo "$PWD/$ZIG_DIR" >> "$GITHUB_PATH"
+      - name: Verify Zig
+        run: zig version
+      - name: Build
+        run: zig build
       - name: Tests
         run: zig build test-all
