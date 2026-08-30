@@ -36,6 +36,11 @@ pub const CommandRegistry = struct {
         Logger.debug("CommandRegistry: Registered command '{s}'", .{name});
     }
 
+    /// Whether `name` is a registered command (palette / `:foo`).
+    pub fn contains(self: *const CommandRegistry, name: []const u8) bool {
+        return self.commands.contains(name);
+    }
+
     /// Execute a command by name
     pub fn execute(self: *CommandRegistry, name: []const u8, ctx: *Command.CommandContext) !bool {
         if (self.commands.get(name)) |command| {

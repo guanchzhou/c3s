@@ -142,6 +142,7 @@ pub fn build(b: *std.Build) void {
         .{ .step = "test-new-resources", .path = "tests/new_resources_test.zig" },
         .{ .step = "test-retry", .path = "tests/retry_test.zig" },
         .{ .step = "test-k8s-service", .path = "tests/services/k8s_service_test.zig" },
+        .{ .step = "test-k9s-parity", .path = "tests/k9s_parity_test.zig" },
         // ui tests are co-located in their src files (run via the `test`
         // unit-test step, which test-all depends on).
         .{ .step = "test-body-render", .path = "tests/view/body_render_test.zig" },
