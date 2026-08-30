@@ -223,6 +223,9 @@ zig build
 
 # Unit tests + integration suites
 zig build test-all
+
+# k9s command/key contract (through App.handleKey / :aliases, not isolated views)
+zig build test-k9s-parity
 ```
 
 Unit tests cover the table engine, resource views, service layer, and memory-leak

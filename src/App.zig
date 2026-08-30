@@ -580,7 +580,9 @@ pub const App = struct {
 
         // Aliases view (k9s Ctrl-A): also reachable via `:aliases` and the
         // fuzzy palette. Toggles the same as Ctrl-A.
-        for ([_][]const u8{ "aliases", "alias", "al" }) |alias| {
+        // k9s alias.go: AliGVR is "alias", "a". `:a` is the command; `a` on a
+        // pod remains Attach because keys and commands are different namespaces.
+        for ([_][]const u8{ "aliases", "alias", "al", "a" }) |alias| {
             try self.command_registry.register(alias, Command{ .name = alias, .execute = aliasesCommand });
         }
 
@@ -2211,7 +2213,7 @@ const ViewCommandEntry = struct {
 
 const view_commands = [_]ViewCommandEntry{
     .{ .field = "pods_view", .view_name = "pods", .aliases = &.{ "pods", "po" } },
-    .{ .field = "port_forwards_view", .view_name = "portforwards", .aliases = &.{ "portforwards", "port-forwards", "pf" } },
+    .{ .field = "port_forwards_view", .view_name = "portforwards", .aliases = &.{ "portforwards", "port-forwards", "portforward", "pf" } },
     .{ .field = "deployments_view", .view_name = "deployments", .aliases = &.{ "deployments", "deploy", "dp" } },
     .{ .field = "services_view", .view_name = "services", .aliases = &.{ "services", "svc" } },
     .{ .field = "namespaces_view", .view_name = "namespaces", .aliases = &.{ "namespaces", "namespace", "ns" } },
