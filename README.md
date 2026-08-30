@@ -69,8 +69,7 @@ Describe (`d`), YAML (`y`), logs (`l`), edit (`e` — any resource), shell (`s`)
 brew install guanchzhou/tap/c3s
 ```
 
-The tap is updated by the tag-triggered release workflow. GitHub Release assets
-must be public for `brew install` to fetch them; a private repo 404s those URLs.
+The tap is updated by the tag-triggered release workflow.
 
 ### **Prerequisites**
 - Zig 0.16.0

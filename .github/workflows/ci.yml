@@ -21,11 +21,9 @@ permissions:
 # for lack of the path deps. We clone both siblings (both public, plain HTTPS,
 # no credentials) next to the checkout before building.
 #
-# This repo is currently private. GitHub Actions minutes for private repos are
-# billed: a push-to-main run that never started (empty steps, no logs) is the
-# spending-limit / payment failure, not a compile error. Making the repo public
-# (like threemf and zig-klient) is the actual CI fix. Until then, PRs run on
-# Ubuntu only; macOS is reserved for main so a PR cannot burn macOS minutes.
+# This repo is public (same as threemf / zig-klient), so Actions minutes are
+# free. PRs still run on Ubuntu only; macOS is reserved for main so a PR does
+# not wait on a macOS runner.
 jobs:
   lint:
     name: zig fmt
