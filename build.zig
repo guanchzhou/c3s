@@ -13,9 +13,12 @@ pub fn build(b: *std.Build) void {
     const optimize = b.standardOptimizeOption(.{});
 
     // Build options for embedding version/build number.
+    // `-Dversion=vX.Y.Z` is what the tag-triggered release workflow passes so
+    // the binary reports the git tag instead of a date stamp.
+    const version_override = b.option([]const u8, "version", "Release version (e.g. v0.2.0)");
     // Zig 0.16: std.process.Child.init was removed; use b.runAllowFail for the
     // build-time `date` command (preserves the graceful "v0.unknown" fallback).
-    const base_version = blk: {
+    const base_version = version_override orelse blk: {
         var code: u8 = undefined;
         const raw = b.runAllowFail(&[_][]const u8{ "date", "+v0.%Y.%m.%d.%H.%M" }, &code, .inherit) catch break :blk "v0.unknown";
         break :blk std.mem.trimEnd(u8, raw, "\n");

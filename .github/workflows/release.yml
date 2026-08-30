@@ -1,0 +1,197 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+# Same sibling-checkout rule as ci.yml: build.zig.zon PATH-deps zig-klient and
+# kubectl-traffic, both public. Zig cross-compiles all four release targets
+# from Ubuntu so a tag does not spend macOS minutes.
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - zig_target: x86_64-linux-musl
+            artifact: linux-amd64
+            zig_url: https://ziglang.org/download/0.16.0/zig-x86_64-linux-0.16.0.tar.xz
+            zig_sha: 70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00
+            zig_dir: zig-x86_64-linux-0.16.0
+          - zig_target: aarch64-linux-musl
+            artifact: linux-arm64
+            zig_url: https://ziglang.org/download/0.16.0/zig-x86_64-linux-0.16.0.tar.xz
+            zig_sha: 70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00
+            zig_dir: zig-x86_64-linux-0.16.0
+          - zig_target: x86_64-macos
+            artifact: darwin-amd64
+            zig_url: https://ziglang.org/download/0.16.0/zig-x86_64-linux-0.16.0.tar.xz
+            zig_sha: 70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00
+            zig_dir: zig-x86_64-linux-0.16.0
+          - zig_target: aarch64-macos
+            artifact: darwin-arm64
+            zig_url: https://ziglang.org/download/0.16.0/zig-x86_64-linux-0.16.0.tar.xz
+            zig_sha: 70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00
+            zig_dir: zig-x86_64-linux-0.16.0
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Clone sibling dependencies
+        run: |
+          cd "$(dirname "$GITHUB_WORKSPACE")"
+          git clone --depth 1 https://github.com/guanchzhou/zig-klient zig-klient
+          git clone --depth 1 https://github.com/guanchzhou/kubectl-traffic kubectl-traffic
+
+      - name: Install Zig 0.16.0
+        env:
+          ZIG_URL: ${{ matrix.zig_url }}
+          ZIG_SHA: ${{ matrix.zig_sha }}
+          ZIG_DIR: ${{ matrix.zig_dir }}
+        run: |
+          curl -fsSL "$ZIG_URL" -o zig.tar.xz
+          echo "$ZIG_SHA  zig.tar.xz" | shasum -a 256 -c -
+          tar -xf zig.tar.xz
+          echo "$PWD/$ZIG_DIR" >> "$GITHUB_PATH"
+
+      - name: Get version from tag
+        id: version
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Build
+        run: |
+          zig version
+          zig build -Doptimize=ReleaseSafe -Dtarget=${{ matrix.zig_target }} -Dversion=v${{ steps.version.outputs.version }}
+
+      - name: Package
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          ART="c3s-${VERSION}-${{ matrix.artifact }}"
+          mkdir -p pkg
+          cp zig-out/bin/c3s pkg/c3s
+          cp LICENSE CHANGELOG.md README.md pkg/
+          tar -C pkg -czf "${ART}.tar.gz" c3s LICENSE CHANGELOG.md README.md
+          shasum -a 256 "${ART}.tar.gz" > "${ART}.tar.gz.sha256"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: c3s-${{ matrix.artifact }}
+          path: |
+            c3s-*.tar.gz
+            c3s-*.tar.gz.sha256
+          retention-days: 5
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          sparse-checkout: |
+            CHANGELOG.md
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Extract release notes from CHANGELOG
+        id: notes
+        env:
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          VERSION="${TAG_NAME#v}"
+          awk -v ver="$VERSION" '
+            $0 ~ "^## \\[" ver "\\]" { capture=1; next }
+            capture && /^## \[/ { exit }
+            capture { print }
+          ' CHANGELOG.md > release-notes.md
+
+          if [ ! -s release-notes.md ]; then
+            echo "ERROR: No CHANGELOG.md section for $VERSION. Add one before tagging."
+            exit 1
+          fi
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          gh release create "$TAG_NAME" dist/c3s-*.tar.gz dist/c3s-*.tar.gz.sha256 \
+            --title "$TAG_NAME" \
+            --notes-file release-notes.md
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: dist/c3s-*.tar.gz
+
+      - name: Update Homebrew tap
+        env:
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          VERSION: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          VER="${VERSION#v}"
+          sha() { shasum -a 256 "$1" | awk '{print $1}'; }
+          SHA_DARWIN_ARM=$(sha dist/c3s-${VER}-darwin-arm64.tar.gz)
+          SHA_DARWIN_AMD=$(sha dist/c3s-${VER}-darwin-amd64.tar.gz)
+          SHA_LINUX_ARM=$(sha dist/c3s-${VER}-linux-arm64.tar.gz)
+          SHA_LINUX_AMD=$(sha dist/c3s-${VER}-linux-amd64.tar.gz)
+
+          git clone "https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/guanchzhou/homebrew-tap.git" /tmp/homebrew-tap
+          mkdir -p /tmp/homebrew-tap/Formula
+          cat > /tmp/homebrew-tap/Formula/c3s.rb << FORMULA
+          class C3s < Formula
+            desc "Kubernetes TUI client"
+            homepage "https://github.com/guanchzhou/c3s"
+            version "${VER}"
+            license "Apache-2.0"
+
+            on_macos do
+              on_arm do
+                url "https://github.com/guanchzhou/c3s/releases/download/v#{version}/c3s-#{version}-darwin-arm64.tar.gz"
+                sha256 "${SHA_DARWIN_ARM}"
+              end
+              on_intel do
+                url "https://github.com/guanchzhou/c3s/releases/download/v#{version}/c3s-#{version}-darwin-amd64.tar.gz"
+                sha256 "${SHA_DARWIN_AMD}"
+              end
+            end
+
+            on_linux do
+              on_arm do
+                url "https://github.com/guanchzhou/c3s/releases/download/v#{version}/c3s-#{version}-linux-arm64.tar.gz"
+                sha256 "${SHA_LINUX_ARM}"
+              end
+              on_intel do
+                url "https://github.com/guanchzhou/c3s/releases/download/v#{version}/c3s-#{version}-linux-amd64.tar.gz"
+                sha256 "${SHA_LINUX_AMD}"
+              end
+            end
+
+            def install
+              bin.install "c3s"
+            end
+
+            test do
+              assert_match "c3s", shell_output("#{bin}/c3s --help")
+            end
+          end
+          FORMULA
+
+          cd /tmp/homebrew-tap
+          git config user.email "maltsev.andrey@gmail.com"
+          git config user.name "Andrei Maltsev"
+          git add Formula/c3s.rb
+          git commit -m "Update c3s to v${VER}"
+          git push
