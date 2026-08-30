@@ -10,6 +10,10 @@ The release workflow extracts the section matching the git tag (`vX.Y.Z` →
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-08-30
+
+First tagged release.
+
 ### Added
 
 - Gateway API views: GatewayClass, Gateway, HTTPRoute, GRPCRoute, ReferenceGrant,
@@ -39,3 +43,6 @@ The release workflow extracts the section matching the git tag (`vX.Y.Z` →
   metacharacters are rejected before kubectl sees them.
 - Port-forward, set-image, transfer, and kill-finalizers refuse under `--readonly`
   before prompting.
+
+[Unreleased]: https://github.com/guanchzhou/c3s/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/guanchzhou/c3s/releases/tag/v0.1.0
