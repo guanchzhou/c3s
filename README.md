@@ -37,16 +37,18 @@ Press `t` on a deployment to open a live traffic topology:
 
 Powered by the `kubectl_traffic` sibling package.
 
-### **25+ Kubernetes Resource Views**
+### **50+ Kubernetes Resource Views**
 - ✅ **Workloads:** Pods, Deployments, StatefulSets, DaemonSets, ReplicaSets, Jobs, CronJobs
-- ✅ **Config & Storage:** ConfigMaps, Secrets, PersistentVolumes, PersistentVolumeClaims, StorageClasses
-- ✅ **Networking:** Services, Endpoints, Ingresses, NetworkPolicies
+- ✅ **Config & Storage:** ConfigMaps, Secrets, PersistentVolumes, PersistentVolumeClaims, StorageClasses, VolumeAttributesClasses, CSIDrivers
+- ✅ **Networking:** Services, Endpoints, EndpointSlices, Ingresses, IngressClasses, NetworkPolicies, IPAddresses, ServiceCIDRs
+- ✅ **Gateway API:** GatewayClasses, Gateways, HTTPRoutes, GRPCRoutes, TCP/TLS/UDPRoutes, ReferenceGrants, BackendTLSPolicies, ListenerSets
 - ✅ **RBAC:** ServiceAccounts, Roles, RoleBindings, ClusterRoles, ClusterRoleBindings
-- ✅ **Cluster:** Namespaces, Nodes, Events, ResourceQuotas, LimitRanges, PodDisruptionBudgets
-- ✅ **Autoscaling:** HorizontalPodAutoscalers
+- ✅ **Admission:** Validating/Mutating AdmissionPolicies and Bindings, Validating/Mutating WebhookConfigurations
+- ✅ **Cluster:** Namespaces, Nodes, Events, ResourceQuotas, LimitRanges, PodDisruptionBudgets, PriorityClasses, RuntimeClasses, Leases, CSRs, StorageVersionMigrations
+- ✅ **Autoscaling / DRA:** HorizontalPodAutoscalers, ResourceClaims, DeviceClasses
 
 ### **Pod Actions**
-Describe (`d`), YAML (`y`), logs (`l`), edit (`e`), shell (`s`), attach (`a`), port-forward (`Shift-F`), delete (`Ctrl-D`).
+Describe (`d`), YAML (`y`), logs (`l`), edit (`e` — any resource), shell (`s`), attach (`a`), port-forward (`Shift-F` on pods and services), delete (`Ctrl-D`).
 
 ### **Context & Themes**
 - Context management: list kubeconfig contexts, interactive switching, multi-cluster support.
@@ -60,6 +62,15 @@ Describe (`d`), YAML (`y`), logs (`l`), edit (`e`), shell (`s`), attach (`a`), p
 ---
 
 ## 📦 **Installation**
+
+### **Homebrew**
+
+```bash
+brew install guanchzhou/tap/c3s
+```
+
+The tap is updated by the tag-triggered release workflow. GitHub Release assets
+must be public for `brew install` to fetch them; a private repo 404s those URLs.
 
 ### **Prerequisites**
 - Zig 0.16.0
@@ -120,10 +131,10 @@ zig build
 | `d` | Describe |
 | `y` | View YAML |
 | `l` | Logs |
-| `e` | Edit |
+| `e` | Edit (`kubectl edit`; any resource) |
 | `s` | Shell into container |
 | `a` | Attach |
-| `Shift-F` | Port-forward |
+| `Shift-F` | Port-forward (pods and services) |
 | `Ctrl-D` | Delete |
 
 ### **Deployment Actions**
@@ -138,6 +149,8 @@ zig build
 :pods               # View pods
 :deployments        # View deployments
 :services           # View services
+:gateways           # Gateway API
+:httproutes         # HTTPRoutes (`:htr`)
 :aliases            # API-resources table
 :contexts           # Manage contexts
 :events             # View cluster events
@@ -209,14 +222,12 @@ c3s follows **MVVM (Model-View-ViewModel)**:
 # Build
 zig build
 
-# Unit tests
-zig build test
+# Unit tests + integration suites
+zig build test-all
 ```
 
 Unit tests cover the table engine, resource views, service layer, and memory-leak
-detection. (The `test-all` aggregate also includes integration suites that are
-currently being updated against in-flight `K8sService` changes; `zig build` +
-`zig build test` are the green, CI-gated targets.)
+detection. `zig build test-all` is what CI runs.
 
 ---
 

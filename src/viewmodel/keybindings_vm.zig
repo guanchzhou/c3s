@@ -247,6 +247,8 @@ fn loadServicesBindings(allocator: std.mem.Allocator) ![]const KeyBinding {
     const bindings = [_]KeyBinding{
         .{ .key = "d", .description = "Describe", .category = .resource, .action = "describe" },
         .{ .key = "y", .description = "YAML", .category = .resource, .action = "yaml" },
+        .{ .key = "e", .description = "Edit", .category = .resource, .action = "edit" },
+        .{ .key = "Shift-f", .description = "Port-Forward", .category = .resource, .action = "port_forward" },
 
         .{ .key = "Shift-t", .description = "Sort Type", .category = .sorting, .action = "sort_type" },
 
@@ -455,15 +457,9 @@ test "keybindings_vm: multiple init calls return same data" {
     try std.testing.expectEqual(bindings1.len, bindings2.len);
 }
 
-test "keybindings_vm: services does NOT advertise port-forward" {
-    // This test used to assert services advertised port-forward. It was enforcing a
-    // lie: `F` -> request_port_forward exists only in resource_view's is_pods branch,
-    // so pressing it on a service did nothing. Inverted, and now also covered globally
-    // by keybindings_data's unimplemented-action scan.
-    //
-    // Port-forwarding a Service is a genuinely useful thing k9s supports; implement it
-    // by adding an is_services branch (or widening is_pods) and re-add the hint in the
-    // same commit.
+test "keybindings_vm: services advertises port-forward" {
+    // Inverted from the previous tripwire: `F` on a Service is now wired in
+    // resource_view's is_services branch, so the hint is allowed to exist.
     var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
@@ -471,11 +467,13 @@ test "keybindings_vm: services does NOT advertise port-forward" {
     var vm = try KeyBindingsViewModel.init(allocator, .services);
     defer vm.deinit();
 
+    var has_pf = false;
     for (vm.getBindings()) |binding| {
-        try std.testing.expect(!std.mem.eql(u8, binding.action, "port_forward"));
+        if (std.mem.eql(u8, binding.action, "port_forward")) has_pf = true;
         try std.testing.expect(!std.mem.eql(u8, binding.action, "logs"));
         try std.testing.expect(!std.mem.eql(u8, binding.action, "bench"));
     }
+    try std.testing.expect(has_pf);
 }
 
 test "keybindings_vm: cronjobs does NOT advertise trigger or suspend" {

@@ -242,3 +242,20 @@ test "events_view: multiple init/deinit cycles" {
         events_view.deinit();
     }
 }
+
+test "httproutes_view: init and cleanup" {
+    var gpa = std.heap.DebugAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
+    var theme = try theme_loader.loadTheme(allocator, "dracula");
+    defer theme_loader.deinitTheme(&theme);
+
+    var k8s_service = try K8sService.init(allocator);
+    defer k8s_service.deinit();
+
+    var view = try src.HTTPRoutesView.init(allocator, &theme, &k8s_service);
+    defer view.deinit();
+
+    try testing.expectEqual(@as(usize, 0), view.table.items.items.len);
+}

@@ -62,6 +62,33 @@ pub const PortForwardRegistry = struct {
         return .{ .allocator = allocator };
     }
 
+    /// True when `spec` is a kubectl port-forward mapping we will pass through:
+    /// digits, optionally `:` and either more digits or a named remote port
+    /// (`[A-Za-z0-9_-]+`). Empty strings, spaces, extra colons, and shell
+    /// metacharacters (`;|&$`) are rejected so they never reach kubectl's argv.
+    pub fn isValidPortForwardSpec(spec: []const u8) bool {
+        if (spec.len == 0) return false;
+        var colon: ?usize = null;
+        for (spec, 0..) |c, i| {
+            switch (c) {
+                '0'...'9' => {},
+                ':' => {
+                    if (colon != null) return false;
+                    colon = i;
+                },
+                'A'...'Z', 'a'...'z', '_', '-' => {
+                    // Named remotes (`8080:http`) are only valid after the colon.
+                    if (colon == null) return false;
+                },
+                else => return false,
+            }
+        }
+        if (colon) |i| {
+            if (i == 0 or i + 1 == spec.len) return false;
+        }
+        return true;
+    }
+
     /// Kill and reap everything still running, then free.
     pub fn deinit(self: *PortForwardRegistry) void {
         for (self.entries.items) |*e| {
@@ -308,4 +335,22 @@ test "add copies its strings, so callers may pass borrowed buffers" {
 
     @memset(&scratch, 0xaa); // poison the caller's buffer
     try std.testing.expectEqualStrings("pods/ephemeral", reg.entries.items[0].target);
+}
+
+test "isValidPortForwardSpec accepts digits and a named remote, rejects shell" {
+    try std.testing.expect(PortForwardRegistry.isValidPortForwardSpec("8080"));
+    try std.testing.expect(PortForwardRegistry.isValidPortForwardSpec("8080:80"));
+    try std.testing.expect(PortForwardRegistry.isValidPortForwardSpec("8080:http"));
+    try std.testing.expect(PortForwardRegistry.isValidPortForwardSpec("8443:https-web"));
+
+    try std.testing.expect(!PortForwardRegistry.isValidPortForwardSpec(""));
+    try std.testing.expect(!PortForwardRegistry.isValidPortForwardSpec("8080:"));
+    try std.testing.expect(!PortForwardRegistry.isValidPortForwardSpec(":80"));
+    try std.testing.expect(!PortForwardRegistry.isValidPortForwardSpec("80:80:80"));
+    try std.testing.expect(!PortForwardRegistry.isValidPortForwardSpec("8080:80;rm -rf /"));
+    try std.testing.expect(!PortForwardRegistry.isValidPortForwardSpec("8080:80|nc"));
+    try std.testing.expect(!PortForwardRegistry.isValidPortForwardSpec("8080:80&"));
+    try std.testing.expect(!PortForwardRegistry.isValidPortForwardSpec("8080:80$"));
+    try std.testing.expect(!PortForwardRegistry.isValidPortForwardSpec("8080 80"));
+    try std.testing.expect(!PortForwardRegistry.isValidPortForwardSpec("http:80"));
 }

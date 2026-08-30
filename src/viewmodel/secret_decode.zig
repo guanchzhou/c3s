@@ -107,6 +107,48 @@ pub fn decodeSecretData(allocator: std.mem.Allocator, json_str: []const u8) Erro
     return out.toOwnedSlice(allocator);
 }
 
+/// Replace Secret `data` / `stringData` string values with a length marker so
+/// `y` / `d` cannot dump credentials. `x` (decodeSecretData) is the deliberate
+/// reveal path. The original JSON is left untouched; this returns a new buffer.
+///
+/// Parse failure is an error, not a passthrough: returning the raw body on a
+/// TLS-intercepting proxy's HTML page would still leak whatever was in it, and
+/// reporting "empty" would lie about the cluster.
+pub fn redactSecretJson(allocator: std.mem.Allocator, json_str: []const u8) Error![]u8 {
+    var parsed = std.json.parseFromSlice(std.json.Value, allocator, json_str, .{}) catch {
+        return Error.NotAnObject;
+    };
+    defer parsed.deinit();
+    if (parsed.value != .object) return Error.NotAnObject;
+
+    var replacements: std.ArrayListUnmanaged([]u8) = .empty;
+    defer {
+        for (replacements.items) |s| allocator.free(s);
+        replacements.deinit(allocator);
+    }
+
+    try redactSecretMap(allocator, parsed.value.object.getPtr("data"), &replacements);
+    try redactSecretMap(allocator, parsed.value.object.getPtr("stringData"), &replacements);
+
+    return std.json.Stringify.valueAlloc(allocator, parsed.value, .{}) catch return Error.OutOfMemory;
+}
+
+fn redactSecretMap(
+    allocator: std.mem.Allocator,
+    maybe: ?*std.json.Value,
+    replacements: *std.ArrayListUnmanaged([]u8),
+) Error!void {
+    const v = maybe orelse return;
+    if (v.* != .object) return;
+    var it = v.object.iterator();
+    while (it.next()) |entry| {
+        if (entry.value_ptr.* != .string) continue;
+        const label = try std.fmt.allocPrint(allocator, "<redacted {d} bytes>", .{entry.value_ptr.string.len});
+        try replacements.append(allocator, label);
+        entry.value_ptr.* = .{ .string = label };
+    }
+}
+
 fn sortedKeys(
     allocator: std.mem.Allocator,
     obj: std.json.ObjectMap,
@@ -324,4 +366,40 @@ test "a PEM key is shown in full rather than hidden as binary" {
     defer a.free(out);
     try testing.expect(std.mem.indexOf(u8, out, "BEGIN PRIVATE KEY") != null);
     try testing.expect(std.mem.indexOf(u8, out, "<binary data") == null);
+}
+
+test "redactSecretJson replaces data values and keeps keys" {
+    const a = testing.allocator;
+    const json =
+        \\{"kind":"Secret","data":{"password":"aHVudGVyMg==","username":"YWRtaW4="},"type":"Opaque"}
+    ;
+    const out = try redactSecretJson(a, json);
+    defer a.free(out);
+
+    try testing.expect(std.mem.indexOf(u8, out, "password") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "username") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "Opaque") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "<redacted 12 bytes>") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "<redacted 8 bytes>") != null);
+    // The original base64 must not survive -- that is the leak `y` used to have.
+    try testing.expect(std.mem.indexOf(u8, out, "aHVudGVyMg==") == null);
+    try testing.expect(std.mem.indexOf(u8, out, "YWRtaW4=") == null);
+}
+
+test "redactSecretJson refuses a non-object body instead of passing it through" {
+    const a = testing.allocator;
+    try testing.expectError(Error.NotAnObject, redactSecretJson(a, "<html>nope</html>"));
+    try testing.expectError(Error.NotAnObject, redactSecretJson(a, "\"a string\""));
+}
+
+test "redactSecretJson redacts stringData too" {
+    const a = testing.allocator;
+    const json =
+        \\{"stringData":{"plain":"already-text"}}
+    ;
+    const out = try redactSecretJson(a, json);
+    defer a.free(out);
+    try testing.expect(std.mem.indexOf(u8, out, "already-text") == null);
+    try testing.expect(std.mem.indexOf(u8, out, "<redacted 12 bytes>") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "plain") != null);
 }

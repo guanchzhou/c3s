@@ -724,13 +724,21 @@ test "every view name in resource_configs resolves to a ResourceType" {
     // this is the check that would have caught endpoints/storageclasses.
     const RT = c3s.k8s_service_types.ResourceType;
     const names = [_][]const u8{
-        "pods",                 "deployments",            "services",       "namespaces",
-        "nodes",                "statefulsets",           "daemonsets",     "replicasets",
-        "jobs",                 "cronjobs",               "configmaps",     "secrets",
-        "persistentvolumes",    "persistentvolumeclaims", "ingresses",      "networkpolicies",
-        "serviceaccounts",      "roles",                  "rolebindings",   "clusterroles",
-        "clusterrolebindings",  "events",                 "resourcequotas", "limitranges",
-        "poddisruptionbudgets", "endpoints",              "storageclasses",
+        "pods",                            "deployments",                       "services",                  "namespaces",
+        "nodes",                           "statefulsets",                      "daemonsets",                "replicasets",
+        "jobs",                            "cronjobs",                          "configmaps",                "secrets",
+        "persistentvolumes",               "persistentvolumeclaims",            "ingresses",                 "networkpolicies",
+        "serviceaccounts",                 "roles",                             "rolebindings",              "clusterroles",
+        "clusterrolebindings",             "events",                            "resourcequotas",            "limitranges",
+        "poddisruptionbudgets",            "hpa",                               "endpoints",                 "storageclasses",
+        "gatewayclasses",                  "gateways",                          "httproutes",                "grpcroutes",
+        "referencegrants",                 "tcproutes",                         "tlsroutes",                 "udproutes",
+        "backendtlspolicies",              "listenersets",                      "endpointslices",            "ingressclasses",
+        "ipaddresses",                     "servicecidrs",                      "volumeattributesclasses",   "csidrivers",
+        "validatingadmissionpolicies",     "validatingadmissionpolicybindings", "mutatingadmissionpolicies", "mutatingadmissionpolicybindings",
+        "validatingwebhookconfigurations", "mutatingwebhookconfigurations",     "resourceclaims",            "deviceclasses",
+        "priorityclasses",                 "runtimeclasses",                    "leases",                    "certificatesigningrequests",
+        "storageversionmigrations",
     };
     for (names) |n| {
         if (std.meta.stringToEnum(RT, n) == null) {
@@ -784,4 +792,17 @@ test "the pod-log query asks for timestamps, previous and container" {
     // Parameters must be & separated after the first, or the API server sees one
     // malformed key.
     try std.testing.expect(std.mem.indexOf(u8, prev, "&timestamps=true") != null);
+}
+
+test "runKubectl and spawnKubectl refuse under --readonly" {
+    // These two used to skip assertMutable, so `set image` / `cp` / port-forward
+    // ran under --readonly. The guard must fire before any subprocess is spawned.
+    const allocator = std.testing.allocator;
+    var svc = try K8sService.init(allocator);
+    defer svc.deinit();
+
+    svc.readonly = true;
+    svc.connected = true;
+    try std.testing.expectError(error.ReadOnlyMode, svc.runKubectl(&.{"version"}));
+    try std.testing.expectError(error.ReadOnlyMode, svc.spawnKubectl(&.{ "port-forward", "svc/x", "80:80" }));
 }
