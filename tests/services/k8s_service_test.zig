@@ -21,7 +21,6 @@ test "k8s_service: initialization and cleanup" {
     var service = try K8sService.init(allocator);
     defer service.deinit();
 
-    try testing.expect(service.client == null);
     try testing.expectEqual(false, service.connected);
     try testing.expectEqualStrings("default", service.current_namespace);
     try testing.expectEqualStrings("unknown", service.context_name);
@@ -56,19 +55,7 @@ test "k8s_service: isConnected returns false initially" {
     try testing.expectEqual(false, service.isConnected());
 }
 
-test "k8s_service: isConnected returns true when connected with client" {
-    const allocator = testing.allocator;
-
-    var service = try K8sService.init(allocator);
-    defer service.deinit();
-
-    // Simulate connected state (no real client, but flags set)
-    service.connected = true;
-    // Without a client or use_kubectl, still false
-    try testing.expectEqual(false, service.isConnected());
-}
-
-test "k8s_service: isConnected returns true in kubectl mode" {
+test "k8s_service: connected flag cannot bypass an empty session slot" {
     const allocator = testing.allocator;
 
     var service = try K8sService.init(allocator);
@@ -76,7 +63,7 @@ test "k8s_service: isConnected returns true in kubectl mode" {
 
     service.connected = true;
     service.use_kubectl = true;
-    try testing.expectEqual(true, service.isConnected());
+    try testing.expectEqual(false, service.isConnected());
 }
 
 // =========================================================================
@@ -152,7 +139,7 @@ test "k8s_service: getServerVersion returns n/a when not connected" {
     try testing.expectEqualStrings("n/a", ver);
 }
 
-test "k8s_service: getServerVersion returns cached version" {
+test "k8s_service: stale cached version is hidden while disconnected" {
     const allocator = testing.allocator;
 
     var service = try K8sService.init(allocator);
@@ -160,23 +147,19 @@ test "k8s_service: getServerVersion returns cached version" {
 
     // Manually set cached version
     service.cached_k8s_version = try allocator.dupe(u8, "v1.30.0");
-    const ver = service.getServerVersion();
-    try testing.expectEqualStrings("v1.30.0", ver);
+    try testing.expectEqualStrings("n/a", service.getServerVersion());
 }
 
-test "k8s_service: getServerVersion returns unknown after fetch failure" {
+test "k8s_service: disconnected state wins over a stale fetch failure" {
     const allocator = testing.allocator;
 
     var service = try K8sService.init(allocator);
     defer service.deinit();
 
-    // Simulate connected + fetch failed
-    service.connected = true;
-    service.use_kubectl = true;
     service.version_fetch_failed = true;
 
     const ver = service.getServerVersion();
-    try testing.expectEqualStrings("unknown", ver);
+    try testing.expectEqualStrings("n/a", ver);
 }
 
 // =========================================================================
@@ -192,17 +175,20 @@ test "k8s_service: getCurrentNamespace returns default initially" {
     try testing.expectEqualStrings("default", service.getCurrentNamespace());
 }
 
-test "k8s_service: setCurrentNamespace updates namespace" {
+test "k8s_service: setCurrentNamespace requires an active session" {
     const allocator = testing.allocator;
 
     var service = try K8sService.init(allocator);
     defer service.deinit();
 
-    try service.setCurrentNamespace("kube-system");
-    try testing.expectEqualStrings("kube-system", service.getCurrentNamespace());
+    try testing.expectError(
+        error.NotConnected,
+        service.setCurrentNamespace("kube-system"),
+    );
+    try testing.expectEqualStrings("default", service.getCurrentNamespace());
 }
 
-test "k8s_service: setCurrentNamespace multiple times does not leak" {
+test "k8s_service: connected namespace changes update facade and client" {
     var gpa = std.heap.DebugAllocator(.{}){};
     defer {
         const leaked = gpa.deinit();
@@ -212,11 +198,22 @@ test "k8s_service: setCurrentNamespace multiple times does not leak" {
 
     var service = try K8sService.init(allocator);
     defer service.deinit();
+    var shared_event: std.Io.Event = .unset;
+    var slot = ActiveSessionSlot4A.init(c3s.runtime.io(), &shared_event);
+    var harness = SessionHarness4A{};
+    service.bindSessionSlot(&slot);
+    service.session_factory = harness.factory();
+    try service.connect("namespace-context");
+    defer releaseInstalledSession4A(&service, &slot);
 
     try service.setCurrentNamespace("ns1");
     try service.setCurrentNamespace("ns2");
     try service.setCurrentNamespace("ns3");
     try testing.expectEqualStrings("ns3", service.getCurrentNamespace());
+
+    var lease = (try service.acquireRequest(.command)).?;
+    defer lease.release();
+    try testing.expectEqualStrings("ns3", (try lease.client()).namespace);
 }
 
 // =========================================================================
@@ -406,6 +403,66 @@ test "k8s_service: listContexts without connection" {
     }
 }
 
+fn exerciseConfiguredContextAllocations(
+    allocator: std.mem.Allocator,
+    path: []const u8,
+) !void {
+    var service = try K8sService.init(allocator);
+    defer service.deinit();
+    service.kubeconfig_parser_allocator = testing.allocator;
+    service.setKubeconfigPath(path);
+    const contexts = try service.listContexts();
+    defer {
+        for (contexts) |context| {
+            allocator.free(context.name);
+            allocator.free(context.cluster);
+            allocator.free(context.user);
+            if (context.namespace) |namespace| allocator.free(namespace);
+        }
+        allocator.free(contexts);
+    }
+    try testing.expectEqual(@as(usize, 1), contexts.len);
+    try testing.expectEqualStrings("configured", contexts[0].name);
+}
+
+test "k8s_service: configured listContexts unwinds every output allocation" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(testing.io, .{
+        .sub_path = "config",
+        .data =
+        \\apiVersion: v1
+        \\kind: Config
+        \\clusters:
+        \\  - name: cluster
+        \\    cluster:
+        \\      server: http://127.0.0.1
+        \\users:
+        \\  - name: user
+        \\    user:
+        \\      token: test
+        \\contexts:
+        \\  - name: configured
+        \\    context:
+        \\      cluster: cluster
+        \\      user: user
+        \\      namespace: custom
+        \\current-context: configured
+        ,
+    });
+    const path = try std.fmt.allocPrint(
+        testing.allocator,
+        ".zig-cache/tmp/{s}/config",
+        .{tmp.sub_path},
+    );
+    defer testing.allocator.free(path);
+    try testing.checkAllAllocationFailures(
+        testing.allocator,
+        exerciseConfiguredContextAllocations,
+        .{path},
+    );
+}
+
 // =========================================================================
 // Type structure tests
 // =========================================================================
@@ -556,21 +613,6 @@ test "k8s_service: PodMetric structure" {
 
     try testing.expectEqualStrings("100m", metric.cpu);
     try testing.expectEqualStrings("256Mi", metric.mem);
-}
-
-// =========================================================================
-// TLS data defaults
-// =========================================================================
-
-test "k8s_service: TLS data defaults to null" {
-    const allocator = testing.allocator;
-
-    var service = try K8sService.init(allocator);
-    defer service.deinit();
-
-    try testing.expect(service.tls_ca_data == null);
-    try testing.expect(service.tls_cert_data == null);
-    try testing.expect(service.tls_key_data == null);
 }
 
 // --- Phase 0: --readonly must actually block mutations (2026-08-22) ----------
@@ -805,4 +847,558 @@ test "runKubectl and spawnKubectl refuse under --readonly" {
     svc.connected = true;
     try std.testing.expectError(error.ReadOnlyMode, svc.runKubectl(&.{"version"}));
     try std.testing.expectError(error.ReadOnlyMode, svc.spawnKubectl(&.{ "port-forward", "svc/x", "80:80" }));
+}
+
+// =========================================================================
+// Synchronous active-session foundation
+// =========================================================================
+
+const ActiveContextSession4A = c3s.ActiveContextSession;
+const ActiveSessionSlot4A = c3s.ActiveSessionSlot;
+const ContextSpec4A = c3s.ContextSpec;
+const SessionFactory4A = c3s.k8s_active_context.SessionFactory;
+const LifecycleEvent4A = c3s.k8s_active_context.LifecycleEvent;
+const LifecycleObserver4A = c3s.k8s_active_context.LifecycleObserver;
+const ProxyOwner4A = c3s.k8s_active_context.ProxyOwner;
+const ProxyStarter4A = c3s.k8s_active_context.ProxyStarter;
+const FallbackProbe4A = c3s.k8s_active_context.FallbackProbe;
+const ReadinessProbe4A = c3s.k8s_active_context.ReadinessProbe;
+
+const SessionHarness4A = struct {
+    session_deinits: usize = 0,
+    client_deinits: usize = 0,
+    fallback_calls: usize = 0,
+    proxy_start_calls: usize = 0,
+
+    fn observe(context: *anyopaque, event: LifecycleEvent4A) void {
+        const self: *SessionHarness4A = @ptrCast(@alignCast(context));
+        switch (event) {
+            .client_deinit => self.client_deinits += 1,
+            .session_deinit => self.session_deinits += 1,
+            else => {},
+        }
+    }
+
+    fn readiness(context: *anyopaque, session: *ActiveContextSession4A) anyerror!void {
+        _ = context;
+        if (std.mem.eql(u8, session.spec.context_name, "bad") or
+            std.mem.eql(u8, session.spec.context_name, "fallback"))
+        {
+            return error.DirectProbeFailed;
+        }
+    }
+
+    fn startProxy(
+        context: *anyopaque,
+        _: *ActiveContextSession4A,
+    ) anyerror!ProxyOwner4A {
+        const self: *SessionHarness4A = @ptrCast(@alignCast(context));
+        self.proxy_start_calls += 1;
+        return error.ProxyStartFailed;
+    }
+
+    fn fallback(context: *anyopaque, session: *ActiveContextSession4A) anyerror!void {
+        const self: *SessionHarness4A = @ptrCast(@alignCast(context));
+        self.fallback_calls += 1;
+        if (!std.mem.eql(u8, session.spec.context_name, "fallback")) {
+            return error.ReadinessFailed;
+        }
+    }
+
+    fn prepare(
+        context: *anyopaque,
+        allocator: std.mem.Allocator,
+        io: std.Io,
+        shared_event: *std.Io.Event,
+        generation: u64,
+        spec: ContextSpec4A,
+    ) anyerror!*ActiveContextSession4A {
+        const self: *SessionHarness4A = @ptrCast(@alignCast(context));
+        const client = try allocator.create(c3s.K8sClient);
+        errdefer allocator.destroy(client);
+        client.* = try c3s.K8sClient.init(testing.allocator, io, .{
+            .server = "http://127.0.0.1",
+            .namespace = spec.default_namespace,
+        });
+        errdefer client.deinit();
+
+        return ActiveContextSession4A.adopt(allocator, io, generation, spec, .{
+            .shared_event = shared_event,
+            .client = client,
+            .cluster_name = spec.context_name,
+            .user_name = "user",
+            .readiness = ReadinessProbe4A.init(self, readiness),
+            .proxy_starter = ProxyStarter4A.init(self, startProxy),
+            .fallback_probe = FallbackProbe4A.init(self, fallback),
+            .observer = LifecycleObserver4A.init(self, observe),
+        });
+    }
+
+    fn factory(self: *SessionHarness4A) SessionFactory4A {
+        return SessionFactory4A.init(self, prepare);
+    }
+};
+
+fn releaseInstalledSession4A(
+    service: *K8sService,
+    slot: *ActiveSessionSlot4A,
+) void {
+    const session = slot.invalidate(null) catch unreachable orelse return;
+    service.detachSession();
+    session.deinit();
+}
+
+test "active session copies every ContextSpec slice" {
+    const allocator = testing.allocator;
+    const context_name = try allocator.dupe(u8, "copied-context");
+    const kubeconfig_path = try allocator.dupe(u8, "/tmp/copied-config");
+    const default_namespace = try allocator.dupe(u8, "copied-namespace");
+
+    var shared_event: std.Io.Event = .unset;
+    var harness = SessionHarness4A{};
+    const session = try harness.factory().prepare(
+        allocator,
+        c3s.runtime.io(),
+        &shared_event,
+        7,
+        .{
+            .context_name = context_name,
+            .kubeconfig_path = kubeconfig_path,
+            .default_namespace = default_namespace,
+            .force_proxy = false,
+            .readonly = true,
+        },
+    );
+    defer session.deinit();
+
+    allocator.free(context_name);
+    allocator.free(kubeconfig_path);
+    allocator.free(default_namespace);
+
+    try testing.expectEqualStrings("copied-context", session.spec.context_name);
+    try testing.expectEqualStrings("/tmp/copied-config", session.spec.kubeconfig_path.?);
+    try testing.expectEqualStrings("copied-namespace", session.spec.default_namespace);
+    try testing.expect(session.spec.readonly);
+}
+
+test "slot acquisition checks generation and signals the shared Event on release" {
+    var shared_event: std.Io.Event = .unset;
+    var slot = ActiveSessionSlot4A.init(c3s.runtime.io(), &shared_event);
+    var harness = SessionHarness4A{};
+    const session = try harness.factory().prepare(
+        testing.allocator,
+        c3s.runtime.io(),
+        &shared_event,
+        11,
+        .{
+            .context_name = "one",
+            .kubeconfig_path = null,
+            .default_namespace = "default",
+            .force_proxy = false,
+            .readonly = false,
+        },
+    );
+    try session.ensureReady();
+    try testing.expect((try slot.commit(session)) == null);
+
+    try testing.expectError(error.GenerationMismatch, slot.acquire(12, .command));
+    var lease = (try slot.acquire(11, .command)).?;
+    try testing.expectEqual(@as(usize, 1), session.leaseCount());
+    try testing.expectEqual(@as(u64, 0), session.leaseEpoch());
+    try testing.expect(lease.shared_event == &shared_event);
+    _ = try lease.client();
+
+    shared_event.reset();
+    lease.release();
+    try testing.expectEqual(@as(usize, 0), session.leaseCount());
+    try testing.expectEqual(@as(u64, 1), session.leaseEpoch());
+    try testing.expect(shared_event.isSet());
+    try testing.expectError(error.LeaseReleased, lease.client());
+
+    lease.release();
+    try testing.expectEqual(@as(u64, 1), session.leaseEpoch());
+
+    const removed = (try slot.invalidate(11)).?;
+    try testing.expect((try slot.acquire(null, .command)) == null);
+    removed.deinit();
+}
+
+test "teardown rejects a live caller lease and succeeds after release" {
+    var shared_event: std.Io.Event = .unset;
+    var slot = ActiveSessionSlot4A.init(c3s.runtime.io(), &shared_event);
+    var harness = SessionHarness4A{};
+    const session = try harness.factory().prepare(
+        testing.allocator,
+        c3s.runtime.io(),
+        &shared_event,
+        12,
+        .{
+            .context_name = "held",
+            .kubeconfig_path = null,
+            .default_namespace = "default",
+            .force_proxy = false,
+            .readonly = false,
+        },
+    );
+    try session.ensureReady();
+    _ = try slot.commit(session);
+    try testing.expectError(error.SessionStillActive, session.checkTeardownReady());
+    var lease = (try slot.acquire(null, .detail)).?;
+    const removed = (try slot.invalidate(null)).?;
+
+    try testing.expectError(error.LeasesOutstanding, removed.checkTeardownReady());
+    lease.release();
+    try removed.checkTeardownReady();
+    removed.deinit();
+}
+
+test "K8sService installs once and all facade leases resolve one client generation" {
+    var shared_event: std.Io.Event = .unset;
+    var slot = ActiveSessionSlot4A.init(c3s.runtime.io(), &shared_event);
+    var harness = SessionHarness4A{};
+    var service = try K8sService.init(testing.allocator);
+    defer service.deinit();
+    service.bindSessionSlot(&slot);
+    service.session_factory = harness.factory();
+    service.setKubeconfigPath("/tmp/configured-kubeconfig");
+
+    try service.connect("A");
+    defer releaseInstalledSession4A(&service, &slot);
+
+    var first = (try service.acquireRequest(.command)).?;
+    defer first.release();
+    var second = (try service.acquireRequest(.detail)).?;
+    defer second.release();
+
+    try testing.expectEqual(first.generation, second.generation);
+    try testing.expect((try first.client()) == (try second.client()));
+    try testing.expectEqual(@as(u64, 1), first.generation);
+    try testing.expectEqualStrings("A", service.context_name);
+    try testing.expect(service.isConnected());
+    service.version_fetch_failed = true;
+    try testing.expectEqualStrings("unknown", service.getServerVersion());
+    service.version_fetch_failed = false;
+    service.cached_k8s_version = try testing.allocator.dupe(u8, "v1.active");
+    try testing.expectEqualStrings("v1.active", service.getServerVersion());
+    try testing.expectEqualStrings(
+        "/tmp/configured-kubeconfig",
+        first.session.spec.kubeconfig_path.?,
+    );
+    try testing.expect(service.sessionSlot() == &slot);
+}
+
+test "readiness failure preserves the old slot facade and cache" {
+    var shared_event: std.Io.Event = .unset;
+    var slot = ActiveSessionSlot4A.init(c3s.runtime.io(), &shared_event);
+    var harness = SessionHarness4A{};
+    var service = try K8sService.init(testing.allocator);
+    defer service.deinit();
+    service.bindSessionSlot(&slot);
+    service.session_factory = harness.factory();
+
+    try service.connect("A");
+    defer releaseInstalledSession4A(&service, &slot);
+    service.cached_k8s_version = try testing.allocator.dupe(u8, "v1.cached");
+    const before = slot.view();
+    const deinits_before = harness.session_deinits;
+
+    try testing.expectError(error.ReadinessFailed, service.switchContext("bad"));
+    const after = slot.view();
+    try testing.expectEqual(before.generation, after.generation);
+    try testing.expectEqualStrings("A", service.context_name);
+    try testing.expectEqualStrings("v1.cached", service.cached_k8s_version.?);
+    try testing.expectEqual(deinits_before + 1, harness.session_deinits);
+}
+
+test "synchronous context switch changes slot and facade then tears down old" {
+    var shared_event: std.Io.Event = .unset;
+    var slot = ActiveSessionSlot4A.init(c3s.runtime.io(), &shared_event);
+    var harness = SessionHarness4A{};
+    var service = try K8sService.init(testing.allocator);
+    defer service.deinit();
+    service.bindSessionSlot(&slot);
+    service.session_factory = harness.factory();
+
+    try service.connect("A");
+    defer releaseInstalledSession4A(&service, &slot);
+    const generation_a = slot.view().generation;
+    const deinits_before = harness.session_deinits;
+
+    try service.switchContext("B");
+    const generation_b = slot.view().generation;
+    try testing.expect(generation_b > generation_a);
+    try testing.expectEqualStrings("B", service.context_name);
+    try testing.expectEqual(deinits_before + 1, harness.session_deinits);
+
+    var first = (try service.acquireRequest(.command)).?;
+    defer first.release();
+    var second = (try service.acquireRequest(.detail)).?;
+    defer second.release();
+    try testing.expectEqual(generation_b, first.generation);
+    try testing.expectEqual(first.generation, second.generation);
+    try testing.expect((try first.client()) == (try second.client()));
+}
+
+test "slot invalidation blocks facade access before old session teardown" {
+    var shared_event: std.Io.Event = .unset;
+    var slot = ActiveSessionSlot4A.init(c3s.runtime.io(), &shared_event);
+    var harness = SessionHarness4A{};
+    var service = try K8sService.init(testing.allocator);
+    defer service.deinit();
+    service.bindSessionSlot(&slot);
+    service.session_factory = harness.factory();
+
+    try service.connect("A");
+    service.cached_k8s_version = try testing.allocator.dupe(u8, "v1.stale");
+    const namespace_before = try testing.allocator.dupe(
+        u8,
+        service.getCurrentNamespace(),
+    );
+    defer testing.allocator.free(namespace_before);
+    const retired = (try slot.invalidate(null)).?;
+    defer {
+        service.detachSession();
+        retired.deinit();
+    }
+
+    try testing.expect(!service.isConnected());
+    try testing.expect((try service.acquireRequest(.detail)) == null);
+    try testing.expectEqualStrings("n/a", service.getServerVersion());
+    try testing.expectError(
+        error.NotConnected,
+        service.setCurrentNamespace("must-not-stick"),
+    );
+    try testing.expectEqualStrings(namespace_before, service.getCurrentNamespace());
+    try testing.expect((try service.getPodMetrics(true)) == null);
+    try testing.expectError(
+        error.NotConnected,
+        service.getRawJson(.pods, "pod-a", "default"),
+    );
+    try testing.expectError(
+        error.NotConnected,
+        service.deleteResource(.pods, "pod-a", "default", false),
+    );
+    try testing.expectEqual(@as(usize, 0), harness.client_deinits);
+}
+
+test "K8sService source has no raw session client alias or fallback" {
+    const source = try std.Io.Dir.cwd().readFileAlloc(
+        c3s.runtime.io(),
+        "src/services/K8sService.zig",
+        testing.allocator,
+        .limited(1024 * 1024),
+    );
+    defer testing.allocator.free(source);
+
+    try testing.expect(std.mem.indexOf(u8, source, "self." ++ "client") == null);
+    try testing.expect(
+        std.mem.indexOf(u8, source, ".client = session." ++ "client") == null,
+    );
+}
+
+test "synchronous switch refuses to strand an old lease" {
+    var shared_event: std.Io.Event = .unset;
+    var slot = ActiveSessionSlot4A.init(c3s.runtime.io(), &shared_event);
+    var harness = SessionHarness4A{};
+    var service = try K8sService.init(testing.allocator);
+    defer service.deinit();
+    service.bindSessionSlot(&slot);
+    service.session_factory = harness.factory();
+
+    try service.connect("A");
+    defer releaseInstalledSession4A(&service, &slot);
+    var lease = (try service.acquireRequest(.command)).?;
+    const generation_a = slot.view().generation;
+
+    try testing.expectError(error.LeasesOutstanding, service.switchContext("B"));
+    try testing.expectEqual(generation_a, slot.view().generation);
+    try testing.expectEqualStrings("A", service.context_name);
+
+    lease.release();
+    try service.switchContext("B");
+    try testing.expect(slot.view().generation > generation_a);
+}
+
+test "direct and proxy failure uses one verified fallback" {
+    var shared_event: std.Io.Event = .unset;
+    var harness = SessionHarness4A{};
+    const session = try harness.factory().prepare(
+        testing.allocator,
+        c3s.runtime.io(),
+        &shared_event,
+        21,
+        .{
+            .context_name = "fallback",
+            .kubeconfig_path = "/tmp/configured",
+            .default_namespace = "default",
+            .force_proxy = false,
+            .readonly = false,
+        },
+    );
+    defer session.deinit();
+
+    try session.ensureReady();
+    try session.ensureReady();
+    try testing.expect(session.isReady());
+    try testing.expect(session.use_kubectl);
+    try testing.expectEqual(@as(usize, 1), harness.proxy_start_calls);
+    try testing.expectEqual(@as(usize, 1), harness.fallback_calls);
+}
+
+const ProxyHarness4A = struct {
+    kills: usize = 0,
+    deinits: usize = 0,
+
+    fn kill(context: *anyopaque, _: std.Io) void {
+        const self: *ProxyHarness4A = @ptrCast(@alignCast(context));
+        self.kills += 1;
+    }
+
+    fn deinit(context: *anyopaque, _: std.mem.Allocator) void {
+        const self: *ProxyHarness4A = @ptrCast(@alignCast(context));
+        self.deinits += 1;
+    }
+
+    fn owner(self: *ProxyHarness4A, port: u16) ProxyOwner4A {
+        return ProxyOwner4A.init(self, port, kill, deinit);
+    }
+};
+
+const SuccessfulProxyStarter4A = struct {
+    proxy: *ProxyHarness4A,
+    entered: std.Io.Event = .unset,
+    proceed: std.Io.Event = .unset,
+    calls: std.atomic.Value(usize) = .init(0),
+
+    fn start(
+        context: *anyopaque,
+        _: *ActiveContextSession4A,
+    ) anyerror!ProxyOwner4A {
+        const self: *SuccessfulProxyStarter4A = @ptrCast(@alignCast(context));
+        _ = self.calls.fetchAdd(1, .acq_rel);
+        self.entered.set(c3s.runtime.io());
+        self.proceed.waitUncancelable(c3s.runtime.io());
+        return self.proxy.owner(43124);
+    }
+};
+
+fn startSessionProxy4A(session: *ActiveContextSession4A) !void {
+    try session.startProxy();
+}
+
+test "concurrent proxy requests share one child owner" {
+    var shared_event: std.Io.Event = .unset;
+    var proxy = ProxyHarness4A{};
+    var starter = SuccessfulProxyStarter4A{ .proxy = &proxy };
+    const client = try testing.allocator.create(c3s.K8sClient);
+    errdefer testing.allocator.destroy(client);
+    client.* = try c3s.K8sClient.init(testing.allocator, c3s.runtime.io(), .{
+        .server = "http://127.0.0.1",
+        .namespace = "default",
+    });
+    errdefer client.deinit();
+    const session = try ActiveContextSession4A.adopt(
+        testing.allocator,
+        c3s.runtime.io(),
+        30,
+        .{
+            .context_name = "proxy-race",
+            .kubeconfig_path = null,
+            .default_namespace = "default",
+            .force_proxy = true,
+            .readonly = false,
+        },
+        .{
+            .shared_event = &shared_event,
+            .client = client,
+            .cluster_name = "cluster",
+            .user_name = "user",
+            .proxy_starter = ProxyStarter4A.init(&starter, SuccessfulProxyStarter4A.start),
+        },
+    );
+
+    var first = try std.Io.concurrent(c3s.runtime.io(), startSessionProxy4A, .{session});
+    try starter.entered.wait(c3s.runtime.io());
+    var second = try std.Io.concurrent(c3s.runtime.io(), startSessionProxy4A, .{session});
+    starter.proceed.set(c3s.runtime.io());
+    try first.await(c3s.runtime.io());
+    try second.await(c3s.runtime.io());
+
+    try testing.expectEqual(@as(usize, 1), starter.calls.load(.acquire));
+    session.deinit();
+    try testing.expectEqual(@as(usize, 1), proxy.kills);
+    try testing.expectEqual(@as(usize, 1), proxy.deinits);
+}
+
+test "session teardown kills its only proxy child exactly once" {
+    var shared_event: std.Io.Event = .unset;
+    var proxy = ProxyHarness4A{};
+    const client = try testing.allocator.create(c3s.K8sClient);
+    errdefer testing.allocator.destroy(client);
+    client.* = try c3s.K8sClient.init(testing.allocator, c3s.runtime.io(), .{
+        .server = "http://127.0.0.1",
+        .namespace = "default",
+    });
+    errdefer client.deinit();
+    const session = try ActiveContextSession4A.adopt(
+        testing.allocator,
+        c3s.runtime.io(),
+        31,
+        .{
+            .context_name = "proxy",
+            .kubeconfig_path = null,
+            .default_namespace = "default",
+            .force_proxy = true,
+            .readonly = false,
+        },
+        .{
+            .shared_event = &shared_event,
+            .client = client,
+            .cluster_name = "cluster",
+            .user_name = "user",
+            .proxy = proxy.owner(43123),
+            .readiness_verified = true,
+        },
+    );
+
+    var slot = ActiveSessionSlot4A.init(c3s.runtime.io(), &shared_event);
+    _ = try slot.commit(session);
+    const removed = (try slot.invalidate(null)).?;
+    removed.deinit();
+    try testing.expectEqual(@as(usize, 1), proxy.kills);
+    try testing.expectEqual(@as(usize, 1), proxy.deinits);
+}
+
+fn exerciseTask4ASetupAllocations(allocator: std.mem.Allocator) !void {
+    const shared_event = try allocator.create(std.Io.Event);
+    shared_event.* = .unset;
+    defer allocator.destroy(shared_event);
+
+    const slot = try allocator.create(ActiveSessionSlot4A);
+    slot.* = ActiveSessionSlot4A.init(c3s.runtime.io(), shared_event);
+    defer allocator.destroy(slot);
+
+    const service = try allocator.create(K8sService);
+    service.* = K8sService.init(allocator) catch |err| {
+        allocator.destroy(service);
+        return err;
+    };
+    defer {
+        releaseInstalledSession4A(service, slot);
+        service.deinit();
+        allocator.destroy(service);
+    }
+
+    var harness = SessionHarness4A{};
+    service.bindSessionSlot(slot);
+    service.session_factory = harness.factory();
+    try service.connect("allocation-context");
+}
+
+test "session slot context and facade setup unwind every allocation ordinal" {
+    try testing.checkAllAllocationFailures(
+        testing.allocator,
+        exerciseTask4ASetupAllocations,
+        .{},
+    );
 }

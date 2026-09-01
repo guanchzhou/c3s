@@ -447,6 +447,7 @@ pub const LogsView = struct {
                     self.auto_scroll = !self.auto_scroll;
                     return .handled;
                 },
+                'f' => return .request_fullscreen,
                 else => return .not_handled,
             },
             .up => {

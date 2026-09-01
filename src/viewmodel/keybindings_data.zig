@@ -6,6 +6,37 @@
 const std = @import("std");
 const KeyBinding = @import("../model/keybindings.zig").KeyBinding;
 
+/// Global k9s daily-driver keys that resource tables actually handle.
+pub const daily_driver_bindings = [_]KeyBinding{
+    .{ .key = "c", .description = "Copy Name", .category = .resource, .action = "copy" },
+    .{ .key = "n", .description = "Copy Namespace", .category = .resource, .action = "copy_namespace" },
+    .{ .key = "Shift-j", .description = "Jump to Owner", .category = .resource, .action = "jump_owner" },
+    .{ .key = "-", .description = "Last Command", .category = .general, .action = "last_command" },
+    .{ .key = "[", .description = "History Back", .category = .general, .action = "history_back" },
+    .{ .key = "]", .description = "History Forward", .category = .general, .action = "history_forward" },
+    .{ .key = "Ctrl-s", .description = "Save JSON", .category = .general, .action = "save" },
+    .{ .key = "Ctrl-g", .description = "Toggle Crumbs", .category = .general, .action = "toggle_crumbs" },
+    .{ .key = "Ctrl-w", .description = "Wide Columns", .category = .general, .action = "toggle_wide" },
+    .{ .key = "Ctrl-z", .description = "Toggle Faults", .category = .general, .action = "toggle_faults" },
+    .{ .key = "Ctrl-r", .description = "Refresh", .category = .resource, .action = "refresh" },
+    .{ .key = "Ctrl-c", .description = "Quit", .category = .general, .action = "quit" },
+    .{ .key = "Ctrl-Space", .description = "Mark Range", .category = .general, .action = "mark_range" },
+    .{ .key = "Ctrl-\\", .description = "Mark Clear", .category = .general, .action = "mark_clear" },
+    .{ .key = "Shift-Left", .description = "Move Column Left", .category = .navigation, .action = "move_column_left" },
+    .{ .key = "Shift-Right", .description = "Move Column Right", .category = .navigation, .action = "move_column_right" },
+};
+
+pub fn concatBindings(allocator: std.mem.Allocator, head: []const KeyBinding, tail: []const KeyBinding) ![]const KeyBinding {
+    const out = try allocator.alloc(KeyBinding, head.len + tail.len);
+    @memcpy(out[0..head.len], head);
+    @memcpy(out[head.len..], tail);
+    return out;
+}
+
+pub fn withDailyDriver(allocator: std.mem.Allocator, extra: []const KeyBinding) ![]const KeyBinding {
+    return concatBindings(allocator, &daily_driver_bindings, extra);
+}
+
 // ============================================================================
 // CORE RESOURCES
 // ============================================================================
@@ -17,6 +48,7 @@ pub fn loadNamespacesBindings(allocator: std.mem.Allocator) ![]const KeyBinding 
         .{ .key = "d", .description = "Describe", .category = .resource, .action = "describe" },
         .{ .key = "y", .description = "YAML", .category = .resource, .action = "yaml" },
         .{ .key = "Ctrl-d", .description = "Delete", .category = .resource, .action = "delete" },
+        .{ .key = "Ctrl-r", .description = "Refresh", .category = .resource, .action = "refresh" },
     };
     return try allocator.dupe(KeyBinding, &bindings);
 }
@@ -28,8 +60,9 @@ pub fn loadEventsBindings(allocator: std.mem.Allocator) ![]const KeyBinding {
         .{ .key = "y", .description = "YAML", .category = .resource, .action = "yaml" },
         .{ .key = "Shift-t", .description = "Sort Type", .category = .sorting, .action = "sort_type" },
         .{ .key = "Shift-r", .description = "Sort Reason", .category = .sorting, .action = "sort_reason" },
+        .{ .key = "w", .description = "Warp Namespace", .category = .resource, .action = "warp" },
     };
-    return try allocator.dupe(KeyBinding, &bindings);
+    return withDailyDriver(allocator, &bindings);
 }
 
 /// Secrets bindings
@@ -38,9 +71,11 @@ pub fn loadSecretsBindings(allocator: std.mem.Allocator) ![]const KeyBinding {
         .{ .key = "d", .description = "Describe", .category = .resource, .action = "describe" },
         .{ .key = "y", .description = "YAML", .category = .resource, .action = "yaml" },
         .{ .key = "x", .description = "Decode", .category = .resource, .action = "decode" },
+        .{ .key = "u", .description = "Used By", .category = .resource, .action = "used_by" },
         .{ .key = "Ctrl-d", .description = "Delete", .category = .resource, .action = "delete" },
+        .{ .key = "w", .description = "Warp Namespace", .category = .resource, .action = "warp" },
     };
-    return try allocator.dupe(KeyBinding, &bindings);
+    return withDailyDriver(allocator, &bindings);
 }
 
 /// ServiceAccounts bindings
@@ -48,9 +83,11 @@ pub fn loadServiceAccountsBindings(allocator: std.mem.Allocator) ![]const KeyBin
     const bindings = [_]KeyBinding{
         .{ .key = "d", .description = "Describe", .category = .resource, .action = "describe" },
         .{ .key = "y", .description = "YAML", .category = .resource, .action = "yaml" },
+        .{ .key = "u", .description = "Used By", .category = .resource, .action = "used_by" },
         .{ .key = "Ctrl-d", .description = "Delete", .category = .resource, .action = "delete" },
+        .{ .key = "w", .description = "Warp Namespace", .category = .resource, .action = "warp" },
     };
-    return try allocator.dupe(KeyBinding, &bindings);
+    return withDailyDriver(allocator, &bindings);
 }
 
 /// PersistentVolumeClaims bindings
@@ -59,10 +96,12 @@ pub fn loadPVCsBindings(allocator: std.mem.Allocator) ![]const KeyBinding {
         .{ .key = "d", .description = "Describe", .category = .resource, .action = "describe" },
         .{ .key = "y", .description = "YAML", .category = .resource, .action = "yaml" },
         .{ .key = "Ctrl-d", .description = "Delete", .category = .resource, .action = "delete" },
+        .{ .key = "u", .description = "Used By", .category = .resource, .action = "used_by" },
         .{ .key = "Shift-s", .description = "Sort Status", .category = .sorting, .action = "sort_status" },
         .{ .key = "Shift-c", .description = "Sort Capacity", .category = .sorting, .action = "sort_capacity" },
+        .{ .key = "w", .description = "Warp Namespace", .category = .resource, .action = "warp" },
     };
-    return try allocator.dupe(KeyBinding, &bindings);
+    return withDailyDriver(allocator, &bindings);
 }
 
 // ============================================================================
@@ -75,8 +114,11 @@ pub fn loadReplicaSetsBindings(allocator: std.mem.Allocator) ![]const KeyBinding
         .{ .key = "d", .description = "Describe", .category = .resource, .action = "describe" },
         .{ .key = "y", .description = "YAML", .category = .resource, .action = "yaml" },
         .{ .key = "Ctrl-d", .description = "Delete", .category = .resource, .action = "delete" },
+        .{ .key = "s", .description = "Scale", .category = .resource, .action = "scale" },
+        .{ .key = "Ctrl-l", .description = "Rollback", .category = .resource, .action = "rollback" },
+        .{ .key = "w", .description = "Warp Namespace", .category = .resource, .action = "warp" },
     };
-    return try allocator.dupe(KeyBinding, &bindings);
+    return withDailyDriver(allocator, &bindings);
 }
 
 /// StatefulSets bindings
@@ -85,8 +127,12 @@ pub fn loadStatefulSetsBindings(allocator: std.mem.Allocator) ![]const KeyBindin
         .{ .key = "d", .description = "Describe", .category = .resource, .action = "describe" },
         .{ .key = "y", .description = "YAML", .category = .resource, .action = "yaml" },
         .{ .key = "Ctrl-d", .description = "Delete", .category = .resource, .action = "delete" },
+        .{ .key = "s", .description = "Scale", .category = .resource, .action = "scale" },
+        .{ .key = "r", .description = "Restart", .category = .resource, .action = "restart" },
+        .{ .key = "Ctrl-l", .description = "Rollback", .category = .resource, .action = "rollback" },
+        .{ .key = "w", .description = "Warp Namespace", .category = .resource, .action = "warp" },
     };
-    return try allocator.dupe(KeyBinding, &bindings);
+    return withDailyDriver(allocator, &bindings);
 }
 
 /// DaemonSets bindings
@@ -95,8 +141,11 @@ pub fn loadDaemonSetsBindings(allocator: std.mem.Allocator) ![]const KeyBinding 
         .{ .key = "d", .description = "Describe", .category = .resource, .action = "describe" },
         .{ .key = "y", .description = "YAML", .category = .resource, .action = "yaml" },
         .{ .key = "Ctrl-d", .description = "Delete", .category = .resource, .action = "delete" },
+        .{ .key = "r", .description = "Restart", .category = .resource, .action = "restart" },
+        .{ .key = "Ctrl-l", .description = "Rollback", .category = .resource, .action = "rollback" },
+        .{ .key = "w", .description = "Warp Namespace", .category = .resource, .action = "warp" },
     };
-    return try allocator.dupe(KeyBinding, &bindings);
+    return withDailyDriver(allocator, &bindings);
 }
 
 // ============================================================================
@@ -109,8 +158,11 @@ pub fn loadCronJobsBindings(allocator: std.mem.Allocator) ![]const KeyBinding {
         .{ .key = "d", .description = "Describe", .category = .resource, .action = "describe" },
         .{ .key = "y", .description = "YAML", .category = .resource, .action = "yaml" },
         .{ .key = "Ctrl-d", .description = "Delete", .category = .resource, .action = "delete" },
+        .{ .key = "p", .description = "Suspend", .category = .resource, .action = "suspend" },
+        .{ .key = "t", .description = "Trigger", .category = .resource, .action = "trigger" },
+        .{ .key = "w", .description = "Warp Namespace", .category = .resource, .action = "warp" },
     };
-    return try allocator.dupe(KeyBinding, &bindings);
+    return withDailyDriver(allocator, &bindings);
 }
 
 /// Jobs bindings
@@ -120,8 +172,9 @@ pub fn loadJobsBindings(allocator: std.mem.Allocator) ![]const KeyBinding {
         .{ .key = "y", .description = "YAML", .category = .resource, .action = "yaml" },
         .{ .key = "Ctrl-d", .description = "Delete", .category = .resource, .action = "delete" },
         .{ .key = "Shift-c", .description = "Sort Completions", .category = .sorting, .action = "sort_completions" },
+        .{ .key = "w", .description = "Warp Namespace", .category = .resource, .action = "warp" },
     };
-    return try allocator.dupe(KeyBinding, &bindings);
+    return withDailyDriver(allocator, &bindings);
 }
 
 // ============================================================================
@@ -135,7 +188,7 @@ pub fn loadRolesBindings(allocator: std.mem.Allocator) ![]const KeyBinding {
         .{ .key = "y", .description = "YAML", .category = .resource, .action = "yaml" },
         .{ .key = "Ctrl-d", .description = "Delete", .category = .resource, .action = "delete" },
     };
-    return try allocator.dupe(KeyBinding, &bindings);
+    return withDailyDriver(allocator, &bindings);
 }
 
 /// RoleBindings/ClusterRoleBindings bindings
@@ -145,7 +198,7 @@ pub fn loadRoleBindingsBindings(allocator: std.mem.Allocator) ![]const KeyBindin
         .{ .key = "y", .description = "YAML", .category = .resource, .action = "yaml" },
         .{ .key = "Ctrl-d", .description = "Delete", .category = .resource, .action = "delete" },
     };
-    return try allocator.dupe(KeyBinding, &bindings);
+    return withDailyDriver(allocator, &bindings);
 }
 
 // ============================================================================
@@ -249,10 +302,8 @@ test "keybindings_data: secrets has decode binding" {
     try std.testing.expect(has_decode);
 }
 
-test "keybindings_data: cronjobs advertises only what it can do" {
-    // Replaces a test that asserted trigger and suspend were advertised -- neither is
-    // implemented. Describe/yaml/delete are, so those are asserted positively: a help
-    // screen that omits a working key is as wrong as one that invents a key.
+test "keybindings_data: cronjobs advertises trigger, suspend, describe" {
+    // Flipped in the same commit that implements `p`/`t` via kubectl.
     var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
@@ -261,12 +312,16 @@ test "keybindings_data: cronjobs advertises only what it can do" {
     defer allocator.free(bindings);
 
     var has_describe = false;
+    var has_trigger = false;
+    var has_suspend = false;
     for (bindings) |binding| {
         if (std.mem.eql(u8, binding.action, "describe")) has_describe = true;
-        try std.testing.expect(!std.mem.eql(u8, binding.action, "trigger"));
-        try std.testing.expect(!std.mem.eql(u8, binding.action, "suspend"));
+        if (std.mem.eql(u8, binding.action, "trigger")) has_trigger = true;
+        if (std.mem.eql(u8, binding.action, "suspend")) has_suspend = true;
     }
     try std.testing.expect(has_describe);
+    try std.testing.expect(has_trigger);
+    try std.testing.expect(has_suspend);
 }
 
 test "keybindings_data: all bindings are UTF-8 valid" {
@@ -372,7 +427,6 @@ pub fn loadGenericResourceBindings(allocator: std.mem.Allocator) ![]const KeyBin
         .{ .key = "d", .description = "Describe", .category = .resource, .action = "describe" },
         .{ .key = "y", .description = "YAML", .category = .resource, .action = "yaml" },
         .{ .key = "e", .description = "Edit", .category = .resource, .action = "edit" },
-        .{ .key = "r", .description = "Refresh", .category = .resource, .action = "refresh" },
         .{ .key = "Ctrl-d", .description = "Delete", .category = .resource, .action = "delete" },
 
         .{ .key = "j", .description = "Down", .category = .navigation, .action = "down" },
@@ -395,7 +449,7 @@ pub fn loadGenericResourceBindings(allocator: std.mem.Allocator) ![]const KeyBin
         .{ .key = "esc", .description = "Back/Clear", .category = .general, .action = "back_clear" },
         .{ .key = ":q", .description = "Quit", .category = .general, .action = "quit" },
     };
-    return try allocator.dupe(KeyBinding, &bindings);
+    return withDailyDriver(allocator, &bindings);
 }
 
 /// Actions with no implementation anywhere in c3s.
@@ -411,36 +465,25 @@ pub fn loadGenericResourceBindings(allocator: std.mem.Allocator) ![]const KeyBin
 ///
 /// Grouped by why they are absent:
 ///
-///   - `scale`, `restart`, `suspend`, `trigger`: workload mutations. scaleDeployment,
-///     scaleStatefulSet, scaleReplicaSet and setCronJobSuspend DO exist in K8sService
-///     with zero callers -- but they reach straight for `self.client.?` with no
-///     use_kubectl branch, which is the defect class already fixed in checkAccess, so
-///     they would fail under the kubectl-proxy transport. Fix that first.
+///   - Workload mutations (`scale`, `restart`, `suspend`, `trigger`, `rollback`)
+///     are implemented via `K8sService.runKubectl` and are NOT in this list.
 ///   - `view_pods`, `view_rules`, `view_policies`, `view_instances`: Enter-to-drill-down.
 ///     There is not even a KeyResult variant for these.
-///   - `copy`, `copy_namespace`, `view`, `jump_owner`, `show_portforward`, `bench`:
-///     never existed.
-///   - `field_next`, `field_previous`, `reload`, `command_clear`, `save`,
-///     `toggle_crumbs`, `last_command`, `history_back`, `history_forward`, `left`,
-///     `right`: several of these name Key variants c3s does not even have
-///     (ctrl_r/ctrl_u/ctrl_s/ctrl_g), and `left`/`right` implied a column-scroll
-///     feature that does not exist.
+///   - `view`, `bench`: never existed as table keys. `bench` is an OUT subsystem.
+///     `f` = show port-forwards is wired on pods/services.
+///   - `field_next`, `field_previous`, `reload`, `command_clear`, `left`, `right`:
+///     column-cursor / leftover names. Shift-arrows move columns without a cursor.
 ///   - `namespace_all`, `namespace_default`: superseded by `toggle_all_namespaces`
 ///     on `0`, which is real.
-///   - `sort_cpu`, `sort_mem`, `sort_pods` were advertised on NODES, where no such
-///     columns exist. They are NOT listed here, because they are real on pods, which
-///     does have CPU and MEM columns -- a reminder that "unimplemented" can be
-///     per-view, and why the test below also checks each sort key against its own
-///     view's columns rather than relying on a name list.
+///   - `xray`, `pulses`, `popeye`, `charts`, `plugins`, `screendump`, `jsonpath`,
+///     `crd_discovery`: owner OUT list (not deferred). Do not advertise.
 pub const unimplemented_actions = [_][]const u8{
-    "scale",            "restart",        "suspend",           "trigger",
-    "view_pods",        "view_rules",     "view_policies",     "view_instances",
-    "copy",             "copy_namespace", "view",              "jump_owner",
-    "show_portforward", "bench",          "field_next",        "field_previous",
-    "reload",           "command_clear",  "save",              "toggle_crumbs",
-    "last_command",     "history_back",   "history_forward",   "left",
-    "right",            "namespace_all",  "namespace_default", "goto",
-    "start",
+    "view_pods",     "view_rules",        "view_policies", "view_instances",
+    "view",          "bench",             "field_next",    "field_previous",
+    "reload",        "command_clear",     "left",          "right",
+    "namespace_all", "namespace_default", "goto",          "start",
+    "xray",          "pulses",            "popeye",        "charts",
+    "plugins",       "screendump",        "jsonpath",      "crd_discovery",
 };
 
 test "no view advertises an action that nothing implements" {
@@ -495,13 +538,19 @@ const view_scoped_actions = [_]OwnedActions{
         },
     },
     // resource_view.zig `is_pods` + `is_services` branches.
-    .{ .views = &.{ "pods", "services" }, .actions = &.{"port_forward"} },
+    .{ .views = &.{ "pods", "services" }, .actions = &.{ "port_forward", "show_portforward" } },
     // resource_view.zig `is_nodes` branch.
     .{ .views = &.{"nodes"}, .actions = &.{ "cordon", "uncordon", "drain" } },
     // resource_view.zig `is_secrets` branch.
     .{ .views = &.{"secrets"}, .actions = &.{"decode"} },
     // resource_view.zig generic switch, gated on config.name == "deployments".
-    .{ .views = &.{"deployments"}, .actions = &.{"traffic"} },
+    .{ .views = &.{"deployments"}, .actions = &.{ "traffic", "view_replicasets" } },
+    .{ .views = &.{ "deployments", "statefulsets", "replicasets" }, .actions = &.{"scale"} },
+    .{ .views = &.{ "deployments", "statefulsets", "daemonsets" }, .actions = &.{"restart"} },
+    .{ .views = &.{ "deployments", "statefulsets", "daemonsets", "replicasets" }, .actions = &.{"rollback"} },
+    .{ .views = &.{"cronjobs"}, .actions = &.{ "suspend", "trigger" } },
+    .{ .views = &.{ "pods", "services", "events", "secrets", "configmaps", "serviceaccounts", "persistentvolumeclaims", "deployments", "replicasets", "statefulsets", "daemonsets", "cronjobs", "jobs", "roles", "rolebindings" }, .actions = &.{"warp"} },
+    .{ .views = &.{ "serviceaccounts", "secrets", "configmaps", "persistentvolumeclaims" }, .actions = &.{"used_by"} },
     // PortForwardsView's own handleKey.
     .{ .views = &.{"portforwards"}, .actions = &.{"stop"} },
 };

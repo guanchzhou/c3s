@@ -158,7 +158,7 @@ pub fn resourceHints() HintConfig {
         Hint.highlighted("d", "", "escribe", 1),
         Hint.highlighted("y", "", " yaml", 2),
         Hint.highlighted("/", "", " filter", 3),
-        Hint.highlighted("r", "", "efresh", 4),
+        Hint.plain("<ctrl-r> refresh", 4),
         Hint.plain("<ctrl-d> delete", 5),
         Hint.highlighted("?", "", " help", 20),
     };

@@ -63,6 +63,16 @@ pub const Terminal = struct {
         self.write_buffer.deinit(self.allocator);
     }
 
+    /// Write OSC 52 so the outer terminal copies `text`. Flushed immediately:
+    /// parking it in the render buffer would mix it with the next frame.
+    pub fn copyToClipboard(self: *Terminal, text: []const u8) !void {
+        const clipboard = @import("clipboard.zig");
+        var seq: std.ArrayList(u8) = .empty;
+        defer seq.deinit(self.allocator);
+        try clipboard.appendOsc52(self.allocator, &seq, text);
+        try self.writeAllStdout(seq.items);
+    }
+
     pub fn enableRawMode(self: *Terminal) !void {
         if (self.raw_enabled) return;
 
@@ -321,14 +331,22 @@ pub const Terminal = struct {
 
         const first = buf[0];
         switch (first) {
+            0x00 => return Key.ctrl_space,
             0x01 => return Key.ctrl_a,
             0x02 => return Key.ctrl_b,
             0x03 => return Key.ctrl_c,
             0x04 => return Key.ctrl_d,
             0x05 => return Key.ctrl_e,
             0x06 => return Key.ctrl_f,
+            0x07 => return Key.ctrl_g,
             0x0b => return Key.ctrl_k,
+            0x0c => return Key.ctrl_l,
             0x10 => return Key.ctrl_p,
+            0x12 => return Key.ctrl_r,
+            0x13 => return Key.ctrl_s,
+            0x17 => return Key.ctrl_w,
+            0x1a => return Key.ctrl_z,
+            0x1c => return Key.ctrl_backslash,
             0x7f => return Key.backspace,
             '\r', '\n' => return Key.enter,
             0x1b => {
@@ -360,6 +378,11 @@ pub const Terminal = struct {
                         // Tilde sequences need one more character: ESC[5~, ESC[6~, etc.
                         if (bytes_read >= 4 and buf[3] == '~') {
                             break;
+                        }
+                        // Modified arrows: ESC[1;2C (shift-right). Stop on the final letter.
+                        if (bytes_read >= 6 and buf[3] == ';') {
+                            const last = buf[bytes_read - 1];
+                            if (last >= 'A' and last <= 'Z') break;
                         }
                     }
                 }
@@ -433,9 +456,22 @@ pub const Terminal = struct {
 
             // Modified keys: ESC[1;XY where X is modifier, Y is key
             // Examples: ESC[1;5A = Ctrl+Up, ESC[1;2A = Shift+Up
+            // Shift-left/right (modifier 2) move columns; other modifiers stay
+            // plain arrows so Ctrl+Up does not become a new binding.
             if (seq.len >= 6 and seq[2] == '1' and seq[3] == ';') {
-                // Normalize modified arrow keys to plain arrow keys
+                const modifier = seq[4];
                 const key_code = seq[5];
+                if (modifier == '2') {
+                    return switch (key_code) {
+                        'C' => Key.shift_right,
+                        'D' => Key.shift_left,
+                        'A' => Key.up,
+                        'B' => Key.down,
+                        'H' => Key.home,
+                        'F' => Key.end,
+                        else => Key.unsupported,
+                    };
+                }
                 return switch (key_code) {
                     'A' => Key.up,
                     'B' => Key.down,
@@ -450,11 +486,16 @@ pub const Terminal = struct {
             return Key.unsupported;
         }
 
-        // ESC O sequences (alternate encoding)
+        // ESC O sequences (SS3 / application cursor mode — common in
+        // Cursor, iTerm2, and macOS Terminal when keypad mode is on).
         if (seq[1] == 'O') {
             if (seq.len < 3) return Key.escape;
             const code = seq[2];
             return switch (code) {
+                'A' => Key.up,
+                'B' => Key.down,
+                'C' => Key.right,
+                'D' => Key.left,
                 'H' => Key.home,
                 'F' => Key.end,
                 else => Key.unsupported,
@@ -486,6 +527,19 @@ pub const Key = union(enum) {
     ctrl_b,
     ctrl_k,
     ctrl_p,
+    ctrl_g,
+    ctrl_l,
+    ctrl_s,
+    ctrl_w,
+    ctrl_z,
+    /// k9s refresh (ASCII DC2). Named so tests can send it; 0x12 is not a `.char`.
+    ctrl_r,
+    /// k9s clear-marks (ASCII FS). Named so tests can send it; 0x1c is not a `.char`.
+    ctrl_backslash,
+    /// k9s mark-range (ASCII NUL). Named so tests can send it; 0x00 is not a `.char`.
+    ctrl_space,
+    shift_left,
+    shift_right,
     question_mark,
     colon,
     backspace,
@@ -680,6 +734,13 @@ fn placeholder(seq: []const u8) void {
     // try testing.expectEqual(expected, key);
 }
 
+test "SS3 arrow keys ESC O A/B/C/D" {
+    try testing.expectEqual(Key.up, try Terminal.decodeCsi("\x1bOA"));
+    try testing.expectEqual(Key.down, try Terminal.decodeCsi("\x1bOB"));
+    try testing.expectEqual(Key.right, try Terminal.decodeCsi("\x1bOC"));
+    try testing.expectEqual(Key.left, try Terminal.decodeCsi("\x1bOD"));
+}
+
 test "arrow up key decoded" {
     placeholder("\x1b[A"); // Expected: Key.up
 }
@@ -732,8 +793,35 @@ test "shift+arrow up normalized" {
     placeholder("\x1b[1;2A"); // Expected: Key.up (modifier ignored)
 }
 
+test "shift+arrow left is shift_left" {
+    const k = try Terminal.decodeCsi("\x1b[1;2D");
+    try testing.expectEqual(Key.shift_left, k);
+}
+
+test "shift+arrow right is shift_right" {
+    const k = try Terminal.decodeCsi("\x1b[1;2C");
+    try testing.expectEqual(Key.shift_right, k);
+}
+
+test "ctrl+arrow left stays left" {
+    const k = try Terminal.decodeCsi("\x1b[1;5D");
+    try testing.expectEqual(Key.left, k);
+}
+
 test "ctrl+c" {
     placeholder("\x03"); // Expected: Key.ctrl_c
+}
+
+test "ctrl+r" {
+    placeholder("\x12"); // Expected: Key.ctrl_r
+}
+
+test "ctrl+backslash" {
+    placeholder("\x1c"); // Expected: Key.ctrl_backslash
+}
+
+test "ctrl+space" {
+    placeholder("\x00"); // Expected: Key.ctrl_space
 }
 
 test "ctrl+d" {

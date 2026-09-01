@@ -368,6 +368,10 @@ pub const TrafficView = struct {
         const self: *TrafficView = @ptrCast(@alignCast(ptr));
 
         switch (key) {
+            .ctrl_r => {
+                self.force_refresh.store(true, .release);
+                return .handled;
+            },
             .char => |c| switch (c) {
                 'q' => return .not_handled,
                 'r' => {

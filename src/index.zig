@@ -2,6 +2,7 @@
 pub const Terminal = @import("core/Terminal.zig").Terminal;
 pub const Key = @import("core/Terminal.zig").Key;
 pub const Color = @import("core/Terminal.zig").Color;
+pub const Wakeup = @import("core/Wakeup.zig").Wakeup;
 pub const Header = @import("ui/Header.zig").Header;
 pub const Footer = @import("ui/Footer.zig").Footer;
 
@@ -60,6 +61,8 @@ pub const View = @import("viewmodel/view.zig").View;
 pub const ResourceInfo = @import("viewmodel/view.zig").ResourceInfo;
 pub const sort = @import("viewmodel/sort.zig");
 pub const filter = @import("viewmodel/filter.zig");
+pub const k9s_query = @import("viewmodel/k9s_query.zig");
+pub const clipboard = @import("core/clipboard.zig");
 pub const App = @import("App.zig").App;
 pub const Config = @import("model/config.zig");
 pub const Logger = @import("core/logger.zig");
@@ -76,6 +79,7 @@ pub const xdg = @import("core/xdg.zig");
 pub const runtime = @import("core/runtime.zig");
 pub const clock = @import("core/clock.zig");
 pub const env = @import("core/env.zig");
+pub const perf_telemetry = @import("core/perf_telemetry.zig");
 pub const sys = @import("core/sys.zig");
 pub const age = @import("viewmodel/age.zig");
 pub const command = @import("viewmodel/command.zig");
@@ -112,6 +116,21 @@ pub const k8s_tls = klient.tls;
 // Note: ConnectionPool was removed in zig-klient v0.3.0 (std.http.Client pools internally).
 pub const k8s_crd = klient.crd;
 pub const KubeconfigParser = klient.KubeconfigParser;
+
+// Shared active-context ownership and switch coordination.
+pub const k8s_active_context = @import("k8s/ActiveContextSession.zig");
+pub const ActiveContextSession = k8s_active_context.ActiveContextSession;
+pub const ContextSpec = k8s_active_context.ContextSpec;
+pub const OwnedContextSpec = k8s_active_context.OwnedContextSpec;
+pub const RequestLease = k8s_active_context.RequestLease;
+pub const LeasePurpose = k8s_active_context.LeasePurpose;
+pub const SessionState = k8s_active_context.SessionState;
+pub const k8s_active_session_slot = @import("k8s/ActiveSessionSlot.zig");
+pub const ActiveSessionSlot = k8s_active_session_slot.ActiveSessionSlot;
+pub const SessionView = k8s_active_session_slot.SessionView;
+pub const k8s_resource_key = @import("k8s/ResourceKey.zig");
+pub const k8s_change_queue = @import("k8s/ChangeQueue.zig");
+pub const ChangeQueue = k8s_change_queue.ChangeQueue;
 
 // Test discovery root. Zig analyzes decls lazily, so the pub imports above do
 // NOT by themselves pull co-located `test{}` blocks into the test binary —

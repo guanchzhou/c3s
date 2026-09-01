@@ -335,11 +335,8 @@ test "x on a non-secrets view is not a decode" {
     try testing.expect(result != c3s.View.KeyResult.request_decode);
 }
 
-test "c and u on the nodes view request cordon and uncordon" {
-    // Same gap: the cordon/uncordon PR verified the help entries by mutation but never
-    // drove the keys themselves.
+test "u on the nodes view toggles cordon; c copies the name" {
     const allocator = testing.allocator;
-
     var svc = try c3s.K8sService.init(allocator);
     defer svc.deinit();
     var theme = try c3s.theme_loader.defaultTheme(allocator);
@@ -348,10 +345,31 @@ test "c and u on the nodes view request cordon and uncordon" {
     var view = try c3s.NodesView.init(allocator, &theme, &svc);
     defer view.deinit();
 
+    const t = &view.table;
+    try t.appendItem(.{ .columns = .{
+        try allocator.dupe(u8, "ready-node"), try allocator.dupe(u8, "Ready"),
+        try allocator.dupe(u8, "worker"),     try allocator.dupe(u8, "v1.33.0"),
+        try allocator.dupe(u8, "10.0.0.1"),   try allocator.dupe(u8, "1d"),
+    }, .allocator = allocator });
+    try t.appendItem(.{ .columns = .{
+        try allocator.dupe(u8, "cordoned"), try allocator.dupe(u8, "Ready,SchedulingDisabled"),
+        try allocator.dupe(u8, "worker"),   try allocator.dupe(u8, "v1.33.0"),
+        try allocator.dupe(u8, "10.0.0.2"), try allocator.dupe(u8, "1d"),
+    }, .allocator = allocator });
+    try t.filtered_indices.append(allocator, 0);
+    try t.filtered_indices.append(allocator, 1);
+    t.selected_row = 0;
+
     try testing.expectEqual(
         c3s.View.KeyResult.request_cordon,
+        try c3s.NodesView.handleKey(&view, .{ .char = 'u' }),
+    );
+    try testing.expectEqual(
+        c3s.View.KeyResult.request_copy,
         try c3s.NodesView.handleKey(&view, .{ .char = 'c' }),
     );
+
+    t.selected_row = 1;
     try testing.expectEqual(
         c3s.View.KeyResult.request_uncordon,
         try c3s.NodesView.handleKey(&view, .{ .char = 'u' }),
@@ -609,6 +627,31 @@ test "hiddenMask hides the namespace column in single-namespace scope" {
     try testing.expect(!view.hiddenMask()[ns_col]);
 }
 
+test "0 toggling all-namespaces schedules deferred refresh with loading hint" {
+    const allocator = testing.allocator;
+    var svc = try c3s.K8sService.init(allocator);
+    defer svc.deinit();
+    var theme = try c3s.theme_loader.defaultTheme(allocator);
+    defer c3s.theme_loader.deinitTheme(&theme);
+
+    var view = try c3s.PodsView.init(allocator, &theme, &svc);
+    defer view.deinit();
+
+    try testing.expect(!view.refresh_pending);
+    try testing.expect(!view.table.show_all_namespaces);
+
+    const result = try c3s.PodsView.handleKey(&view, .{ .char = '0' });
+    try testing.expectEqual(c3s.View.KeyResult.handled, result);
+    try testing.expect(view.refresh_pending);
+    try testing.expect(view.table.loading);
+    try testing.expect(view.table.show_all_namespaces);
+    try testing.expect(view.table.loading_detail.len > 0);
+    try testing.expect(view.getStatusHint() != null);
+
+    _ = view.flushPendingRefresh();
+    try testing.expect(!view.refresh_pending);
+}
+
 test "hiddenMask hides every column views.yaml left out" {
     // Force-hiding is what hands the unused width to the columns that ARE shown. A
     // mutation removing it survived until this test existed, because nothing else
@@ -689,7 +732,7 @@ test "calculateColumnWidthsHidden gives a masked column zero width and reassigns
     try testing.expect(masked.widths[1] > unmasked.widths[1]);
 }
 
-test "D on the nodes view requests a drain, and only on nodes" {
+test "r on the nodes view requests a drain, and only on nodes" {
     const allocator = testing.allocator;
     var svc = try c3s.K8sService.init(allocator);
     defer svc.deinit();
@@ -700,17 +743,42 @@ test "D on the nodes view requests a drain, and only on nodes" {
     defer nodes.deinit();
     try testing.expectEqual(
         c3s.View.KeyResult.request_drain,
+        try c3s.NodesView.handleKey(&nodes, .{ .char = 'r' }),
+    );
+    try testing.expectEqual(
+        c3s.View.KeyResult.request_drain,
         try c3s.NodesView.handleKey(&nodes, .{ .char = 'D' }),
     );
-
-    // `r` must still refresh rather than drain -- that collision is the whole reason
-    // drain is on D and not on k9s's key.
     try testing.expectEqual(
         c3s.View.KeyResult.handled,
-        try c3s.NodesView.handleKey(&nodes, .{ .char = 'r' }),
+        try c3s.NodesView.handleKey(&nodes, .ctrl_r),
     );
 
     var pods = try c3s.PodsView.init(allocator, &theme, &svc);
     defer pods.deinit();
+    try testing.expect(try c3s.PodsView.handleKey(&pods, .{ .char = 'r' }) != c3s.View.KeyResult.request_drain);
     try testing.expect(try c3s.PodsView.handleKey(&pods, .{ .char = 'D' }) != c3s.View.KeyResult.request_drain);
+    try testing.expectEqual(
+        c3s.View.KeyResult.request_show_port_forwards,
+        try c3s.PodsView.handleKey(&pods, .{ .char = 'f' }),
+    );
+}
+
+test "r on deployments requests a restart; ctrl-r refreshes" {
+    const allocator = testing.allocator;
+    var svc = try c3s.K8sService.init(allocator);
+    defer svc.deinit();
+    var theme = try c3s.theme_loader.defaultTheme(allocator);
+    defer c3s.theme_loader.deinitTheme(&theme);
+
+    var dp = try c3s.DeploymentsView.init(allocator, &theme, &svc);
+    defer dp.deinit();
+    try testing.expectEqual(
+        c3s.View.KeyResult.request_restart,
+        try c3s.DeploymentsView.handleKey(&dp, .{ .char = 'r' }),
+    );
+    try testing.expectEqual(
+        c3s.View.KeyResult.handled,
+        try c3s.DeploymentsView.handleKey(&dp, .ctrl_r),
+    );
 }

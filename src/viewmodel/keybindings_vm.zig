@@ -135,10 +135,9 @@ fn loadPodsBindings(allocator: std.mem.Allocator) ![]const KeyBinding {
         .{ .key = "o", .description = "Show Node", .category = .resource, .action = "show_node" },
         .{ .key = "p", .description = "Logs Previous", .category = .resource, .action = "logs_previous" },
         .{ .key = "Shift-f", .description = "Port-Forward", .category = .resource, .action = "port_forward" },
-        // `Shift-r` = Refresh was a contradiction: the same list advertises Shift-r as
-        // the READY sort, and the sort wins in resource_view.handleKey. The real
-        // refresh is lowercase `r`, which was advertised nowhere at all.
-        .{ .key = "r", .description = "Refresh", .category = .resource, .action = "refresh" },
+        .{ .key = "f", .description = "Show Port-Forwards", .category = .resource, .action = "show_portforward" },
+        // k9s refresh is Ctrl-r (daily_driver). Lowercase `r` still refreshes here
+        // because it does not collide with drain/restart.
         .{ .key = "s", .description = "Shell", .category = .resource, .action = "shell" },
         .{ .key = "t", .description = "Transfer", .category = .resource, .action = "transfer" },
         .{ .key = "y", .description = "YAML", .category = .resource, .action = "yaml" },
@@ -181,27 +180,21 @@ fn loadPodsBindings(allocator: std.mem.Allocator) ![]const KeyBinding {
         .{ .key = "Shift-r", .description = "Ready", .category = .sorting, .action = "sort_ready" },
         .{ .key = "Shift-s", .description = "Status", .category = .sorting, .action = "sort_status" },
         .{ .key = "Shift-t", .description = "Restart", .category = .sorting, .action = "sort_restart" },
+        .{ .key = "w", .description = "Warp Namespace", .category = .resource, .action = "warp" },
     };
 
-    return try allocator.dupe(KeyBinding, &bindings);
+    return bindings_data.withDailyDriver(allocator, &bindings);
 }
 
 /// Load nodes-specific key bindings
 fn loadNodesBindings(allocator: std.mem.Allocator) ![]const KeyBinding {
     // Node-specific key bindings
     const bindings = [_]KeyBinding{
-        // Node-specific commands.
-        //
-        // Cordon and Uncordon are re-added here in the same commit that implements
-        // them, per the rule in tasks/lessons.md: "wire every key or remove the hint".
-        //
-        // Drain is implemented now, and re-added here in the same commit -- the
-        // protocol this file's tripwires exist to enforce. It is on `D`, NOT k9s's
-        // `r`: `r` is refresh in c3s, and binding an eviction to the refresh key would
-        // be an accident generator. It confirms first, like delete.
-        .{ .key = "c", .description = "Cordon", .category = .resource, .action = "cordon" },
-        .{ .key = "D", .description = "Drain", .category = .resource, .action = "drain" },
+        // Node-specific commands. k9s keys: `r` drain, `u` cordon toggle.
+        // `c` is copy (daily_driver), matching every other table.
+        .{ .key = "u", .description = "Cordon", .category = .resource, .action = "cordon" },
         .{ .key = "u", .description = "Uncordon", .category = .resource, .action = "uncordon" },
+        .{ .key = "r", .description = "Drain", .category = .resource, .action = "drain" },
         .{ .key = "y", .description = "YAML", .category = .resource, .action = "yaml" },
         .{ .key = "d", .description = "Describe", .category = .resource, .action = "describe" },
 
@@ -215,21 +208,19 @@ fn loadNodesBindings(allocator: std.mem.Allocator) ![]const KeyBinding {
         .{ .key = "Shift-g", .description = "Goto Bottom", .category = .navigation, .action = "goto_bottom" },
     };
 
-    return try allocator.dupe(KeyBinding, &bindings);
+    return bindings_data.withDailyDriver(allocator, &bindings);
 }
 
 /// Load deployments-specific key bindings
 fn loadDeploymentsBindings(allocator: std.mem.Allocator) ![]const KeyBinding {
     // Similar to pods but with deployment-specific commands
     const bindings = [_]KeyBinding{
-        // `r` was advertised as "Restart" while resource_view's generic switch binds
-        // lowercase `r` to refresh -- so pressing it refreshed instead. Worse than a
-        // missing feature: the user gets a different action from the one promised.
-        // A rollout restart is unimplemented; see the roadmap.
-        .{ .key = "r", .description = "Refresh", .category = .resource, .action = "refresh" },
-        // Traffic is the reverse of every other defect here: implemented and reachable
-        // (resource_view -> request_traffic -> App.showTrafficView) but advertised
-        // nowhere, so nobody could discover it.
+        // k9s: `r` restarts the rollout; Ctrl-r (daily_driver) refreshes.
+        .{ .key = "r", .description = "Restart", .category = .resource, .action = "restart" },
+        .{ .key = "s", .description = "Scale", .category = .resource, .action = "scale" },
+        .{ .key = "Ctrl-l", .description = "Rollback", .category = .resource, .action = "rollback" },
+        .{ .key = "z", .description = "View ReplicaSets", .category = .resource, .action = "view_replicasets" },
+        .{ .key = "w", .description = "Warp Namespace", .category = .resource, .action = "warp" },
         .{ .key = "t", .description = "Traffic", .category = .resource, .action = "traffic" },
         .{ .key = "d", .description = "Describe", .category = .resource, .action = "describe" },
         .{ .key = "y", .description = "YAML", .category = .resource, .action = "yaml" },
@@ -239,7 +230,7 @@ fn loadDeploymentsBindings(allocator: std.mem.Allocator) ![]const KeyBinding {
         .{ .key = ":q", .description = "Quit", .category = .general, .action = "quit" },
     };
 
-    return try allocator.dupe(KeyBinding, &bindings);
+    return bindings_data.withDailyDriver(allocator, &bindings);
 }
 
 /// Load services-specific key bindings
@@ -249,6 +240,8 @@ fn loadServicesBindings(allocator: std.mem.Allocator) ![]const KeyBinding {
         .{ .key = "y", .description = "YAML", .category = .resource, .action = "yaml" },
         .{ .key = "e", .description = "Edit", .category = .resource, .action = "edit" },
         .{ .key = "Shift-f", .description = "Port-Forward", .category = .resource, .action = "port_forward" },
+        .{ .key = "f", .description = "Show Port-Forwards", .category = .resource, .action = "show_portforward" },
+        .{ .key = "w", .description = "Warp Namespace", .category = .resource, .action = "warp" },
 
         .{ .key = "Shift-t", .description = "Sort Type", .category = .sorting, .action = "sort_type" },
 
@@ -256,7 +249,7 @@ fn loadServicesBindings(allocator: std.mem.Allocator) ![]const KeyBinding {
         .{ .key = ":q", .description = "Quit", .category = .general, .action = "quit" },
     };
 
-    return try allocator.dupe(KeyBinding, &bindings);
+    return bindings_data.withDailyDriver(allocator, &bindings);
 }
 
 /// Load configmaps-specific key bindings
@@ -265,12 +258,14 @@ fn loadConfigMapsBindings(allocator: std.mem.Allocator) ![]const KeyBinding {
         .{ .key = "d", .description = "Describe", .category = .resource, .action = "describe" },
         .{ .key = "y", .description = "YAML", .category = .resource, .action = "yaml" },
         .{ .key = "Ctrl-d", .description = "Delete", .category = .resource, .action = "delete" },
+        .{ .key = "u", .description = "Used By", .category = .resource, .action = "used_by" },
+        .{ .key = "w", .description = "Warp Namespace", .category = .resource, .action = "warp" },
 
         .{ .key = "?", .description = "Help", .category = .general, .action = "help" },
         .{ .key = ":q", .description = "Quit", .category = .general, .action = "quit" },
     };
 
-    return try allocator.dupe(KeyBinding, &bindings);
+    return bindings_data.withDailyDriver(allocator, &bindings);
 }
 
 // --- Tests ---
@@ -324,19 +319,22 @@ test "keybindings_vm: pods view has expected bindings" {
     var has_attach = false;
     var has_logs = false;
     var has_describe = false;
+    var has_copy = false;
 
     for (bindings) |binding| {
         if (std.mem.eql(u8, binding.action, "attach")) has_attach = true;
         if (std.mem.eql(u8, binding.action, "logs")) has_logs = true;
         if (std.mem.eql(u8, binding.action, "describe")) has_describe = true;
-        // Same tripwire as the nodes one: `c` = "Copy" was advertised here with no
-        // implementation anywhere. Re-add the hint only alongside a real action.
-        try std.testing.expect(!std.mem.eql(u8, binding.action, "copy"));
+        if (std.mem.eql(u8, binding.action, "copy")) {
+            has_copy = true;
+            try std.testing.expectEqualStrings("c", binding.key);
+        }
     }
 
     try std.testing.expect(has_attach);
     try std.testing.expect(has_logs);
     try std.testing.expect(has_describe);
+    try std.testing.expect(has_copy);
 }
 
 test "keybindings_vm: nodes view has specific bindings" {
@@ -359,8 +357,7 @@ test "keybindings_vm: nodes view has specific bindings" {
         if (std.mem.eql(u8, binding.action, "uncordon")) has_uncordon = true;
         if (std.mem.eql(u8, binding.action, "drain")) {
             has_drain = true;
-            // On `D`, deliberately not k9s's `r`, which is refresh here.
-            try std.testing.expectEqualStrings("D", binding.key);
+            try std.testing.expectEqualStrings("r", binding.key);
         }
     }
     try std.testing.expect(has_cordon);
@@ -378,15 +375,8 @@ test "keybindings_vm: nodes view has specific bindings" {
     try std.testing.expect(has_describe);
 }
 
-test "keybindings_vm: deployments advertise traffic, and no longer advertise restart" {
-    // This test used to assert deployments advertised "restart". That was enforcing a
-    // lie with a sting in it: nothing implements a rollout restart, and the key it was
-    // advertised on -- lowercase `r` -- is bound to refresh in resource_view's generic
-    // switch. So the help promised Restart and the key delivered Refresh.
-    //
-    // Now inverted for restart, and positive for traffic, which is implemented and
-    // reachable but had been advertised nowhere. Flip the restart half back in the
-    // same commit that implements a rollout restart on a key that is actually free.
+test "keybindings_vm: deployments advertise traffic, refresh on Ctrl-r, restart on r" {
+    // k9s: `r` restarts the rollout; Ctrl-r refreshes (daily_driver).
     var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
@@ -398,6 +388,7 @@ test "keybindings_vm: deployments advertise traffic, and no longer advertise res
 
     var has_traffic = false;
     var has_refresh = false;
+    var has_restart = false;
     for (bindings) |binding| {
         if (std.mem.eql(u8, binding.action, "traffic")) {
             has_traffic = true;
@@ -405,13 +396,17 @@ test "keybindings_vm: deployments advertise traffic, and no longer advertise res
         }
         if (std.mem.eql(u8, binding.action, "refresh")) {
             has_refresh = true;
+            try std.testing.expectEqualStrings("Ctrl-r", binding.key);
+        }
+        if (std.mem.eql(u8, binding.action, "restart")) {
+            has_restart = true;
             try std.testing.expectEqualStrings("r", binding.key);
         }
-        try std.testing.expect(!std.mem.eql(u8, binding.action, "restart"));
     }
 
     try std.testing.expect(has_traffic);
     try std.testing.expect(has_refresh);
+    try std.testing.expect(has_restart);
 }
 
 test "keybindings_vm: all bindings have valid enum values" {
@@ -476,10 +471,8 @@ test "keybindings_vm: services advertises port-forward" {
     try std.testing.expect(has_pf);
 }
 
-test "keybindings_vm: cronjobs does NOT advertise trigger or suspend" {
-    // Was asserting cronjobs advertised trigger. Nothing triggers a cronjob run
-    // anywhere in c3s, and setCronJobSuspend exists with zero callers (and would fail
-    // under the kubectl-proxy transport, since it reaches straight for self.client.?).
+test "keybindings_vm: cronjobs advertises trigger and suspend" {
+    // Flipped in the same commit that wires `p`/`t` through App.handleKey → kubectl.
     var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
@@ -487,8 +480,18 @@ test "keybindings_vm: cronjobs does NOT advertise trigger or suspend" {
     var vm = try KeyBindingsViewModel.init(allocator, .cronjobs);
     defer vm.deinit();
 
+    var has_trigger = false;
+    var has_suspend = false;
     for (vm.getBindings()) |binding| {
-        try std.testing.expect(!std.mem.eql(u8, binding.action, "trigger"));
-        try std.testing.expect(!std.mem.eql(u8, binding.action, "suspend"));
+        if (std.mem.eql(u8, binding.action, "trigger")) {
+            has_trigger = true;
+            try std.testing.expectEqualStrings("t", binding.key);
+        }
+        if (std.mem.eql(u8, binding.action, "suspend")) {
+            has_suspend = true;
+            try std.testing.expectEqualStrings("p", binding.key);
+        }
     }
+    try std.testing.expect(has_trigger);
+    try std.testing.expect(has_suspend);
 }

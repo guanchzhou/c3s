@@ -267,6 +267,10 @@ pub const PortForwardsView = struct {
                 };
                 return .handled;
             },
+            .ctrl_r => {
+                self.refresh() catch |err| Logger.err("Failed to refresh port-forwards: {any}", .{err});
+                return .handled;
+            },
             .char => |c| switch (c) {
                 'r' => {
                     self.refresh() catch |err| Logger.err("Failed to refresh port-forwards: {any}", .{err});

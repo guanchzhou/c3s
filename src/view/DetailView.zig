@@ -637,6 +637,7 @@ pub const DetailView = struct {
                     try self.setAllFolds(false);
                     return .handled;
                 },
+                'f' => return .request_fullscreen,
                 else => return .not_handled,
             },
             .enter => {

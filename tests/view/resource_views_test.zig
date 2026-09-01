@@ -259,3 +259,35 @@ test "httproutes_view: init and cleanup" {
 
     try testing.expectEqual(@as(usize, 0), view.table.items.items.len);
 }
+
+// Verify showsAllNamespaces vtable round-trip on a real resource view.
+// Uses PodsView (is_namespaced=true, default_all_namespaces=false) so the
+// initial value is false; the test exercises the actual vtable, not just the
+// field.
+test "resource_view: showsAllNamespaces vtable round-trip" {
+    var gpa = std.heap.DebugAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
+    var theme = try theme_loader.loadTheme(allocator, "dracula");
+    defer theme_loader.deinitTheme(&theme);
+
+    var k8s_service = try K8sService.init(allocator);
+    defer k8s_service.deinit();
+
+    var pods_view = try src.PodsView.init(allocator, &theme, &k8s_service);
+    defer pods_view.deinit();
+
+    const view = pods_view.createView();
+
+    // Initial state: single-namespace (default_all_namespaces is unset for PodsView).
+    try testing.expectEqual(false, view.showsAllNamespaces());
+
+    // Toggle on through the vtable.
+    view.setShowAllNamespaces(true);
+    try testing.expectEqual(true, view.showsAllNamespaces());
+
+    // Toggle back.
+    view.setShowAllNamespaces(false);
+    try testing.expectEqual(false, view.showsAllNamespaces());
+}

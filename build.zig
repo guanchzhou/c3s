@@ -174,6 +174,23 @@ pub fn build(b: *std.Build) void {
     const clean_cmd = b.addSystemCommand(&[_][]const u8{ "rm", "-rf", ".zig-cache" });
     clean_step.dependOn(&clean_cmd.step);
 
+    // c3s vs k9s read-only PTY comparison (Python, stdlib only).
+    // Usage: zig build -Doptimize=ReleaseFast perf -- --context k8s-dev
+    const perf_tests = b.addSystemCommand(&.{"python3"});
+    perf_tests.addFileArg(b.path("tools/perf/test_perf.py"));
+    const test_perf_step = b.step("test-perf", "Run c3s vs k9s perf harness unit tests (no cluster)");
+    test_perf_step.dependOn(&perf_tests.step);
+    all_tests_step.dependOn(&perf_tests.step);
+
+    const perf_cmd = b.addSystemCommand(&.{"python3"});
+    perf_cmd.addFileArg(b.path("tools/perf/compare.py"));
+    perf_cmd.step.dependOn(b.getInstallStep());
+    if (b.args) |args| {
+        perf_cmd.addArgs(args);
+    }
+    const perf_step = b.step("perf", "Measure c3s vs k9s (read-only PTY; pass --context)");
+    perf_step.dependOn(&perf_cmd.step);
+
     // Formatting gate (ghostty/Zig convention: zig fmt is enforced).
     const fmt_step = b.step("fmt", "Check formatting with zig fmt --check");
     const fmt_check = b.addFmt(.{

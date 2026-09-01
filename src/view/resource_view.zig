@@ -18,6 +18,8 @@ const age_util = @import("../viewmodel/age.zig");
 const TableState = @import("../ui/TableState.zig").TableState;
 const table_layout = @import("../ui/table_layout.zig");
 const PodMetric = @import("../services/k8s_types.zig").PodMetric;
+const k9s_query = @import("../viewmodel/k9s_query.zig");
+const filter_util = @import("../viewmodel/filter.zig");
 
 /// Column definition for a resource view
 pub const ColumnDef = struct {
@@ -98,16 +100,27 @@ pub fn ResourceView(
         visible_columns: u8 = col_count,
         /// Scratch buffer for the decorated box title ("pods(default)[8]").
         title_buf: [192]u8 = undefined,
+        /// k9s ctrl-w: when false, VERY_LOW (CPU/MEM) columns are force-hidden.
+        /// Defaults true so an existing wide terminal still shows metrics.
+        show_wide: bool = true,
+        /// k9s ctrl-z: keep only rows whose STATUS/READY look unhealthy.
+        faults_only: bool = false,
+        cached_show_wide: bool = true,
+        /// Set by handleKey when a refresh must paint a loading frame first.
+        refresh_pending: bool = false,
 
         /// Row data: uniform array of display strings
         pub const RowData = struct {
             columns: [col_count][]const u8,
             allocator: std.mem.Allocator,
+            /// Flattened `k=v,k=v` from metadata.labels. Empty slice is not owned.
+            labels: []const u8 = &.{},
 
             pub fn deinit(self: *RowData) void {
                 for (&self.columns) |*col| {
                     self.allocator.free(col.*);
                 }
+                if (self.labels.len > 0) self.allocator.free(self.labels);
             }
 
             /// Get column value by index (used for sorting)
@@ -155,6 +168,12 @@ pub fn ResourceView(
                 for (self.column_order[0..self.visible_columns]) |ci| listed[ci] = true;
                 for (0..col_count) |ci| {
                     if (!listed[ci]) mask[ci] = true;
+                }
+            }
+
+            if (!self.show_wide) {
+                inline for (config.columns, 0..) |cd, ci| {
+                    if (cd.priority == table_layout.ColumnPriority.VERY_LOW) mask[ci] = true;
                 }
             }
             return mask;
@@ -229,8 +248,29 @@ pub fn ResourceView(
                 return;
             }
 
-            self.table.loading = true;
-            defer self.table.loading = false;
+            const preserve_key_owned: ?[]const u8 = blk: {
+                if (self.table.getSelectedItem()) |item| {
+                    const name = item.columns[config.name_column];
+                    if (config.namespace_column) |ns_col| {
+                        break :blk try std.fmt.allocPrint(
+                            self.table.allocator,
+                            "{s}/{s}",
+                            .{ item.columns[ns_col], name },
+                        );
+                    }
+                    break :blk try self.table.allocator.dupe(u8, name);
+                }
+                break :blk null;
+            };
+            defer if (preserve_key_owned) |key| self.table.allocator.free(key);
+            const preserve_scroll = self.table.scroll_offset;
+
+            const had_items = self.table.items.items.len > 0;
+            if (!had_items) self.table.loading = true;
+            defer {
+                self.table.loading = false;
+                self.table.loading_detail = "";
+            }
             self.table.clearItems();
 
             // Invalidate column width cache on refresh
@@ -263,9 +303,19 @@ pub fn ResourceView(
                     Logger.err("Failed to transform {s} item: {}", .{ config.name, err });
                     continue;
                 };
+                const labels: []const u8 = blk: {
+                    if (@hasField(KlientType, "metadata") and @hasField(@TypeOf(item.metadata), "labels")) {
+                        if (item.metadata.labels) |lv| {
+                            break :blk k9s_query.formatLabels(self.table.allocator, lv) catch &.{};
+                        }
+                    }
+                    break :blk &.{};
+                };
+                errdefer if (labels.len > 0) self.table.allocator.free(labels);
                 try self.table.appendItem(.{
                     .columns = cols,
                     .allocator = self.table.allocator,
+                    .labels = labels,
                 });
             }
 
@@ -327,6 +377,57 @@ pub fn ResourceView(
             }
 
             try self.applyFilter(self.table.filter_text);
+
+            const restore_idx: ?usize = if (preserve_key_owned) |key| blk: {
+                for (self.table.items.items, 0..) |row, i| {
+                    const name = row.columns[config.name_column];
+                    const matches = if (config.namespace_column) |ns_col| blk2: {
+                        var keybuf: [512]u8 = undefined;
+                        const row_key = std.fmt.bufPrint(
+                            &keybuf,
+                            "{s}/{s}",
+                            .{ row.columns[ns_col], name },
+                        ) catch continue;
+                        break :blk2 std.mem.eql(u8, row_key, key);
+                    } else std.mem.eql(u8, name, key);
+                    if (matches) break :blk i;
+                }
+                break :blk null;
+            } else null;
+            if (restore_idx != null) self.table.scroll_offset = preserve_scroll;
+            _ = filter_util.restoreSelectionByItemIndex(
+                self.table.filtered_indices.items,
+                restore_idx,
+                &self.table.selected_row,
+                &self.table.scroll_offset,
+                self.table.visible_rows,
+            );
+        }
+
+        /// Queue refresh so App can paint loading before the blocking list fetch.
+        pub fn scheduleRefresh(self: *Self, hint: []const u8) void {
+            self.table.loading = true;
+            self.table.loading_detail = hint;
+            self.refresh_pending = true;
+        }
+
+        pub fn flushPendingRefresh(self: *Self) bool {
+            if (!self.refresh_pending) return false;
+            self.refresh_pending = false;
+            self.refresh() catch |err| {
+                Logger.err("Failed to refresh {s}: {}", .{ config.name, err });
+                self.table.loading = false;
+                self.table.loading_detail = "";
+            };
+            return true;
+        }
+
+        pub fn getStatusHint(self: *const Self) ?[]const u8 {
+            if (self.refresh_pending or self.table.loading) {
+                if (self.table.loading_detail.len > 0) return self.table.loading_detail;
+                return "Loading...";
+            }
+            return null;
         }
 
         pub fn getSelectedResourceInfo(self: *Self) ?view_mod.ResourceInfo {
@@ -347,16 +448,88 @@ pub fn ResourceView(
                 self.cached_col_widths = null;
             }
             try self.table.applyFilter(filter, matchFn);
+            if (self.faults_only) self.retainFaultsOnly();
             self.applySorting();
         }
 
+        fn retainFaultsOnly(self: *Self) void {
+            const status_i: ?u8 = comptime blk: {
+                for (config.columns, 0..) |cd, i| {
+                    if (std.mem.eql(u8, cd.name, "STATUS")) break :blk @as(u8, @intCast(i));
+                }
+                break :blk null;
+            };
+            const ready_i: ?u8 = comptime blk: {
+                for (config.columns, 0..) |cd, i| {
+                    if (std.mem.eql(u8, cd.name, "READY")) break :blk @as(u8, @intCast(i));
+                }
+                break :blk null;
+            };
+            if (status_i == null and ready_i == null) return;
+
+            var write: usize = 0;
+            for (self.table.filtered_indices.items) |idx| {
+                const row = &self.table.items.items[idx];
+                const st: ?[]const u8 = if (status_i) |si| row.columns[si] else null;
+                const rd: ?[]const u8 = if (ready_i) |ri| row.columns[ri] else null;
+                if (k9s_query.isFault(st, rd)) {
+                    self.table.filtered_indices.items[write] = idx;
+                    write += 1;
+                }
+            }
+            self.table.filtered_indices.shrinkRetainingCapacity(write);
+            if (self.table.selected_row >= self.table.filtered_indices.items.len) {
+                self.table.selected_row = if (self.table.filtered_indices.items.len == 0)
+                    0
+                else
+                    @intCast(self.table.filtered_indices.items.len - 1);
+            }
+            if (self.table.selected_row < self.table.scroll_offset) {
+                self.table.scroll_offset = self.table.selected_row;
+            }
+        }
+
         /// Bulk mark operations over the currently-filtered rows.
-        /// `.all` marks every filtered row (idempotent); `.invert` toggles each.
-        /// Clearing is `table.clearMarks()` directly. toggleMark dupes the key,
-        /// so reusing one stack buffer across rows is safe.
-        const MarkOp = enum { all, invert };
+        /// `.all` marks every filtered row (idempotent); `.invert` toggles each;
+        /// `.range` fills from the nearest already-marked filtered row to the
+        /// cursor (k9s Ctrl-Space). Clearing is `table.clearMarks()` directly.
+        /// toggleMark dupes the key, so reusing one stack buffer across rows is safe.
+        const MarkOp = enum { all, invert, range };
         fn applyMarkOp(self: *Self, op: MarkOp) void {
             var key_buf: [512]u8 = undefined;
+            const n = self.table.filtered_indices.items.len;
+            if (n == 0) return;
+
+            if (op == .range) {
+                const sel = @min(self.table.selected_row, @as(u32, @intCast(n - 1)));
+                var anchor: ?u32 = null;
+                var best: u32 = std.math.maxInt(u32);
+                for (self.table.filtered_indices.items, 0..) |idx, i| {
+                    const item: *const RowData = &self.table.items.items[idx];
+                    const key = rowKey(item, &key_buf);
+                    if (!self.table.isMarked(key)) continue;
+                    const ui: u32 = @intCast(i);
+                    const dist = if (ui > sel) ui - sel else sel - ui;
+                    if (dist < best) {
+                        best = dist;
+                        anchor = ui;
+                    }
+                }
+                const a = anchor orelse sel;
+                var i = @min(a, sel);
+                const hi = @max(a, sel);
+                while (i <= hi) : (i += 1) {
+                    const idx = self.table.filtered_indices.items[i];
+                    const item: *const RowData = &self.table.items.items[idx];
+                    const key = rowKey(item, &key_buf);
+                    if (!self.table.isMarked(key)) {
+                        self.table.toggleMark(key) catch |err|
+                            Logger.err("Failed to mark range in {s}: {}", .{ config.name, err });
+                    }
+                }
+                return;
+            }
+
             for (self.table.filtered_indices.items) |idx| {
                 const item: *const RowData = &self.table.items.items[idx];
                 const key = rowKey(item, &key_buf);
@@ -367,6 +540,7 @@ pub fn ResourceView(
                     },
                     .invert => self.table.toggleMark(key) catch |err|
                         Logger.err("Failed to invert mark in {s}: {}", .{ config.name, err }),
+                    .range => unreachable,
                 }
             }
         }
@@ -379,14 +553,44 @@ pub fn ResourceView(
             }
         }
 
+        fn invalidateWidths(self: *Self) void {
+            if (self.cached_col_widths) |*w| {
+                w.deinit();
+                self.cached_col_widths = null;
+            }
+        }
+
+        fn rotateColumns(self: *Self, dir: i8) void {
+            const n = self.visible_columns;
+            if (n < 2) return;
+            if (dir > 0) {
+                const last = self.column_order[n - 1];
+                var i = n;
+                while (i > 1) : (i -= 1) {
+                    self.column_order[i - 1] = self.column_order[i - 2];
+                }
+                self.column_order[0] = last;
+            } else {
+                const first = self.column_order[0];
+                var i: u8 = 0;
+                while (i + 1 < n) : (i += 1) {
+                    self.column_order[i] = self.column_order[i + 1];
+                }
+                self.column_order[n - 1] = first;
+            }
+            self.invalidateWidths();
+        }
+
         fn matchFn(item: *const RowData, filter: []const u8) bool {
-            // Search only columns marked as searchable
+            var cols: [col_count][]const u8 = undefined;
+            var n: usize = 0;
             inline for (config.columns, 0..) |col_def, idx| {
                 if (col_def.searchable) {
-                    if (std.mem.indexOf(u8, item.columns[idx], filter) != null) return true;
+                    cols[n] = item.columns[idx];
+                    n += 1;
                 }
             }
-            return false;
+            return k9s_query.matchSearchable(cols[0..n], item.labels, filter);
         }
 
         pub fn createView(self: *Self) View {
@@ -444,7 +648,8 @@ pub fn ResourceView(
 
             const use_cache = self.cached_col_widths != null and
                 self.cached_terminal_width == available_width and
-                self.cached_show_all == self.table.show_all_namespaces;
+                self.cached_show_all == self.table.show_all_namespaces and
+                self.cached_show_wide == self.show_wide;
 
             const col_widths = if (use_cache) blk: {
                 break :blk &self.cached_col_widths.?;
@@ -453,7 +658,12 @@ pub fn ResourceView(
                 var rows_data = try std.ArrayList([]const []const u8).initCapacity(allocator, self.table.filtered_indices.items.len);
                 defer rows_data.deinit(allocator);
 
-                for (self.table.filtered_indices.items) |item_idx| {
+                // Scanning 4k+ rows every redraw was freezing navigation after
+                // all-namespaces toggle. Sample the first N filtered rows for
+                // width — enough for representative column sizing.
+                const width_sample_max = 256;
+                const width_sample_len = @min(self.table.filtered_indices.items.len, width_sample_max);
+                for (self.table.filtered_indices.items[0..width_sample_len]) |item_idx| {
                     // Point into the stable items backing array, NOT a loop-local
                     // copy: `&item.columns` on a by-value copy aliases one stack
                     // slot, so every row would carry the last item's values and
@@ -481,6 +691,7 @@ pub fn ResourceView(
                 self.cached_col_widths = new_widths;
                 self.cached_terminal_width = available_width;
                 self.cached_show_all = self.table.show_all_namespaces;
+                self.cached_show_wide = self.show_wide;
                 break :blk &self.cached_col_widths.?;
             };
 
@@ -601,6 +812,18 @@ pub fn ResourceView(
         const is_nodes = std.mem.eql(u8, config.name, "nodes");
         const is_secrets = std.mem.eql(u8, config.name, "secrets");
         const is_services = std.mem.eql(u8, config.name, "services");
+        const is_deployments = std.mem.eql(u8, config.name, "deployments");
+        const is_statefulsets = std.mem.eql(u8, config.name, "statefulsets");
+        const is_daemonsets = std.mem.eql(u8, config.name, "daemonsets");
+        const is_replicasets = std.mem.eql(u8, config.name, "replicasets");
+        const is_cronjobs = std.mem.eql(u8, config.name, "cronjobs");
+        const is_used_by_view = std.mem.eql(u8, config.name, "serviceaccounts") or
+            std.mem.eql(u8, config.name, "secrets") or
+            std.mem.eql(u8, config.name, "configmaps") or
+            std.mem.eql(u8, config.name, "persistentvolumeclaims");
+        const is_restart_view = is_deployments or is_statefulsets or is_daemonsets;
+        const is_scale_view = is_deployments or is_statefulsets or is_replicasets;
+        const is_rollback_view = is_restart_view or is_replicasets;
 
         /// pub so tests can drive the real key handler. It is already reachable
         /// through the vtable; a mutation that deleted the secrets `x` mapping survived
@@ -624,19 +847,16 @@ pub fn ResourceView(
             if (is_nodes) {
                 switch (key) {
                     .char => |c| switch (c) {
-                        // Cordon / uncordon only. Drain is deliberately NOT bound
-                        // here: k9s uses `r`, which in c3s is refresh -- binding a
-                        // workload-evicting operation to the key users press to
-                        // refresh is an accident generator. It also needs a
-                        // confirmation flow, like delete has.
-                        'c' => return .request_cordon,
-                        'u' => return .request_uncordon,
-                        // Uppercase D, NOT k9s's `r`: `r` is refresh in c3s, and
-                        // binding an eviction to the key users press to refresh would
-                        // be an accident generator. Only 'G' is remapped by
-                        // Terminal.readKey, so 'D' arrives as a plain char, and nodes
-                        // has no 'D' sort key.
-                        'D' => return .request_drain,
+                        // k9s: `u` toggles cordon. STATUS carries kubectl's
+                        // `,SchedulingDisabled` when spec.unschedulable is set.
+                        'u' => {
+                            const item = self.table.getSelectedItem() orelse return .handled;
+                            if (std.mem.indexOf(u8, item.columns[1], "SchedulingDisabled") != null)
+                                return .request_uncordon;
+                            return .request_cordon;
+                        },
+                        // k9s drain is `r`. `D` stays as a silent extra.
+                        'r', 'D' => return .request_drain,
                         else => {},
                     },
                     else => {},
@@ -658,6 +878,7 @@ pub fn ResourceView(
                         'z' => return .request_sanitize,
                         't' => return .request_transfer,
                         'F' => return .request_port_forward,
+                        'f' => return .request_show_port_forwards,
                         else => {},
                     },
                     else => {},
@@ -668,13 +889,64 @@ pub fn ResourceView(
                 switch (key) {
                     .char => |c| switch (c) {
                         'F' => return .request_port_forward,
+                        'f' => return .request_show_port_forwards,
                         else => {},
                     },
                     else => {},
                 }
             }
 
+            if (is_cronjobs) {
+                switch (key) {
+                    .char => |c| switch (c) {
+                        'p' => return .request_suspend,
+                        't' => return .request_trigger,
+                        else => {},
+                    },
+                    else => {},
+                }
+            }
+
+            if (is_used_by_view and !is_nodes) {
+                switch (key) {
+                    .char => |c| if (c == 'u') return .request_used_by,
+                    else => {},
+                }
+            }
+
             switch (key) {
+                .ctrl_r => {
+                    self.refresh() catch |err| Logger.err("Failed to refresh {s}: {}", .{ config.name, err });
+                    return .handled;
+                },
+                .ctrl_backslash => {
+                    self.table.clearMarks();
+                    return .handled;
+                },
+                .ctrl_space => {
+                    self.applyMarkOp(.range);
+                    return .handled;
+                },
+                .ctrl_w => {
+                    self.show_wide = !self.show_wide;
+                    self.invalidateWidths();
+                    return .handled;
+                },
+                .ctrl_z => {
+                    self.faults_only = !self.faults_only;
+                    self.applyFilter(self.table.filter_text) catch |err|
+                        Logger.err("Failed to apply faults filter on {s}: {}", .{ config.name, err });
+                    return .handled;
+                },
+                .ctrl_l => if (is_rollback_view) return .request_rollback else return .not_handled,
+                .shift_left => {
+                    self.rotateColumns(-1);
+                    return .handled;
+                },
+                .shift_right => {
+                    self.rotateColumns(1);
+                    return .handled;
+                },
                 .char => |c| {
                     // Space toggles a k9s-style mark on the current row. Marks
                     // persist by row identity as the cursor moves/refreshes.
@@ -711,14 +983,16 @@ pub fn ResourceView(
                         return .request_edit;
                     }
 
-                    // Refresh
+                    // Refresh. k9s uses Ctrl-r. Lowercase `r` stays refresh only
+                    // where it is not drain (nodes, handled above) or restart.
                     if (c == 'r') {
+                        if (is_restart_view) return .request_restart;
                         self.refresh() catch |err| Logger.err("Failed to refresh {s}: {}", .{ config.name, err });
                         return .handled;
                     }
 
                     // Traffic view (deployments only)
-                    if (c == 't' and std.mem.eql(u8, config.name, "deployments")) {
+                    if (c == 't' and is_deployments) {
                         return .request_traffic;
                     }
 
@@ -726,9 +1000,24 @@ pub fn ResourceView(
                     if (config.is_namespaced and c == '0') {
                         self.table.show_all_namespaces = !self.table.show_all_namespaces;
                         self.table.gotoTop();
-                        self.refresh() catch |err| Logger.err("Failed to refresh {s}: {}", .{ config.name, err });
+                        const hint = if (self.table.show_all_namespaces)
+                            "Loading all namespaces (large clusters may take a minute)..."
+                        else
+                            "Loading namespace...";
+                        self.scheduleRefresh(hint);
                         return .handled;
                     }
+
+                    if (c == 'z' and is_deployments) return .request_view_replicasets;
+                    if (c == 'R' and is_restart_view) return .request_restart;
+                    if (c == 's' and is_scale_view) return .request_scale;
+
+                    // Copy/warp/jump. Nodes `u` is cordon-toggle (handled above);
+                    // `c` is copy there too, matching k9s.
+                    if (c == 'c') return .request_copy;
+                    if (c == 'n') return .request_copy_namespace;
+                    if (c == 'w' and config.is_namespaced) return .request_warp;
+                    if (c == 'J') return .request_jump_owner;
 
                     // Comptime-generated sort key dispatch
                     inline for (config.columns, 0..) |col_def, idx| {
@@ -755,7 +1044,8 @@ pub fn ResourceView(
             const self: *Self = @ptrCast(@alignCast(ptr));
             // Re-showing must be instant (Esc back from a sub-view / switching
             // back): show already-loaded rows, never block on kubectl. Only
-            // auto-load when empty; `r` forces a refresh. See PodsView.
+            // auto-load when empty; Ctrl-r (and `r` where it is not drain/restart)
+            // forces a refresh. See PodsView.
             if (self.table.items.items.len > 0) return;
             self.refresh() catch |err| {
                 Logger.err("Failed to refresh {s}: {}", .{ config.name, err });
@@ -829,6 +1119,26 @@ pub fn ResourceView(
             return self.getSelectedResourceInfo();
         }
 
+        fn vtableSetShowAllNamespaces(ptr: *anyopaque, all: bool) void {
+            const self: *Self = @ptrCast(@alignCast(ptr));
+            self.table.show_all_namespaces = all;
+        }
+
+        fn vtableShowsAllNamespaces(ptr: *anyopaque) bool {
+            const self: *const Self = @ptrCast(@alignCast(ptr));
+            return self.table.show_all_namespaces;
+        }
+
+        fn vtableFlushPendingRefresh(ptr: *anyopaque) bool {
+            const self: *Self = @ptrCast(@alignCast(ptr));
+            return self.flushPendingRefresh();
+        }
+
+        fn vtableGetStatusHint(ptr: *anyopaque) ?[]const u8 {
+            const self: *const Self = @ptrCast(@alignCast(ptr));
+            return self.getStatusHint();
+        }
+
         const vtable = View.VTable{
             .render = render,
             .handleKey = handleKey,
@@ -842,6 +1152,10 @@ pub fn ResourceView(
             .clearFilter = vtableClearFilter,
             .refresh = vtableRefresh,
             .getSelectedResource = vtableGetSelectedResource,
+            .setShowAllNamespaces = vtableSetShowAllNamespaces,
+            .showsAllNamespaces = vtableShowsAllNamespaces,
+            .flushPendingRefresh = vtableFlushPendingRefresh,
+            .getStatusHint = vtableGetStatusHint,
         };
     };
 }

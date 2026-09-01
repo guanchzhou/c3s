@@ -417,6 +417,25 @@ pub const AuthorizationView = struct {
                     else => return .not_handled,
                 }
             },
+            .ctrl_r => {
+                switch (self.active_tab) {
+                    .access_review => self.refreshAccessReview() catch |err| {
+                        Logger.err("Failed to refresh access review: {}", .{err});
+                    },
+                    .policy_browser => self.refreshPolicies() catch |err| {
+                        Logger.err("Failed to refresh policies: {}", .{err});
+                    },
+                    .condition_inspector => {
+                        const sel = self.access_tab.getSelectedRow();
+                        if (sel) |row| {
+                            self.refreshConditions(row.resource, row.group) catch |err| {
+                                Logger.err("Failed to refresh conditions: {}", .{err});
+                            };
+                        }
+                    },
+                }
+                return .handled;
+            },
             .down => {
                 self.moveDown();
                 return .handled;

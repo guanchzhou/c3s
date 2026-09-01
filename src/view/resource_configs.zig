@@ -854,19 +854,25 @@ pub const EventsView = ResourceView(klient.types.Event, klient.resources.Events,
 // === Nodes ===
 // ============================================================================
 fn transformNode(node: klient.types.Node, alloc: std.mem.Allocator) ![6][]const u8 {
-    // Determine node status from the Ready condition. klient 0.4.0 types
-    // NodeStatus.conditions, so this is a walk over structs rather than a DOM.
+    // Ready condition, plus kubectl's `,SchedulingDisabled` when spec.unschedulable
+    // is set -- the nodes `u` toggle keys off that substring.
+    const unschedulable = if (node.spec) |spec| spec.unschedulable orelse false else false;
     const status = blk: {
-        if (node.status) |node_status| {
-            if (node_status.conditions) |conditions| {
-                for (conditions) |condition| {
-                    if (!std.mem.eql(u8, condition.type, "Ready")) continue;
-                    const ready = std.mem.eql(u8, condition.status, "True");
-                    break :blk try alloc.dupe(u8, if (ready) "Ready" else "NotReady");
+        const base = inner: {
+            if (node.status) |node_status| {
+                if (node_status.conditions) |conditions| {
+                    for (conditions) |condition| {
+                        if (!std.mem.eql(u8, condition.type, "Ready")) continue;
+                        const ready = std.mem.eql(u8, condition.status, "True");
+                        break :inner try alloc.dupe(u8, if (ready) "Ready" else "NotReady");
+                    }
                 }
             }
-        }
-        break :blk try alloc.dupe(u8, "Unknown");
+            break :inner try alloc.dupe(u8, "Unknown");
+        };
+        if (!unschedulable) break :blk base;
+        defer alloc.free(base);
+        break :blk try std.fmt.allocPrint(alloc, "{s},SchedulingDisabled", .{base});
     };
 
     // Get node roles from labels
@@ -942,7 +948,7 @@ pub const NodesView = ResourceView(klient.types.Node, klient.resources.Nodes, .{
     .name_column = 0,
     .columns = &.{
         .{ .name = "NAME", .min_width = 12, .max_width = 28, .priority = P.CRITICAL, .sort_key = 'N', .searchable = true },
-        .{ .name = "STATUS", .min_width = 8, .max_width = 12, .priority = P.HIGH, .sort_key = 'S' },
+        .{ .name = "STATUS", .min_width = 8, .max_width = 28, .priority = P.HIGH, .sort_key = 'S' },
         .{ .name = "ROLES", .min_width = 8, .max_width = 16, .priority = P.HIGH, .sort_key = 'R' },
         .{ .name = "VERSION", .min_width = 8, .max_width = 16, .priority = P.MEDIUM },
         .{ .name = "INTERNAL-IP", .min_width = 10, .max_width = 20, .priority = P.MEDIUM },

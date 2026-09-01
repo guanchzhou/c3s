@@ -108,6 +108,13 @@ pub const CommandInput = struct {
         return self.buffer.items;
     }
 
+    pub fn setText(self: *CommandInput, text: []const u8) !void {
+        self.buffer.clearRetainingCapacity();
+        try self.buffer.appendSlice(self.allocator, text);
+        self.cursor_pos = text.len;
+        self.recompute();
+    }
+
     pub fn render(self: *CommandInput, terminal: *Terminal, x: u16, y: u16, width: u16) !void {
         // If not visible, do not touch the screen row to avoid erasing view borders
         if (!self.visible) {

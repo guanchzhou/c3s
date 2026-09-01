@@ -13,6 +13,11 @@ const BoxDrawing = @import("ui/box_drawing.zig");
 const Cli = @import("cli.zig");
 const Config = @import("model/config.zig");
 const Logger = @import("core/logger.zig");
+const PerfTelemetry = @import("core/perf_telemetry.zig").PerfTelemetry;
+const Wakeup = @import("core/Wakeup.zig").Wakeup;
+const sys = @import("core/sys.zig");
+const ChangeQueue = @import("k8s/ChangeQueue.zig").ChangeQueue;
+const resource_key = @import("k8s/ResourceKey.zig");
 const version = @import("model/version.zig");
 const theme_loader = @import("model/theme_loader.zig");
 // MVVM imports
@@ -101,12 +106,19 @@ const K9sMigration = @import("services/K9sMigration.zig");
 const ResourceType = k8s_service_mod.ResourceType;
 const view_mod = @import("viewmodel/view.zig");
 const ResourceInfo = view_mod.ResourceInfo;
+const k9s_query = @import("viewmodel/k9s_query.zig");
+const ActiveSessionSlot = @import("k8s/ActiveSessionSlot.zig").ActiveSessionSlot;
 
 // Global flag for terminal resize signal
 var terminal_resized: std.atomic.Value(bool) = std.atomic.Value(bool).init(false);
 
 pub const App = struct {
     allocator: std.mem.Allocator,
+    perf_telemetry: PerfTelemetry,
+    shared_event: *std.Io.Event,
+    wakeup: *Wakeup,
+    change_queue: *ChangeQueue,
+    active_session_slot: *ActiveSessionSlot,
     terminal: Terminal,
     header: Header,
     footer: Footer,
@@ -225,7 +237,7 @@ pub const App = struct {
     delete_resource_type: ?ResourceType = null,
 
     // Generic text-input prompt (set-image / port-forward / transfer / sanitize).
-    pending_input: enum { none, set_image, port_forward, transfer, sanitize, drain } = .none,
+    pending_input: enum { none, set_image, port_forward, transfer, sanitize, drain, scale } = .none,
     pending_name: ?[]u8 = null,
     pending_namespace: ?[]u8 = null,
     pending_type: ?ResourceType = null,
@@ -241,10 +253,50 @@ pub const App = struct {
     /// View to return to after switching cluster context (k9s behavior:
     /// selecting a context drops you back where you were, not in contexts).
     pre_contexts_view: []const u8 = "pods",
+    command_history: std.ArrayListUnmanaged([]u8) = .empty,
+    history_cursor: usize = 0,
+    crumbs_visible: bool = true,
+    view_fullscreen: bool = false,
+    crumb_buf: [160]u8 = undefined,
 
     pub fn init(allocator: std.mem.Allocator, config: Cli.Config) !App {
+        var perf_telemetry = PerfTelemetry.initFromEnv();
+        errdefer perf_telemetry.deinit();
+
+        const shared_event = try allocator.create(std.Io.Event);
+        shared_event.* = .unset;
+        errdefer allocator.destroy(shared_event);
+
+        const wakeup = try allocator.create(Wakeup);
+        wakeup.* = try Wakeup.init();
+        errdefer {
+            wakeup.deinit();
+            allocator.destroy(wakeup);
+        }
+
+        const change_queue = try allocator.create(ChangeQueue);
+        change_queue.* = ChangeQueue.init(
+            runtime.io(),
+            allocator,
+            resource_key.Limits.default,
+            shared_event,
+            wakeup,
+        );
+        errdefer {
+            change_queue.deinit();
+            allocator.destroy(change_queue);
+        }
+
+        const active_session_slot = try allocator.create(ActiveSessionSlot);
+        active_session_slot.* = ActiveSessionSlot.init(runtime.io(), shared_event);
+        errdefer {
+            active_session_slot.deinit();
+            allocator.destroy(active_session_slot);
+        }
+
         // Initialize terminal
-        const term = try Terminal.init(allocator);
+        var term = try Terminal.init(allocator);
+        errdefer term.deinit();
 
         // Drop-in k9s support: import an existing k9s config tree (skins,
         // aliases, active skin → theme) before the config is first read.
@@ -261,18 +313,20 @@ pub const App = struct {
 
         // Load theme
         const theme = try allocator.create(theme_loader.ThemeColors);
+        errdefer allocator.destroy(theme);
         theme.* = try theme_loader.loadTheme(allocator, ui_config.ui.theme);
+        errdefer theme_loader.deinitTheme(theme);
 
         // Initialize Kubernetes service (heap-allocated so views get a stable pointer)
         const k8s_service = try allocator.create(K8sService);
+        errdefer allocator.destroy(k8s_service);
         k8s_service.* = try K8sService.init(allocator);
         // --readonly was previously parsed and never consulted, so it blocked nothing.
         // The service rejects mutations; the UI additionally declines to prompt.
         k8s_service.readonly = config.readonly;
-        errdefer {
-            k8s_service.deinit();
-            allocator.destroy(k8s_service);
-        }
+        k8s_service.setKubeconfigPath(config.kubeconfig);
+        k8s_service.bindSessionSlot(active_session_slot);
+        errdefer k8s_service.deinit();
 
         // K8s connection is deferred to first render — app starts instantly
 
@@ -401,6 +455,11 @@ pub const App = struct {
         // Create app
         var app = App{
             .allocator = allocator,
+            .perf_telemetry = perf_telemetry,
+            .shared_event = shared_event,
+            .wakeup = wakeup,
+            .change_queue = change_queue,
+            .active_session_slot = active_session_slot,
             .terminal = term,
             .header = header,
             .footer = footer,
@@ -491,6 +550,7 @@ pub const App = struct {
 
         // Register commands
         try app.registerCommands();
+        app.crumbs_visible = !config.crumbsless;
 
         // Build the candidate list for the fuzzy command palette dropdown.
         // Done once here; the slice lives for the entire app lifetime.
@@ -505,6 +565,9 @@ pub const App = struct {
 
     pub fn deinit(self: *App) void {
         self.clearPendingInput();
+
+        for (self.command_history.items) |cmd| self.allocator.free(cmd);
+        self.command_history.deinit(self.allocator);
 
         // Tear down the view manager BEFORE destroying the view objects it
         // references. (ViewManager.deinit no longer touches the views, but
@@ -545,6 +608,22 @@ pub const App = struct {
         self.allocator.free(self.command_names);
         self.command_registry.deinit();
 
+        const active_session = self.active_session_slot.invalidate(null) catch |err|
+            std.debug.panic("active session invalidation failed: {any}", .{err});
+        self.k8s_service.detachSession();
+        if (active_session) |session| {
+            session.checkTeardownReady() catch |err|
+                std.debug.panic("active session teardown failed: {any}", .{err});
+            session.deinit();
+        }
+        self.active_session_slot.deinit();
+        self.allocator.destroy(self.active_session_slot);
+
+        self.change_queue.deinit();
+        self.allocator.destroy(self.change_queue);
+        self.wakeup.deinit();
+        self.allocator.destroy(self.wakeup);
+
         // Clean up Kubernetes service
         self.k8s_service.deinit();
         self.allocator.destroy(self.k8s_service);
@@ -559,6 +638,8 @@ pub const App = struct {
         self.command_input.deinit();
         self.allocator.free(self.current_theme_name);
         self.terminal.deinit();
+        self.perf_telemetry.deinit();
+        self.allocator.destroy(self.shared_event);
     }
 
     fn registerCommands(self: *App) !void {
@@ -600,6 +681,11 @@ pub const App = struct {
 
         // Internal commands
         try self.command_registry.register("select_theme", Command{ .name = "select_theme", .execute = selectThemeCommand });
+        try self.command_registry.register("restart", Command{ .name = "restart", .execute = restartCommand });
+        try self.command_registry.register("scale", Command{ .name = "scale", .execute = scaleCommand });
+        try self.command_registry.register("suspend", Command{ .name = "suspend", .execute = suspendCommand });
+        try self.command_registry.register("trigger", Command{ .name = "trigger", .execute = triggerCommand });
+        try self.command_registry.register("rollback", Command{ .name = "rollback", .execute = rollbackCommand });
     }
 
     pub fn run(self: *App) !void {
@@ -643,9 +729,6 @@ pub const App = struct {
                 self.k8s_service.connect(self.config.context) catch |err| {
                     Logger.warn("Failed to connect to Kubernetes: {}. Continuing without cluster connection.", .{err});
                 };
-                // Start the persistent kubectl proxy so the first (and every)
-                // request is a fast localhost call, not a ~2s kubectl spawn.
-                if (self.k8s_service.use_kubectl) self.k8s_service.startProxy();
                 // Update header with connection info (cheap, no network).
                 const cluster_info = self.k8s_service.getClusterInfo();
                 self.header.updateClusterInfo(cluster_info.context, cluster_info.cluster, cluster_info.user) catch {};
@@ -655,6 +738,7 @@ pub const App = struct {
                 if (self.view_manager.getCurrentView()) |current_view| {
                     current_view.refresh() catch {};
                 }
+                self.markRefreshCompleted();
                 self.dirty = true;
                 self.renderIfNeeded() catch {};
 
@@ -672,26 +756,32 @@ pub const App = struct {
                 self.dirty = true;
             }
 
-            var pollfds = [_]posix.pollfd{
-                posix.pollfd{ .fd = self.terminal.stdin.handle, .events = posix.POLL.IN, .revents = 0 },
-            };
-
-            // Poll for whatever remains of the current frame when a frame was just
-            // dropped by the rate limiter; otherwise the usual 100 ms, which exists
-            // to notice resize signals.
             const poll_timeout: i32 = self.pending_frame_ms orelse 100;
-            const poll_result = posix.poll(&pollfds, poll_timeout) catch |err| {
+            const poll = sys.pollInputAndWakeup(
+                self.terminal.stdin.handle,
+                self.wakeup.readHandle(),
+                poll_timeout,
+            ) catch |err| {
                 return err;
             };
 
-            if (poll_result == 0) {
-                // Timeout: no input. This is where periodic work belongs.
+            if (poll.wakeup.hasAny()) {
+                self.wakeup.drain();
+                self.drainChangeQueue();
+                if (self.change_queue.hasPending()) self.wakeup.notify();
+            }
+
+            if (poll.input.isTerminal()) {
+                self.running = false;
+                continue;
+            }
+
+            if (poll.readiness == .timeout) {
                 self.maybeAutoRefresh();
                 continue;
             }
 
-            const events = pollfds[0].revents;
-            if ((events & posix.POLL.IN) != 0) {
+            if (poll.input.readable) {
                 if (self.terminal.readKey() catch |err| {
                     Logger.err("readKey error: {any}", .{err});
                     continue;
@@ -699,13 +789,41 @@ pub const App = struct {
                     self.handleKey(key) catch |err| {
                         Logger.err("handleKey error: {any}", .{err});
                     };
+                    // Paint loading feedback before a deferred list fetch blocks.
+                    self.renderIfNeeded() catch |err| {
+                        Logger.err("Render error: {any}", .{err});
+                    };
+                    if (self.view_manager.getCurrentView()) |v| {
+                        if (v.flushPendingRefresh()) {
+                            self.dirty = true;
+                            self.renderIfNeeded() catch |err| {
+                                Logger.err("Render error: {any}", .{err});
+                            };
+                        }
+                    }
                 }
             }
-
-            if ((events & (posix.POLL.ERR | posix.POLL.HUP | posix.POLL.NVAL)) != 0) {
-                self.running = false;
-            }
         }
+    }
+
+    fn drainChangeQueue(self: *App) void {
+        var router = resource_key.UiRouter{
+            .context = @ptrCast(self),
+            .targetFn = appEnvelopeTarget,
+        };
+        var n: usize = 0;
+        while (n < resource_key.Limits.default.drain_batches) : (n += 1) {
+            var envelope = self.change_queue.pop() orelse break;
+            envelope.apply(&router, self.allocator) catch |err| {
+                Logger.err("envelope apply failed: {any}", .{err});
+                envelope.deinit(self.allocator);
+            };
+            self.dirty = true;
+        }
+    }
+
+    fn appEnvelopeTarget(_: *anyopaque, _: resource_key.EnvelopeTarget) ?*anyopaque {
+        return null;
     }
 
     fn renderIfNeeded(self: *App) !void {
@@ -733,10 +851,10 @@ pub const App = struct {
         try self.terminal.beginSyncOutput();
         defer self.terminal.endSyncOutput() catch {};
 
-        const new_header_height = self.header.height();
+        const new_header_height = if (self.view_fullscreen) 0 else self.header.height();
         const header_height_changed = self.header_height != new_header_height;
         self.header_height = new_header_height;
-        const footer_height: u16 = if (self.footer_visible) 1 else 0;
+        const footer_height: u16 = if (self.footer_visible and !self.view_fullscreen) 1 else 0;
         const command_height: u16 = if (self.command_input.visible) 1 else 0;
 
         // Clear on resize OR header size change (compact toggle)
@@ -758,7 +876,7 @@ pub const App = struct {
         }
 
         // Render header with hints from current view
-        if (size.height >= self.header_height) {
+        if (!self.view_fullscreen and size.height >= self.header_height) {
             if (self.view_manager.getCurrentView()) |current_view| {
                 const hints = current_view.getHints();
                 try self.header.render(&self.terminal, 0, 0, size.width, self.header_height, hints);
@@ -844,12 +962,34 @@ pub const App = struct {
                 } else {
                     self.footer.setPreviewStatus(null);
                 }
-                if (self.k8s_service.isConnected()) {
+                const view_hint = if (self.view_manager.getCurrentView()) |v| v.getStatusHint() else null;
+                if (view_hint) |hint| {
+                    self.footer.setStatus(hint);
+                } else if (self.view_manager.getCurrentView()) |v| {
+                    // Bridge (labeled — remove with maybeAutoRefresh's all-ns guard):
+                    // Show a persistent hint when auto-refresh is intentionally deferred
+                    // for all-namespace views. Keeps the user aware that data is static
+                    // until they press r. Condition mirrors maybeAutoRefresh exactly.
+                    if (v.showsAllNamespaces() and self.k8s_service.isConnected() and self.config.refresh_rate > 0) {
+                        self.footer.setStatus("all-ns: press Ctrl-r to refresh");
+                    } else if (self.k8s_service.isConnected()) {
+                        self.footer.setStatus(null);
+                    } else if (!self.k8s_service.hasAttemptedConnect()) {
+                        self.footer.setStatus("Connecting...");
+                    } else {
+                        self.footer.setStatus("Not connected to Kubernetes cluster");
+                    }
+                } else if (self.k8s_service.isConnected()) {
                     self.footer.setStatus(null);
                 } else if (!self.k8s_service.hasAttemptedConnect()) {
                     self.footer.setStatus("Connecting...");
                 } else {
                     self.footer.setStatus("Not connected to Kubernetes cluster");
+                }
+                if (self.crumbs_visible and self.view_manager.getDepth() >= 2) {
+                    self.footer.setCrumbs(self.view_manager.writeCrumbs(&self.crumb_buf));
+                } else {
+                    self.footer.setCrumbs("");
                 }
                 try self.footer.render(&self.terminal, 0, footer_y, size.width, footer_height);
             }
@@ -982,6 +1122,10 @@ pub const App = struct {
                         self.dirty = true;
                         return;
                     }
+                    if (std.mem.eql(u8, self.command_input.prompt, ":") and (c == '[' or c == ']')) {
+                        try self.historyStep(if (c == '[') -1 else 1);
+                        return;
+                    }
                     if (c >= 32 and c <= 126) {
                         try self.command_input.addChar(c);
                         self.liveFilterIfActive();
@@ -1014,12 +1158,17 @@ pub const App = struct {
                     self.dirty = true;
                 },
                 .enter => {
-                    // For ':' prompt: prefer the highlighted suggestion over the raw buffer.
+                    // For ':' prompt: prefer the highlighted suggestion over the
+                    // raw buffer — but only when the first token is not already a
+                    // registered command. `:po kube-system` and `:dp /fred` must
+                    // keep extras; replacing the whole line with "pods" dropped them.
                     const prompt = self.command_input.prompt;
-                    const cmd_text = if (std.mem.eql(u8, prompt, ":"))
-                        self.command_input.currentSuggestion() orelse self.command_input.getCommand()
-                    else
-                        self.command_input.getCommand();
+                    const typed = self.command_input.getCommand();
+                    const cmd_text = if (std.mem.eql(u8, prompt, ":")) blk: {
+                        const extras = k9s_query.parseCommand(typed);
+                        if (self.command_registry.contains(extras.name)) break :blk typed;
+                        break :blk self.command_input.currentSuggestion() orelse typed;
+                    } else typed;
 
                     if (self.pending_input != .none) {
                         self.dispatchPendingInput(cmd_text);
@@ -1042,13 +1191,7 @@ pub const App = struct {
                             try self.applyFilterToCurrentView(cmd_text);
                         }
                     } else if (std.mem.eql(u8, prompt, ":")) {
-                        // Execute command
-                        var ctx = Command.CommandContext{
-                            .allocator = self.allocator,
-                            .view_manager = &self.view_manager,
-                            .data = self,
-                        };
-                        _ = try self.command_registry.execute(cmd_text, &ctx);
+                        try self.executePaletteCommand(cmd_text, true);
                     }
 
                     self.command_input.hide();
@@ -1059,6 +1202,9 @@ pub const App = struct {
                     self.clearPendingInput();
                     self.clearDeleteState();
                     self.dirty = true;
+                },
+                .ctrl_c => {
+                    self.running = false;
                 },
                 else => {},
             }
@@ -1082,7 +1228,7 @@ pub const App = struct {
         // pending delete, push pods after a namespace switch) that a view returning
         // .handled must not be able to swallow.
         switch (key) {
-            .char, .ctrl_d => {
+            .char, .ctrl_d, .ctrl_w, .ctrl_z, .ctrl_l, .ctrl_r, .ctrl_backslash, .ctrl_space, .shift_left, .shift_right => {
                 if (self.view_manager.getCurrentView()) |current_view| {
                     const result = try current_view.handleKey(key);
                     if (result != .not_handled) {
@@ -1097,6 +1243,11 @@ pub const App = struct {
         // Handle global keys
         switch (key) {
             .char => |c| switch (c) {
+                '-' => {
+                    try self.replayLastCommand();
+                },
+                '[' => try self.historyStep(-1),
+                ']' => try self.historyStep(1),
                 'x' => {
                     // Clear filter with 'x' key (like delete)
                     try self.applyFilterToCurrentView("");
@@ -1221,7 +1372,7 @@ pub const App = struct {
                 }
             },
             .ctrl_c => {
-                // Ctrl+C doesn't exit, use :q command instead
+                self.running = false;
             },
             .ctrl_a => {
                 // Ctrl+A: toggle the aliases view (full view; Ctrl-A again exits).
@@ -1297,20 +1448,23 @@ pub const App = struct {
                 if (self.view_manager.getCurrentView()) |current_view| {
                     const result = try current_view.handleKey(key);
                     try self.handleViewResult(result, current_view, key);
-
-                    // After selecting a namespace, push pods view on top
-                    // Esc will pop back to namespaces view
-                    if (result == .handled and std.mem.eql(u8, self.current_view_name, "namespaces")) {
-                        try self.view_manager.pushView(self.pods_view.createView());
-                        self.current_view_name = "pods";
-                        self.dirty = true;
-                    }
                 }
             },
             .unsupported => {},
             .ctrl_e => {
                 self.header.toggleCompact();
                 self.dirty = true;
+            },
+            .ctrl_s => try self.saveSelectedResource(),
+            .ctrl_g => {
+                self.crumbs_visible = !self.crumbs_visible;
+                self.dirty = true;
+            },
+            .ctrl_w, .ctrl_z, .ctrl_l, .ctrl_r, .ctrl_backslash, .ctrl_space, .shift_left, .shift_right => {
+                if (self.view_manager.getCurrentView()) |current_view| {
+                    const result = try current_view.handleKey(key);
+                    try self.handleViewResult(result, current_view, key);
+                }
             },
         }
     }
@@ -1348,9 +1502,13 @@ pub const App = struct {
                 self.dirty = true;
             },
             .namespace_switched => {
-                // Same shape as context_switched: the view we return to holds rows
-                // from the previous namespace, and its onShow deliberately skips the
-                // network when rows exist, so the refresh has to be forced here.
+                // Keep namespaces under pods so Esc returns to the namespace picker.
+                try self.view_manager.pushView(self.pods_view.createView());
+                self.current_view_name = "pods";
+
+                // onShow preserves existing rows for instant stack navigation, but
+                // those rows belong to the previous namespace. Refresh the new
+                // destination only after it is on top.
                 if (self.view_manager.getCurrentView()) |v| {
                     v.refresh() catch |err| {
                         Logger.err("Refresh after namespace switch failed: {any}", .{err});
@@ -1435,6 +1593,24 @@ pub const App = struct {
             .request_transfer => self.promptTransfer() catch |e| Logger.err("transfer prompt: {any}", .{e}),
             .request_sanitize => self.promptSanitize(),
             .request_traffic => self.showTrafficView() catch |e| Logger.err("traffic view failed: {any}", .{e}),
+            .request_copy => self.copySelectedField(.name),
+            .request_copy_namespace => self.copySelectedField(.namespace),
+            .request_warp => self.warpToSelectedNamespace() catch |e| Logger.err("warp failed: {any}", .{e}),
+            .request_jump_owner => self.jumpToOwner() catch |e| Logger.err("jump-owner failed: {any}", .{e}),
+            .request_used_by => self.showUsedBy() catch |e| Logger.err("used-by failed: {any}", .{e}),
+            .request_restart => self.doRestart() catch |e| Logger.err("restart failed: {any}", .{e}),
+            .request_scale => self.promptScale() catch |e| Logger.err("scale prompt: {any}", .{e}),
+            .request_suspend => self.doSuspendToggle() catch |e| Logger.err("suspend failed: {any}", .{e}),
+            .request_trigger => self.doTrigger() catch |e| Logger.err("trigger failed: {any}", .{e}),
+            .request_rollback => self.doRollback() catch |e| Logger.err("rollback failed: {any}", .{e}),
+            .request_view_replicasets => self.viewReplicaSets() catch |e| Logger.err("view RS failed: {any}", .{e}),
+            .request_fullscreen => {
+                self.view_fullscreen = !self.view_fullscreen;
+                self.dirty = true;
+            },
+            .request_show_port_forwards => {
+                try self.switchToView("pf");
+            },
         }
     }
 
@@ -1700,6 +1876,7 @@ pub const App = struct {
                     self.doSanitize() catch |e| Logger.err("sanitize failed: {any}", .{e});
                 }
             },
+            .scale => self.doScale(value) catch |e| Logger.err("scale failed: {any}", .{e}),
             .none => {},
         }
         self.clearPendingInput();
@@ -2031,7 +2208,6 @@ pub const App = struct {
         return false;
     }
 
-    /// Refresh the current view
     /// Refresh the current view when the --refresh interval has elapsed.
     ///
     /// Called from the poll-timeout branch, which fires at least every 100 ms, so the
@@ -2048,11 +2224,67 @@ pub const App = struct {
         // destructive action at a different row.
         if (self.command_input.visible or self.delete_pending) return;
 
-        const now = clock.nanoTimestamp();
-        if (!shouldAutoRefresh(self.config.refresh_rate, self.last_auto_refresh_ns, now)) return;
+        // Bridge (labeled — remove when background LIST+WATCH lands):
+        //
+        // refreshCurrentView() is a synchronous blocking LIST. In all-namespace
+        // mode on large clusters (4 k+ pods) it takes 3–12 s. The main loop
+        // DOES reach poll() after the LIST returns, but with the pre-fix timestamp
+        // placement shouldAutoRefresh immediately re-fired on the next 100 ms tick
+        // (elapsed ≥ interval), causing near-continuous blocking with ~100 ms gaps.
+        //
+        // The timestamp fix (last = completion time) gives a responsive window after
+        // each LIST, but the LIST itself still blocks for 3–12 s, making the app feel
+        // unresponsive for the duration. Deferring auto-refresh for all-namespace
+        // views eliminates those stalls entirely; manual Ctrl-r still works. The footer
+        // shows "all-ns: press Ctrl-r to refresh" (set in the render loop) so the user
+        // knows data is not auto-refreshing.
+        //
+        // Delete this guard and the render-loop status message when watch snapshots
+        // deliver data via redraw_request from a background thread.
+        if (self.view_manager.getCurrentView()) |v| {
+            if (v.showsAllNamespaces()) return;
+        }
 
-        self.last_auto_refresh_ns = now;
-        self.refreshCurrentView();
+        _ = App.runAutoRefreshCycle(
+            self.config.refresh_rate,
+            &self.last_auto_refresh_ns,
+            clock.nanoTimestamp(),
+            *App,
+            self,
+            struct {
+                fn f(app: *App) void {
+                    app.refreshCurrentView();
+                }
+            }.f,
+            clock.nanoTimestamp,
+        );
+    }
+
+    /// Scheduling primitive for periodic refresh. Calls refreshFn when the
+    /// interval has elapsed; then records the time returned by clockFn — called
+    /// AFTER refreshFn returns — as the new *last_ns.
+    ///
+    /// Keeping the clock capture after the refresh is the invariant that prevents
+    /// a refresh storm: if refreshFn blocks longer than the interval, the next
+    /// deadline is still `interval` seconds from completion, not from start.
+    ///
+    /// clockFn is injectable so tests can supply a known completion timestamp and
+    /// assert that *last_ns holds that value (not the pre-call now_ns).
+    ///
+    /// Returns true when a refresh was performed.
+    pub fn runAutoRefreshCycle(
+        interval_s: f32,
+        last_ns: *i128,
+        now_ns: i128,
+        comptime Ctx: type,
+        ctx: Ctx,
+        comptime refreshFn: fn (Ctx) void,
+        comptime clockFn: fn () i128,
+    ) bool {
+        if (!shouldAutoRefresh(interval_s, last_ns.*, now_ns)) return false;
+        refreshFn(ctx);
+        last_ns.* = clockFn();
+        return true;
     }
 
     /// Whether the auto-refresh interval has elapsed.
@@ -2093,12 +2325,289 @@ pub const App = struct {
         self.refreshCurrentView();
     }
 
+    fn executePaletteCommand(self: *App, cmd_text: []const u8, record: bool) !void {
+        const extras = k9s_query.parseCommand(cmd_text);
+        if (extras.context) |ctx_name| {
+            if (ctx_name.len > 0) {
+                self.k8s_service.switchContext(ctx_name) catch {
+                    self.footer.setStatus("context switch failed");
+                    self.dirty = true;
+                    return;
+                };
+            }
+        }
+
+        var ctx = Command.CommandContext{
+            .allocator = self.allocator,
+            .view_manager = &self.view_manager,
+            .data = self,
+        };
+        const ok = try self.command_registry.execute(extras.name, &ctx);
+        if (!ok) {
+            self.footer.setStatus("unknown command");
+            self.dirty = true;
+            return;
+        }
+        if (record) try self.recordHistory(cmd_text);
+
+        if (extras.namespace) |ns| {
+            try self.k8s_service.setCurrentNamespace(ns);
+            if (self.view_manager.getCurrentView()) |v| v.setShowAllNamespaces(false);
+            self.refreshCurrentView();
+        }
+        if (extras.labels) |sel| {
+            var buf: [256]u8 = undefined;
+            const f = std.fmt.bufPrint(&buf, "-l {s}", .{sel}) catch sel;
+            try self.applyFilterToCurrentView(f);
+        }
+        if (extras.filter) |f| {
+            try self.applyFilterToCurrentView(f);
+        }
+    }
+
+    fn recordHistory(self: *App, cmd: []const u8) !void {
+        const owned = try self.allocator.dupe(u8, cmd);
+        errdefer self.allocator.free(owned);
+        if (self.command_history.items.len >= 50) {
+            const old = self.command_history.orderedRemove(0);
+            self.allocator.free(old);
+        }
+        try self.command_history.append(self.allocator, owned);
+        self.history_cursor = self.command_history.items.len;
+    }
+
+    fn replayLastCommand(self: *App) !void {
+        if (self.command_history.items.len == 0) return;
+        const last = self.command_history.items[self.command_history.items.len - 1];
+        try self.executePaletteCommand(last, false);
+    }
+
+    fn historyStep(self: *App, delta: i32) !void {
+        if (self.command_history.items.len == 0) return;
+        var idx: i32 = @intCast(self.history_cursor);
+        idx += delta;
+        const max: i32 = @intCast(self.command_history.items.len - 1);
+        if (idx < 0) idx = 0;
+        if (idx > max) idx = max;
+        self.history_cursor = @intCast(idx);
+        if (!self.command_input.visible or !std.mem.eql(u8, self.command_input.prompt, ":")) {
+            self.command_input.showWithPrompt(":");
+        }
+        try self.command_input.setText(self.command_history.items[self.history_cursor]);
+        self.dirty = true;
+    }
+
+    fn copySelectedField(self: *App, field: enum { name, namespace }) void {
+        const info = self.getSelectedResourceFromCurrentView() orelse return;
+        const text = switch (field) {
+            .name => info.name,
+            .namespace => info.namespace,
+        };
+        self.terminal.copyToClipboard(text) catch {
+            self.footer.setStatus("copy failed");
+            self.dirty = true;
+            return;
+        };
+        self.footer.setStatus("copied");
+        self.dirty = true;
+    }
+
+    fn warpToSelectedNamespace(self: *App) !void {
+        const info = self.getSelectedResourceFromCurrentView() orelse return;
+        if (std.mem.eql(u8, info.namespace, "cluster")) return;
+        try self.k8s_service.setCurrentNamespace(info.namespace);
+        if (self.view_manager.getCurrentView()) |v| v.setShowAllNamespaces(false);
+        self.refreshCurrentView();
+    }
+
+    fn jumpToOwner(self: *App) !void {
+        const rt = self.currentResourceType() orelse return;
+        const info = self.getSelectedResourceFromCurrentView() orelse return;
+        const json_data = self.k8s_service.getRawJson(rt, info.name, info.namespace) catch {
+            self.footer.setStatus("cannot fetch owner");
+            self.dirty = true;
+            return;
+        };
+        defer self.allocator.free(json_data);
+        const parsed = std.json.parseFromSlice(std.json.Value, self.allocator, json_data, .{}) catch {
+            self.footer.setStatus("cannot parse owner");
+            self.dirty = true;
+            return;
+        };
+        defer parsed.deinit();
+        const owner = k9s_query.firstOwnerRef(parsed.value) orelse {
+            self.footer.setStatus("no owner");
+            self.dirty = true;
+            return;
+        };
+        const view = k9s_query.viewForOwnerKind(owner.kind) orelse {
+            self.footer.setStatus("unknown owner kind");
+            self.dirty = true;
+            return;
+        };
+        const name = try self.allocator.dupe(u8, owner.name);
+        defer self.allocator.free(name);
+        try self.switchToView(view);
+        try self.applyFilterToCurrentView(name);
+    }
+
+    fn showUsedBy(self: *App) !void {
+        if (!k9s_query.usedByApplies(self.current_view_name)) return;
+        const info = self.getSelectedResourceFromCurrentView() orelse return;
+        const name = try self.allocator.dupe(u8, info.name);
+        defer self.allocator.free(name);
+        const ns = try self.allocator.dupe(u8, info.namespace);
+        defer self.allocator.free(ns);
+        try self.k8s_service.setCurrentNamespace(ns);
+        try self.switchToView("po");
+        if (self.view_manager.getCurrentView()) |v| v.setShowAllNamespaces(false);
+        self.refreshCurrentView();
+        try self.applyFilterToCurrentView(name);
+    }
+
+    fn viewReplicaSets(self: *App) !void {
+        if (!std.mem.eql(u8, self.current_view_name, "deployments")) return;
+        const info = self.getSelectedResourceFromCurrentView() orelse return;
+        const name = try self.allocator.dupe(u8, info.name);
+        defer self.allocator.free(name);
+        const ns = try self.allocator.dupe(u8, info.namespace);
+        defer self.allocator.free(ns);
+        try self.k8s_service.setCurrentNamespace(ns);
+        try self.switchToView("rs");
+        if (self.view_manager.getCurrentView()) |v| v.setShowAllNamespaces(false);
+        self.refreshCurrentView();
+        try self.applyFilterToCurrentView(name);
+    }
+
+    fn runRollout(self: *App, verb: []const u8) !void {
+        const rt = self.currentResourceType() orelse return;
+        const info = self.getSelectedResourceFromCurrentView() orelse return;
+        var target_buf: [256]u8 = undefined;
+        const target = std.fmt.bufPrint(&target_buf, "{s}/{s}", .{ rt.resourceName(), info.name }) catch return;
+        try self.k8s_service.runKubectl(&.{ "rollout", verb, target, "-n", info.namespace });
+        self.footer.setStatus("rollout updated");
+        self.refreshCurrentView();
+    }
+
+    fn doRestart(self: *App) !void {
+        if (!k9s_query.restartApplies(self.current_view_name)) return;
+        if (self.refuseIfReadonly("restart")) return;
+        try self.runRollout("restart");
+    }
+
+    fn doRollback(self: *App) !void {
+        if (!k9s_query.rollbackApplies(self.current_view_name)) return;
+        if (self.refuseIfReadonly("rollback")) return;
+        try self.runRollout("undo");
+    }
+
+    fn promptScale(self: *App) !void {
+        if (!k9s_query.scaleApplies(self.current_view_name)) return;
+        if (self.refuseIfReadonly("scale")) return;
+        try self.beginResourcePrompt("replicas:");
+        if (self.pending_name != null) self.pending_input = .scale;
+    }
+
+    fn doScale(self: *App, value: []const u8) !void {
+        const replicas = std.mem.trim(u8, value, " \t");
+        _ = std.fmt.parseInt(u32, replicas, 10) catch {
+            self.footer.setStatus("invalid replica count");
+            self.dirty = true;
+            return;
+        };
+        const rt = self.pending_type orelse return;
+        const name = self.pending_name orelse return;
+        const ns = self.pending_namespace orelse return;
+        var target_buf: [256]u8 = undefined;
+        const target = std.fmt.bufPrint(&target_buf, "{s}/{s}", .{ rt.resourceName(), name }) catch return;
+        var flag_buf: [40]u8 = undefined;
+        const flag = std.fmt.bufPrint(&flag_buf, "--replicas={s}", .{replicas}) catch return;
+        try self.k8s_service.runKubectl(&.{ "scale", target, flag, "-n", ns });
+        self.footer.setStatus("scaled");
+        self.refreshCurrentView();
+    }
+
+    fn doSuspendToggle(self: *App) !void {
+        if (!std.mem.eql(u8, self.current_view_name, "cronjobs")) return;
+        if (self.refuseIfReadonly("suspend")) return;
+        const rt = self.currentResourceType() orelse return;
+        const info = self.getSelectedResourceFromCurrentView() orelse return;
+        const json_data = self.k8s_service.getRawJson(rt, info.name, info.namespace) catch {
+            self.footer.setStatus("cannot fetch cronjob");
+            self.dirty = true;
+            return;
+        };
+        defer self.allocator.free(json_data);
+        const parsed = std.json.parseFromSlice(std.json.Value, self.allocator, json_data, .{}) catch {
+            self.footer.setStatus("cannot parse cronjob");
+            self.dirty = true;
+            return;
+        };
+        defer parsed.deinit();
+        const suspend_now = k9s_query.specSuspend(parsed.value);
+        const patch: []const u8 = if (suspend_now)
+            "{\"spec\":{\"suspend\":false}}"
+        else
+            "{\"spec\":{\"suspend\":true}}";
+        var target_buf: [256]u8 = undefined;
+        const target = std.fmt.bufPrint(&target_buf, "cronjobs/{s}", .{info.name}) catch return;
+        try self.k8s_service.runKubectl(&.{ "patch", target, "-n", info.namespace, "--type=merge", "-p", patch });
+        self.footer.setStatus(if (suspend_now) "cronjob resumed" else "cronjob suspended");
+        self.refreshCurrentView();
+    }
+
+    fn doTrigger(self: *App) !void {
+        if (!std.mem.eql(u8, self.current_view_name, "cronjobs")) return;
+        if (self.refuseIfReadonly("trigger")) return;
+        const info = self.getSelectedResourceFromCurrentView() orelse return;
+        var from_buf: [160]u8 = undefined;
+        const from = std.fmt.bufPrint(&from_buf, "--from=cronjob/{s}", .{info.name}) catch return;
+        var job_buf: [80]u8 = undefined;
+        const ts: u64 = @intCast(@max(clock.timestamp(), 0));
+        const job_name = std.fmt.bufPrint(&job_buf, "{s}-{d}", .{ info.name, ts }) catch return;
+        const clipped = if (job_name.len > 63) job_name[0..63] else job_name;
+        try self.k8s_service.runKubectl(&.{ "create", "job", clipped, from, "-n", info.namespace });
+        self.footer.setStatus("job created");
+        self.refreshCurrentView();
+    }
+
+    fn saveSelectedResource(self: *App) !void {
+        const rt = self.currentResourceType() orelse return;
+        const info = self.getSelectedResourceFromCurrentView() orelse return;
+        const json_data = self.k8s_service.getRawJson(rt, info.name, info.namespace) catch {
+            self.footer.setStatus("save failed");
+            self.dirty = true;
+            return;
+        };
+        defer self.allocator.free(json_data);
+        const xdg = @import("core/xdg.zig");
+        const dir = self.config.screen_dump_dir orelse (try xdg.ensurePaths()).dumps_dir;
+        var path_buf: [512]u8 = undefined;
+        const path = std.fmt.bufPrint(&path_buf, "{s}/{s}-{d}.json", .{ dir, info.name, clock.timestamp() }) catch {
+            self.footer.setStatus("save path too long");
+            self.dirty = true;
+            return;
+        };
+        std.Io.Dir.cwd().writeFile(runtime.io(), .{ .sub_path = path, .data = json_data }) catch {
+            self.footer.setStatus("save failed");
+            self.dirty = true;
+            return;
+        };
+        self.footer.setStatus("saved");
+        self.dirty = true;
+    }
+
+    fn markRefreshCompleted(self: *App) void {
+        self.last_auto_refresh_ns = clock.nanoTimestamp();
+    }
+
     fn refreshCurrentView(self: *App) void {
         if (self.view_manager.getCurrentView()) |current| {
             current.refresh() catch |err| {
                 Logger.err("Failed to refresh view: {any}", .{err});
             };
         }
+        self.markRefreshCompleted();
         self.dirty = true;
     }
 
@@ -2344,6 +2853,22 @@ fn invertMarksCommand(ctx: *Command.CommandContext) !void {
     try markChar(@ptrCast(@alignCast(ctx.data.?)), '^');
 }
 
+fn restartCommand(ctx: *Command.CommandContext) !void {
+    try @as(*App, @ptrCast(@alignCast(ctx.data.?))).doRestart();
+}
+fn scaleCommand(ctx: *Command.CommandContext) !void {
+    try @as(*App, @ptrCast(@alignCast(ctx.data.?))).promptScale();
+}
+fn suspendCommand(ctx: *Command.CommandContext) !void {
+    try @as(*App, @ptrCast(@alignCast(ctx.data.?))).doSuspendToggle();
+}
+fn triggerCommand(ctx: *Command.CommandContext) !void {
+    try @as(*App, @ptrCast(@alignCast(ctx.data.?))).doTrigger();
+}
+fn rollbackCommand(ctx: *Command.CommandContext) !void {
+    try @as(*App, @ptrCast(@alignCast(ctx.data.?))).doRollback();
+}
+
 // SIGWINCH signal handler for terminal resize.
 // Zig 0.16: Sigaction.handler_fn takes the SIG enum, not c_int.
 fn handleResize(_: posix.SIG) callconv(.c) void {
@@ -2387,6 +2912,63 @@ test "shouldAutoRefresh: interval, disabling, and clock sanity" {
     try std.testing.expect(!App.shouldAutoRefresh(2.0, 1000 * ns, 900 * ns));
 }
 
+test "runAutoRefreshCycle: last_ns stores completion time, not pre-refresh start time" {
+    // Mutation-effective regression for the refresh-storm bug.
+    //
+    // The bug: maybeAutoRefresh wrote `last_auto_refresh_ns = now` BEFORE calling
+    // refreshCurrentView(). On a large cluster a single LIST call takes 3–12 s —
+    // well above the default 2 s interval. With last set at T_start:
+    //
+    //   now_after_list = T_start + 3 s
+    //   shouldAutoRefresh(2.0, T_start, now_after_list) → elapsed 3 s ≥ 2 s → true
+    //
+    // The main loop does reach poll() after the LIST returns, but the very next
+    // 100 ms timeout immediately fires another blocking LIST. Near-continuous
+    // blocking with ~100 ms gaps leaves the app effectively unresponsive.
+    //
+    // The fix: last_ns = clockFn(), called AFTER refreshFn() returns.
+    //
+    // This test fails if the assignment order is reversed (last_ns would become
+    // now_ns = 1000*ns instead of the injected clock value 1003*ns).
+    const ns = std.time.ns_per_s;
+
+    const MockClock = struct {
+        fn now() i128 {
+            return 1003 * std.time.ns_per_s; // simulates a 3 s blocking LIST
+        }
+    };
+    const MockRefresh = struct {
+        fn run(count: *usize) void {
+            count.* += 1;
+        }
+    };
+
+    var refresh_count: usize = 0;
+    var last_ns: i128 = 0;
+
+    const fired = App.runAutoRefreshCycle(
+        2.0,
+        &last_ns,
+        1000 * ns, // now = T+1s; last=0 (never refreshed) → should fire
+        *usize,
+        &refresh_count,
+        MockRefresh.run,
+        MockClock.now,
+    );
+
+    try std.testing.expect(fired);
+    try std.testing.expectEqual(@as(usize, 1), refresh_count);
+
+    // last_ns must equal MockClock.now() — the value returned AFTER the refresh.
+    // If assignment happens before refreshFn (old bug), last_ns == 1000*ns here
+    // and the expectEqual below fails, catching the regression.
+    try std.testing.expectEqual(@as(i128, 1003 * ns), last_ns);
+
+    // Consequence: 100 ms after completion, the interval (2 s) has not elapsed.
+    // No re-entry fire — this is the responsive window the fix provides.
+    try std.testing.expect(!App.shouldAutoRefresh(2.0, last_ns, @as(i128, 1003 * ns) + 100_000_000));
+}
+
 test "shouldLiveFilter refuses every prompt that is not a live filter" {
     // Filtering as you type is only correct for the "/" filter prompt. The same
     // prompt is reused for a delete confirmation's y/n and for value prompts
@@ -2407,4 +2989,52 @@ test "shouldLiveFilter refuses every prompt that is not a live filter" {
 
     // Both at once is still refused.
     try std.testing.expect(!App.shouldLiveFilter(true, "/", true, false));
+}
+
+test "App owns inherited telemetry without emitting paint markers" {
+    if (std.c.getenv("C3S_PERF_FD") != null) return error.SkipZigTest;
+    const Env = struct {
+        extern "c" fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
+        extern "c" fn unsetenv(name: [*:0]const u8) c_int;
+    };
+
+    var fds: [2]std.c.fd_t = undefined;
+    try std.testing.expectEqual(@as(c_int, 0), std.c.pipe(&fds));
+    defer _ = std.c.close(fds[0]);
+    defer if (std.c.fcntl(fds[1], std.c.F.GETFD) >= 0) {
+        _ = std.c.close(fds[1]);
+    };
+
+    const read_flags = std.c.fcntl(fds[0], std.c.F.GETFL);
+    try std.testing.expect(read_flags >= 0);
+    const nonblocking: c_int = @bitCast(std.c.O{ .NONBLOCK = true });
+    try std.testing.expectEqual(@as(c_int, 0), std.c.fcntl(fds[0], std.c.F.SETFL, read_flags | nonblocking));
+
+    const write_flags = std.c.fcntl(fds[1], std.c.F.GETFD);
+    try std.testing.expect(write_flags >= 0);
+    try std.testing.expectEqual(
+        @as(c_int, 0),
+        std.c.fcntl(fds[1], std.c.F.SETFD, write_flags & ~@as(c_int, std.c.FD_CLOEXEC)),
+    );
+
+    var fd_buf: [32]u8 = undefined;
+    const fd_value = try std.fmt.bufPrintZ(&fd_buf, "{d}", .{fds[1]});
+    try std.testing.expectEqual(@as(c_int, 0), Env.setenv("C3S_PERF_FD", fd_value.ptr, 1));
+    defer _ = Env.unsetenv("C3S_PERF_FD");
+
+    var app = try App.init(std.testing.allocator, .{});
+    var app_live = true;
+    defer if (app_live) app.deinit();
+
+    try std.testing.expect(std.c.fcntl(fds[1], std.c.F.GETFD) & std.c.FD_CLOEXEC != 0);
+    var byte: [1]u8 = undefined;
+    const before_deinit = std.c.read(fds[0], &byte, byte.len);
+    try std.testing.expectEqual(@as(isize, -1), before_deinit);
+    try std.testing.expectEqual(std.c.E.AGAIN, std.c.errno(before_deinit));
+
+    app.deinit();
+    app_live = false;
+    try std.testing.expectEqual(@as(c_int, -1), std.c.fcntl(fds[1], std.c.F.GETFD));
+    try std.testing.expectEqual(std.c.E.BADF, std.c.errno(-1));
+    try std.testing.expectEqual(@as(isize, 0), std.c.read(fds[0], &byte, byte.len));
 }

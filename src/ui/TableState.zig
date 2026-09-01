@@ -28,6 +28,8 @@ pub fn TableState(comptime ItemType: type) type {
         sort_ascending: bool = true,
         show_all_namespaces: bool = false,
         loading: bool = false,
+        /// Optional detail shown instead of plain "Loading..." (static literal).
+        loading_detail: []const u8 = "",
         error_message: ?[]u8 = null,
         /// k9s-style multi-select: set of marked row identity keys.
         /// Keys are owned (duped) by the TableState; values are unit (void).
@@ -376,7 +378,8 @@ pub fn TableState(comptime ItemType: type) type {
         /// Render loading/error states. Returns true if a state was rendered (caller should return).
         pub fn renderStatus(self: *const Self, terminal_inst: *Terminal, x: u16, y: u16, colors: *const theme_loader.ThemeColors) !bool {
             if (self.loading) {
-                try Theme.writeStringWithTheme(terminal_inst, x, y, "Loading...", colors.main_fg, colors.main_bg);
+                const msg = if (self.loading_detail.len > 0) self.loading_detail else "Loading...";
+                try Theme.writeStringWithTheme(terminal_inst, x, y, msg, colors.main_fg, colors.main_bg);
                 return true;
             }
             if (self.error_message) |msg| {

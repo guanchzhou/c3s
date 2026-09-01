@@ -52,6 +52,20 @@ pub const View = struct {
 
         /// Get selected resource info for describe/delete/logs
         getSelectedResource: *const fn (ptr: *anyopaque) ?ResourceInfo = &noopGetSelectedResource,
+
+        /// Warp / `:po ns-x` pin the view to one namespace. No-op on cluster-scoped views.
+        setShowAllNamespaces: *const fn (ptr: *anyopaque, all: bool) void = &noopSetShowAllNamespaces,
+
+        /// Returns true when the view is currently showing all namespaces.
+        /// Used by the auto-refresh throttle to skip expensive all-namespace LISTs.
+        showsAllNamespaces: *const fn (ptr: *anyopaque) bool = &noopShowsAllNamespaces,
+
+        /// Run work queued during handleKey (e.g. all-namespaces toggle) after the
+        /// loading frame has been painted. Returns true when refresh ran.
+        flushPendingRefresh: *const fn (ptr: *anyopaque) bool = &noopFlushPendingRefresh,
+
+        /// Short footer hint while the view is busy (loading frame, etc.).
+        getStatusHint: *const fn (ptr: *anyopaque) ?[]const u8 = &noopGetStatusHint,
     };
 
     pub const KeyResult = enum {
@@ -89,14 +103,28 @@ pub const View = struct {
         namespace_switched,
         /// Base64-decode the selected Secret's data (`x` on the secrets view).
         request_decode,
-        /// Evict the selected node's pods (`D` on the nodes view). Confirmed first.
+        /// Evict the selected node's pods (`r` on the nodes view, k9s). Confirmed first.
         request_drain,
-        /// Mark the selected node unschedulable (`c` on the nodes view).
+        /// Mark the selected node unschedulable (`u` toggle on the nodes view).
         request_cordon,
-        /// Undo a cordon (`u` on the nodes view).
+        /// Undo a cordon (`u` toggle on the nodes view).
         request_uncordon,
         /// Open the traffic view for the selected resource.
         request_traffic,
+        request_copy,
+        request_copy_namespace,
+        request_warp,
+        request_jump_owner,
+        request_used_by,
+        request_restart,
+        request_scale,
+        request_suspend,
+        request_trigger,
+        request_rollback,
+        request_view_replicasets,
+        request_fullscreen,
+        /// Open the port-forwards list (`f` on pods/services, k9s).
+        request_show_port_forwards,
     };
 
     pub fn render(self: View, terminal_inst: *Terminal, x: u16, y: u16, width: u16, height: u16) !void {
@@ -147,6 +175,22 @@ pub const View = struct {
         return self.vtable.getSelectedResource(self.ptr);
     }
 
+    pub fn setShowAllNamespaces(self: View, all: bool) void {
+        return self.vtable.setShowAllNamespaces(self.ptr, all);
+    }
+
+    pub fn showsAllNamespaces(self: View) bool {
+        return self.vtable.showsAllNamespaces(self.ptr);
+    }
+
+    pub fn flushPendingRefresh(self: View) bool {
+        return self.vtable.flushPendingRefresh(self.ptr);
+    }
+
+    pub fn getStatusHint(self: View) ?[]const u8 {
+        return self.vtable.getStatusHint(self.ptr);
+    }
+
     /// Create a view from a concrete type
     pub fn create(comptime T: type, instance: *T, vtable: *const VTable) View {
         return View{
@@ -166,6 +210,16 @@ pub const View = struct {
     }
     fn noopRefresh(_: *anyopaque) anyerror!void {}
     fn noopGetSelectedResource(_: *anyopaque) ?ResourceInfo {
+        return null;
+    }
+    fn noopSetShowAllNamespaces(_: *anyopaque, _: bool) void {}
+    fn noopShowsAllNamespaces(_: *anyopaque) bool {
+        return false;
+    }
+    fn noopFlushPendingRefresh(_: *anyopaque) bool {
+        return false;
+    }
+    fn noopGetStatusHint(_: *anyopaque) ?[]const u8 {
         return null;
     }
 };

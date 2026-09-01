@@ -272,6 +272,10 @@ pub const ContextsView = struct {
     fn handleKey(ctx: *anyopaque, key: Key) anyerror!KeyResult {
         const self: *ContextsView = @ptrCast(@alignCast(ctx));
         switch (key) {
+            .ctrl_r => {
+                try self.refresh();
+                return .handled;
+            },
             .char => |c| switch (c) {
                 'j' => {
                     if (self.selected_row < self.filtered_indices.items.len -| 1) self.selected_row += 1;

@@ -303,6 +303,10 @@ pub const AliasesView = struct {
         if (self.table.handleNavigationKey(key)) |result| return result;
 
         switch (key) {
+            .ctrl_r => {
+                self.refresh() catch |err| Logger.err("Failed to refresh aliases: {}", .{err});
+                return .handled;
+            },
             .char => |c| {
                 if (c == 'r') {
                     self.refresh() catch |err| Logger.err("Failed to refresh aliases: {}", .{err});
