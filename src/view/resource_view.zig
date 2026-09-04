@@ -20,6 +20,161 @@ const table_layout = @import("../ui/table_layout.zig");
 const PodMetric = @import("../services/k8s_types.zig").PodMetric;
 const k9s_query = @import("../viewmodel/k9s_query.zig");
 const filter_util = @import("../viewmodel/filter.zig");
+const PodRecord = @import("../k8s/PodRecord.zig");
+const PodProjection = @import("../k8s/ResourceProjection.zig").ResourceProjection(PodRecord);
+const projection_mod = @import("../k8s/ResourceProjection.zig");
+
+pub const Source = enum { data_plane, legacy_list };
+pub const PodSource = Source;
+pub const ResourceFamily = enum { services, config, workloads, batch, networking, storage };
+pub const ResourceSourceRegistry = struct {
+    services: Source = .data_plane,
+    config: Source = .data_plane,
+    workloads: Source = .data_plane,
+    batch: Source = .data_plane,
+    networking: Source = .data_plane,
+    storage: Source = .data_plane,
+
+    pub fn sourceFor(self: ResourceSourceRegistry, family: ResourceFamily) Source {
+        return switch (family) {
+            .services => self.services,
+            .config => self.config,
+            .workloads => self.workloads,
+            .batch => self.batch,
+            .networking => self.networking,
+            .storage => self.storage,
+        };
+    }
+};
+pub var active_pod_source: Source = .data_plane;
+pub var active_node_source: Source = .data_plane;
+pub var active_services_source: Source = .data_plane;
+pub var active_config_source: Source = .data_plane;
+pub var active_workloads_source: Source = .data_plane;
+pub var active_batch_source: Source = .data_plane;
+pub var active_networking_source: Source = .data_plane;
+pub var active_storage_source: Source = .data_plane;
+pub var legacy_loader_test_hook: ?*const fn ([]const u8) void = null;
+
+pub fn familySourceRegistry() ResourceSourceRegistry {
+    return .{
+        .services = active_services_source,
+        .config = active_config_source,
+        .workloads = active_workloads_source,
+        .batch = active_batch_source,
+        .networking = active_networking_source,
+        .storage = active_storage_source,
+    };
+}
+
+test "resource family source gates are independent" {
+    const previous_services = active_services_source;
+    const previous_config = active_config_source;
+    const previous_workloads = active_workloads_source;
+    const previous_batch = active_batch_source;
+    const previous_networking = active_networking_source;
+    const previous_storage = active_storage_source;
+    defer {
+        active_services_source = previous_services;
+        active_config_source = previous_config;
+        active_workloads_source = previous_workloads;
+        active_batch_source = previous_batch;
+        active_networking_source = previous_networking;
+        active_storage_source = previous_storage;
+    }
+    active_services_source = .data_plane;
+    active_config_source = .legacy_list;
+    active_workloads_source = .data_plane;
+    active_batch_source = .legacy_list;
+    active_networking_source = .data_plane;
+    active_storage_source = .legacy_list;
+    var registry = familySourceRegistry();
+    try std.testing.expectEqual(Source.data_plane, registry.sourceFor(.services));
+    try std.testing.expectEqual(Source.legacy_list, registry.sourceFor(.config));
+    try std.testing.expectEqual(Source.data_plane, registry.sourceFor(.workloads));
+    try std.testing.expectEqual(Source.legacy_list, registry.sourceFor(.batch));
+    try std.testing.expectEqual(Source.data_plane, registry.sourceFor(.networking));
+    try std.testing.expectEqual(Source.legacy_list, registry.sourceFor(.storage));
+    active_services_source = .legacy_list;
+    active_config_source = .data_plane;
+    active_workloads_source = .legacy_list;
+    active_batch_source = .data_plane;
+    active_networking_source = .legacy_list;
+    active_storage_source = .data_plane;
+    registry = familySourceRegistry();
+    try std.testing.expectEqual(Source.legacy_list, registry.sourceFor(.services));
+    try std.testing.expectEqual(Source.data_plane, registry.sourceFor(.config));
+    try std.testing.expectEqual(Source.legacy_list, registry.sourceFor(.workloads));
+    try std.testing.expectEqual(Source.data_plane, registry.sourceFor(.batch));
+    try std.testing.expectEqual(Source.legacy_list, registry.sourceFor(.networking));
+    try std.testing.expectEqual(Source.data_plane, registry.sourceFor(.storage));
+}
+
+test "batch source changes do not alter existing family gates" {
+    const previous_services = active_services_source;
+    const previous_config = active_config_source;
+    const previous_workloads = active_workloads_source;
+    const previous_batch = active_batch_source;
+    defer {
+        active_services_source = previous_services;
+        active_config_source = previous_config;
+        active_workloads_source = previous_workloads;
+        active_batch_source = previous_batch;
+    }
+    active_services_source = .data_plane;
+    active_config_source = .legacy_list;
+    active_workloads_source = .data_plane;
+    active_batch_source = .data_plane;
+    const before = familySourceRegistry();
+    active_batch_source = .legacy_list;
+    const after = familySourceRegistry();
+    try std.testing.expectEqual(before.services, after.services);
+    try std.testing.expectEqual(before.config, after.config);
+    try std.testing.expectEqual(before.workloads, after.workloads);
+    try std.testing.expect(before.batch != after.batch);
+}
+
+test "networking source changes do not alter existing family gates" {
+    const previous_services = active_services_source;
+    const previous_config = active_config_source;
+    const previous_workloads = active_workloads_source;
+    const previous_batch = active_batch_source;
+    const previous_networking = active_networking_source;
+    defer {
+        active_services_source = previous_services;
+        active_config_source = previous_config;
+        active_workloads_source = previous_workloads;
+        active_batch_source = previous_batch;
+        active_networking_source = previous_networking;
+    }
+    active_services_source = .legacy_list;
+    active_config_source = .data_plane;
+    active_workloads_source = .legacy_list;
+    active_batch_source = .data_plane;
+    active_networking_source = .data_plane;
+    const before = familySourceRegistry();
+    active_networking_source = .legacy_list;
+    const after = familySourceRegistry();
+    try std.testing.expectEqual(before.services, after.services);
+    try std.testing.expectEqual(before.config, after.config);
+    try std.testing.expectEqual(before.workloads, after.workloads);
+    try std.testing.expectEqual(before.batch, after.batch);
+    try std.testing.expect(before.networking != after.networking);
+}
+
+test "storage source changes do not alter existing family gates" {
+    const previous = familySourceRegistry();
+    const previous_storage = active_storage_source;
+    defer active_storage_source = previous_storage;
+    active_storage_source = if (previous_storage == .data_plane) .legacy_list else .data_plane;
+    const after = familySourceRegistry();
+    try std.testing.expectEqual(previous.services, after.services);
+    try std.testing.expectEqual(previous.config, after.config);
+    try std.testing.expectEqual(previous.workloads, after.workloads);
+    try std.testing.expectEqual(previous.batch, after.batch);
+    try std.testing.expectEqual(previous.networking, after.networking);
+    try std.testing.expect(previous.storage != after.storage);
+}
 
 /// Column definition for a resource view
 pub const ColumnDef = struct {
@@ -73,6 +228,10 @@ pub fn ResourceView(
 
     return struct {
         const Self = @This();
+        const is_pods = std.mem.eql(u8, config.name, "pods");
+
+        pub const SubscriptionRequest = enum { none, start, restart };
+        pub const PodSubscriptionRequest = SubscriptionRequest;
 
         /// The view's Config, exposed so tests can check that what a view advertises
         /// (sort keys, columns) matches what it can actually do. ~14 advertised sort
@@ -87,6 +246,9 @@ pub fn ResourceView(
         /// Cached widths bake in whether NAMESPACE is hidden, so the cache is
         /// only valid while the namespace scope is unchanged.
         cached_show_all: bool = false,
+        projection_adapter: ?ProjectionAdapter = null,
+        subscription_started: bool = false,
+        subscription_request: SubscriptionRequest = .none,
         /// Column display order, and how many of them are shown.
         ///
         /// Populated once at init from views.yaml. `column_order[0..visible_columns]`
@@ -113,6 +275,7 @@ pub fn ResourceView(
         pub const RowData = struct {
             columns: [col_count][]const u8,
             allocator: std.mem.Allocator,
+            uid: []const u8 = &.{},
             /// Flattened `k=v,k=v` from metadata.labels. Empty slice is not owned.
             labels: []const u8 = &.{},
 
@@ -121,6 +284,7 @@ pub fn ResourceView(
                     self.allocator.free(col.*);
                 }
                 if (self.labels.len > 0) self.allocator.free(self.labels);
+                if (self.uid.len > 0) self.allocator.free(self.uid);
             }
 
             /// Get column value by index (used for sorting)
@@ -136,6 +300,128 @@ pub fn ResourceView(
             /// instantiation per view rather than one per (view, column).
             fn getColumnAt(row: *const RowData, idx: usize) []const u8 {
                 return row.columns[idx];
+            }
+        };
+
+        pub const ProjectionAdapter = struct {
+            pub const ViewRollback = struct {
+                ptr: *anyopaque,
+                alignment: std.mem.Alignment,
+                restoreFn: *const fn (*anyopaque, *anyopaque, std.mem.Allocator) void,
+                deinitFn: *const fn (*anyopaque, std.mem.Alignment, std.mem.Allocator) void,
+
+                fn restore(self: *ViewRollback, projection: *anyopaque, allocator: std.mem.Allocator) void {
+                    self.restoreFn(projection, self.ptr, allocator);
+                    self.ptr = undefined;
+                }
+
+                fn deinit(self: *ViewRollback, allocator: std.mem.Allocator) void {
+                    self.deinitFn(self.ptr, self.alignment, allocator);
+                    self.ptr = undefined;
+                }
+            };
+
+            ptr: *anyopaque,
+            enabledFn: *const fn () bool,
+            countFn: *const fn (*anyopaque) usize,
+            visibleCountFn: *const fn (*anyopaque) usize,
+            visibleUidFn: *const fn (*anyopaque, usize) ?[]const u8,
+            selectedUidFn: *const fn (*anyopaque) ?[]const u8,
+            selectUidFn: *const fn (*anyopaque, []const u8) bool,
+            captureViewFn: *const fn (*anyopaque, std.mem.Allocator) anyerror!ViewRollback,
+            setViewFn: *const fn (*anyopaque, []const u8, u8, bool) anyerror!void,
+            columnsFn: *const fn (*anyopaque, []const u8, std.mem.Allocator) anyerror!?[col_count][]const u8,
+
+            fn enabled(self: ProjectionAdapter) bool {
+                return self.enabledFn();
+            }
+
+            pub fn init(
+                comptime Record: type,
+                projection: *projection_mod.ResourceProjection(Record),
+                comptime enabled_fn: fn () bool,
+                comptime columns_fn: fn (
+                    *projection_mod.ResourceProjection(Record),
+                    *const Record,
+                    std.mem.Allocator,
+                ) anyerror![col_count][]const u8,
+            ) ProjectionAdapter {
+                const Projection = projection_mod.ResourceProjection(Record);
+                const Adapter = struct {
+                    fn typedProjection(raw: *anyopaque) *Projection {
+                        return @ptrCast(@alignCast(raw));
+                    }
+                    fn count(raw: *anyopaque) usize {
+                        return typedProjection(raw).count();
+                    }
+                    fn visibleCount(raw: *anyopaque) usize {
+                        return typedProjection(raw).visibleCount();
+                    }
+                    fn visibleUid(raw: *anyopaque, row: usize) ?[]const u8 {
+                        return typedProjection(raw).visibleUid(row);
+                    }
+                    fn selectedUid(raw: *anyopaque) ?[]const u8 {
+                        return typedProjection(raw).selectedUid();
+                    }
+                    fn selectUid(raw: *anyopaque, uid: []const u8) bool {
+                        return typedProjection(raw).selectUid(uid);
+                    }
+                    fn captureView(raw: *anyopaque, allocator: std.mem.Allocator) anyerror!ViewRollback {
+                        const Snapshot = Projection.ViewSnapshot;
+                        const snapshot = try allocator.create(Snapshot);
+                        errdefer allocator.destroy(snapshot);
+                        snapshot.* = try typedProjection(raw).captureView();
+                        return .{
+                            .ptr = snapshot,
+                            .alignment = .of(Snapshot),
+                            .restoreFn = restoreView,
+                            .deinitFn = adapterDeinitView,
+                        };
+                    }
+                    fn restoreView(raw: *anyopaque, erased: *anyopaque, allocator: std.mem.Allocator) void {
+                        const snapshot: *Projection.ViewSnapshot = @ptrCast(@alignCast(erased));
+                        typedProjection(raw).restoreView(snapshot);
+                        allocator.destroy(snapshot);
+                    }
+                    fn adapterDeinitView(
+                        erased: *anyopaque,
+                        _: std.mem.Alignment,
+                        allocator: std.mem.Allocator,
+                    ) void {
+                        const snapshot: *Projection.ViewSnapshot = @ptrCast(@alignCast(erased));
+                        snapshot.deinit(snapshot.allocator);
+                        allocator.destroy(snapshot);
+                    }
+                    fn setView(
+                        raw: *anyopaque,
+                        filter: []const u8,
+                        column: u8,
+                        ascending: bool,
+                    ) anyerror!void {
+                        try typedProjection(raw).setView(filter, column, ascending);
+                    }
+                    fn columns(
+                        raw: *anyopaque,
+                        uid: []const u8,
+                        allocator: std.mem.Allocator,
+                    ) anyerror!?[col_count][]const u8 {
+                        const typed = typedProjection(raw);
+                        const record = typed.record(uid) orelse return null;
+                        return try columns_fn(typed, record, allocator);
+                    }
+                };
+                return .{
+                    .ptr = @ptrCast(projection),
+                    .enabledFn = enabled_fn,
+                    .countFn = Adapter.count,
+                    .visibleCountFn = Adapter.visibleCount,
+                    .visibleUidFn = Adapter.visibleUid,
+                    .selectedUidFn = Adapter.selectedUid,
+                    .selectUidFn = Adapter.selectUid,
+                    .captureViewFn = Adapter.captureView,
+                    .setViewFn = Adapter.setView,
+                    .columnsFn = Adapter.columns,
+                };
             }
         };
 
@@ -241,7 +527,66 @@ pub fn ResourceView(
             self.table.deinit();
         }
 
+        pub fn bindProjection(self: *Self, adapter: ProjectionAdapter) void {
+            self.projection_adapter = adapter;
+        }
+
+        pub fn bindPodProjection(self: *Self, projection: *PodProjection) void {
+            if (is_pods) {
+                self.bindProjection(ProjectionAdapter.init(
+                    PodRecord,
+                    projection,
+                    podDataPlaneEnabled,
+                    podProjectionColumns,
+                ));
+            }
+        }
+
+        fn usesDataPlane(self: *const Self) bool {
+            const adapter = self.projection_adapter orelse
+                return is_pods and active_pod_source == .data_plane;
+            return adapter.enabled();
+        }
+
+        pub fn markSubscriptionStarted(self: *Self) void {
+            self.subscription_started = true;
+            self.subscription_request = .none;
+        }
+
+        pub fn markSubscriptionStopped(self: *Self) void {
+            self.subscription_started = false;
+        }
+
+        pub fn takeSubscriptionRequest(self: *Self) SubscriptionRequest {
+            const request = self.subscription_request;
+            self.subscription_request = .none;
+            return request;
+        }
+
+        pub fn markPodSubscriptionStarted(self: *Self) void {
+            if (is_pods) self.markSubscriptionStarted();
+        }
+
+        pub fn markPodSubscriptionStopped(self: *Self) void {
+            if (is_pods) self.markSubscriptionStopped();
+        }
+
+        pub fn takePodSubscriptionRequest(self: *Self) PodSubscriptionRequest {
+            if (!is_pods) return .none;
+            return self.takeSubscriptionRequest();
+        }
+
         pub fn refresh(self: *Self) !void {
+            if (self.usesDataPlane()) {
+                self.table.loading = self.table.items.items.len == 0;
+                self.table.loading_detail = "Loading " ++ config.name ++ "...";
+                self.subscription_request = if (self.subscription_started) .restart else .start;
+                return;
+            }
+            if (legacy_loader_test_hook) |hook| {
+                hook(config.name);
+                return;
+            }
             // If connection not yet attempted, stay in loading state
             if (!self.k8s_service.isConnected() and !self.k8s_service.hasAttemptedConnect()) {
                 self.table.loading = true;
@@ -408,10 +753,15 @@ pub fn ResourceView(
         pub fn scheduleRefresh(self: *Self, hint: []const u8) void {
             self.table.loading = true;
             self.table.loading_detail = hint;
+            if (self.usesDataPlane()) {
+                self.subscription_request = if (self.subscription_started) .restart else .start;
+                return;
+            }
             self.refresh_pending = true;
         }
 
         pub fn flushPendingRefresh(self: *Self) bool {
+            if (self.usesDataPlane()) return false;
             if (!self.refresh_pending) return false;
             self.refresh_pending = false;
             self.refresh() catch |err| {
@@ -447,9 +797,45 @@ pub fn ResourceView(
                 w.deinit();
                 self.cached_col_widths = null;
             }
-            try self.table.applyFilter(filter, matchFn);
+            if (self.usesDataPlane()) {
+                if (self.projection_adapter != null) {
+                    const owned_filter: []const u8 = if (filter.len > 0)
+                        try self.table.allocator.dupe(u8, filter)
+                    else
+                        "";
+                    errdefer if (owned_filter.len > 0) self.table.allocator.free(owned_filter);
+                    try self.setProjectionViewAndSync(
+                        filter,
+                        self.table.sort_column orelse config.name_column,
+                        self.table.sort_ascending,
+                    );
+                    if (self.table.filter_text.len > 0) self.table.allocator.free(self.table.filter_text);
+                    self.table.filter_text = owned_filter;
+                    if (self.faults_only) self.retainFaultsOnly();
+                    return;
+                }
+            } else try self.table.applyFilter(filter, matchFn);
             if (self.faults_only) self.retainFaultsOnly();
             self.applySorting();
+        }
+
+        fn setProjectionViewAndSync(
+            self: *Self,
+            filter: []const u8,
+            column: u8,
+            ascending: bool,
+        ) !void {
+            const adapter = self.projection_adapter orelse return;
+            var rollback = try adapter.captureViewFn(adapter.ptr, self.table.allocator);
+            adapter.setViewFn(adapter.ptr, filter, column, ascending) catch |err| {
+                rollback.deinit(self.table.allocator);
+                return err;
+            };
+            self.syncProjection() catch |err| {
+                rollback.restore(adapter.ptr, self.table.allocator);
+                return err;
+            };
+            rollback.deinit(self.table.allocator);
         }
 
         fn retainFaultsOnly(self: *Self) void {
@@ -465,6 +851,12 @@ pub fn ResourceView(
                 }
                 break :blk null;
             };
+            const desired_i: ?u8 = comptime blk: {
+                for (config.columns, 0..) |cd, i| {
+                    if (std.mem.eql(u8, cd.name, "DESIRED")) break :blk @as(u8, @intCast(i));
+                }
+                break :blk null;
+            };
             if (status_i == null and ready_i == null) return;
 
             var write: usize = 0;
@@ -472,7 +864,15 @@ pub fn ResourceView(
                 const row = &self.table.items.items[idx];
                 const st: ?[]const u8 = if (status_i) |si| row.columns[si] else null;
                 const rd: ?[]const u8 = if (ready_i) |ri| row.columns[ri] else null;
-                if (k9s_query.isFault(st, rd)) {
+                const bare_ready_fault = if (rd) |ready|
+                    if (desired_i) |di|
+                        std.mem.indexOfScalar(u8, ready, '/') == null and
+                            !std.mem.eql(u8, ready, row.columns[di])
+                    else
+                        false
+                else
+                    false;
+                if (k9s_query.isFault(st, rd) or bare_ready_fault) {
                     self.table.filtered_indices.items[write] = idx;
                     write += 1;
                 }
@@ -546,6 +946,17 @@ pub fn ResourceView(
         }
 
         fn applySorting(self: *Self) void {
+            if (self.usesDataPlane()) {
+                if (self.projection_adapter != null) {
+                    self.setProjectionViewAndSync(
+                        self.table.filter_text,
+                        self.table.sort_column orelse config.name_column,
+                        self.table.sort_ascending,
+                    ) catch return;
+                    if (self.faults_only) self.retainFaultsOnly();
+                }
+                return;
+            }
             if (self.table.sort_column) |col| {
                 if (col < col_count) {
                     self.table.sortByColumn(&RowData.getColumnAt, col);
@@ -591,6 +1002,68 @@ pub fn ResourceView(
                 }
             }
             return k9s_query.matchSearchable(cols[0..n], item.labels, filter);
+        }
+
+        pub fn syncProjection(self: *Self) !void {
+            const adapter = self.projection_adapter orelse return;
+            self.syncProjectionSelection();
+
+            var next_items: std.ArrayListUnmanaged(RowData) = .empty;
+            errdefer {
+                for (next_items.items) |*row| row.deinit();
+                next_items.deinit(self.table.allocator);
+            }
+            var next_indices: std.ArrayListUnmanaged(usize) = .empty;
+            errdefer next_indices.deinit(self.table.allocator);
+            const visible_count = adapter.visibleCountFn(adapter.ptr);
+            try next_items.ensureTotalCapacity(self.table.allocator, visible_count);
+            try next_indices.ensureTotalCapacity(self.table.allocator, visible_count);
+
+            var row_index: usize = 0;
+            while (row_index < visible_count) : (row_index += 1) {
+                const uid = adapter.visibleUidFn(adapter.ptr, row_index) orelse continue;
+                const columns = try adapter.columnsFn(adapter.ptr, uid, self.table.allocator) orelse continue;
+                var columns_owned = true;
+                errdefer if (columns_owned) for (columns) |column| self.table.allocator.free(column);
+                const row = RowData{
+                    .columns = columns,
+                    .allocator = self.table.allocator,
+                    .uid = try self.table.allocator.dupe(u8, uid),
+                };
+                next_items.appendAssumeCapacity(row);
+                columns_owned = false;
+                next_indices.appendAssumeCapacity(next_items.items.len - 1);
+            }
+
+            self.table.clearItems();
+            self.table.items.deinit(self.table.allocator);
+            self.table.filtered_indices.deinit(self.table.allocator);
+            self.table.items = next_items;
+            self.table.filtered_indices = next_indices;
+            next_items = .empty;
+            next_indices = .empty;
+            self.table.loading = false;
+            self.table.loading_detail = "";
+
+            if (adapter.selectedUidFn(adapter.ptr)) |selected_uid| {
+                for (self.table.filtered_indices.items, 0..) |item_index, visible_index| {
+                    if (std.mem.eql(u8, self.table.items.items[item_index].uid, selected_uid)) {
+                        self.table.selected_row = @intCast(visible_index);
+                        break;
+                    }
+                }
+            }
+            self.invalidateWidths();
+        }
+
+        pub fn syncPodProjection(self: *Self) !void {
+            if (is_pods) try self.syncProjection();
+        }
+
+        fn syncProjectionSelection(self: *Self) void {
+            const adapter = self.projection_adapter orelse return;
+            const selected = self.table.getSelectedItem() orelse return;
+            if (selected.uid.len > 0) _ = adapter.selectUidFn(adapter.ptr, selected.uid);
         }
 
         pub fn createView(self: *Self) View {
@@ -807,7 +1280,6 @@ pub fn ResourceView(
         // Key handling
         // ====================================================================
 
-        const is_pods = std.mem.eql(u8, config.name, "pods");
         // Node-specific keys, mirroring the is_pods branch below.
         const is_nodes = std.mem.eql(u8, config.name, "nodes");
         const is_secrets = std.mem.eql(u8, config.name, "secrets");
@@ -831,7 +1303,10 @@ pub fn ResourceView(
         pub fn handleKey(ptr: *anyopaque, key: Key) !KeyResult {
             const self: *Self = @ptrCast(@alignCast(ptr));
 
-            if (self.table.handleNavigationKey(key)) |result| return result;
+            if (self.table.handleNavigationKey(key)) |result| {
+                self.syncProjectionSelection();
+                return result;
+            }
 
             // Pod-specific action keys (comptime-gated; inert for every other
             // view). Mirrors the action map of the former bespoke PodsView so
@@ -907,7 +1382,7 @@ pub fn ResourceView(
                 }
             }
 
-            if (is_used_by_view and !is_nodes) {
+            if (is_used_by_view) {
                 switch (key) {
                     .char => |c| if (c == 'u') return .request_used_by,
                     else => {},
@@ -1042,6 +1517,11 @@ pub fn ResourceView(
 
         fn onShow(ptr: *anyopaque) void {
             const self: *Self = @ptrCast(@alignCast(ptr));
+            if (self.usesDataPlane()) {
+                if (!self.subscription_started and self.subscription_request == .none)
+                    self.subscription_request = .start;
+                return;
+            }
             // Re-showing must be instant (Esc back from a sub-view / switching
             // back): show already-loaded rows, never block on kubectl. Only
             // auto-load when empty; Ctrl-r (and `r` where it is not drain/restart)
@@ -1158,4 +1638,87 @@ pub fn ResourceView(
             .getStatusHint = vtableGetStatusHint,
         };
     };
+}
+
+fn podDataPlaneEnabled() bool {
+    return active_pod_source == .data_plane;
+}
+
+fn podProjectionColumns(
+    projection: *PodProjection,
+    record: *const PodRecord,
+    allocator: std.mem.Allocator,
+) ![12][]const u8 {
+    var columns: [12][]const u8 = undefined;
+    var initialized: usize = 0;
+    errdefer for (columns[0..initialized]) |column| allocator.free(column);
+    columns[0] = try allocator.dupe(u8, record.key.namespace);
+    initialized += 1;
+    columns[1] = try allocator.dupe(u8, record.key.name);
+    initialized += 1;
+    columns[2] = try std.fmt.allocPrint(allocator, "{d}/{d}", .{
+        record.ready_count,
+        record.container_count,
+    });
+    initialized += 1;
+    columns[3] = try allocator.dupe(
+        u8,
+        if (record.status_reason.len > 0)
+            record.status_reason
+        else if (record.phase.len > 0)
+            record.phase
+        else
+            "Unknown",
+    );
+    initialized += 1;
+    columns[4] = try std.fmt.allocPrint(allocator, "{d}", .{record.restart_count});
+    initialized += 1;
+    const metrics = projection.metricsFor(record.key.uid);
+    if (metrics != null and metrics.?.revision > 0) {
+        columns[5] = try formatPodCpu(allocator, metrics.?.cpu_milli);
+        initialized += 1;
+        columns[6] = try formatPodMemory(allocator, metrics.?.mem_bytes);
+        initialized += 1;
+    } else {
+        columns[5] = try allocator.dupe(u8, "n/a");
+        initialized += 1;
+        columns[6] = try allocator.dupe(u8, "n/a");
+        initialized += 1;
+    }
+    columns[7] = try allocator.dupe(u8, "n/a");
+    initialized += 1;
+    columns[8] = try allocator.dupe(u8, "n/a");
+    initialized += 1;
+    columns[9] = try allocator.dupe(u8, if (record.pod_ip.len > 0) record.pod_ip else "-");
+    initialized += 1;
+    columns[10] = try allocator.dupe(u8, if (record.node_name.len > 0) record.node_name else "-");
+    initialized += 1;
+    const age = try projection.ageCell(record.key.uid, record.creation_timestamp, 11);
+    columns[11] = try allocator.dupe(u8, age);
+    return columns;
+}
+
+fn formatPodCpu(allocator: std.mem.Allocator, milli: u64) ![]u8 {
+    if (milli >= 1000 and milli % 1000 == 0)
+        return std.fmt.allocPrint(allocator, "{d}", .{milli / 1000});
+    return std.fmt.allocPrint(allocator, "{d}m", .{milli});
+}
+
+fn formatPodMemory(allocator: std.mem.Allocator, bytes: u64) ![]u8 {
+    if (bytes >= 1024 * 1024 * 1024 and bytes % (1024 * 1024 * 1024) == 0)
+        return std.fmt.allocPrint(allocator, "{d}Gi", .{bytes / (1024 * 1024 * 1024)});
+    if (bytes >= 1024 * 1024)
+        return std.fmt.allocPrint(allocator, "{d}Mi", .{bytes / (1024 * 1024)});
+    if (bytes >= 1024)
+        return std.fmt.allocPrint(allocator, "{d}Ki", .{bytes / 1024});
+    return std.fmt.allocPrint(allocator, "{d}", .{bytes});
+}
+
+test "pod projection metrics format raw CPU and memory values" {
+    const cpu = try formatPodCpu(std.testing.allocator, 125);
+    defer std.testing.allocator.free(cpu);
+    const memory = try formatPodMemory(std.testing.allocator, 4 * 1024);
+    defer std.testing.allocator.free(memory);
+    try std.testing.expectEqualStrings("125m", cpu);
+    try std.testing.expectEqualStrings("4Ki", memory);
 }

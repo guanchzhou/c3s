@@ -368,12 +368,14 @@ pub const EndpointSlicesView = ResourceView(klient.types.EndpointSlice, klient.r
     },
 }, transformEndpointSlice);
 
-fn transformIngressClass(item: klient.types.IngressClass, alloc: std.mem.Allocator) ![3][]const u8 {
-    return .{
-        try dupe(alloc, item.metadata.name),
-        try dupe(alloc, item.controller),
-        try ageOf(alloc, item.metadata.creationTimestamp),
-    };
+pub fn transformIngressClass(item: klient.types.IngressClass, alloc: std.mem.Allocator) ![3][]const u8 {
+    const spec = item.spec orelse return error.MissingController;
+    const name = try dupe(alloc, item.metadata.name);
+    errdefer alloc.free(name);
+    const controller = try dupe(alloc, spec.controller);
+    errdefer alloc.free(controller);
+    const age = try ageOf(alloc, item.metadata.creationTimestamp);
+    return .{ name, controller, age };
 }
 
 pub const IngressClassesView = ResourceView(klient.types.IngressClass, klient.resources.IngressClasses, .{
@@ -387,7 +389,7 @@ pub const IngressClassesView = ResourceView(klient.types.IngressClass, klient.re
     },
 }, transformIngressClass);
 
-fn transformIPAddress(item: klient.types.IPAddress, alloc: std.mem.Allocator) ![3][]const u8 {
+pub fn transformIPAddress(item: klient.types.IPAddress, alloc: std.mem.Allocator) ![3][]const u8 {
     const parent = blk: {
         const spec = item.spec orelse break :blk "<none>";
         if (spec.parentRef != .object) break :blk "<none>";
@@ -414,7 +416,7 @@ pub const IPAddressesView = ResourceView(klient.types.IPAddress, klient.resource
     },
 }, transformIPAddress);
 
-fn transformServiceCIDR(item: klient.types.ServiceCIDR, alloc: std.mem.Allocator) ![3][]const u8 {
+pub fn transformServiceCIDR(item: klient.types.ServiceCIDR, alloc: std.mem.Allocator) ![3][]const u8 {
     const cidrs = if (item.spec) |spec| spec.cidrs else null;
     return .{
         try dupe(alloc, item.metadata.name),
@@ -438,7 +440,7 @@ pub const ServiceCIDRsView = ResourceView(klient.types.ServiceCIDR, klient.resou
 // Storage / CSI
 // ============================================================================
 
-fn transformVolumeAttributesClass(item: klient.types.VolumeAttributesClass, alloc: std.mem.Allocator) ![3][]const u8 {
+pub fn transformVolumeAttributesClass(item: klient.types.VolumeAttributesClass, alloc: std.mem.Allocator) ![3][]const u8 {
     return .{
         try dupe(alloc, item.metadata.name),
         try dupe(alloc, item.driverName),
@@ -457,7 +459,7 @@ pub const VolumeAttributesClassesView = ResourceView(klient.types.VolumeAttribut
     },
 }, transformVolumeAttributesClass);
 
-fn transformCSIDriver(item: klient.types.CSIDriver, alloc: std.mem.Allocator) ![4][]const u8 {
+pub fn transformCSIDriver(item: klient.types.CSIDriver, alloc: std.mem.Allocator) ![4][]const u8 {
     const attach = if (item.spec.attachRequired orelse true) "true" else "false";
     const pod_info = if (item.spec.podInfoOnMount orelse false) "true" else "false";
     return .{

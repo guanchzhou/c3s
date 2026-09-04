@@ -38,7 +38,7 @@ pub const ChildKind = enum {
     retirement,
 };
 
-pub const ChildPhase = enum {
+pub const ChildPhase = enum(u8) {
     starting,
     running,
     delivery_ready,
@@ -62,17 +62,25 @@ pub const OwnedTaskSpec = struct {
     ptr: ?*anyopaque = null,
     alignment: std.mem.Alignment = .@"1",
     owned_bytes: usize = 0,
-    runFn: *const fn (*anyopaque, *ChildControl, std.Io) std.Io.Cancelable!void = noopRun,
+    lease_purpose: session_mod.LeasePurpose = .list_watch,
+    bindFn: *const fn (?*anyopaque, Generation, SubscriptionId) void = noopSpecBind,
+    runFn: *const fn (?*anyopaque, *ChildControl, std.Io) anyerror!void = noopRun,
     deinitFn: *const fn (?*anyopaque, std.mem.Alignment, std.mem.Allocator) void = noopSpecDeinit,
+
+    pub fn take(self: *OwnedTaskSpec) OwnedTaskSpec {
+        const owned = self.*;
+        self.* = .{};
+        return owned;
+    }
 
     pub fn deinit(self: *OwnedTaskSpec, allocator: std.mem.Allocator) void {
         self.deinitFn(self.ptr, self.alignment, allocator);
-        self.ptr = null;
-        self.owned_bytes = 0;
+        self.* = .{};
     }
 };
 
-fn noopRun(_: *anyopaque, _: *ChildControl, _: std.Io) std.Io.Cancelable!void {}
+fn noopSpecBind(_: ?*anyopaque, _: Generation, _: SubscriptionId) void {}
+fn noopRun(_: ?*anyopaque, _: *ChildControl, _: std.Io) anyerror!void {}
 fn noopSpecDeinit(_: ?*anyopaque, _: std.mem.Alignment, _: std.mem.Allocator) void {}
 
 pub fn emptyTaskSpec() OwnedTaskSpec {
@@ -176,6 +184,12 @@ pub const ChildOutcomeStorage = union(enum) {
     }
 };
 
+pub const DeliveryOutcome = enum(u8) {
+    pending,
+    accepted,
+    abandoned,
+};
+
 pub const ChildControl = struct {
     key: ChildKey,
     kind: ChildKind,
@@ -183,19 +197,22 @@ pub const ChildControl = struct {
     outcome: ChildOutcomeStorage = .none,
     lease: ?RequestLease = null,
     delivery_ack: std.Io.Event = .unset,
+    delivery_outcome: std.atomic.Value(DeliveryOutcome) = .init(.pending),
     observed_queue_space_epoch: ?u64 = null,
     spec: OwnedTaskSpec = .{},
     io: std.Io,
     shared_event: *std.Io.Event,
     allocator: std.mem.Allocator,
 
-    pub fn publishDelivery(self: *ChildControl, envelope: Envelope) std.Io.Cancelable!void {
+    pub fn publishDelivery(self: *ChildControl, envelope: Envelope) std.Io.Cancelable!DeliveryOutcome {
         std.debug.assert(self.outcome == .none);
+        self.delivery_outcome.store(.pending, .release);
         self.outcome = .{ .delivery = envelope };
         self.phase.store(.delivery_ready, .release);
         self.shared_event.set(self.io);
         try self.delivery_ack.wait(self.io);
         self.delivery_ack.reset();
+        return self.delivery_outcome.load(.acquire);
     }
 
     pub fn finish(self: *ChildControl, completion: LifecycleCompletion) void {
@@ -230,6 +247,7 @@ pub const CancellationWord = packed struct(u64) {
 pub const CancellationIntents = struct {
     pub const capacity = 512;
     pub const max_generation: u60 = std.math.maxInt(u60);
+    pub const ClaimResult = enum { none, accepted_not_launched, live };
 
     cells: [capacity]std.atomic.Value(u64) = [_]std.atomic.Value(u64){std.atomic.Value(u64).init(0)} ** capacity,
 
@@ -265,10 +283,11 @@ pub const CancellationIntents = struct {
     }
 
     pub fn markLive(self: *CancellationIntents, key: ChildKey) bool {
-        return self.transition(key, .accepted, .live, false);
+        return self.transition(key, .accepted, .live, true);
     }
 
     pub fn request(self: *CancellationIntents, key: ChildKey) bool {
+        if (key.slot >= capacity) return false;
         var observed = self.cells[key.slot].load(.monotonic);
         while (true) {
             var word = unpack(observed);
@@ -289,13 +308,14 @@ pub const CancellationIntents = struct {
         }
     }
 
-    pub fn claimRequested(self: *CancellationIntents, key: ChildKey) enum { none, accepted_not_launched, live } {
+    pub fn claimRequested(self: *CancellationIntents, key: ChildKey) ClaimResult {
+        if (key.slot >= capacity) return .none;
         var observed = self.cells[key.slot].load(.monotonic);
         while (true) {
             var word = unpack(observed);
             if (word.generation != key.generation) return .none;
             if (!word.cancel_requested and word.state != .canceling) return .none;
-            const kind: enum { none, accepted_not_launched, live } = switch (word.state) {
+            const kind: ClaimResult = switch (word.state) {
                 .accepted => .accepted_not_launched,
                 .live => .live,
                 .canceling => return if (word.cancel_requested) .live else .none,
@@ -312,6 +332,7 @@ pub const CancellationIntents = struct {
     }
 
     pub fn free(self: *CancellationIntents, key: ChildKey) bool {
+        if (key.slot >= capacity) return false;
         var observed = self.cells[key.slot].load(.monotonic);
         while (true) {
             var word = unpack(observed);
@@ -334,6 +355,7 @@ pub const CancellationIntents = struct {
         to: CancellationCellState,
         keep_cancel: bool,
     ) bool {
+        if (key.slot >= capacity) return false;
         var observed = self.cells[key.slot].load(.monotonic);
         while (true) {
             var word = unpack(observed);
@@ -442,6 +464,10 @@ pub const LifecycleInbox = struct {
         self.shared_event.set(self.io);
     }
 
+    pub fn isRootTerminated(self: *const LifecycleInbox) bool {
+        return self.root_terminated.load(.acquire);
+    }
+
     pub fn deinit(self: *LifecycleInbox, allocator: std.mem.Allocator) void {
         while (self.tryPop()) |cmd| {
             var owned = cmd;
@@ -497,11 +523,14 @@ pub const LifecycleProducer = struct {
                 return;
             },
         };
+        if (!self.cancellations.markAccepted(key)) {
+            _ = self.cancellations.free(key);
+            return error.Closed;
+        }
         self.inbox.tryPush(command) catch |err| {
             _ = self.cancellations.free(key);
             return err;
         };
-        _ = self.cancellations.markAccepted(key);
     }
 
     pub fn tryRequestCancel(self: *LifecycleProducer, key: ChildKey) bool {

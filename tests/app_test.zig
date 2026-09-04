@@ -178,12 +178,25 @@ test "x on the secrets view reaches the view, not App's global filter-clear" {
     // Put a filter in place. If App's global 'x' handler wins, the filter is cleared
     // and the decode never happens -- which is exactly the shipped bug.
     try app.applyFilterToCurrentView("keep-me");
+    try app.secrets_view.table.appendItem(.{
+        .columns = .{
+            try allocator.dupe(u8, "default"),
+            try allocator.dupe(u8, "selected-secret"),
+            try allocator.dupe(u8, "Opaque"),
+            try allocator.dupe(u8, "1"),
+            try allocator.dupe(u8, "1m"),
+        },
+        .allocator = allocator,
+        .uid = try allocator.dupe(u8, "secret-uid"),
+    });
+    try app.secrets_view.table.filtered_indices.append(allocator, 0);
     try app.handleKey(.{ .char = 'x' });
 
     // The filter survived, so 'x' was consumed by the view rather than the global
     // clear-filter handler. (The decode itself needs a cluster; that it was ATTEMPTED
     // is what this asserts.)
     try testing.expect(app.secrets_view.table.filter_text.len > 0);
+    try testing.expectEqualStrings("Could not read secret", app.footer.status_message.?);
 }
 
 test "x on a view with no decode still clears the filter" {
@@ -201,6 +214,59 @@ test "x on a view with no decode still clears the filter" {
 
     try app.handleKey(.{ .char = 'x' });
     try testing.expectEqual(@as(usize, 0), app.configmaps_view.table.filter_text.len);
+}
+
+test "z on projected deployment opens replicasets in selected namespace" {
+    const allocator = testing.allocator;
+    var app = try App.init(allocator, .{});
+    defer app.deinit();
+    const DeploymentRecord = @import("../src/k8s/DeploymentRecord.zig");
+    const keys = @import("../src/k8s/ResourceKey.zig");
+    const Projection = @TypeOf(app.resource_families.deployment_projection);
+    const changes = try allocator.alloc(keys.TypedChange(DeploymentRecord), 1);
+    changes[0] = .{ .initial_upsert = DeploymentRecord{
+        .key = try (keys.ObjectKey{
+            .uid = "deployment-uid",
+            .namespace = "team-a",
+            .name = "api",
+        }).clone(allocator),
+        .ready_replicas = 2,
+        .desired_replicas = 3,
+        .updated_replicas = 3,
+        .available_replicas = 2,
+        .ready_sort_key = DeploymentRecord.ratioSortKey(2, 3),
+        .updated_sort_key = DeploymentRecord.countSortKey(3),
+        .available_sort_key = DeploymentRecord.countSortKey(2),
+    } };
+    var batch = keys.TypedBatch(DeploymentRecord){
+        .generation = 1,
+        .subscription_id = 1,
+        .revision = 1,
+        .changes = changes,
+        .sync = .list_started,
+        .owned_bytes = 1,
+    };
+    defer batch.deinit(allocator);
+    var plan = try Projection.handler().preflight(
+        @ptrCast(&app.resource_families.deployment_projection),
+        &batch,
+        allocator,
+    );
+    Projection.handler().commit(
+        @ptrCast(&app.resource_families.deployment_projection),
+        &batch,
+        &plan,
+    );
+    plan.deinit(allocator);
+    try testing.expect(app.resource_families.deployment_projection.selectUid("deployment-uid"));
+    try app.deployments_view.syncProjection();
+    try app.switchToView("deployments");
+
+    try app.handleKey(.{ .char = 'z' });
+
+    try testing.expectEqualStrings("replicasets", app.current_view_name);
+    try testing.expectEqualStrings("team-a", app.k8s_service.getCurrentNamespace());
+    try testing.expectEqualStrings("api", app.replicasets_view.table.filter_text);
 }
 
 test "Ctrl-D on the port-forwards view stops a forward instead of asking to delete" {
@@ -449,6 +515,42 @@ test "drain refuses under --readonly without even prompting" {
     try testing.expect(app.pending_input == .none);
 }
 
+test "readonly top-level dispatch refuses every mutating result before side effects" {
+    var gpa = std.heap.DebugAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+    var app = try App.init(allocator, .{ .readonly = true });
+    defer app.deinit();
+
+    const mutations = [_]c3s.View.KeyResult{
+        .request_delete,
+        .request_kill,
+        .request_edit,
+        .request_shell,
+        .request_attach,
+        .request_port_forward,
+        .request_set_image,
+        .request_sanitize,
+        .request_transfer,
+        .request_kill_finalizers,
+        .request_drain,
+        .request_cordon,
+        .request_uncordon,
+        .request_restart,
+        .request_scale,
+        .request_suspend,
+        .request_trigger,
+        .request_rollback,
+    };
+    for (mutations) |result| {
+        try app.dispatchViewResultForTest(result);
+        try testing.expect(!app.command_input.visible);
+        try testing.expect(app.pending_input == .none);
+        try testing.expect(!app.delete_pending);
+        try testing.expectEqual(@as(usize, 0), app.port_forward_registry.count());
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Synchronous active-session ownership
 // ---------------------------------------------------------------------------
@@ -496,7 +598,6 @@ test "Task 4A source contains only synchronous session ownership" {
         "src/k8s/ActiveContextSession.zig",
         "src/k8s/ActiveSessionSlot.zig",
         "src/services/K8sService.zig",
-        "src/App.zig",
         "src/index.zig",
     };
     const forbidden = [_][]const u8{
@@ -557,8 +658,8 @@ test "App constructs and tears down shared Event storage in safe order" {
         return error.ActiveSessionSlotInitializationMissing;
     try testing.expect(event_init < slot_init);
 
-    const invalidate = std.mem.indexOf(u8, source, "active_session_slot.invalidate") orelse
-        return error.ActiveSessionInvalidationMissing;
+    const invalidate = std.mem.indexOf(u8, source, "self.finishLifecycle()") orelse
+        return error.SupervisorShutdownMissing;
     const event_destroy = std.mem.indexOf(u8, source, "allocator.destroy(self.shared_event)") orelse
         return error.SharedEventDestructionMissing;
     try testing.expect(invalidate < event_destroy);
@@ -600,4 +701,243 @@ test "Task 4A production files contain no publisher fingerprints" {
             try testing.expect(!containsStandaloneFingerprint(source, needle));
         }
     }
+}
+
+test "App owns the process-long supervisor endpoints and awaits root once" {
+    var app = try App.init(testing.allocator, .{});
+    defer app.deinit();
+
+    try testing.expect(app.lifecycle_producer.inbox == app.lifecycle_inbox);
+    try testing.expect(app.lifecycle_producer.cancellations == app.cancellation_intents);
+    try testing.expect(app.lifecycle_supervisor.inbox == app.lifecycle_inbox);
+    try testing.expect(app.lifecycle_supervisor.active_slot == app.active_session_slot);
+    try testing.expect(app.lifecycle_supervisor.change_queue == app.change_queue);
+
+    app.finishLifecycle();
+    try testing.expectEqual(@as(usize, 1), app.lifecycle_root_await_count);
+    app.finishLifecycle();
+    try testing.expectEqual(@as(usize, 1), app.lifecycle_root_await_count);
+}
+
+const TaskProbe = struct {
+    runs: std.atomic.Value(usize) = .init(0),
+    started: std.Io.Event = .unset,
+    gate: std.Io.Event = .unset,
+};
+
+fn immediateLifecycleTask(
+    raw: ?*anyopaque,
+    _: *App.ChildControl,
+    _: std.Io,
+) anyerror!void {
+    const probe: *TaskProbe = @ptrCast(@alignCast(raw.?));
+    _ = probe.runs.fetchAdd(1, .acq_rel);
+}
+
+fn blockingLifecycleTask(
+    raw: ?*anyopaque,
+    _: *App.ChildControl,
+    io: std.Io,
+) anyerror!void {
+    const probe: *TaskProbe = @ptrCast(@alignCast(raw.?));
+    _ = probe.runs.fetchAdd(1, .acq_rel);
+    probe.started.set(io);
+    try probe.gate.wait(io);
+}
+
+fn noTaskSpecDeinit(_: ?*anyopaque, _: std.mem.Alignment, _: std.mem.Allocator) void {}
+
+fn startLifecycleRequest(
+    app: *App,
+    task_context: *anyopaque,
+    runFn: *const fn (?*anyopaque, *App.ChildControl, std.Io) anyerror!void,
+) !App.ChildKey {
+    const key = try app.lifecycle_producer.reserveChild();
+    try app.lifecycle_producer.tryPushStart(.{ .start_request = .{
+        .child_key = key,
+        .expected_generation = 1,
+        .request_id = key.slot,
+        .spec = .{
+            .ptr = task_context,
+            .alignment = .@"1",
+            .runFn = runFn,
+            .deinitFn = noTaskSpecDeinit,
+        },
+    } });
+    return key;
+}
+
+test "supervisor naturally reaps an immediately completing child" {
+    var app = try App.init(testing.allocator, .{});
+    defer app.deinit();
+    try installLocalAppSession(&app, testing.allocator);
+
+    var probe = TaskProbe{};
+    _ = try startLifecycleRequest(&app, &probe, immediateLifecycleTask);
+    app.finishLifecycle();
+
+    try testing.expectEqual(@as(usize, 1), probe.runs.load(.acquire));
+    try testing.expectEqual(app.lifecycle_supervisor.metrics.launched, app.lifecycle_supervisor.metrics.reaped);
+    try testing.expectEqual(@as(usize, 0), app.lifecycle_supervisor.live_children);
+}
+
+test "stale expected generation destroys the task without running it" {
+    var app = try App.init(testing.allocator, .{});
+    defer app.deinit();
+    try installLocalAppSession(&app, testing.allocator);
+    var probe = TaskProbe{};
+    const key = try app.lifecycle_producer.reserveChild();
+    try app.lifecycle_producer.tryPushStart(.{ .start_request = .{
+        .child_key = key,
+        .expected_generation = 2,
+        .request_id = 1,
+        .spec = .{
+            .ptr = &probe,
+            .alignment = .of(TaskProbe),
+            .runFn = immediateLifecycleTask,
+            .deinitFn = noTaskSpecDeinit,
+        },
+    } });
+    app.finishLifecycle();
+
+    try testing.expectEqual(@as(usize, 0), probe.runs.load(.acquire));
+    try testing.expect(!app.lifecycle_producer.tryRequestCancel(key));
+}
+
+test "canceling one child does not consume its sibling lifecycle" {
+    var app = try App.init(testing.allocator, .{});
+    defer app.deinit();
+    try installLocalAppSession(&app, testing.allocator);
+
+    var canceled_probe = TaskProbe{};
+    var sibling_probe = TaskProbe{};
+    const canceled_key = try startLifecycleRequest(&app, &canceled_probe, blockingLifecycleTask);
+    _ = try startLifecycleRequest(&app, &sibling_probe, blockingLifecycleTask);
+    try canceled_probe.started.wait(testing.io);
+    try sibling_probe.started.wait(testing.io);
+
+    try testing.expect(app.lifecycle_producer.tryRequestCancel(canceled_key));
+    sibling_probe.gate.set(testing.io);
+    app.finishLifecycle();
+
+    try testing.expectEqual(@as(usize, 1), canceled_probe.runs.load(.acquire));
+    try testing.expectEqual(@as(usize, 1), sibling_probe.runs.load(.acquire));
+    try testing.expect(app.lifecycle_supervisor.metrics.canceled >= 1);
+    try testing.expectEqual(app.lifecycle_supervisor.metrics.launched, app.lifecycle_supervisor.metrics.reaped);
+}
+
+const DeliveryProbe = struct {
+    allocator: std.mem.Allocator,
+    acknowledgements: std.atomic.Value(usize) = .init(0),
+    published: std.Io.Event = .unset,
+    done: std.Io.Event = .unset,
+};
+
+fn makeLifecycleEnvelope(allocator: std.mem.Allocator, target: c3s.k8s_resource_key.EnvelopeTarget) !c3s.k8s_resource_key.Envelope {
+    const payload = try allocator.create(u8);
+    payload.* = 1;
+    return c3s.k8s_resource_key.erasePayload(
+        u8,
+        allocator,
+        target,
+        payload,
+        &c3s.k8s_resource_key.test_noop_u8_handler,
+        1,
+        1,
+        1,
+        1,
+        null,
+    );
+}
+
+fn reusableDeliveryTask(
+    raw: ?*anyopaque,
+    control: *App.ChildControl,
+    io: std.Io,
+) anyerror!void {
+    const probe: *DeliveryProbe = @ptrCast(@alignCast(raw.?));
+    for (0..2) |_| {
+        const envelope = try makeLifecycleEnvelope(
+            probe.allocator,
+            .{ .resource = .{ .generation = 1, .subscription_id = 1 } },
+        );
+        try control.publishDelivery(envelope);
+        _ = probe.acknowledgements.fetchAdd(1, .acq_rel);
+    }
+    probe.done.set(io);
+}
+
+fn heldDeliveryTask(
+    raw: ?*anyopaque,
+    control: *App.ChildControl,
+    io: std.Io,
+) anyerror!void {
+    const probe: *DeliveryProbe = @ptrCast(@alignCast(raw.?));
+    control.outcome = .{ .delivery = try makeLifecycleEnvelope(
+        probe.allocator,
+        .{ .resource = .{ .generation = 1, .subscription_id = 1 } },
+    ) };
+    control.phase.store(.delivery_ready, .release);
+    control.shared_event.set(io);
+    probe.published.set(io);
+    try control.delivery_ack.wait(io);
+    control.delivery_ack.reset();
+}
+
+test "delivery acknowledgement resets and can be reused" {
+    var app = try App.init(testing.allocator, .{});
+    defer app.deinit();
+    try installLocalAppSession(&app, testing.allocator);
+    var probe = DeliveryProbe{ .allocator = testing.allocator };
+
+    _ = try startLifecycleRequest(
+        &app,
+        &probe,
+        reusableDeliveryTask,
+    );
+    try probe.done.wait(testing.io);
+    app.finishLifecycle();
+
+    try testing.expectEqual(@as(usize, 2), probe.acknowledgements.load(.acquire));
+}
+
+test "cancellation owns a delivery blocked by a full queue" {
+    var app = try App.init(testing.allocator, .{});
+    defer app.deinit();
+    try installLocalAppSession(&app, testing.allocator);
+    for (0..c3s.k8s_resource_key.Limits.default.max_data_batches) |_| {
+        try app.change_queue.tryPush(try makeLifecycleEnvelope(
+            testing.allocator,
+            .{ .resource = .{ .generation = 1, .subscription_id = 1 } },
+        ));
+    }
+    var probe = DeliveryProbe{ .allocator = testing.allocator };
+    const key = try startLifecycleRequest(
+        &app,
+        &probe,
+        heldDeliveryTask,
+    );
+    try probe.published.wait(testing.io);
+    try testing.expect(app.lifecycle_producer.tryRequestCancel(key));
+    app.finishLifecycle();
+
+    try testing.expectEqual(app.lifecycle_supervisor.metrics.launched, app.lifecycle_supervisor.metrics.reaped);
+    try testing.expectEqual(@as(usize, 0), app.lifecycle_supervisor.live_children);
+}
+
+test "Task 4B source has one root Future exception and no forbidden ownership" {
+    const app_source = try readTask4ASource("src/App.zig");
+    defer testing.allocator.free(app_source);
+    const supervisor_source = try readTask4ASource("src/k8s/LifecycleSupervisor.zig");
+    defer testing.allocator.free(supervisor_source);
+
+    try testing.expectEqual(
+        @as(usize, 1),
+        std.mem.count(u8, app_source, "std.Io.Future(void)"),
+    );
+    try testing.expect(std.mem.indexOf(u8, app_source, "std.Io." ++ "Group") == null);
+    try testing.expect(std.mem.indexOf(u8, supervisor_source, "std.Io." ++ "Group") == null);
+    try testing.expect(std.mem.indexOf(u8, supervisor_source, "std." ++ "Thread") == null);
+    try testing.expect(std.mem.indexOf(u8, supervisor_source, "Completion" ++ "Sink") == null);
+    try testing.expect(std.mem.indexOf(u8, supervisor_source, "Candidate" ++ "Sink") == null);
 }

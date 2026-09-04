@@ -31,6 +31,50 @@ pub const Event = struct {
     queue_bytes: usize,
 };
 
+pub const PodPaintEvidence = struct {
+    current_is_pods: bool,
+    initial_applied: bool,
+    loading: bool,
+    has_error: bool,
+    visible_rows: usize,
+    flush_succeeded: bool,
+    close_succeeded: bool,
+    list_complete_revision: ?u64,
+    applied_revision: u64,
+    apply_failed: bool,
+};
+
+pub fn emitPodPaintsAfterFlush(
+    telemetry: *PerfTelemetry,
+    first_emitted: *bool,
+    complete_emitted: *bool,
+    evidence: PodPaintEvidence,
+    first_event: Event,
+    complete_event: Event,
+) void {
+    if (shouldMarkFirstPodPaint(first_emitted.*, evidence)) {
+        telemetry.emit(first_event);
+        first_emitted.* = true;
+    }
+    if (shouldMarkCompletePodPaint(complete_emitted.*, evidence)) {
+        telemetry.emit(complete_event);
+        complete_emitted.* = true;
+    }
+}
+
+pub fn shouldMarkFirstPodPaint(emitted: bool, evidence: PodPaintEvidence) bool {
+    return !emitted and evidence.current_is_pods and evidence.initial_applied and
+        !evidence.loading and !evidence.has_error and evidence.visible_rows > 0 and
+        evidence.flush_succeeded and evidence.close_succeeded;
+}
+
+pub fn shouldMarkCompletePodPaint(emitted: bool, evidence: PodPaintEvidence) bool {
+    return !emitted and !evidence.apply_failed and evidence.current_is_pods and
+        evidence.flush_succeeded and evidence.close_succeeded and
+        evidence.list_complete_revision != null and
+        evidence.applied_revision >= evidence.list_complete_revision.?;
+}
+
 pub const Counters = struct {
     dropped_oversize: u64 = 0,
     dropped_eagain: u64 = 0,

@@ -18,6 +18,31 @@ const Queued = struct {
 
 const Lane = enum { data, ordinary, critical };
 
+pub const Popped = struct {
+    envelope: Envelope,
+    sequence: u64,
+    lane: Lane,
+    active: bool = true,
+
+    fn takeEnvelope(self: *Popped) Envelope {
+        std.debug.assert(self.active);
+        self.active = false;
+        return self.envelope;
+    }
+
+    pub fn destroy(self: *Popped, allocator: std.mem.Allocator) void {
+        std.debug.assert(self.active);
+        self.envelope.deinit(allocator);
+        self.active = false;
+    }
+
+    pub fn finishConsumed(self: *Popped) void {
+        std.debug.assert(self.active);
+        std.debug.assert(self.envelope.state == .consumed);
+        self.active = false;
+    }
+};
+
 pub const ChangeQueue = struct {
     io: std.Io,
     allocator: std.mem.Allocator,
@@ -92,6 +117,14 @@ pub const ChangeQueue = struct {
     }
 
     pub fn pop(self: *ChangeQueue) ?Envelope {
+        var popped = self.popForRetry() orelse return null;
+        return popped.takeEnvelope();
+    }
+
+    /// Removes one item while retaining its original ordering token.
+    /// Only the sole UI consumer may hold this token, and only across one
+    /// synchronous apply attempt before calling retryPopped or destroying it.
+    pub fn popForRetry(self: *ChangeQueue) ?Popped {
         self.mutex.lockUncancelable(self.io);
         const index = self.nextIndexLocked() orelse {
             self.mutex.unlock(self.io);
@@ -103,7 +136,64 @@ pub const ChangeQueue = struct {
         _ = epoch;
         self.mutex.unlock(self.io);
         self.shared_event.set(self.io);
-        return item.envelope;
+        return .{
+            .envelope = item.envelope,
+            .sequence = item.sequence,
+            .lane = item.lane,
+        };
+    }
+
+    /// Requeues a just-popped item with its original sequence.
+    /// Takes ownership only on success.
+    pub fn retryPopped(self: *ChangeQueue, popped: *Popped) error{ Full, Closed }!void {
+        std.debug.assert(popped.active);
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        if (self.closed) return error.Closed;
+        if (!self.fits(popped.lane, popped.envelope.owned_bytes)) return error.Full;
+        self.items.append(self.allocator, .{
+            .envelope = popped.envelope,
+            .sequence = popped.sequence,
+            .lane = popped.lane,
+        }) catch return error.Full;
+        self.credit(popped.lane, popped.envelope.owned_bytes);
+        popped.active = false;
+        if (self.wakeup) |wakeup| wakeup.notify();
+        self.shared_event.set(self.io);
+    }
+
+    /// Destroys queued data for one exact subscription identity while
+    /// preserving every other subscription, including peers in its generation.
+    pub fn purgeSubscription(
+        self: *ChangeQueue,
+        key: anytype,
+    ) usize {
+        var removed: usize = 0;
+        while (true) {
+            self.mutex.lockUncancelable(self.io);
+            const match_index = for (self.items.items, 0..) |item, index| {
+                const matches = switch (item.envelope.target) {
+                    .resource => |resource| resource.generation == key.generation and
+                        resource.subscription_id == key.subscription_id,
+                    else => false,
+                };
+                if (matches) break index;
+            } else null;
+            const index = match_index orelse {
+                self.mutex.unlock(self.io);
+                break;
+            };
+            var owned = self.items.orderedRemove(index);
+            self.debit(owned.lane, owned.envelope.owned_bytes);
+            self.mutex.unlock(self.io);
+            owned.envelope.deinit(self.allocator);
+            removed += 1;
+        }
+        if (removed > 0) {
+            _ = self.queue_space_epoch.fetchAdd(1, .acq_rel);
+        }
+        if (removed > 0) self.shared_event.set(self.io);
+        return removed;
     }
 
     fn pushLane(self: *ChangeQueue, envelope: Envelope, lane: Lane) error{ Full, Closed }!void {
@@ -222,6 +312,67 @@ fn makeNotice(allocator: std.mem.Allocator, target: EnvelopeTarget, bytes: usize
         0,
         0,
         bytes,
+        null,
+    );
+}
+
+const RetryPayload = struct {
+    fail_once: *bool,
+    order: *[2]u8,
+    applied: *usize,
+    destroyed: *usize,
+    id: u8,
+};
+
+fn retryPreflight(
+    payload: *RetryPayload,
+    _: *keys.UiRouter,
+    _: std.mem.Allocator,
+) anyerror!keys.ApplyPlan {
+    if (payload.fail_once.*) {
+        payload.fail_once.* = false;
+        return error.PreflightFailed;
+    }
+    return keys.ApplyPlan.empty(0);
+}
+
+fn retryCommit(payload: *RetryPayload, _: *keys.UiRouter, _: *keys.ApplyPlan) void {
+    payload.order[payload.applied.*] = payload.id;
+    payload.applied.* += 1;
+}
+
+fn retryDestroy(payload: *RetryPayload, _: std.mem.Allocator) void {
+    payload.destroyed.* += 1;
+}
+
+const retry_handler = keys.PayloadHandler(RetryPayload){
+    .preflight = retryPreflight,
+    .commit = retryCommit,
+    .deinit = retryDestroy,
+};
+
+fn retryTarget(_: *anyopaque, _: EnvelopeTarget) ?*anyopaque {
+    return @ptrFromInt(1);
+}
+
+fn makeRetryEnvelope(
+    allocator: std.mem.Allocator,
+    payload: RetryPayload,
+    revision: keys.Revision,
+    owned_bytes: usize,
+) !Envelope {
+    const owned = try allocator.create(RetryPayload);
+    owned.* = payload;
+    return keys.erasePayload(
+        RetryPayload,
+        allocator,
+        .{ .resource = .{ .generation = 1, .subscription_id = 1 } },
+        owned,
+        &retry_handler,
+        1,
+        1,
+        revision,
+        owned_bytes,
         null,
     );
 }
@@ -420,6 +571,51 @@ test "successful push notifies wakeup" {
     wakeup.drain();
 }
 
+test "purgeSubscription keeps control lanes and increments space epoch once" {
+    const allocator = testing.allocator;
+    const io = runtime.io();
+    var event: std.Io.Event = .unset;
+    var queue = ChangeQueue.init(io, allocator, Limits.default, &event, null);
+    defer queue.deinit();
+
+    try queue.tryPush(try makeNotice(allocator, .{ .resource = .{ .generation = 1, .subscription_id = 1 } }, 1));
+    try queue.tryPush(try makeNotice(allocator, .{ .resource = .{ .generation = 1, .subscription_id = 1 } }, 1));
+    try queue.tryPush(try makeNotice(allocator, .{ .resource = .{ .generation = 1, .subscription_id = 2 } }, 1));
+    try queue.tryPushControl(try makeNotice(allocator, .lifecycle, 1));
+
+    const epoch = queue.spaceEpoch();
+    try testing.expectEqual(@as(usize, 2), queue.purgeSubscription(.{
+        .generation = 1,
+        .subscription_id = 1,
+    }));
+    try testing.expectEqual(epoch + 1, queue.spaceEpoch());
+
+    var extra_control: usize = 0;
+    while (extra_control < 2) : (extra_control += 1) {
+        try queue.tryPushControl(try makeNotice(allocator, .lifecycle, 1));
+    }
+    var overflow = try makeNotice(allocator, .lifecycle, 1);
+    try testing.expectError(error.Full, queue.tryPushControl(overflow));
+    overflow.deinit(allocator);
+
+    var remaining_resource: usize = 0;
+    var remaining_control: usize = 0;
+    while (queue.pop()) |value| {
+        var envelope = value;
+        switch (envelope.target) {
+            .resource => |resource| {
+                remaining_resource += 1;
+                try testing.expectEqual(@as(keys.SubscriptionId, 2), resource.subscription_id);
+            },
+            .lifecycle => remaining_control += 1,
+            else => return error.UnexpectedTarget,
+        }
+        envelope.deinit(allocator);
+    }
+    try testing.expectEqual(@as(usize, 1), remaining_resource);
+    try testing.expectEqual(@as(usize, 3), remaining_control);
+}
+
 test "closed queue returns Closed and caller keeps the envelope" {
     const allocator = testing.allocator;
     const io = runtime.io();
@@ -430,4 +626,87 @@ test "closed queue returns Closed and caller keeps the envelope" {
     var env = try makeNotice(allocator, .lifecycle, 1);
     try testing.expectError(error.Closed, queue.tryPushControl(env));
     env.deinit(allocator);
+}
+
+test "retry preserves original sequence ahead of later data and fenced completion" {
+    const allocator = testing.allocator;
+    const io = runtime.io();
+    var event: std.Io.Event = .unset;
+    var queue = ChangeQueue.init(io, allocator, Limits.default, &event, null);
+    defer queue.deinit();
+    var fail_a = true;
+    var never_fail = false;
+    var order: [2]u8 = undefined;
+    var applied: usize = 0;
+    var destroyed: usize = 0;
+    const bytes = 7;
+    try queue.tryPush(try makeRetryEnvelope(allocator, .{
+        .fail_once = &fail_a,
+        .order = &order,
+        .applied = &applied,
+        .destroyed = &destroyed,
+        .id = 'A',
+    }, 1, bytes));
+    try queue.tryPush(try makeRetryEnvelope(allocator, .{
+        .fail_once = &never_fail,
+        .order = &order,
+        .applied = &applied,
+        .destroyed = &destroyed,
+        .id = 'B',
+    }, 2, bytes));
+    var terminal = try makeNotice(allocator, .lifecycle, 1);
+    terminal.after_revision = std.math.maxInt(keys.Revision);
+    try queue.tryPushControl(terminal);
+    try testing.expectEqual(@as(usize, 2), queue.data_count);
+    try testing.expectEqual(@as(usize, bytes * 2), queue.data_bytes);
+
+    var router = keys.UiRouter{ .context = @ptrFromInt(1), .targetFn = retryTarget };
+    const epoch = queue.spaceEpoch();
+    var first_attempt = queue.popForRetry() orelse return error.MissingA;
+    try testing.expectEqual(@as(usize, 1), queue.data_count);
+    try testing.expectEqual(@as(usize, bytes), queue.data_bytes);
+    try testing.expectError(error.PreflightFailed, first_attempt.envelope.apply(&router, allocator));
+    try queue.retryPopped(&first_attempt);
+    try testing.expectEqual(@as(usize, 2), queue.data_count);
+    try testing.expectEqual(@as(usize, bytes * 2), queue.data_bytes);
+    try testing.expectEqual(epoch + 1, queue.spaceEpoch());
+
+    var retried = queue.popForRetry() orelse return error.MissingRetriedA;
+    try retried.envelope.apply(&router, allocator);
+    retried.finishConsumed();
+    var later = queue.popForRetry() orelse return error.MissingB;
+    try later.envelope.apply(&router, allocator);
+    later.finishConsumed();
+    var completion = queue.popForRetry() orelse return error.MissingCompletion;
+    try testing.expectEqual(EnvelopeTarget.lifecycle, completion.envelope.target);
+    completion.destroy(allocator);
+
+    try testing.expectEqualSlices(u8, "AB", &order);
+    try testing.expectEqual(@as(usize, 2), destroyed);
+    try testing.expect(!queue.hasPending());
+}
+
+test "stale popped data is destroyed without retry" {
+    const allocator = testing.allocator;
+    const io = runtime.io();
+    var event: std.Io.Event = .unset;
+    var queue = ChangeQueue.init(io, allocator, Limits.default, &event, null);
+    defer queue.deinit();
+    var never_fail = false;
+    var order: [2]u8 = undefined;
+    var applied: usize = 0;
+    var destroyed: usize = 0;
+    try queue.tryPush(try makeRetryEnvelope(allocator, .{
+        .fail_once = &never_fail,
+        .order = &order,
+        .applied = &applied,
+        .destroyed = &destroyed,
+        .id = 'S',
+    }, 1, 1));
+
+    var stale = queue.popForRetry() orelse return error.MissingStale;
+    stale.destroy(allocator);
+    try testing.expectEqual(@as(usize, 1), destroyed);
+    try testing.expectEqual(@as(usize, 0), applied);
+    try testing.expect(!queue.hasPending());
 }

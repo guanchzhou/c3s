@@ -131,6 +131,38 @@ pub const SessionView = k8s_active_session_slot.SessionView;
 pub const k8s_resource_key = @import("k8s/ResourceKey.zig");
 pub const k8s_change_queue = @import("k8s/ChangeQueue.zig");
 pub const ChangeQueue = k8s_change_queue.ChangeQueue;
+pub const k8s_lifecycle_inbox = @import("k8s/LifecycleInbox.zig");
+pub const k8s_lifecycle_supervisor = @import("k8s/LifecycleSupervisor.zig");
+pub const LifecycleSupervisor = k8s_lifecycle_supervisor.LifecycleSupervisor;
+pub const k8s_read_transport = @import("k8s/ReadTransport.zig");
+pub const k8s_fake_transport = @import("k8s/FakeTransport.zig");
+pub const k8s_stream_list = @import("k8s/StreamList.zig");
+pub const k8s_pod_record = @import("k8s/PodRecord.zig");
+pub const PodRecord = k8s_pod_record;
+pub const NodeRecord = @import("k8s/NodeRecord.zig");
+pub const NamespaceRecord = @import("k8s/NamespaceRecord.zig");
+pub const ServiceRecord = @import("k8s/ServiceRecord.zig");
+pub const EndpointRecord = @import("k8s/EndpointRecord.zig");
+pub const EndpointSliceRecord = @import("k8s/EndpointSliceRecord.zig");
+pub const ConfigMapRecord = @import("k8s/ConfigMapRecord.zig");
+pub const SecretRecord = @import("k8s/SecretRecord.zig");
+pub const ServiceAccountRecord = @import("k8s/ServiceAccountRecord.zig");
+pub const ResourceQuotaRecord = @import("k8s/ResourceQuotaRecord.zig");
+pub const LimitRangeRecord = @import("k8s/LimitRangeRecord.zig");
+pub const PVRecord = @import("k8s/PVRecord.zig");
+pub const PVCRecord = @import("k8s/PVCRecord.zig");
+pub const StorageClassRecord = @import("k8s/StorageClassRecord.zig");
+pub const VolumeAttributesClassRecord = @import("k8s/VolumeAttributesClassRecord.zig");
+pub const CSIDriverRecord = @import("k8s/CSIDriverRecord.zig");
+pub const k8s_load_balancer_address = @import("k8s/LoadBalancerAddress.zig");
+pub const k8s_resource_store = @import("k8s/ResourceStore.zig");
+pub const k8s_resource_projection = @import("k8s/ResourceProjection.zig");
+pub const k8s_resource_subscription = @import("k8s/ResourceSubscription.zig");
+pub const k8s_resource_family_registry = @import("k8s/ResourceFamilyRegistry.zig");
+pub const k8s_list_watch = @import("k8s/ListWatch.zig");
+pub const k8s_data_plane = @import("k8s/DataPlane.zig");
+pub const DataPlane = k8s_data_plane.DataPlane;
+pub const k8s_metrics_feed = @import("k8s/MetricsFeed.zig");
 
 // Test discovery root. Zig analyzes decls lazily, so the pub imports above do
 // NOT by themselves pull co-located `test{}` blocks into the test binary —
@@ -138,5 +170,8 @@ pub const ChangeQueue = k8s_change_queue.ChangeQueue;
 // reports success. refAllDecls references every pub decl, forcing analysis of
 // each imported module and collecting its tests.
 test {
+    _ = @import("k8s/batch_records_test.zig");
+    _ = @import("k8s/networking_records_test.zig");
+    _ = @import("k8s/storage_records_test.zig");
     @import("std").testing.refAllDecls(@This());
 }

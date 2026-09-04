@@ -10,6 +10,8 @@ const Config = resource_view.Config;
 const age_util = @import("../viewmodel/age.zig");
 const table_layout = @import("../ui/table_layout.zig");
 const clock = @import("../core/clock.zig");
+const NodeRecord = @import("../k8s/NodeRecord.zig");
+const loadBalancerAddresses = @import("../k8s/LoadBalancerAddress.zig").format;
 
 const P = table_layout.ColumnPriority;
 
@@ -94,32 +96,6 @@ fn joinStrings(
 
 fn identity(s: []const u8) []const u8 {
     return s;
-}
-
-/// Join `status.loadBalancer.ingress[].ip`/`.hostname` (k9s ADDRESS/EXTERNAL-IP
-/// for LoadBalancer Services and Ingresses). Returns `<pending>` when the
-/// loadBalancer block exists but has no ingress entries; null when absent.
-fn loadBalancerAddresses(alloc: std.mem.Allocator, status: ?std.json.Value) !?[]const u8 {
-    const s = status orelse return null;
-    if (s != .object) return null;
-    const lb = s.object.get("loadBalancer") orelse return null;
-    if (lb != .object) return null;
-    const ingress = lb.object.get("ingress") orelse return try alloc.dupe(u8, "<pending>");
-    if (ingress != .array) return null;
-    if (ingress.array.items.len == 0) return try alloc.dupe(u8, "<pending>");
-
-    var buf = std.ArrayListUnmanaged(u8).empty;
-    defer buf.deinit(alloc);
-    var wrote = false;
-    for (ingress.array.items) |entry| {
-        if (entry != .object) continue;
-        const addr = jsonValStr(entry, "ip") orelse jsonValStr(entry, "hostname") orelse continue;
-        if (wrote) try buf.append(alloc, ',');
-        try buf.appendSlice(alloc, addr);
-        wrote = true;
-    }
-    if (!wrote) return try alloc.dupe(u8, "<pending>");
-    return try buf.toOwnedSlice(alloc);
 }
 
 /// Format `spec.podSelector.matchLabels` as `k=v,k=v`, or `<none>` when empty
@@ -343,13 +319,10 @@ pub const ServicesView = ResourceView(klient.types.Service, klient.resources.Ser
 // === ConfigMaps ===
 // ============================================================================
 fn transformConfigMap(cm: klient.types.ConfigMap, alloc: std.mem.Allocator) ![4][]const u8 {
-    // ConfigMap has no `spec` — `data` is top-level. Reading it through the old
-    // `cm.spec` always yielded null, so this column showed 0 for every ConfigMap.
     const keys: usize = if (cm.data) |data_json|
         (if (data_json == .object) data_json.object.count() else 0)
     else
         0;
-
     return .{
         try alloc.dupe(u8, cm.metadata.namespace orelse "default"),
         try alloc.dupe(u8, cm.metadata.name),
@@ -380,7 +353,6 @@ fn transformSecret(secret: klient.types.Secret, alloc: std.mem.Allocator) ![5][]
         if (data_json == .object) break :blk data_json.object.count();
         break :blk 0;
     } else 0;
-
     return .{
         try alloc.dupe(u8, secret.metadata.namespace orelse "default"),
         try alloc.dupe(u8, secret.metadata.name),
@@ -559,7 +531,7 @@ fn transformCronJob(cj: klient.types.CronJob, alloc: std.mem.Allocator) ![6][]co
         if (s.schedule) |sched| try alloc.dupe(u8, sched) else try alloc.dupe(u8, "")
     else
         try alloc.dupe(u8, "");
-    const suspended = if (cj.spec) |s| s.suspended orelse false else false;
+    const should_suspend = if (cj.spec) |s| s.@"suspend" orelse false else false;
 
     // Extract active from JSON Value (it's an array of references)
     const active: i32 = if (cj.status) |status_json| blk: {
@@ -582,7 +554,7 @@ fn transformCronJob(cj: klient.types.CronJob, alloc: std.mem.Allocator) ![6][]co
         try alloc.dupe(u8, cj.metadata.namespace orelse "default"),
         try alloc.dupe(u8, cj.metadata.name),
         schedule,
-        if (suspended) try alloc.dupe(u8, "True") else try alloc.dupe(u8, "False"),
+        if (should_suspend) try alloc.dupe(u8, "True") else try alloc.dupe(u8, "False"),
         try intToStr(alloc, active),
         last_schedule,
     };
@@ -854,92 +826,9 @@ pub const EventsView = ResourceView(klient.types.Event, klient.resources.Events,
 // === Nodes ===
 // ============================================================================
 fn transformNode(node: klient.types.Node, alloc: std.mem.Allocator) ![6][]const u8 {
-    // Ready condition, plus kubectl's `,SchedulingDisabled` when spec.unschedulable
-    // is set -- the nodes `u` toggle keys off that substring.
-    const unschedulable = if (node.spec) |spec| spec.unschedulable orelse false else false;
-    const status = blk: {
-        const base = inner: {
-            if (node.status) |node_status| {
-                if (node_status.conditions) |conditions| {
-                    for (conditions) |condition| {
-                        if (!std.mem.eql(u8, condition.type, "Ready")) continue;
-                        const ready = std.mem.eql(u8, condition.status, "True");
-                        break :inner try alloc.dupe(u8, if (ready) "Ready" else "NotReady");
-                    }
-                }
-            }
-            break :inner try alloc.dupe(u8, "Unknown");
-        };
-        if (!unschedulable) break :blk base;
-        defer alloc.free(base);
-        break :blk try std.fmt.allocPrint(alloc, "{s},SchedulingDisabled", .{base});
-    };
-
-    // Get node roles from labels
-    const roles = blk: {
-        if (node.metadata.labels) |labels_json| {
-            if (labels_json == .object) {
-                const role_prefix = "node-role.kubernetes.io/";
-                var roles_buf: [256]u8 = undefined;
-                var roles_len: usize = 0;
-                var it = labels_json.object.iterator();
-                while (it.next()) |entry| {
-                    const key_str = entry.key_ptr.*;
-                    if (std.mem.startsWith(u8, key_str, role_prefix)) {
-                        const role_name = key_str[role_prefix.len..];
-                        if (role_name.len > 0) {
-                            if (roles_len > 0) {
-                                if (roles_len + 1 < roles_buf.len) {
-                                    roles_buf[roles_len] = ',';
-                                    roles_len += 1;
-                                }
-                            }
-                            const copy_len = @min(role_name.len, roles_buf.len - roles_len);
-                            @memcpy(roles_buf[roles_len..][0..copy_len], role_name[0..copy_len]);
-                            roles_len += copy_len;
-                        }
-                    }
-                }
-                if (roles_len > 0) {
-                    break :blk try alloc.dupe(u8, roles_buf[0..roles_len]);
-                }
-            }
-        }
-        break :blk try alloc.dupe(u8, "<none>");
-    };
-
-    // Extract internal IP from status.addresses
-    const internal_ip = blk: {
-        if (node.status) |node_status| {
-            if (node_status.addresses) |addresses| {
-                for (addresses) |addr| {
-                    if (std.mem.eql(u8, addr.type, "InternalIP")) {
-                        break :blk try alloc.dupe(u8, addr.address);
-                    }
-                }
-            }
-        }
-        break :blk try alloc.dupe(u8, "<unknown>");
-    };
-
-    // Extract version from status.nodeInfo.kubeletVersion
-    const version = blk: {
-        if (node.status) |node_status| {
-            if (node_status.nodeInfo) |node_info| {
-                if (node_info.kubeletVersion) |v| break :blk try alloc.dupe(u8, v);
-            }
-        }
-        break :blk try alloc.dupe(u8, "unknown");
-    };
-
-    return .{
-        try alloc.dupe(u8, node.metadata.name),
-        status,
-        roles,
-        version,
-        internal_ip,
-        try age_util.calculateAge(alloc, node.metadata.creationTimestamp),
-    };
+    var record = try NodeRecord.fromNode(alloc, node);
+    defer record.deinit(alloc);
+    return record.columns(alloc);
 }
 
 pub const NodesView = ResourceView(klient.types.Node, klient.resources.Nodes, .{
@@ -1308,6 +1197,1350 @@ pub const MutatingAdmissionPoliciesView = modern.MutatingAdmissionPoliciesView;
 pub const MutatingAdmissionPolicyBindingsView = modern.MutatingAdmissionPolicyBindingsView;
 pub const ValidatingWebhookConfigurationsView = modern.ValidatingWebhookConfigurationsView;
 pub const MutatingWebhookConfigurationsView = modern.MutatingWebhookConfigurationsView;
+
+test "pod data-plane onShow requests one subscription" {
+    const K8sService = @import("../services/K8sService.zig").K8sService;
+    const Theme = @import("../model/theme_loader.zig").ThemeColors;
+    const previous_source = resource_view.active_pod_source;
+    defer resource_view.active_pod_source = previous_source;
+    resource_view.active_pod_source = .data_plane;
+
+    var service: K8sService = undefined;
+    var theme: Theme = undefined;
+    var pods = try PodsView.init(std.testing.allocator, &theme, &service);
+    defer pods.deinit();
+    const view = pods.createView();
+
+    view.onShow();
+    try std.testing.expectEqual(.start, pods.takePodSubscriptionRequest());
+    pods.markPodSubscriptionStarted();
+    view.onShow();
+    try std.testing.expectEqual(.none, pods.takePodSubscriptionRequest());
+    try pods.refresh();
+    try std.testing.expectEqual(.restart, pods.takePodSubscriptionRequest());
+}
+
+test "legacy pod rollback source remains selectable" {
+    const previous_source = resource_view.active_pod_source;
+    defer resource_view.active_pod_source = previous_source;
+    resource_view.active_pod_source = .legacy_list;
+    try std.testing.expectEqual(resource_view.PodSource.legacy_list, resource_view.active_pod_source);
+}
+
+test "nodes projection preserves scheduling actions and UID selection" {
+    const keys = @import("../k8s/ResourceKey.zig");
+    const NodeProjection = @import("../k8s/ResourceProjection.zig").ResourceProjection(NodeRecord);
+    const K8sService = @import("../services/K8sService.zig").K8sService;
+    const Theme = @import("../model/theme_loader.zig").ThemeColors;
+    const ProjectionFns = struct {
+        fn match(record: *const NodeRecord, filter: []const u8) bool {
+            return filter.len == 0 or std.mem.indexOf(u8, record.key.name, filter) != null;
+        }
+        fn sort(record: *const NodeRecord, column: u8) []const u8 {
+            return if (column == 1) record.status else record.key.name;
+        }
+        fn enabled() bool {
+            return true;
+        }
+        fn columns(
+            _: *NodeProjection,
+            record: *const NodeRecord,
+            allocator: std.mem.Allocator,
+        ) ![6][]const u8 {
+            return record.columns(allocator);
+        }
+    };
+    const allocator = std.testing.allocator;
+    var view_failing = std.testing.FailingAllocator.init(allocator, .{});
+    var projection = NodeProjection.init(allocator, .{
+        .matchFn = ProjectionFns.match,
+        .sortKeyFn = ProjectionFns.sort,
+    });
+    defer projection.deinit();
+    var service: K8sService = undefined;
+    var theme: Theme = undefined;
+    var nodes = try NodesView.init(view_failing.allocator(), &theme, &service);
+    defer nodes.deinit();
+    nodes.bindProjection(NodesView.ProjectionAdapter.init(
+        NodeRecord,
+        &projection,
+        ProjectionFns.enabled,
+        ProjectionFns.columns,
+    ));
+
+    const changes = try allocator.alloc(keys.TypedChange(NodeRecord), 2);
+    changes[0] = .{ .initial_upsert = .{
+        .key = try (keys.ObjectKey{ .uid = "node-uid", .namespace = "", .name = "worker" }).clone(allocator),
+        .status = try allocator.dupe(u8, "Ready,SchedulingDisabled"),
+        .roles = try allocator.dupe(u8, "worker"),
+        .version = try allocator.dupe(u8, "v1.31.0"),
+        .internal_ip = try allocator.dupe(u8, "10.0.0.1"),
+    } };
+    changes[1] = .{ .initial_upsert = .{
+        .key = try (keys.ObjectKey{ .uid = "broken-uid", .namespace = "", .name = "broken" }).clone(allocator),
+        .status = try allocator.dupe(u8, "NotReady"),
+        .roles = try allocator.dupe(u8, "worker"),
+        .version = try allocator.dupe(u8, "v1.31.0"),
+        .internal_ip = try allocator.dupe(u8, "10.0.0.2"),
+    } };
+    var batch = keys.TypedBatch(NodeRecord){
+        .generation = 1,
+        .subscription_id = 2,
+        .revision = 1,
+        .changes = changes,
+        .sync = .list_started,
+        .owned_bytes = 1,
+    };
+    defer batch.deinit(allocator);
+    var plan = try NodeProjection.handler().preflight(@ptrCast(&projection), &batch, allocator);
+    NodeProjection.handler().commit(@ptrCast(&projection), &batch, &plan);
+    plan.deinit(allocator);
+    try nodes.syncProjection();
+    try std.testing.expectEqual(@as(usize, 2), nodes.table.items.items.len);
+    view_failing.fail_index = view_failing.alloc_index + 2;
+    try std.testing.expectError(error.OutOfMemory, nodes.applyFilter("work"));
+    try std.testing.expectEqual(@as(usize, 2), nodes.table.items.items.len);
+    try std.testing.expectEqual(@as(usize, 2), projection.visibleCount());
+    try std.testing.expectEqualStrings("", nodes.table.filter_text);
+    view_failing.fail_index = std.math.maxInt(usize);
+    nodes.table.selected_row = 1;
+    try nodes.syncProjection();
+    try std.testing.expectEqual(
+        @import("../viewmodel/view.zig").View.KeyResult.request_uncordon,
+        try NodesView.handleKey(&nodes, .{ .char = 'u' }),
+    );
+    try std.testing.expect(projection.selectUid("node-uid"));
+
+    const update = try allocator.alloc(keys.TypedChange(NodeRecord), 1);
+    update[0] = .{ .watch_upsert = .{
+        .key = try (keys.ObjectKey{ .uid = "node-uid", .namespace = "", .name = "worker" }).clone(allocator),
+        .status = try allocator.dupe(u8, "Ready"),
+        .roles = try allocator.dupe(u8, "worker"),
+        .version = try allocator.dupe(u8, "v1.31.1"),
+        .internal_ip = try allocator.dupe(u8, "10.0.0.1"),
+    } };
+    var update_batch = keys.TypedBatch(NodeRecord){
+        .generation = 1,
+        .subscription_id = 2,
+        .revision = 2,
+        .changes = update,
+        .sync = null,
+        .owned_bytes = 1,
+    };
+    defer update_batch.deinit(allocator);
+    var update_plan = try NodeProjection.handler().preflight(
+        @ptrCast(&projection),
+        &update_batch,
+        allocator,
+    );
+    NodeProjection.handler().commit(@ptrCast(&projection), &update_batch, &update_plan);
+    update_plan.deinit(allocator);
+    try nodes.syncProjection();
+    try std.testing.expectEqualStrings("node-uid", projection.selectedUid().?);
+    try std.testing.expectEqual(
+        @import("../viewmodel/view.zig").View.KeyResult.request_cordon,
+        try NodesView.handleKey(&nodes, .{ .char = 'u' }),
+    );
+    _ = try NodesView.handleKey(&nodes, .ctrl_z);
+    try std.testing.expectEqual(@as(usize, 1), nodes.table.filtered_indices.items.len);
+    try std.testing.expectEqualStrings(
+        "broken",
+        nodes.table.getSelectedItem().?.columns[0],
+    );
+    _ = try NodesView.handleKey(&nodes, .{ .char = 'N' });
+    try std.testing.expectEqual(@as(usize, 1), nodes.table.filtered_indices.items.len);
+}
+
+test "node rollback gate retains legacy refresh path" {
+    const previous = resource_view.active_node_source;
+    defer resource_view.active_node_source = previous;
+    const previous_hook = resource_view.legacy_loader_test_hook;
+    defer resource_view.legacy_loader_test_hook = previous_hook;
+    const Probe = struct {
+        var calls: usize = 0;
+        fn load(resource: []const u8) void {
+            if (std.mem.eql(u8, resource, "nodes")) calls += 1;
+        }
+    };
+    Probe.calls = 0;
+    resource_view.active_node_source = .legacy_list;
+    resource_view.legacy_loader_test_hook = Probe.load;
+    var service: @import("../services/K8sService.zig").K8sService = undefined;
+    var theme: @import("../model/theme_loader.zig").ThemeColors = undefined;
+    var nodes = try NodesView.init(std.testing.allocator, &theme, &service);
+    defer nodes.deinit();
+    try nodes.refresh();
+    try std.testing.expectEqual(@as(usize, 1), Probe.calls);
+    try std.testing.expectEqual(.none, nodes.takeSubscriptionRequest());
+}
+
+test "services family rollback gate executes retained legacy loader seam" {
+    const previous = resource_view.active_services_source;
+    defer resource_view.active_services_source = previous;
+    const previous_hook = resource_view.legacy_loader_test_hook;
+    defer resource_view.legacy_loader_test_hook = previous_hook;
+    const Probe = struct {
+        var calls: usize = 0;
+        fn load(resource: []const u8) void {
+            if (std.mem.eql(u8, resource, "services") or
+                std.mem.eql(u8, resource, "endpoints") or
+                std.mem.eql(u8, resource, "endpointslices"))
+                calls += 1;
+        }
+    };
+    Probe.calls = 0;
+    resource_view.active_services_source = .legacy_list;
+    resource_view.legacy_loader_test_hook = Probe.load;
+    var service: @import("../services/K8sService.zig").K8sService = undefined;
+    var theme: @import("../model/theme_loader.zig").ThemeColors = undefined;
+    var services = try ServicesView.init(std.testing.allocator, &theme, &service);
+    defer services.deinit();
+    var endpoints = try EndpointsView.init(std.testing.allocator, &theme, &service);
+    defer endpoints.deinit();
+    var endpoint_slices = try EndpointSlicesView.init(std.testing.allocator, &theme, &service);
+    defer endpoint_slices.deinit();
+    try services.refresh();
+    try endpoints.refresh();
+    try endpoint_slices.refresh();
+    try std.testing.expectEqual(@as(usize, 3), Probe.calls);
+    try std.testing.expectEqual(
+        resource_view.Source.legacy_list,
+        resource_view.familySourceRegistry().sourceFor(.services),
+    );
+}
+
+test "config family rollback gate executes retained legacy loader seam" {
+    const previous = resource_view.active_config_source;
+    defer resource_view.active_config_source = previous;
+    const previous_hook = resource_view.legacy_loader_test_hook;
+    defer resource_view.legacy_loader_test_hook = previous_hook;
+    const Probe = struct {
+        var calls: usize = 0;
+        fn load(resource: []const u8) void {
+            inline for (.{ "configmaps", "secrets", "serviceaccounts", "resourcequotas", "limitranges" }) |name| {
+                if (std.mem.eql(u8, resource, name)) calls += 1;
+            }
+        }
+    };
+    Probe.calls = 0;
+    resource_view.active_config_source = .legacy_list;
+    resource_view.legacy_loader_test_hook = Probe.load;
+    var service: @import("../services/K8sService.zig").K8sService = undefined;
+    var theme: @import("../model/theme_loader.zig").ThemeColors = undefined;
+    inline for (.{
+        ConfigMapsView,
+        SecretsView,
+        ServiceAccountsView,
+        ResourceQuotasView,
+        LimitRangesView,
+    }) |ViewType| {
+        var view = try ViewType.init(std.testing.allocator, &theme, &service);
+        defer view.deinit();
+        try view.refresh();
+        try std.testing.expectEqual(.none, view.takeSubscriptionRequest());
+    }
+    try std.testing.expectEqual(@as(usize, 5), Probe.calls);
+    try std.testing.expectEqual(
+        resource_view.Source.legacy_list,
+        resource_view.familySourceRegistry().sourceFor(.config),
+    );
+}
+
+test "workloads family rollback gate executes retained legacy loader seam" {
+    const previous = resource_view.active_workloads_source;
+    defer resource_view.active_workloads_source = previous;
+    const previous_hook = resource_view.legacy_loader_test_hook;
+    defer resource_view.legacy_loader_test_hook = previous_hook;
+    const Probe = struct {
+        var calls: usize = 0;
+        fn load(resource: []const u8) void {
+            inline for (.{ "deployments", "statefulsets", "daemonsets", "replicasets" }) |name| {
+                if (std.mem.eql(u8, resource, name)) calls += 1;
+            }
+        }
+    };
+    Probe.calls = 0;
+    resource_view.active_workloads_source = .legacy_list;
+    resource_view.legacy_loader_test_hook = Probe.load;
+    var service: @import("../services/K8sService.zig").K8sService = undefined;
+    var theme: @import("../model/theme_loader.zig").ThemeColors = undefined;
+    inline for (.{ DeploymentsView, StatefulSetsView, DaemonSetsView, ReplicaSetsView }) |ViewType| {
+        var view = try ViewType.init(std.testing.allocator, &theme, &service);
+        defer view.deinit();
+        try view.refresh();
+        try std.testing.expectEqual(.none, view.takeSubscriptionRequest());
+    }
+    try std.testing.expectEqual(@as(usize, 4), Probe.calls);
+    try std.testing.expectEqual(
+        resource_view.Source.legacy_list,
+        resource_view.familySourceRegistry().sourceFor(.workloads),
+    );
+}
+
+test "batch family rollback gate executes retained legacy loader seam" {
+    const previous = resource_view.active_batch_source;
+    defer resource_view.active_batch_source = previous;
+    const previous_hook = resource_view.legacy_loader_test_hook;
+    defer resource_view.legacy_loader_test_hook = previous_hook;
+    const Probe = struct {
+        var calls: usize = 0;
+        fn load(resource: []const u8) void {
+            inline for (.{ "jobs", "cronjobs", "hpa", "poddisruptionbudgets" }) |name| {
+                if (std.mem.eql(u8, resource, name)) calls += 1;
+            }
+        }
+    };
+    Probe.calls = 0;
+    resource_view.active_batch_source = .legacy_list;
+    resource_view.legacy_loader_test_hook = Probe.load;
+    var service: @import("../services/K8sService.zig").K8sService = undefined;
+    var theme: @import("../model/theme_loader.zig").ThemeColors = undefined;
+    inline for (.{ JobsView, CronJobsView, HPAView, PodDisruptionBudgetsView }) |ViewType| {
+        var view = try ViewType.init(std.testing.allocator, &theme, &service);
+        defer view.deinit();
+        try view.refresh();
+        try std.testing.expectEqual(.none, view.takeSubscriptionRequest());
+    }
+    try std.testing.expectEqual(@as(usize, 4), Probe.calls);
+    try std.testing.expectEqual(
+        resource_view.Source.legacy_list,
+        resource_view.familySourceRegistry().sourceFor(.batch),
+    );
+}
+
+test "networking family rollback gate executes retained legacy loader seam" {
+    const previous = resource_view.active_networking_source;
+    defer resource_view.active_networking_source = previous;
+    const previous_hook = resource_view.legacy_loader_test_hook;
+    defer resource_view.legacy_loader_test_hook = previous_hook;
+    const Probe = struct {
+        var calls: usize = 0;
+        fn load(resource: []const u8) void {
+            inline for (.{ "ingresses", "ingressclasses", "networkpolicies", "ipaddresses", "servicecidrs" }) |name| {
+                if (std.mem.eql(u8, resource, name)) calls += 1;
+            }
+        }
+    };
+    Probe.calls = 0;
+    resource_view.active_networking_source = .legacy_list;
+    resource_view.legacy_loader_test_hook = Probe.load;
+    var service: @import("../services/K8sService.zig").K8sService = undefined;
+    var theme: @import("../model/theme_loader.zig").ThemeColors = undefined;
+    inline for (.{
+        IngressesView,
+        IngressClassesView,
+        NetworkPoliciesView,
+        IPAddressesView,
+        ServiceCIDRsView,
+    }) |ViewType| {
+        var view = try ViewType.init(std.testing.allocator, &theme, &service);
+        defer view.deinit();
+        try view.refresh();
+        try std.testing.expectEqual(.none, view.takeSubscriptionRequest());
+    }
+    try std.testing.expectEqual(@as(usize, 5), Probe.calls);
+    try std.testing.expectEqual(
+        resource_view.Source.legacy_list,
+        resource_view.familySourceRegistry().sourceFor(.networking),
+    );
+}
+
+test "storage family rollback gate executes retained legacy loader seam" {
+    const previous = resource_view.active_storage_source;
+    defer resource_view.active_storage_source = previous;
+    const previous_hook = resource_view.legacy_loader_test_hook;
+    defer resource_view.legacy_loader_test_hook = previous_hook;
+    const Probe = struct {
+        var calls: usize = 0;
+        fn load(resource: []const u8) void {
+            inline for (.{ "persistentvolumes", "persistentvolumeclaims", "storageclasses", "volumeattributesclasses", "csidrivers" }) |name| {
+                if (std.mem.eql(u8, resource, name)) calls += 1;
+            }
+        }
+    };
+    Probe.calls = 0;
+    resource_view.active_storage_source = .legacy_list;
+    resource_view.legacy_loader_test_hook = Probe.load;
+    var service: @import("../services/K8sService.zig").K8sService = undefined;
+    var theme: @import("../model/theme_loader.zig").ThemeColors = undefined;
+    inline for (.{
+        PersistentVolumesView,
+        PersistentVolumeClaimsView,
+        StorageClassesView,
+        VolumeAttributesClassesView,
+        CSIDriversView,
+    }) |ViewType| {
+        var view = try ViewType.init(std.testing.allocator, &theme, &service);
+        defer view.deinit();
+        try view.refresh();
+        try std.testing.expectEqual(.none, view.takeSubscriptionRequest());
+    }
+    try std.testing.expectEqual(@as(usize, 5), Probe.calls);
+    try std.testing.expectEqual(
+        resource_view.Source.legacy_list,
+        resource_view.familySourceRegistry().sourceFor(.storage),
+    );
+}
+
+fn expectSameColumns(
+    comptime count: usize,
+    allocator: std.mem.Allocator,
+    legacy: [count][]const u8,
+    projected: [count][]const u8,
+) !void {
+    defer for (legacy) |column| allocator.free(column);
+    defer for (projected) |column| allocator.free(column);
+    for (legacy, projected) |left, right| try std.testing.expectEqualStrings(left, right);
+}
+
+test "config records preserve exact legacy transform columns" {
+    const allocator = std.testing.allocator;
+    {
+        var parsed = try std.json.parseFromSlice(
+            klient.ConfigMap,
+            allocator,
+            \\{"metadata":{"uid":"cm-1","namespace":"team","name":"settings","creationTimestamp":"2024-01-01T00:00:00Z"},"data":{"a":"1","b":"2"}}
+        ,
+            .{ .ignore_unknown_fields = true },
+        );
+        defer parsed.deinit();
+        var record = try @import("../k8s/ConfigMapRecord.zig").fromConfigMap(allocator, parsed.value);
+        defer record.deinit(allocator);
+        try expectSameColumns(4, allocator, try transformConfigMap(parsed.value, allocator), try record.columns(allocator));
+    }
+    {
+        var parsed = try std.json.parseFromSlice(
+            klient.Secret,
+            allocator,
+            \\{"metadata":{"uid":"secret-1","namespace":"team","name":"token","creationTimestamp":"2024-01-01T00:00:00Z"},"type":"kubernetes.io/tls","data":{"tls.crt":"AA==","tls.key":"AA=="}}
+        ,
+            .{ .ignore_unknown_fields = true },
+        );
+        defer parsed.deinit();
+        var record = try @import("../k8s/SecretRecord.zig").fromSecret(allocator, parsed.value);
+        defer record.deinit(allocator);
+        try expectSameColumns(5, allocator, try transformSecret(parsed.value, allocator), try record.columns(allocator));
+    }
+    {
+        var parsed = try std.json.parseFromSlice(
+            klient.ServiceAccount,
+            allocator,
+            \\{"metadata":{"uid":"sa-1","namespace":"team","name":"builder","creationTimestamp":"2024-01-01T00:00:00Z"},"secrets":[{"name":"one"},{"name":"two"}]}
+        ,
+            .{ .ignore_unknown_fields = true },
+        );
+        defer parsed.deinit();
+        var record = try @import("../k8s/ServiceAccountRecord.zig").fromServiceAccount(allocator, parsed.value);
+        defer record.deinit(allocator);
+        try expectSameColumns(4, allocator, try transformServiceAccount(parsed.value, allocator), try record.columns(allocator));
+    }
+    {
+        var parsed = try std.json.parseFromSlice(
+            klient.ResourceQuota,
+            allocator,
+            \\{"metadata":{"uid":"quota-1","namespace":"team","name":"compute","creationTimestamp":"2024-01-01T00:00:00Z"}}
+        ,
+            .{ .ignore_unknown_fields = true },
+        );
+        defer parsed.deinit();
+        var record = try @import("../k8s/ResourceQuotaRecord.zig").fromResourceQuota(allocator, parsed.value);
+        defer record.deinit(allocator);
+        try expectSameColumns(3, allocator, try transformResourceQuota(parsed.value, allocator), try record.columns(allocator));
+    }
+    {
+        var parsed = try std.json.parseFromSlice(
+            klient.LimitRange,
+            allocator,
+            \\{"metadata":{"uid":"limit-1","namespace":"team","name":"defaults","creationTimestamp":"2024-01-01T00:00:00Z"},"spec":{"limits":[]}}
+        ,
+            .{ .ignore_unknown_fields = true },
+        );
+        defer parsed.deinit();
+        var record = try @import("../k8s/LimitRangeRecord.zig").fromLimitRange(allocator, parsed.value);
+        defer record.deinit(allocator);
+        try expectSameColumns(3, allocator, try transformLimitRange(parsed.value, allocator), try record.columns(allocator));
+    }
+}
+
+test "workload records preserve exact legacy transform columns" {
+    const allocator = std.testing.allocator;
+    {
+        var parsed = try std.json.parseFromSlice(
+            klient.Deployment,
+            allocator,
+            \\{"metadata":{"uid":"dep-1","namespace":"team","name":"api","creationTimestamp":"2024-01-01T00:00:00Z"},"spec":{"replicas":4},"status":{"readyReplicas":2,"updatedReplicas":3,"availableReplicas":1}}
+        ,
+            .{ .ignore_unknown_fields = true },
+        );
+        defer parsed.deinit();
+        var record = try @import("../k8s/DeploymentRecord.zig").fromDeployment(allocator, parsed.value);
+        defer record.deinit(allocator);
+        try expectSameColumns(6, allocator, try transformDeployment(parsed.value, allocator), try record.columns(allocator));
+    }
+    {
+        var parsed = try std.json.parseFromSlice(
+            klient.StatefulSet,
+            allocator,
+            \\{"metadata":{"uid":"sts-1","namespace":"team","name":"db","creationTimestamp":"2024-01-01T00:00:00Z"},"spec":{"replicas":3},"status":{"readyReplicas":2}}
+        ,
+            .{ .ignore_unknown_fields = true },
+        );
+        defer parsed.deinit();
+        var record = try @import("../k8s/StatefulSetRecord.zig").fromStatefulSet(allocator, parsed.value);
+        defer record.deinit(allocator);
+        try expectSameColumns(4, allocator, try transformStatefulSet(parsed.value, allocator), try record.columns(allocator));
+    }
+    {
+        var parsed = try std.json.parseFromSlice(
+            klient.DaemonSet,
+            allocator,
+            \\{"metadata":{"uid":"ds-1","namespace":"team","name":"agent","creationTimestamp":"2024-01-01T00:00:00Z"},"status":{"desiredNumberScheduled":5,"currentNumberScheduled":4,"numberReady":3,"updatedNumberScheduled":2}}
+        ,
+            .{ .ignore_unknown_fields = true },
+        );
+        defer parsed.deinit();
+        var record = try @import("../k8s/DaemonSetRecord.zig").fromDaemonSet(allocator, parsed.value);
+        defer record.deinit(allocator);
+        try expectSameColumns(7, allocator, try transformDaemonSet(parsed.value, allocator), try record.columns(allocator));
+    }
+    {
+        var parsed = try std.json.parseFromSlice(
+            klient.ReplicaSet,
+            allocator,
+            \\{"metadata":{"uid":"rs-1","namespace":"team","name":"api-abc","creationTimestamp":"2024-01-01T00:00:00Z"},"spec":{"replicas":4},"status":{"replicas":3,"readyReplicas":2}}
+        ,
+            .{ .ignore_unknown_fields = true },
+        );
+        defer parsed.deinit();
+        var record = try @import("../k8s/ReplicaSetRecord.zig").fromReplicaSet(allocator, parsed.value);
+        defer record.deinit(allocator);
+        try expectSameColumns(6, allocator, try transformReplicaSet(parsed.value, allocator), try record.columns(allocator));
+    }
+}
+
+test "batch records preserve exact legacy transform columns" {
+    const allocator = std.testing.allocator;
+    {
+        var parsed = try std.json.parseFromSlice(
+            klient.Job,
+            allocator,
+            \\{"metadata":{"uid":"job-1","namespace":"team","name":"backup","creationTimestamp":"2024-01-01T00:00:00Z"},"spec":{"completions":3},"status":{"succeeded":2,"startTime":"2024-01-01T00:00:00Z","completionTime":"2024-01-01T01:00:00Z"}}
+        ,
+            .{ .ignore_unknown_fields = true },
+        );
+        defer parsed.deinit();
+        var record = try @import("../k8s/JobRecord.zig").fromJob(allocator, parsed.value);
+        defer record.deinit(allocator);
+        try expectSameColumns(5, allocator, try transformJob(parsed.value, allocator), try record.columns(allocator));
+    }
+    {
+        var parsed = try std.json.parseFromSlice(
+            klient.CronJob,
+            allocator,
+            \\{"metadata":{"uid":"cron-1","namespace":"team","name":"nightly"},"spec":{"schedule":"0 0 * * *","suspend":true},"status":{"active":[{"name":"one"},{"name":"two"}]}}
+        ,
+            .{ .ignore_unknown_fields = true },
+        );
+        defer parsed.deinit();
+        var record = try @import("../k8s/CronJobRecord.zig").fromCronJob(allocator, parsed.value);
+        defer record.deinit(allocator);
+        try expectSameColumns(6, allocator, try transformCronJob(parsed.value, allocator), try record.columns(allocator));
+    }
+    {
+        var parsed = try std.json.parseFromSlice(
+            klient.HorizontalPodAutoscaler,
+            allocator,
+            \\{"metadata":{"uid":"hpa-1","namespace":"team","name":"api"},"spec":{"minReplicas":2,"maxReplicas":10,"scaleTargetRef":{"apiVersion":"apps/v1","kind":"Deployment","name":"api"}},"status":{"currentReplicas":4}}
+        ,
+            .{ .ignore_unknown_fields = true },
+        );
+        defer parsed.deinit();
+        var record = try @import("../k8s/HPARecord.zig").fromHorizontalPodAutoscaler(allocator, parsed.value);
+        defer record.deinit(allocator);
+        try expectSameColumns(6, allocator, try transformHPA(parsed.value, allocator), try record.columns(allocator));
+    }
+    {
+        var parsed = try std.json.parseFromSlice(
+            klient.PodDisruptionBudget,
+            allocator,
+            \\{"metadata":{"uid":"pdb-1","namespace":"team","name":"api"},"spec":{"minAvailable":"50%","maxUnavailable":1,"selector":{"matchLabels":{"app":"api"}}},"status":{"disruptionsAllowed":2}}
+        ,
+            .{ .ignore_unknown_fields = true },
+        );
+        defer parsed.deinit();
+        var record = try @import("../k8s/PDBRecord.zig").fromPodDisruptionBudget(allocator, parsed.value);
+        defer record.deinit(allocator);
+        try expectSameColumns(6, allocator, try transformPodDisruptionBudget(parsed.value, allocator), try record.columns(allocator));
+    }
+}
+
+test "cron job real suspend states preserve legacy projection parity" {
+    const allocator = std.testing.allocator;
+    const cases = [_]struct {
+        json: []const u8,
+        expected: []const u8,
+    }{
+        .{
+            .json =
+            \\{"metadata":{"uid":"cron-true","namespace":"team","name":"nightly"},"spec":{"schedule":"0 0 * * *","suspend":true}}
+            ,
+            .expected = "True",
+        },
+        .{
+            .json =
+            \\{"metadata":{"uid":"cron-false","namespace":"team","name":"nightly"},"spec":{"schedule":"0 0 * * *","suspend":false}}
+            ,
+            .expected = "False",
+        },
+        .{
+            .json =
+            \\{"metadata":{"uid":"cron-absent","namespace":"team","name":"nightly"},"spec":{"schedule":"0 0 * * *"}}
+            ,
+            .expected = "False",
+        },
+    };
+
+    for (cases) |case| {
+        var parsed = try std.json.parseFromSlice(
+            klient.CronJob,
+            allocator,
+            case.json,
+            .{ .ignore_unknown_fields = true },
+        );
+        defer parsed.deinit();
+        var record = try @import("../k8s/CronJobRecord.zig").fromCronJob(allocator, parsed.value);
+        defer record.deinit(allocator);
+        const legacy = try transformCronJob(parsed.value, allocator);
+        const projected = try record.columns(allocator);
+        try std.testing.expectEqualStrings(case.expected, legacy[3]);
+        try std.testing.expectEqualStrings(case.expected, projected[3]);
+        try expectSameColumns(6, allocator, legacy, projected);
+    }
+}
+
+test "networking records preserve exact retained transform columns" {
+    const allocator = std.testing.allocator;
+    {
+        var parsed = try std.json.parseFromSlice(
+            klient.types.Ingress,
+            allocator,
+            \\{"metadata":{"uid":"ing-1","namespace":"team","name":"web","creationTimestamp":"2024-01-01T00:00:00Z"},"spec":{"ingressClassName":"nginx","rules":[{"host":"web.example"}],"tls":[{}]},"status":{"loadBalancer":{"ingress":[{"ip":"10.0.0.1"}]}}}
+        ,
+            .{ .ignore_unknown_fields = true },
+        );
+        defer parsed.deinit();
+        var record = try @import("../k8s/IngressRecord.zig").fromIngress(allocator, parsed.value);
+        defer record.deinit(allocator);
+        try expectSameColumns(7, allocator, try transformIngress(parsed.value, allocator), try record.columns(allocator));
+    }
+    {
+        var parsed = try std.json.parseFromSlice(
+            klient.NetworkPolicy,
+            allocator,
+            \\{"metadata":{"uid":"np-1","namespace":"team","name":"allow-web","creationTimestamp":"2024-01-01T00:00:00Z"},"spec":{"podSelector":{"matchLabels":{"app":"web"}}}}
+        ,
+            .{ .ignore_unknown_fields = true },
+        );
+        defer parsed.deinit();
+        var record = try @import("../k8s/NetworkPolicyRecord.zig").fromNetworkPolicy(allocator, parsed.value);
+        defer record.deinit(allocator);
+        try expectSameColumns(4, allocator, try transformNetworkPolicy(parsed.value, allocator), try record.columns(allocator));
+    }
+    {
+        var parsed = try std.json.parseFromSlice(
+            klient.IngressClass,
+            allocator,
+            \\{"metadata":{"uid":"class-1","name":"nginx"},"spec":{"controller":"k8s.io/ingress-nginx"}}
+        ,
+            .{ .ignore_unknown_fields = true },
+        );
+        defer parsed.deinit();
+        var record = try @import("../k8s/IngressClassRecord.zig").fromIngressClass(allocator, parsed.value);
+        defer record.deinit(allocator);
+        try expectSameColumns(3, allocator, try modern.transformIngressClass(parsed.value, allocator), try record.columns(allocator));
+    }
+    {
+        var parsed = try std.json.parseFromSlice(
+            klient.IPAddress,
+            allocator,
+            \\{"metadata":{"uid":"ip-1","name":"10.0.0.8"},"spec":{"parentRef":{"name":"service-a"}}}
+        ,
+            .{ .ignore_unknown_fields = true },
+        );
+        defer parsed.deinit();
+        var record = try @import("../k8s/IPAddressRecord.zig").fromIPAddress(allocator, parsed.value);
+        defer record.deinit(allocator);
+        try expectSameColumns(3, allocator, try modern.transformIPAddress(parsed.value, allocator), try record.columns(allocator));
+    }
+    {
+        var parsed = try std.json.parseFromSlice(
+            klient.ServiceCIDR,
+            allocator,
+            \\{"metadata":{"uid":"cidr-1","name":"kubernetes"},"spec":{"cidrs":["10.96.0.0/12","fd00::/108"]}}
+        ,
+            .{ .ignore_unknown_fields = true },
+        );
+        defer parsed.deinit();
+        var record = try @import("../k8s/ServiceCIDRRecord.zig").fromServiceCIDR(allocator, parsed.value);
+        defer record.deinit(allocator);
+        try expectSameColumns(3, allocator, try modern.transformServiceCIDR(parsed.value, allocator), try record.columns(allocator));
+    }
+}
+
+test "storage real-shaped records preserve exact retained transform columns" {
+    const allocator = std.testing.allocator;
+    const fixtures = @import("../k8s/storage_records_test.zig");
+    {
+        var parsed = try std.json.parseFromSlice(klient.PersistentVolume, allocator, fixtures.pv_object_json, .{ .ignore_unknown_fields = true });
+        defer parsed.deinit();
+        var record = try @import("../k8s/PVRecord.zig").fromPersistentVolume(allocator, parsed.value);
+        defer record.deinit(allocator);
+        try expectSameColumns(8, allocator, try transformPersistentVolume(parsed.value, allocator), try record.columns(allocator));
+    }
+    {
+        var parsed = try std.json.parseFromSlice(klient.PersistentVolumeClaim, allocator, fixtures.pvc_object_json, .{ .ignore_unknown_fields = true });
+        defer parsed.deinit();
+        var record = try @import("../k8s/PVCRecord.zig").fromPersistentVolumeClaim(allocator, parsed.value);
+        defer record.deinit(allocator);
+        try expectSameColumns(8, allocator, try transformPersistentVolumeClaim(parsed.value, allocator), try record.columns(allocator));
+    }
+    {
+        var parsed = try std.json.parseFromSlice(klient.StorageClass, allocator, fixtures.storage_class_object_json, .{ .ignore_unknown_fields = true });
+        defer parsed.deinit();
+        var record = try @import("../k8s/StorageClassRecord.zig").fromStorageClass(allocator, parsed.value);
+        defer record.deinit(allocator);
+        try expectSameColumns(6, allocator, try transformStorageClass(parsed.value, allocator), try record.columns(allocator));
+    }
+    {
+        var parsed = try std.json.parseFromSlice(klient.VolumeAttributesClass, allocator, fixtures.volume_attributes_class_object_json, .{ .ignore_unknown_fields = true });
+        defer parsed.deinit();
+        var record = try @import("../k8s/VolumeAttributesClassRecord.zig").fromVolumeAttributesClass(allocator, parsed.value);
+        defer record.deinit(allocator);
+        try expectSameColumns(3, allocator, try modern.transformVolumeAttributesClass(parsed.value, allocator), try record.columns(allocator));
+    }
+    {
+        var parsed = try std.json.parseFromSlice(klient.CSIDriver, allocator, fixtures.csi_driver_object_json, .{ .ignore_unknown_fields = true });
+        defer parsed.deinit();
+        var record = try @import("../k8s/CSIDriverRecord.zig").fromCSIDriver(allocator, parsed.value);
+        defer record.deinit(allocator);
+        try expectSameColumns(4, allocator, try modern.transformCSIDriver(parsed.value, allocator), try record.columns(allocator));
+    }
+}
+
+test "real-shaped ingress class projected columns match retained transform" {
+    const allocator = std.testing.allocator;
+    var parsed = try std.json.parseFromSlice(
+        klient.IngressClass,
+        allocator,
+        \\{"metadata":{"uid":"class-1","name":"nginx"},"spec":{"controller":"k8s.io/ingress-nginx"}}
+    ,
+        .{ .ignore_unknown_fields = true },
+    );
+    defer parsed.deinit();
+    var record = try @import("../k8s/IngressClassRecord.zig").fromIngressClass(allocator, parsed.value);
+    defer record.deinit(allocator);
+    try expectSameColumns(
+        3,
+        allocator,
+        try modern.transformIngressClass(parsed.value, allocator),
+        try record.columns(allocator),
+    );
+}
+
+test "config view declarations preserve exact columns scopes and defaults" {
+    const Cases = .{
+        .{ ConfigMapsView, true, &[_][]const u8{ "NAMESPACE", "NAME", "DATA", "AGE" } },
+        .{ SecretsView, false, &[_][]const u8{ "NAMESPACE", "NAME", "TYPE", "DATA", "AGE" } },
+        .{ ServiceAccountsView, false, &[_][]const u8{ "NAMESPACE", "NAME", "SECRETS", "AGE" } },
+        .{ ResourceQuotasView, true, &[_][]const u8{ "NAMESPACE", "NAME", "AGE" } },
+        .{ LimitRangesView, true, &[_][]const u8{ "NAMESPACE", "NAME", "AGE" } },
+    };
+    inline for (Cases) |case| {
+        try std.testing.expect(case[0].view_config.is_namespaced);
+        try std.testing.expectEqual(case[1], case[0].view_config.default_all_namespaces);
+        try std.testing.expectEqual(case[2].len, case[0].view_config.columns.len);
+        inline for (case[2], 0..) |name, index| {
+            try std.testing.expectEqualStrings(name, case[0].view_config.columns[index].name);
+        }
+    }
+}
+
+test "workload view declarations preserve exact columns scopes and defaults" {
+    const Cases = .{
+        .{ DeploymentsView, false, &[_][]const u8{ "NAMESPACE", "NAME", "READY", "UP-TO-DATE", "AVAILABLE", "AGE" } },
+        .{ StatefulSetsView, false, &[_][]const u8{ "NAMESPACE", "NAME", "READY", "AGE" } },
+        .{ DaemonSetsView, true, &[_][]const u8{ "NAMESPACE", "NAME", "DESIRED", "CURRENT", "READY", "UP-TO-DATE", "AGE" } },
+        .{ ReplicaSetsView, false, &[_][]const u8{ "NAMESPACE", "NAME", "DESIRED", "CURRENT", "READY", "AGE" } },
+    };
+    inline for (Cases) |case| {
+        try std.testing.expect(case[0].view_config.is_namespaced);
+        try std.testing.expectEqual(case[1], case[0].view_config.default_all_namespaces);
+        try std.testing.expectEqual(case[2].len, case[0].view_config.columns.len);
+        inline for (case[2], 0..) |name, index| {
+            try std.testing.expectEqualStrings(name, case[0].view_config.columns[index].name);
+        }
+    }
+}
+
+test "batch view declarations preserve exact columns scopes and defaults" {
+    const Cases = .{
+        .{ JobsView, false, &[_][]const u8{ "NAMESPACE", "NAME", "COMPLETIONS", "DURATION", "AGE" } },
+        .{ CronJobsView, false, &[_][]const u8{ "NAMESPACE", "NAME", "SCHEDULE", "SUSPEND", "ACTIVE", "LAST" } },
+        .{ HPAView, true, &[_][]const u8{ "NAMESPACE", "NAME", "MINPODS", "MAXPODS", "REPLICAS", "AGE" } },
+        .{ PodDisruptionBudgetsView, true, &[_][]const u8{ "NAMESPACE", "NAME", "MIN-AVAILABLE", "MAX-UNAVAILABLE", "ALLOWED-DISRUPTIONS", "AGE" } },
+    };
+    inline for (Cases) |case| {
+        try std.testing.expect(case[0].view_config.is_namespaced);
+        try std.testing.expectEqual(case[1], case[0].view_config.default_all_namespaces);
+        try std.testing.expectEqual(case[2].len, case[0].view_config.columns.len);
+        inline for (case[2], 0..) |name, index| {
+            try std.testing.expectEqualStrings(name, case[0].view_config.columns[index].name);
+        }
+    }
+}
+
+test "networking view declarations preserve exact columns scopes and defaults" {
+    const Cases = .{
+        .{ IngressesView, true, false, &[_][]const u8{ "NAMESPACE", "NAME", "CLASS", "HOSTS", "ADDRESS", "PORTS", "AGE" } },
+        .{ IngressClassesView, false, false, &[_][]const u8{ "NAME", "CONTROLLER", "AGE" } },
+        .{ NetworkPoliciesView, true, false, &[_][]const u8{ "NAMESPACE", "NAME", "POD-SELECTOR", "AGE" } },
+        .{ IPAddressesView, false, false, &[_][]const u8{ "NAME", "PARENT", "AGE" } },
+        .{ ServiceCIDRsView, false, false, &[_][]const u8{ "NAME", "CIDRS", "AGE" } },
+    };
+    inline for (Cases) |case| {
+        try std.testing.expectEqual(case[1], case[0].view_config.is_namespaced);
+        try std.testing.expectEqual(case[2], case[0].view_config.default_all_namespaces);
+        try std.testing.expectEqual(case[3].len, case[0].view_config.columns.len);
+        inline for (case[3], 0..) |name, index| {
+            try std.testing.expectEqualStrings(name, case[0].view_config.columns[index].name);
+        }
+    }
+}
+
+test "storage view declarations preserve exact columns scopes and defaults" {
+    const Cases = .{
+        .{ PersistentVolumesView, "persistentvolumes", false, &[_][]const u8{ "NAME", "CAPACITY", "ACCESS", "RECLAIM", "STATUS", "CLAIM", "STORAGECLASS", "AGE" } },
+        .{ PersistentVolumeClaimsView, "persistentvolumeclaims", true, &[_][]const u8{ "NAMESPACE", "NAME", "STATUS", "VOLUME", "CAPACITY", "ACCESS", "STORAGECLASS", "AGE" } },
+        .{ StorageClassesView, "storageclasses", false, &[_][]const u8{ "NAME", "PROVISIONER", "RECLAIMPOLICY", "BINDMODE", "EXPANSION", "AGE" } },
+        .{ VolumeAttributesClassesView, "volumeattributesclasses", false, &[_][]const u8{ "NAME", "DRIVER", "AGE" } },
+        .{ CSIDriversView, "csidrivers", false, &[_][]const u8{ "NAME", "ATTACHREQUIRED", "PODINFO", "AGE" } },
+    };
+    inline for (Cases) |case| {
+        try std.testing.expectEqualStrings(case[1], case[0].view_config.name);
+        try std.testing.expectEqual(case[2], case[0].view_config.is_namespaced);
+        try std.testing.expectEqual(case[3].len, case[0].view_config.columns.len);
+        inline for (case[3], 0..) |name, index|
+            try std.testing.expectEqualStrings(name, case[0].view_config.columns[index].name);
+    }
+}
+
+test "workload faults-only filter uses READY status" {
+    const allocator = std.testing.allocator;
+    var service: @import("../services/K8sService.zig").K8sService = undefined;
+    var theme: @import("../model/theme_loader.zig").ThemeColors = undefined;
+    var view = try DeploymentsView.init(allocator, &theme, &service);
+    defer view.deinit();
+    try view.table.appendItem(.{
+        .columns = .{
+            try allocator.dupe(u8, "team"),
+            try allocator.dupe(u8, "healthy"),
+            try allocator.dupe(u8, "3/3"),
+            try allocator.dupe(u8, "3"),
+            try allocator.dupe(u8, "3"),
+            try allocator.dupe(u8, "1m"),
+        },
+        .allocator = allocator,
+        .uid = try allocator.dupe(u8, "healthy-uid"),
+    });
+    try view.table.appendItem(.{
+        .columns = .{
+            try allocator.dupe(u8, "team"),
+            try allocator.dupe(u8, "unhealthy"),
+            try allocator.dupe(u8, "1/3"),
+            try allocator.dupe(u8, "2"),
+            try allocator.dupe(u8, "1"),
+            try allocator.dupe(u8, "1m"),
+        },
+        .allocator = allocator,
+        .uid = try allocator.dupe(u8, "unhealthy-uid"),
+    });
+    try view.applyFilter("");
+    _ = try DeploymentsView.handleKey(&view, .ctrl_z);
+    try std.testing.expectEqual(@as(usize, 1), view.table.filtered_indices.items.len);
+    try std.testing.expectEqualStrings(
+        "unhealthy",
+        view.table.items.items[view.table.filtered_indices.items[0]].columns[1],
+    );
+}
+
+test "stateful set faults-only filter uses READY status" {
+    const allocator = std.testing.allocator;
+    var service: @import("../services/K8sService.zig").K8sService = undefined;
+    var theme: @import("../model/theme_loader.zig").ThemeColors = undefined;
+    var view = try StatefulSetsView.init(allocator, &theme, &service);
+    defer view.deinit();
+    inline for (.{
+        .{ "healthy", "3/3", "healthy-uid" },
+        .{ "unhealthy", "1/3", "unhealthy-uid" },
+    }) |row| {
+        try view.table.appendItem(.{
+            .columns = .{
+                try allocator.dupe(u8, "team"),
+                try allocator.dupe(u8, row[0]),
+                try allocator.dupe(u8, row[1]),
+                try allocator.dupe(u8, "1m"),
+            },
+            .allocator = allocator,
+            .uid = try allocator.dupe(u8, row[2]),
+        });
+    }
+    try view.applyFilter("");
+    _ = try StatefulSetsView.handleKey(&view, .ctrl_z);
+    try std.testing.expectEqual(@as(usize, 1), view.table.filtered_indices.items.len);
+    try std.testing.expectEqualStrings("unhealthy", view.table.items.items[view.table.filtered_indices.items[0]].columns[1]);
+}
+
+test "daemon set faults-only filter compares bare READY to DESIRED" {
+    const allocator = std.testing.allocator;
+    var service: @import("../services/K8sService.zig").K8sService = undefined;
+    var theme: @import("../model/theme_loader.zig").ThemeColors = undefined;
+    var view = try DaemonSetsView.init(allocator, &theme, &service);
+    defer view.deinit();
+    inline for (.{
+        .{ "healthy", "3", "healthy-uid" },
+        .{ "unhealthy", "1", "unhealthy-uid" },
+    }) |row| {
+        try view.table.appendItem(.{
+            .columns = .{
+                try allocator.dupe(u8, "team"),
+                try allocator.dupe(u8, row[0]),
+                try allocator.dupe(u8, "3"),
+                try allocator.dupe(u8, "3"),
+                try allocator.dupe(u8, row[1]),
+                try allocator.dupe(u8, "3"),
+                try allocator.dupe(u8, "1m"),
+            },
+            .allocator = allocator,
+            .uid = try allocator.dupe(u8, row[2]),
+        });
+    }
+    try view.applyFilter("");
+    _ = try DaemonSetsView.handleKey(&view, .ctrl_z);
+    try std.testing.expectEqual(@as(usize, 1), view.table.filtered_indices.items.len);
+    try std.testing.expectEqualStrings("unhealthy", view.table.items.items[view.table.filtered_indices.items[0]].columns[1]);
+}
+
+test "replica set faults-only filter compares bare READY to DESIRED" {
+    const allocator = std.testing.allocator;
+    var service: @import("../services/K8sService.zig").K8sService = undefined;
+    var theme: @import("../model/theme_loader.zig").ThemeColors = undefined;
+    var view = try ReplicaSetsView.init(allocator, &theme, &service);
+    defer view.deinit();
+    inline for (.{
+        .{ "healthy", "3", "healthy-uid" },
+        .{ "unhealthy", "1", "unhealthy-uid" },
+    }) |row| {
+        try view.table.appendItem(.{
+            .columns = .{
+                try allocator.dupe(u8, "team"),
+                try allocator.dupe(u8, row[0]),
+                try allocator.dupe(u8, "3"),
+                try allocator.dupe(u8, "3"),
+                try allocator.dupe(u8, row[1]),
+                try allocator.dupe(u8, "1m"),
+            },
+            .allocator = allocator,
+            .uid = try allocator.dupe(u8, row[2]),
+        });
+    }
+    try view.applyFilter("");
+    _ = try ReplicaSetsView.handleKey(&view, .ctrl_z);
+    try std.testing.expectEqual(@as(usize, 1), view.table.filtered_indices.items.len);
+    try std.testing.expectEqualStrings("unhealthy", view.table.items.items[view.table.filtered_indices.items[0]].columns[1]);
+}
+
+test "services scope toggle requests exact subscription restart" {
+    const ServiceRecord = @import("../k8s/ServiceRecord.zig");
+    const Projection = @import("../k8s/ResourceProjection.zig").ResourceProjection(ServiceRecord);
+    const Fns = struct {
+        fn match(_: *const ServiceRecord, _: []const u8) bool {
+            return true;
+        }
+        fn sort(record: *const ServiceRecord, _: u8) []const u8 {
+            return record.key.name;
+        }
+        fn enabled() bool {
+            return true;
+        }
+        fn columns(
+            _: *Projection,
+            record: *const ServiceRecord,
+            allocator: std.mem.Allocator,
+        ) ![7][]const u8 {
+            return record.columns(allocator);
+        }
+    };
+    var projection = Projection.init(std.testing.allocator, .{
+        .matchFn = Fns.match,
+        .sortKeyFn = Fns.sort,
+    });
+    defer projection.deinit();
+    var service: @import("../services/K8sService.zig").K8sService = undefined;
+    var theme: @import("../model/theme_loader.zig").ThemeColors = undefined;
+    var services = try ServicesView.init(std.testing.allocator, &theme, &service);
+    defer services.deinit();
+    services.bindProjection(ServicesView.ProjectionAdapter.init(
+        ServiceRecord,
+        &projection,
+        Fns.enabled,
+        Fns.columns,
+    ));
+    services.markSubscriptionStarted();
+    _ = try ServicesView.handleKey(&services, .{ .char = '0' });
+    try std.testing.expect(services.table.show_all_namespaces);
+    try std.testing.expectEqual(.restart, services.takeSubscriptionRequest());
+}
+
+fn exerciseFamilyAtomicSync(
+    comptime Record: type,
+    comptime ViewType: type,
+    comptime columns_count: usize,
+) !void {
+    const Projection = @import("../k8s/ResourceProjection.zig").ResourceProjection(Record);
+    const keys = @import("../k8s/ResourceKey.zig");
+    const column_count = columns_count;
+    const Fns = struct {
+        fn match(_: *const Record, _: []const u8) bool {
+            return true;
+        }
+        fn sort(item: *const Record, _: u8) []const u8 {
+            return item.key.name;
+        }
+        fn enabled() bool {
+            return true;
+        }
+        fn columns(
+            _: *Projection,
+            item: *const Record,
+            allocator: std.mem.Allocator,
+        ) ![column_count][]const u8 {
+            return item.columns(allocator);
+        }
+        fn makeRecord(allocator: std.mem.Allocator) !Record {
+            const ServiceRecord = @import("../k8s/ServiceRecord.zig");
+            const EndpointRecord = @import("../k8s/EndpointRecord.zig");
+            const ConfigMapRecord = @import("../k8s/ConfigMapRecord.zig");
+            const SecretRecord = @import("../k8s/SecretRecord.zig");
+            const ServiceAccountRecord = @import("../k8s/ServiceAccountRecord.zig");
+            const ResourceQuotaRecord = @import("../k8s/ResourceQuotaRecord.zig");
+            const LimitRangeRecord = @import("../k8s/LimitRangeRecord.zig");
+            const DeploymentRecord = @import("../k8s/DeploymentRecord.zig");
+            const StatefulSetRecord = @import("../k8s/StatefulSetRecord.zig");
+            const DaemonSetRecord = @import("../k8s/DaemonSetRecord.zig");
+            const ReplicaSetRecord = @import("../k8s/ReplicaSetRecord.zig");
+            const JobRecord = @import("../k8s/JobRecord.zig");
+            const CronJobRecord = @import("../k8s/CronJobRecord.zig");
+            const HPARecord = @import("../k8s/HPARecord.zig");
+            const PDBRecord = @import("../k8s/PDBRecord.zig");
+            const IngressRecord = @import("../k8s/IngressRecord.zig");
+            const IngressClassRecord = @import("../k8s/IngressClassRecord.zig");
+            const NetworkPolicyRecord = @import("../k8s/NetworkPolicyRecord.zig");
+            const IPAddressRecord = @import("../k8s/IPAddressRecord.zig");
+            const ServiceCIDRRecord = @import("../k8s/ServiceCIDRRecord.zig");
+            const PVRecord = @import("../k8s/PVRecord.zig");
+            const PVCRecord = @import("../k8s/PVCRecord.zig");
+            const StorageClassRecord = @import("../k8s/StorageClassRecord.zig");
+            const VolumeAttributesClassRecord = @import("../k8s/VolumeAttributesClassRecord.zig");
+            const CSIDriverRecord = @import("../k8s/CSIDriverRecord.zig");
+            const key = try (keys.ObjectKey{
+                .uid = "resource-uid",
+                .namespace = if (ViewType.view_config.is_namespaced) "default" else "",
+                .name = "api",
+            }).clone(allocator);
+            if (comptime Record == ServiceRecord) return .{
+                .key = key,
+                .service_type = try allocator.dupe(u8, "ClusterIP"),
+                .cluster_ip = try allocator.dupe(u8, "10.96.0.1"),
+                .external_ip = try allocator.dupe(u8, "<none>"),
+                .ports = try allocator.dupe(u8, "80/TCP"),
+            };
+            if (comptime Record == EndpointRecord) return .{
+                .key = key,
+                .endpoints = try allocator.dupe(u8, "2"),
+            };
+            if (comptime Record == ConfigMapRecord) return .{
+                .key = key,
+                .data_count = 2,
+            };
+            if (comptime Record == SecretRecord) return .{
+                .key = key,
+                .secret_type = try allocator.dupe(u8, "Opaque"),
+                .data_count = 2,
+            };
+            if (comptime Record == ServiceAccountRecord) return .{
+                .key = key,
+                .secret_count = 2,
+            };
+            if (comptime Record == ResourceQuotaRecord or Record == LimitRangeRecord) return .{
+                .key = key,
+            };
+            if (comptime Record == DeploymentRecord) return .{
+                .key = key,
+                .ready_replicas = 2,
+                .desired_replicas = 4,
+                .updated_replicas = 3,
+                .available_replicas = 1,
+            };
+            if (comptime Record == StatefulSetRecord) return .{
+                .key = key,
+                .ready_replicas = 2,
+                .desired_replicas = 3,
+            };
+            if (comptime Record == DaemonSetRecord) return .{
+                .key = key,
+                .desired = 5,
+                .current = 4,
+                .ready = 3,
+                .updated = 2,
+            };
+            if (comptime Record == ReplicaSetRecord) return .{
+                .key = key,
+                .desired = 4,
+                .current = 3,
+                .ready = 2,
+            };
+            if (comptime Record == JobRecord) return .{
+                .key = key,
+                .succeeded = 2,
+                .desired = 4,
+                .completions_sort_key = JobRecord.ratioSortKey(2, 4),
+            };
+            if (comptime Record == CronJobRecord) return .{
+                .key = key,
+                .schedule = try allocator.dupe(u8, "0 0 * * *"),
+                .@"suspend" = false,
+                .active = 2,
+                .active_sort_key = CronJobRecord.countSortKey(2),
+            };
+            if (comptime Record == HPARecord) return .{
+                .key = key,
+                .min_replicas = 2,
+                .max_replicas = 10,
+                .current_replicas = 4,
+                .min_sort_key = HPARecord.countSortKey(2),
+                .max_sort_key = HPARecord.countSortKey(10),
+                .current_sort_key = HPARecord.countSortKey(4),
+            };
+            if (comptime Record == PDBRecord) return .{
+                .key = key,
+                .min_available = try allocator.dupe(u8, "1"),
+                .max_unavailable = try allocator.dupe(u8, "1"),
+                .allowed_disruptions = 2,
+                .allowed_sort_key = PDBRecord.countSortKey(2),
+            };
+            if (comptime Record == IngressRecord) return .{
+                .key = key,
+                .class = try allocator.dupe(u8, "nginx"),
+                .hosts = try allocator.dupe(u8, "api.example"),
+                .address = try allocator.dupe(u8, "10.0.0.1"),
+                .ports = try allocator.dupe(u8, "80"),
+            };
+            if (comptime Record == IngressClassRecord) return .{
+                .key = key,
+                .controller = try allocator.dupe(u8, "k8s.io/ingress-nginx"),
+            };
+            if (comptime Record == NetworkPolicyRecord) return .{
+                .key = key,
+                .pod_selector = try allocator.dupe(u8, "app=api"),
+            };
+            if (comptime Record == IPAddressRecord) return .{
+                .key = key,
+                .parent = try allocator.dupe(u8, "service-a"),
+            };
+            if (comptime Record == ServiceCIDRRecord) return .{
+                .key = key,
+                .cidrs = try allocator.dupe(u8, "10.96.0.0/12"),
+            };
+            if (comptime Record == PVRecord) return .{
+                .key = key,
+                .capacity = try allocator.dupe(u8, "10Gi"),
+                .capacity_sort_key = PVRecord.capacitySortKey("10Gi"),
+                .access = try allocator.dupe(u8, "RWO"),
+                .reclaim = try allocator.dupe(u8, "Retain"),
+                .status = try allocator.dupe(u8, "Bound"),
+                .claim = try allocator.dupe(u8, "default/cache"),
+                .storage_class = try allocator.dupe(u8, "fast"),
+            };
+            if (comptime Record == PVCRecord) return .{
+                .key = key,
+                .status = try allocator.dupe(u8, "Bound"),
+                .volume = try allocator.dupe(u8, "pv-1"),
+                .capacity = try allocator.dupe(u8, "10Gi"),
+                .capacity_sort_key = PVRecord.capacitySortKey("10Gi"),
+                .access = try allocator.dupe(u8, "RWO"),
+                .storage_class = try allocator.dupe(u8, "fast"),
+            };
+            if (comptime Record == StorageClassRecord) return .{
+                .key = key,
+                .provisioner = try allocator.dupe(u8, "csi.example"),
+                .reclaim_policy = try allocator.dupe(u8, "Retain"),
+                .bind_mode = try allocator.dupe(u8, "Immediate"),
+                .expansion = true,
+            };
+            if (comptime Record == VolumeAttributesClassRecord) return .{
+                .key = key,
+                .driver = try allocator.dupe(u8, "csi.example"),
+            };
+            if (comptime Record == CSIDriverRecord) return .{
+                .key = key,
+                .attach_required = true,
+                .pod_info = false,
+            };
+            return .{
+                .key = key,
+                .address_type = try allocator.dupe(u8, "IPv4"),
+                .endpoints = try allocator.dupe(u8, "2"),
+            };
+        }
+    };
+    const backing = std.testing.allocator;
+    var projection = Projection.init(backing, .{
+        .matchFn = Fns.match,
+        .sortKeyFn = Fns.sort,
+    });
+    defer projection.deinit();
+    var failing = std.testing.FailingAllocator.init(backing, .{});
+    var service: @import("../services/K8sService.zig").K8sService = undefined;
+    var theme: @import("../model/theme_loader.zig").ThemeColors = undefined;
+    var view = try ViewType.init(failing.allocator(), &theme, &service);
+    defer view.deinit();
+    view.bindProjection(ViewType.ProjectionAdapter.init(
+        Record,
+        &projection,
+        Fns.enabled,
+        Fns.columns,
+    ));
+    const changes = try backing.alloc(keys.TypedChange(Record), 1);
+    changes[0] = .{ .initial_upsert = try Fns.makeRecord(backing) };
+    var batch = keys.TypedBatch(Record){
+        .generation = 1,
+        .subscription_id = 1,
+        .revision = 1,
+        .changes = changes,
+        .sync = .list_started,
+        .owned_bytes = 1,
+    };
+    defer batch.deinit(backing);
+    var plan = try Projection.handler().preflight(@ptrCast(&projection), &batch, backing);
+    Projection.handler().commit(@ptrCast(&projection), &batch, &plan);
+    plan.deinit(backing);
+    try view.syncProjection();
+    try std.testing.expectEqualStrings(
+        "api",
+        view.table.items.items[0].columns[ViewType.view_config.name_column],
+    );
+
+    failing.fail_index = failing.alloc_index;
+    try std.testing.expectError(error.OutOfMemory, view.syncProjection());
+    try std.testing.expectEqual(@as(usize, 1), view.table.items.items.len);
+    try std.testing.expectEqualStrings(
+        "api",
+        view.table.items.items[0].columns[ViewType.view_config.name_column],
+    );
+}
+
+test "services family projection table synchronization is allocation atomic" {
+    try exerciseFamilyAtomicSync(
+        @import("../k8s/ServiceRecord.zig"),
+        ServicesView,
+        7,
+    );
+    try exerciseFamilyAtomicSync(
+        @import("../k8s/EndpointRecord.zig"),
+        EndpointsView,
+        4,
+    );
+    try exerciseFamilyAtomicSync(
+        @import("../k8s/EndpointSliceRecord.zig"),
+        EndpointSlicesView,
+        5,
+    );
+}
+
+test "config family projection table synchronization is allocation atomic" {
+    try exerciseFamilyAtomicSync(
+        @import("../k8s/ConfigMapRecord.zig"),
+        ConfigMapsView,
+        4,
+    );
+    try exerciseFamilyAtomicSync(
+        @import("../k8s/SecretRecord.zig"),
+        SecretsView,
+        5,
+    );
+    try exerciseFamilyAtomicSync(
+        @import("../k8s/ServiceAccountRecord.zig"),
+        ServiceAccountsView,
+        4,
+    );
+    try exerciseFamilyAtomicSync(
+        @import("../k8s/ResourceQuotaRecord.zig"),
+        ResourceQuotasView,
+        3,
+    );
+    try exerciseFamilyAtomicSync(
+        @import("../k8s/LimitRangeRecord.zig"),
+        LimitRangesView,
+        3,
+    );
+}
+
+test "workload family projection table synchronization is allocation atomic" {
+    try exerciseFamilyAtomicSync(
+        @import("../k8s/DeploymentRecord.zig"),
+        DeploymentsView,
+        6,
+    );
+    try exerciseFamilyAtomicSync(
+        @import("../k8s/StatefulSetRecord.zig"),
+        StatefulSetsView,
+        4,
+    );
+    try exerciseFamilyAtomicSync(
+        @import("../k8s/DaemonSetRecord.zig"),
+        DaemonSetsView,
+        7,
+    );
+    try exerciseFamilyAtomicSync(
+        @import("../k8s/ReplicaSetRecord.zig"),
+        ReplicaSetsView,
+        6,
+    );
+}
+
+test "batch family projection table synchronization is allocation atomic" {
+    try exerciseFamilyAtomicSync(@import("../k8s/JobRecord.zig"), JobsView, 5);
+    try exerciseFamilyAtomicSync(@import("../k8s/CronJobRecord.zig"), CronJobsView, 6);
+    try exerciseFamilyAtomicSync(@import("../k8s/HPARecord.zig"), HPAView, 6);
+    try exerciseFamilyAtomicSync(@import("../k8s/PDBRecord.zig"), PodDisruptionBudgetsView, 6);
+}
+
+test "networking family projection table synchronization is allocation atomic" {
+    try exerciseFamilyAtomicSync(@import("../k8s/IngressRecord.zig"), IngressesView, 7);
+    try exerciseFamilyAtomicSync(@import("../k8s/IngressClassRecord.zig"), IngressClassesView, 3);
+    try exerciseFamilyAtomicSync(@import("../k8s/NetworkPolicyRecord.zig"), NetworkPoliciesView, 4);
+    try exerciseFamilyAtomicSync(@import("../k8s/IPAddressRecord.zig"), IPAddressesView, 3);
+    try exerciseFamilyAtomicSync(@import("../k8s/ServiceCIDRRecord.zig"), ServiceCIDRsView, 3);
+}
+
+test "storage family projection table synchronization is allocation atomic" {
+    try exerciseFamilyAtomicSync(@import("../k8s/PVRecord.zig"), PersistentVolumesView, 8);
+    try exerciseFamilyAtomicSync(@import("../k8s/PVCRecord.zig"), PersistentVolumeClaimsView, 8);
+    try exerciseFamilyAtomicSync(@import("../k8s/StorageClassRecord.zig"), StorageClassesView, 6);
+    try exerciseFamilyAtomicSync(@import("../k8s/VolumeAttributesClassRecord.zig"), VolumeAttributesClassesView, 3);
+    try exerciseFamilyAtomicSync(@import("../k8s/CSIDriverRecord.zig"), CSIDriversView, 4);
+}
+
 pub const ResourceClaimsView = modern.ResourceClaimsView;
 pub const DeviceClassesView = modern.DeviceClassesView;
 pub const PriorityClassesView = modern.PriorityClassesView;

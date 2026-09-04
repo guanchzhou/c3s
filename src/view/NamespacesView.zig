@@ -20,12 +20,22 @@ const TableState = @import("../ui/TableState.zig").TableState;
 const runtime = @import("../core/runtime.zig");
 const ActiveContextSession = @import("../k8s/ActiveContextSession.zig").ActiveContextSession;
 const ActiveSessionSlot = @import("../k8s/ActiveSessionSlot.zig").ActiveSessionSlot;
+const NamespaceRecord = @import("../k8s/NamespaceRecord.zig");
+const NamespaceProjection = @import("../k8s/ResourceProjection.zig").ResourceProjection(NamespaceRecord);
+
+pub var active_namespace_source: @import("resource_view.zig").Source = .data_plane;
+pub var legacy_loader_test_hook: ?*const fn () void = null;
 
 pub const NamespacesView = struct {
+    pub const SubscriptionRequest = enum { none, start, restart };
+
     theme: *const theme_loader.ThemeColors,
     k8s_service: *K8sService,
     table: TableState(NamespaceInfo),
     current_namespace: []const u8,
+    projection: ?*NamespaceProjection = null,
+    subscription_started: bool = false,
+    subscription_request: SubscriptionRequest = .none,
 
     // Sort column indices
     const COL_NAME: u8 = 0;
@@ -36,12 +46,14 @@ pub const NamespacesView = struct {
         name: []const u8,
         status: []const u8,
         age: []const u8,
+        uid: []const u8 = &.{},
         allocator: std.mem.Allocator,
 
         pub fn deinit(self: *NamespaceInfo) void {
             self.allocator.free(self.name);
             self.allocator.free(self.status);
             self.allocator.free(self.age);
+            if (self.uid.len > 0) self.allocator.free(self.uid);
         }
 
         fn getName(self: *const NamespaceInfo) []const u8 {
@@ -75,8 +87,36 @@ pub const NamespacesView = struct {
         self.table.deinit();
     }
 
+    pub fn bindProjection(self: *NamespacesView, projection: *NamespaceProjection) void {
+        self.projection = projection;
+    }
+
+    pub fn markSubscriptionStarted(self: *NamespacesView) void {
+        self.subscription_started = true;
+        self.subscription_request = .none;
+    }
+
+    pub fn markSubscriptionStopped(self: *NamespacesView) void {
+        self.subscription_started = false;
+    }
+
+    pub fn takeSubscriptionRequest(self: *NamespacesView) SubscriptionRequest {
+        const request = self.subscription_request;
+        self.subscription_request = .none;
+        return request;
+    }
+
     /// Refresh namespaces list from K8s API
     pub fn refresh(self: *NamespacesView) !void {
+        if (active_namespace_source == .data_plane and self.projection != null) {
+            self.table.loading = self.table.items.items.len == 0;
+            self.subscription_request = if (self.subscription_started) .restart else .start;
+            return;
+        }
+        if (legacy_loader_test_hook) |hook| {
+            hook();
+            return;
+        }
         // Remember the selected namespace name before clearItems frees the rows.
         const preserve_name_owned: ?[]const u8 = if (self.table.getSelectedItem()) |item|
             try self.table.allocator.dupe(u8, item.name)
@@ -126,6 +166,10 @@ pub const NamespacesView = struct {
                 .name = try self.table.allocator.dupe(u8, ns.metadata.name),
                 .status = status,
                 .age = try age_util.calculateAge(self.table.allocator, ns.metadata.creationTimestamp),
+                .uid = if (ns.metadata.uid) |uid|
+                    try self.table.allocator.dupe(u8, uid)
+                else
+                    &.{},
                 .allocator = self.table.allocator,
             };
 
@@ -137,6 +181,68 @@ pub const NamespacesView = struct {
         // Rebuild filtered indices
         try self.applyFilter(self.table.filter_text);
         self.restoreSelectionAfterRefresh(preserve_name_owned, preserve_scroll);
+    }
+
+    pub fn syncProjection(self: *NamespacesView) !void {
+        const projection = self.projection orelse return;
+        if (self.table.getSelectedItem()) |selected| {
+            if (selected.uid.len > 0) _ = projection.selectUid(selected.uid);
+        }
+
+        var next_items: std.ArrayListUnmanaged(NamespaceInfo) = .empty;
+        errdefer {
+            for (next_items.items) |*item| item.deinit();
+            next_items.deinit(self.table.allocator);
+        }
+        var next_indices: std.ArrayListUnmanaged(usize) = .empty;
+        errdefer next_indices.deinit(self.table.allocator);
+        try next_items.ensureTotalCapacity(self.table.allocator, projection.visibleCount());
+        try next_indices.ensureTotalCapacity(self.table.allocator, projection.visibleCount());
+
+        var row: usize = 0;
+        while (row < projection.visibleCount()) : (row += 1) {
+            const uid = projection.visibleUid(row) orelse continue;
+            const record = projection.record(uid) orelse continue;
+            const name = try self.table.allocator.dupe(u8, record.key.name);
+            var name_owned = true;
+            errdefer if (name_owned) self.table.allocator.free(name);
+            const status = try self.table.allocator.dupe(u8, record.status);
+            var status_owned = true;
+            errdefer if (status_owned) self.table.allocator.free(status);
+            const age = try record.age(self.table.allocator);
+            var age_owned = true;
+            errdefer if (age_owned) self.table.allocator.free(age);
+            const owned_uid = try self.table.allocator.dupe(u8, uid);
+            next_items.appendAssumeCapacity(.{
+                .name = name,
+                .status = status,
+                .age = age,
+                .uid = owned_uid,
+                .allocator = self.table.allocator,
+            });
+            name_owned = false;
+            status_owned = false;
+            age_owned = false;
+            next_indices.appendAssumeCapacity(next_items.items.len - 1);
+        }
+
+        self.table.clearItems();
+        self.table.items.deinit(self.table.allocator);
+        self.table.filtered_indices.deinit(self.table.allocator);
+        self.table.items = next_items;
+        self.table.filtered_indices = next_indices;
+        next_items = .empty;
+        next_indices = .empty;
+        self.table.loading = false;
+
+        if (projection.selectedUid()) |selected_uid| {
+            for (self.table.filtered_indices.items, 0..) |item_index, visible_index| {
+                if (std.mem.eql(u8, self.table.items.items[item_index].uid, selected_uid)) {
+                    self.table.selected_row = @intCast(visible_index);
+                    break;
+                }
+            }
+        }
     }
 
     fn restoreSelectionAfterRefresh(
@@ -172,11 +278,38 @@ pub const NamespacesView = struct {
     }
 
     pub fn applyFilter(self: *NamespacesView, filter: []const u8) !void {
+        if (active_namespace_source == .data_plane) {
+            if (self.projection != null) {
+                const owned_filter: []const u8 = if (filter.len > 0)
+                    try self.table.allocator.dupe(u8, filter)
+                else
+                    "";
+                errdefer if (owned_filter.len > 0) self.table.allocator.free(owned_filter);
+                try self.setProjectionViewAndSync(
+                    filter,
+                    self.table.sort_column orelse COL_NAME,
+                    self.table.sort_ascending,
+                );
+                if (self.table.filter_text.len > 0) self.table.allocator.free(self.table.filter_text);
+                self.table.filter_text = owned_filter;
+                return;
+            }
+        }
         try self.table.applyFilter(filter, namespaceMatchFn);
         self.applySorting();
     }
 
     fn applySorting(self: *NamespacesView) void {
+        if (active_namespace_source == .data_plane) {
+            if (self.projection != null) {
+                self.setProjectionViewAndSync(
+                    self.table.filter_text,
+                    self.table.sort_column orelse COL_NAME,
+                    self.table.sort_ascending,
+                ) catch return;
+                return;
+            }
+        }
         if (self.table.sort_column) |col| {
             switch (col) {
                 COL_NAME => self.table.sortBy(NamespaceInfo.getName),
@@ -185,6 +318,25 @@ pub const NamespacesView = struct {
                 else => {},
             }
         }
+    }
+
+    fn setProjectionViewAndSync(
+        self: *NamespacesView,
+        filter: []const u8,
+        column: u8,
+        ascending: bool,
+    ) !void {
+        const projection = self.projection orelse return;
+        var rollback = try projection.captureView();
+        projection.setView(filter, column, ascending) catch |err| {
+            rollback.deinit(projection.allocator);
+            return err;
+        };
+        self.syncProjection() catch |err| {
+            projection.restoreView(&rollback);
+            return err;
+        };
+        rollback.deinit(projection.allocator);
     }
 
     fn namespaceMatchFn(item: *const NamespaceInfo, filter: []const u8) bool {
@@ -283,7 +435,11 @@ pub const NamespacesView = struct {
         for (self.table.filtered_indices.items[range.start..range.end], 0..) |ns_idx, i| {
             const ns = self.table.items.items[ns_idx];
             const colors = self.table.rowColors(i, self.theme);
-            const is_current = std.mem.eql(u8, ns.name, self.current_namespace);
+            const is_current = std.mem.eql(
+                u8,
+                ns.name,
+                self.k8s_service.getCurrentNamespace(),
+            );
             const row_y = y + 1 + @as(u16, @intCast(i));
 
             // Paint the full row background first so inter-column gaps share
@@ -639,4 +795,160 @@ test "namespace selection survives a reordered refresh" {
 
     const selected = view.table.getSelectedItem().?;
     try std.testing.expectEqualStrings("gamma", selected.name);
+}
+
+test "namespace projection preserves current namespace and UID selection across watch update" {
+    const keys = @import("../k8s/ResourceKey.zig");
+    const allocator = std.testing.allocator;
+    const ProjectionFns = struct {
+        fn match(record: *const NamespaceRecord, filter: []const u8) bool {
+            return filter.len == 0 or std.mem.indexOf(u8, record.key.name, filter) != null;
+        }
+        fn sort(record: *const NamespaceRecord, _: u8) []const u8 {
+            return record.key.name;
+        }
+    };
+    var projection = NamespaceProjection.init(allocator, .{
+        .matchFn = ProjectionFns.match,
+        .sortKeyFn = ProjectionFns.sort,
+    });
+    defer projection.deinit();
+    var service = try K8sService.init(allocator);
+    defer service.deinit();
+    allocator.free(service.current_namespace);
+    service.current_namespace = try allocator.dupe(u8, "team-a");
+    var theme: theme_loader.ThemeColors = undefined;
+    var view = try NamespacesView.init(allocator, &theme, &service);
+    defer view.deinit();
+    view.bindProjection(&projection);
+
+    const initial = try allocator.alloc(keys.TypedChange(NamespaceRecord), 2);
+    initial[0] = .{ .initial_upsert = .{
+        .key = try (keys.ObjectKey{ .uid = "uid-a", .namespace = "", .name = "team-a" }).clone(allocator),
+        .status = try allocator.dupe(u8, "Active"),
+    } };
+    initial[1] = .{ .initial_upsert = .{
+        .key = try (keys.ObjectKey{ .uid = "uid-b", .namespace = "", .name = "team-b" }).clone(allocator),
+        .status = try allocator.dupe(u8, "Active"),
+    } };
+    var batch = keys.TypedBatch(NamespaceRecord){
+        .generation = 1,
+        .subscription_id = 2,
+        .revision = 1,
+        .changes = initial,
+        .sync = .list_started,
+        .owned_bytes = 1,
+    };
+    defer batch.deinit(allocator);
+    var plan = try NamespaceProjection.handler().preflight(@ptrCast(&projection), &batch, allocator);
+    NamespaceProjection.handler().commit(@ptrCast(&projection), &batch, &plan);
+    plan.deinit(allocator);
+    try view.syncProjection();
+    try std.testing.expectEqualStrings("team-a", view.current_namespace);
+    view.table.selected_row = 1;
+    try view.syncProjection();
+
+    const update = try allocator.alloc(keys.TypedChange(NamespaceRecord), 1);
+    update[0] = .{ .watch_upsert = .{
+        .key = try (keys.ObjectKey{ .uid = "uid-b", .namespace = "", .name = "team-b" }).clone(allocator),
+        .status = try allocator.dupe(u8, "Terminating"),
+    } };
+    var update_batch = keys.TypedBatch(NamespaceRecord){
+        .generation = 1,
+        .subscription_id = 2,
+        .revision = 2,
+        .changes = update,
+        .sync = null,
+        .owned_bytes = 1,
+    };
+    defer update_batch.deinit(allocator);
+    var update_plan = try NamespaceProjection.handler().preflight(
+        @ptrCast(&projection),
+        &update_batch,
+        allocator,
+    );
+    NamespaceProjection.handler().commit(@ptrCast(&projection), &update_batch, &update_plan);
+    update_plan.deinit(allocator);
+    try view.syncProjection();
+    try std.testing.expectEqualStrings("team-a", view.current_namespace);
+    try std.testing.expectEqualStrings("uid-b", projection.selectedUid().?);
+    try std.testing.expectEqualStrings("team-b", view.table.getSelectedItem().?.name);
+    try std.testing.expectEqualStrings("Terminating", view.table.getSelectedItem().?.status);
+}
+
+test "namespace projection sync OOM preserves table selection and current namespace" {
+    const keys = @import("../k8s/ResourceKey.zig");
+    const backing = std.testing.allocator;
+    var failing = std.testing.FailingAllocator.init(backing, .{});
+    const ProjectionFns = struct {
+        fn match(_: *const NamespaceRecord, _: []const u8) bool {
+            return true;
+        }
+        fn sort(record: *const NamespaceRecord, _: u8) []const u8 {
+            return record.key.name;
+        }
+    };
+    var projection = NamespaceProjection.init(backing, .{
+        .matchFn = ProjectionFns.match,
+        .sortKeyFn = ProjectionFns.sort,
+    });
+    defer projection.deinit();
+    var service = try K8sService.init(backing);
+    defer service.deinit();
+    var theme: theme_loader.ThemeColors = undefined;
+    var view = try NamespacesView.init(failing.allocator(), &theme, &service);
+    defer view.deinit();
+    view.bindProjection(&projection);
+
+    const changes = try backing.alloc(keys.TypedChange(NamespaceRecord), 1);
+    changes[0] = .{ .initial_upsert = .{
+        .key = try (keys.ObjectKey{ .uid = "uid-a", .namespace = "", .name = "default" }).clone(backing),
+        .status = try backing.dupe(u8, "Active"),
+    } };
+    var batch = keys.TypedBatch(NamespaceRecord){
+        .generation = 1,
+        .subscription_id = 2,
+        .revision = 1,
+        .changes = changes,
+        .sync = .list_started,
+        .owned_bytes = 1,
+    };
+    defer batch.deinit(backing);
+    var plan = try NamespaceProjection.handler().preflight(@ptrCast(&projection), &batch, backing);
+    NamespaceProjection.handler().commit(@ptrCast(&projection), &batch, &plan);
+    plan.deinit(backing);
+    try view.syncProjection();
+    const selected_before = view.table.getSelectedItem().?.uid;
+    const visible_before = projection.visibleUid(0).?;
+    failing.fail_index = failing.alloc_index + 1;
+    try std.testing.expectError(error.OutOfMemory, view.applyFilter("def"));
+    try std.testing.expectEqualStrings("default", view.current_namespace);
+    try std.testing.expectEqualStrings(selected_before, view.table.getSelectedItem().?.uid);
+    try std.testing.expectEqualStrings(visible_before, projection.visibleUid(0).?);
+    try std.testing.expectEqual(@as(usize, 1), projection.visibleCount());
+    try std.testing.expectEqualStrings("", view.table.filter_text);
+}
+
+test "namespace rollback gate retains legacy list path" {
+    const previous = active_namespace_source;
+    defer active_namespace_source = previous;
+    const previous_hook = legacy_loader_test_hook;
+    defer legacy_loader_test_hook = previous_hook;
+    const Probe = struct {
+        var calls: usize = 0;
+        fn load() void {
+            calls += 1;
+        }
+    };
+    Probe.calls = 0;
+    active_namespace_source = .legacy_list;
+    legacy_loader_test_hook = Probe.load;
+    var service = try K8sService.init(std.testing.allocator);
+    defer service.deinit();
+    var theme: theme_loader.ThemeColors = undefined;
+    var view = try NamespacesView.init(std.testing.allocator, &theme, &service);
+    defer view.deinit();
+    try view.refresh();
+    try std.testing.expectEqual(@as(usize, 1), Probe.calls);
+    try std.testing.expectEqual(NamespacesView.SubscriptionRequest.none, view.takeSubscriptionRequest());
 }

@@ -53,15 +53,24 @@ pub const ChangeKind = enum {
 };
 
 pub const PodMetricsRecord = struct {
-    uid: []const u8 = &.{},
+    namespace: []const u8 = &.{},
+    name: []const u8 = &.{},
     cpu_milli: u64 = 0,
     mem_bytes: u64 = 0,
     revision: Revision = 0,
 
     pub fn deinit(self: *PodMetricsRecord, allocator: std.mem.Allocator) void {
-        if (self.uid.len > 0) allocator.free(self.uid);
-        self.uid = &.{};
+        if (self.namespace.len > 0) allocator.free(self.namespace);
+        if (self.name.len > 0) allocator.free(self.name);
+        self.namespace = &.{};
+        self.name = &.{};
     }
+};
+
+pub const MetricsStatus = enum {
+    available,
+    degraded,
+    unavailable,
 };
 
 pub const SyncBoundary = union(enum) {
@@ -71,7 +80,7 @@ pub const SyncBoundary = union(enum) {
         object_count: usize,
     },
     watch_connected,
-    metrics_ready,
+    metrics_ready: MetricsStatus,
     reconnecting,
 
     pub fn deinit(self: *SyncBoundary, allocator: std.mem.Allocator) void {
@@ -80,6 +89,14 @@ pub const SyncBoundary = union(enum) {
             else => {},
         }
     }
+};
+
+pub const SyncKind = enum {
+    list_started,
+    list_complete,
+    watch_connected,
+    metrics_ready,
+    reconnecting,
 };
 
 pub fn TypedChange(comptime Record: type) type {
@@ -137,8 +154,13 @@ pub fn TypedBatch(comptime Record: type) type {
     };
 }
 
+pub const ResourceIdentity = struct {
+    generation: Generation,
+    subscription_id: SubscriptionId,
+};
+
 pub const EnvelopeTarget = union(enum) {
-    resource: struct { generation: Generation, subscription_id: SubscriptionId },
+    resource: ResourceIdentity,
     lifecycle,
     header_metrics,
     traffic,
@@ -169,9 +191,18 @@ fn noopPlanDeinit(_: ?*anyopaque, _: std.mem.Alignment, _: std.mem.Allocator) vo
 pub const UiRouter = struct {
     context: *anyopaque,
     targetFn: *const fn (*anyopaque, EnvelopeTarget) ?*anyopaque,
+    lifecycleFn: ?*const fn (*anyopaque, *anyopaque, ?ResourceIdentity) void = null,
 
     pub fn target(self: *UiRouter, route: EnvelopeTarget) ?*anyopaque {
         return self.targetFn(self.context, route);
+    }
+
+    pub fn observeLifecycle(
+        self: *UiRouter,
+        payload: *anyopaque,
+        identity: ?ResourceIdentity,
+    ) void {
+        if (self.lifecycleFn) |observe| observe(self.context, payload, identity);
     }
 };
 
@@ -189,6 +220,9 @@ pub const Envelope = struct {
     revision: Revision = 0,
     owned_bytes: usize = 0,
     after_revision: ?Revision = null,
+    sync_kind: ?SyncKind = null,
+    change_count: usize = 0,
+    has_initial_changes: bool = false,
     target: EnvelopeTarget = .lifecycle,
     payload: ?*anyopaque = null,
     payload_alignment: std.mem.Alignment = .@"1",
@@ -283,12 +317,25 @@ pub fn eraseBatch(
         .list_complete => batch.revision,
         else => null,
     } else null;
+    const sync_kind: ?SyncKind = if (batch.sync) |sync| switch (sync) {
+        .list_started => .list_started,
+        .list_complete => .list_complete,
+        .watch_connected => .watch_connected,
+        .metrics_ready => .metrics_ready,
+        .reconnecting => .reconnecting,
+    } else null;
+    const has_initial_changes = for (batch.changes) |change| {
+        if (change == .initial_upsert) break true;
+    } else false;
     return .{
         .generation = batch.generation,
         .subscription_id = batch.subscription_id,
         .revision = batch.revision,
         .owned_bytes = batch.owned_bytes,
         .after_revision = after_revision,
+        .sync_kind = sync_kind,
+        .change_count = batch.changes.len,
+        .has_initial_changes = has_initial_changes,
         .target = .{ .resource = .{
             .generation = batch.generation,
             .subscription_id = batch.subscription_id,

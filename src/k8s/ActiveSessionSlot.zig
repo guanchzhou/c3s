@@ -68,6 +68,24 @@ pub const ActiveSessionSlot = struct {
         self: *ActiveSessionSlot,
         replacement: *ActiveContextSession,
     ) !?*ActiveContextSession {
+        return self.replace(replacement, true);
+    }
+
+    /// Atomically publishes a ready replacement and returns the invalidated
+    /// previous session. Existing leases remain valid and must drain before the
+    /// caller destroys the returned session.
+    pub fn replaceAndRetire(
+        self: *ActiveSessionSlot,
+        replacement: *ActiveContextSession,
+    ) !?*ActiveContextSession {
+        return self.replace(replacement, false);
+    }
+
+    fn replace(
+        self: *ActiveSessionSlot,
+        replacement: *ActiveContextSession,
+        require_no_leases: bool,
+    ) !?*ActiveContextSession {
         self.mutex.lockUncancelable(self.io);
         defer self.mutex.unlock(self.io);
 
@@ -75,9 +93,9 @@ pub const ActiveSessionSlot = struct {
             return error.SharedEventMismatch;
         }
         if (!replacement.isReady()) return error.SessionNotReady;
-        if (self.session) |current| {
+        if (require_no_leases) if (self.session) |current| {
             if (current.leaseCount() != 0) return error.LeasesOutstanding;
-        }
+        };
 
         try replacement.activateLocked();
         const previous = self.session;

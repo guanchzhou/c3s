@@ -14,10 +14,198 @@ const Cli = @import("cli.zig");
 const Config = @import("model/config.zig");
 const Logger = @import("core/logger.zig");
 const PerfTelemetry = @import("core/perf_telemetry.zig").PerfTelemetry;
+const perf = @import("core/perf_telemetry.zig");
 const Wakeup = @import("core/Wakeup.zig").Wakeup;
 const sys = @import("core/sys.zig");
 const ChangeQueue = @import("k8s/ChangeQueue.zig").ChangeQueue;
 const resource_key = @import("k8s/ResourceKey.zig");
+const lifecycle = @import("k8s/LifecycleInbox.zig");
+const lifecycle_supervisor = @import("k8s/LifecycleSupervisor.zig");
+const data_plane_mod = @import("k8s/DataPlane.zig");
+const DataPlane = data_plane_mod.DataPlane;
+const PodRecord = @import("k8s/PodRecord.zig");
+const PodProjection = @import("k8s/ResourceProjection.zig").ResourceProjection(PodRecord);
+const pod_subscription = @import("k8s/PodSubscription.zig");
+const metrics_feed = @import("k8s/MetricsFeed.zig");
+const NodeRecord = @import("k8s/NodeRecord.zig");
+const NamespaceRecord = @import("k8s/NamespaceRecord.zig");
+const NodeProjection = @import("k8s/ResourceProjection.zig").ResourceProjection(NodeRecord);
+const NamespaceProjection = @import("k8s/ResourceProjection.zig").ResourceProjection(NamespaceRecord);
+const resource_subscription = @import("k8s/ResourceSubscription.zig");
+const NodeSubscription = resource_subscription.ResourceSubscription(
+    klient.Node,
+    NodeRecord,
+    NodeRecord.fromNode,
+);
+const NamespaceSubscription = resource_subscription.ResourceSubscription(
+    klient.Namespace,
+    NamespaceRecord,
+    NamespaceRecord.fromNamespace,
+);
+const ServiceRecord = @import("k8s/ServiceRecord.zig");
+const EndpointRecord = @import("k8s/EndpointRecord.zig");
+const EndpointSliceRecord = @import("k8s/EndpointSliceRecord.zig");
+const ServiceProjection = @import("k8s/ResourceProjection.zig").ResourceProjection(ServiceRecord);
+const EndpointProjection = @import("k8s/ResourceProjection.zig").ResourceProjection(EndpointRecord);
+const EndpointSliceProjection = @import("k8s/ResourceProjection.zig").ResourceProjection(EndpointSliceRecord);
+const ServiceSubscription = resource_subscription.ResourceSubscription(
+    klient.Service,
+    ServiceRecord,
+    ServiceRecord.fromService,
+);
+const EndpointSubscription = resource_subscription.ResourceSubscription(
+    klient.Endpoints,
+    EndpointRecord,
+    EndpointRecord.fromEndpoints,
+);
+const EndpointSliceSubscription = resource_subscription.ResourceSubscription(
+    klient.EndpointSlice,
+    EndpointSliceRecord,
+    EndpointSliceRecord.fromEndpointSlice,
+);
+const ConfigMapRecord = @import("k8s/ConfigMapRecord.zig");
+const SecretRecord = @import("k8s/SecretRecord.zig");
+const ServiceAccountRecord = @import("k8s/ServiceAccountRecord.zig");
+const ResourceQuotaRecord = @import("k8s/ResourceQuotaRecord.zig");
+const LimitRangeRecord = @import("k8s/LimitRangeRecord.zig");
+const ConfigMapProjection = @import("k8s/ResourceProjection.zig").ResourceProjection(ConfigMapRecord);
+const SecretProjection = @import("k8s/ResourceProjection.zig").ResourceProjection(SecretRecord);
+const ServiceAccountProjection = @import("k8s/ResourceProjection.zig").ResourceProjection(ServiceAccountRecord);
+const ResourceQuotaProjection = @import("k8s/ResourceProjection.zig").ResourceProjection(ResourceQuotaRecord);
+const LimitRangeProjection = @import("k8s/ResourceProjection.zig").ResourceProjection(LimitRangeRecord);
+const ConfigMapSubscription = resource_subscription.ResourceSubscription(
+    klient.ConfigMap,
+    ConfigMapRecord,
+    ConfigMapRecord.fromConfigMap,
+);
+const SecretSubscription = resource_subscription.ResourceSubscription(
+    klient.Secret,
+    SecretRecord,
+    SecretRecord.fromSecret,
+);
+const ServiceAccountSubscription = resource_subscription.ResourceSubscription(
+    klient.ServiceAccount,
+    ServiceAccountRecord,
+    ServiceAccountRecord.fromServiceAccount,
+);
+const ResourceQuotaSubscription = resource_subscription.ResourceSubscription(
+    klient.ResourceQuota,
+    ResourceQuotaRecord,
+    ResourceQuotaRecord.fromResourceQuota,
+);
+const LimitRangeSubscription = resource_subscription.ResourceSubscription(
+    klient.LimitRange,
+    LimitRangeRecord,
+    LimitRangeRecord.fromLimitRange,
+);
+const DeploymentRecord = @import("k8s/DeploymentRecord.zig");
+const StatefulSetRecord = @import("k8s/StatefulSetRecord.zig");
+const DaemonSetRecord = @import("k8s/DaemonSetRecord.zig");
+const ReplicaSetRecord = @import("k8s/ReplicaSetRecord.zig");
+const DeploymentProjection = @import("k8s/ResourceProjection.zig").ResourceProjection(DeploymentRecord);
+const StatefulSetProjection = @import("k8s/ResourceProjection.zig").ResourceProjection(StatefulSetRecord);
+const DaemonSetProjection = @import("k8s/ResourceProjection.zig").ResourceProjection(DaemonSetRecord);
+const ReplicaSetProjection = @import("k8s/ResourceProjection.zig").ResourceProjection(ReplicaSetRecord);
+const DeploymentSubscription = resource_subscription.ResourceSubscription(
+    klient.Deployment,
+    DeploymentRecord,
+    DeploymentRecord.fromDeployment,
+);
+const StatefulSetSubscription = resource_subscription.ResourceSubscription(
+    klient.StatefulSet,
+    StatefulSetRecord,
+    StatefulSetRecord.fromStatefulSet,
+);
+const DaemonSetSubscription = resource_subscription.ResourceSubscription(
+    klient.DaemonSet,
+    DaemonSetRecord,
+    DaemonSetRecord.fromDaemonSet,
+);
+const ReplicaSetSubscription = resource_subscription.ResourceSubscription(
+    klient.ReplicaSet,
+    ReplicaSetRecord,
+    ReplicaSetRecord.fromReplicaSet,
+);
+const JobRecord = @import("k8s/JobRecord.zig");
+const CronJobRecord = @import("k8s/CronJobRecord.zig");
+const HPARecord = @import("k8s/HPARecord.zig");
+const PDBRecord = @import("k8s/PDBRecord.zig");
+const JobProjection = @import("k8s/ResourceProjection.zig").ResourceProjection(JobRecord);
+const CronJobProjection = @import("k8s/ResourceProjection.zig").ResourceProjection(CronJobRecord);
+const HPAProjection = @import("k8s/ResourceProjection.zig").ResourceProjection(HPARecord);
+const PDBProjection = @import("k8s/ResourceProjection.zig").ResourceProjection(PDBRecord);
+const JobSubscription = resource_subscription.ResourceSubscription(
+    klient.Job,
+    JobRecord,
+    JobRecord.fromJob,
+);
+const CronJobSubscription = resource_subscription.ResourceSubscription(
+    klient.CronJob,
+    CronJobRecord,
+    CronJobRecord.fromCronJob,
+);
+const HPASubscription = resource_subscription.ResourceSubscription(
+    klient.HorizontalPodAutoscaler,
+    HPARecord,
+    HPARecord.fromHorizontalPodAutoscaler,
+);
+const PDBSubscription = resource_subscription.ResourceSubscription(
+    klient.PodDisruptionBudget,
+    PDBRecord,
+    PDBRecord.fromPodDisruptionBudget,
+);
+const IngressRecord = @import("k8s/IngressRecord.zig");
+const IngressClassRecord = @import("k8s/IngressClassRecord.zig");
+const NetworkPolicyRecord = @import("k8s/NetworkPolicyRecord.zig");
+const IPAddressRecord = @import("k8s/IPAddressRecord.zig");
+const ServiceCIDRRecord = @import("k8s/ServiceCIDRRecord.zig");
+const IngressProjection = @import("k8s/ResourceProjection.zig").ResourceProjection(IngressRecord);
+const IngressClassProjection = @import("k8s/ResourceProjection.zig").ResourceProjection(IngressClassRecord);
+const NetworkPolicyProjection = @import("k8s/ResourceProjection.zig").ResourceProjection(NetworkPolicyRecord);
+const IPAddressProjection = @import("k8s/ResourceProjection.zig").ResourceProjection(IPAddressRecord);
+const ServiceCIDRProjection = @import("k8s/ResourceProjection.zig").ResourceProjection(ServiceCIDRRecord);
+const IngressSubscription = resource_subscription.ResourceSubscription(
+    klient.types.Ingress,
+    IngressRecord,
+    IngressRecord.fromIngress,
+);
+const IngressClassSubscription = resource_subscription.ResourceSubscription(
+    klient.IngressClass,
+    IngressClassRecord,
+    IngressClassRecord.fromIngressClass,
+);
+const NetworkPolicySubscription = resource_subscription.ResourceSubscription(
+    klient.NetworkPolicy,
+    NetworkPolicyRecord,
+    NetworkPolicyRecord.fromNetworkPolicy,
+);
+const IPAddressSubscription = resource_subscription.ResourceSubscription(
+    klient.IPAddress,
+    IPAddressRecord,
+    IPAddressRecord.fromIPAddress,
+);
+const ServiceCIDRSubscription = resource_subscription.ResourceSubscription(
+    klient.ServiceCIDR,
+    ServiceCIDRRecord,
+    ServiceCIDRRecord.fromServiceCIDR,
+);
+const PVRecord = @import("k8s/PVRecord.zig");
+const PVCRecord = @import("k8s/PVCRecord.zig");
+const StorageClassRecord = @import("k8s/StorageClassRecord.zig");
+const VolumeAttributesClassRecord = @import("k8s/VolumeAttributesClassRecord.zig");
+const CSIDriverRecord = @import("k8s/CSIDriverRecord.zig");
+const PVProjection = @import("k8s/ResourceProjection.zig").ResourceProjection(PVRecord);
+const PVCProjection = @import("k8s/ResourceProjection.zig").ResourceProjection(PVCRecord);
+const StorageClassProjection = @import("k8s/ResourceProjection.zig").ResourceProjection(StorageClassRecord);
+const VolumeAttributesClassProjection = @import("k8s/ResourceProjection.zig").ResourceProjection(VolumeAttributesClassRecord);
+const CSIDriverProjection = @import("k8s/ResourceProjection.zig").ResourceProjection(CSIDriverRecord);
+const PVSubscription = resource_subscription.ResourceSubscription(klient.PersistentVolume, PVRecord, PVRecord.fromPersistentVolume);
+const PVCSubscription = resource_subscription.ResourceSubscription(klient.PersistentVolumeClaim, PVCRecord, PVCRecord.fromPersistentVolumeClaim);
+const StorageClassSubscription = resource_subscription.ResourceSubscription(klient.StorageClass, StorageClassRecord, StorageClassRecord.fromStorageClass);
+const VolumeAttributesClassSubscription = resource_subscription.ResourceSubscription(klient.VolumeAttributesClass, VolumeAttributesClassRecord, VolumeAttributesClassRecord.fromVolumeAttributesClass);
+const CSIDriverSubscription = resource_subscription.ResourceSubscription(klient.CSIDriver, CSIDriverRecord, CSIDriverRecord.fromCSIDriver);
+const family_registry = @import("k8s/ResourceFamilyRegistry.zig");
+const resource_view = @import("view/resource_view.zig");
 const version = @import("model/version.zig");
 const theme_loader = @import("model/theme_loader.zig");
 // MVVM imports
@@ -112,13 +300,284 @@ const ActiveSessionSlot = @import("k8s/ActiveSessionSlot.zig").ActiveSessionSlot
 // Global flag for terminal resize signal
 var terminal_resized: std.atomic.Value(bool) = std.atomic.Value(bool).init(false);
 
+const ResourceFamilies = struct {
+    const planned_family_capacity = 3 + 5 + 4 + 4 + 5 + 5 + 5 + 5 + 4 + 6 + 2 + 6;
+
+    allocator: std.mem.Allocator,
+    service_projection: ServiceProjection,
+    endpoint_projection: EndpointProjection,
+    endpoint_slice_projection: EndpointSliceProjection,
+    config_map_projection: ConfigMapProjection,
+    secret_projection: SecretProjection,
+    service_account_projection: ServiceAccountProjection,
+    resource_quota_projection: ResourceQuotaProjection,
+    limit_range_projection: LimitRangeProjection,
+    deployment_projection: DeploymentProjection,
+    stateful_set_projection: StatefulSetProjection,
+    daemon_set_projection: DaemonSetProjection,
+    replica_set_projection: ReplicaSetProjection,
+    job_projection: JobProjection,
+    cron_job_projection: CronJobProjection,
+    hpa_projection: HPAProjection,
+    pdb_projection: PDBProjection,
+    ingress_projection: IngressProjection,
+    ingress_class_projection: IngressClassProjection,
+    network_policy_projection: NetworkPolicyProjection,
+    ip_address_projection: IPAddressProjection,
+    service_cidr_projection: ServiceCIDRProjection,
+    pv_projection: PVProjection,
+    pvc_projection: PVCProjection,
+    storage_class_projection: StorageClassProjection,
+    volume_attributes_class_projection: VolumeAttributesClassProjection,
+    csi_driver_projection: CSIDriverProjection,
+    entries: std.ArrayListUnmanaged(family_registry.Entry) = .empty,
+    registry: family_registry.Registry = undefined,
+
+    fn init(allocator: std.mem.Allocator) ResourceFamilies {
+        return .{
+            .allocator = allocator,
+            .service_projection = ServiceProjection.init(allocator, .{
+                .matchFn = serviceProjectionMatch,
+                .sortKeyFn = serviceProjectionSortKey,
+            }),
+            .endpoint_projection = EndpointProjection.init(allocator, .{
+                .matchFn = endpointProjectionMatch,
+                .sortKeyFn = endpointProjectionSortKey,
+            }),
+            .endpoint_slice_projection = EndpointSliceProjection.init(allocator, .{
+                .matchFn = endpointSliceProjectionMatch,
+                .sortKeyFn = endpointSliceProjectionSortKey,
+            }),
+            .config_map_projection = ConfigMapProjection.init(allocator, .{
+                .matchFn = configMapProjectionMatch,
+                .sortKeyFn = configMapProjectionSortKey,
+            }),
+            .secret_projection = SecretProjection.init(allocator, .{
+                .matchFn = secretProjectionMatch,
+                .sortKeyFn = secretProjectionSortKey,
+            }),
+            .service_account_projection = ServiceAccountProjection.init(allocator, .{
+                .matchFn = serviceAccountProjectionMatch,
+                .sortKeyFn = serviceAccountProjectionSortKey,
+            }),
+            .resource_quota_projection = ResourceQuotaProjection.init(allocator, .{
+                .matchFn = resourceQuotaProjectionMatch,
+                .sortKeyFn = resourceQuotaProjectionSortKey,
+            }),
+            .limit_range_projection = LimitRangeProjection.init(allocator, .{
+                .matchFn = limitRangeProjectionMatch,
+                .sortKeyFn = limitRangeProjectionSortKey,
+            }),
+            .deployment_projection = DeploymentProjection.init(allocator, .{
+                .matchFn = deploymentProjectionMatch,
+                .sortKeyFn = deploymentProjectionSortKey,
+            }),
+            .stateful_set_projection = StatefulSetProjection.init(allocator, .{
+                .matchFn = statefulSetProjectionMatch,
+                .sortKeyFn = statefulSetProjectionSortKey,
+            }),
+            .daemon_set_projection = DaemonSetProjection.init(allocator, .{
+                .matchFn = daemonSetProjectionMatch,
+                .sortKeyFn = daemonSetProjectionSortKey,
+            }),
+            .replica_set_projection = ReplicaSetProjection.init(allocator, .{
+                .matchFn = replicaSetProjectionMatch,
+                .sortKeyFn = replicaSetProjectionSortKey,
+            }),
+            .job_projection = JobProjection.init(allocator, .{
+                .matchFn = jobProjectionMatch,
+                .sortKeyFn = jobProjectionSortKey,
+            }),
+            .cron_job_projection = CronJobProjection.init(allocator, .{
+                .matchFn = cronJobProjectionMatch,
+                .sortKeyFn = cronJobProjectionSortKey,
+            }),
+            .hpa_projection = HPAProjection.init(allocator, .{
+                .matchFn = hpaProjectionMatch,
+                .sortKeyFn = hpaProjectionSortKey,
+            }),
+            .pdb_projection = PDBProjection.init(allocator, .{
+                .matchFn = pdbProjectionMatch,
+                .sortKeyFn = pdbProjectionSortKey,
+            }),
+            .ingress_projection = IngressProjection.init(allocator, .{
+                .matchFn = ingressProjectionMatch,
+                .sortKeyFn = ingressProjectionSortKey,
+            }),
+            .ingress_class_projection = IngressClassProjection.init(allocator, .{
+                .matchFn = ingressClassProjectionMatch,
+                .sortKeyFn = ingressClassProjectionSortKey,
+            }),
+            .network_policy_projection = NetworkPolicyProjection.init(allocator, .{
+                .matchFn = networkPolicyProjectionMatch,
+                .sortKeyFn = networkPolicyProjectionSortKey,
+            }),
+            .ip_address_projection = IPAddressProjection.init(allocator, .{
+                .matchFn = ipAddressProjectionMatch,
+                .sortKeyFn = ipAddressProjectionSortKey,
+            }),
+            .service_cidr_projection = ServiceCIDRProjection.init(allocator, .{
+                .matchFn = serviceCIDRProjectionMatch,
+                .sortKeyFn = serviceCIDRProjectionSortKey,
+            }),
+            .pv_projection = PVProjection.init(allocator, .{
+                .matchFn = pvProjectionMatch,
+                .sortKeyFn = pvProjectionSortKey,
+            }),
+            .pvc_projection = PVCProjection.init(allocator, .{
+                .matchFn = pvcProjectionMatch,
+                .sortKeyFn = pvcProjectionSortKey,
+            }),
+            .storage_class_projection = StorageClassProjection.init(allocator, .{
+                .matchFn = storageClassProjectionMatch,
+                .sortKeyFn = storageClassProjectionSortKey,
+            }),
+            .volume_attributes_class_projection = VolumeAttributesClassProjection.init(allocator, .{
+                .matchFn = volumeAttributesClassProjectionMatch,
+                .sortKeyFn = volumeAttributesClassProjectionSortKey,
+            }),
+            .csi_driver_projection = CSIDriverProjection.init(allocator, .{
+                .matchFn = csiDriverProjectionMatch,
+                .sortKeyFn = csiDriverProjectionSortKey,
+            }),
+        };
+    }
+
+    fn bind(
+        self: *ResourceFamilies,
+        comptime Record: type,
+        comptime Subscription: type,
+        comptime ResourceViewType: type,
+        name: []const u8,
+        projection: *@import("k8s/ResourceProjection.zig").ResourceProjection(Record),
+        view: *ResourceViewType,
+        comptime enabled_fn: fn () bool,
+        comptime columns_fn: anytype,
+    ) !void {
+        view.bindProjection(ResourceViewType.ProjectionAdapter.init(
+            Record,
+            projection,
+            enabled_fn,
+            columns_fn,
+        ));
+        try self.entries.append(
+            self.allocator,
+            family_registry.Entry.init(
+                Record,
+                Subscription,
+                ResourceViewType,
+                name,
+                projection,
+                view,
+                enabled_fn,
+            ),
+        );
+        self.registry.rebind();
+    }
+
+    fn bindViews(self: *ResourceFamilies, app: anytype) !void {
+        try self.entries.ensureTotalCapacity(self.allocator, planned_family_capacity);
+        self.registry = family_registry.Registry.initDynamic(&self.entries);
+        try self.bind(ServiceRecord, ServiceSubscription, ServicesView, "services", &self.service_projection, app.services_view, servicesDataPlaneEnabled, serviceProjectionColumns);
+        try self.bind(EndpointRecord, EndpointSubscription, EndpointsView, "endpoints", &self.endpoint_projection, app.endpoints_view, servicesDataPlaneEnabled, endpointProjectionColumns);
+        try self.bind(EndpointSliceRecord, EndpointSliceSubscription, EndpointSlicesView, "endpointslices", &self.endpoint_slice_projection, app.endpointslices_view, servicesDataPlaneEnabled, endpointSliceProjectionColumns);
+        try self.bind(ConfigMapRecord, ConfigMapSubscription, ConfigMapsView, "configmaps", &self.config_map_projection, app.configmaps_view, configDataPlaneEnabled, configMapProjectionColumns);
+        try self.bind(SecretRecord, SecretSubscription, SecretsView, "secrets", &self.secret_projection, app.secrets_view, configDataPlaneEnabled, secretProjectionColumns);
+        try self.bind(ServiceAccountRecord, ServiceAccountSubscription, ServiceAccountsView, "serviceaccounts", &self.service_account_projection, app.serviceaccounts_view, configDataPlaneEnabled, serviceAccountProjectionColumns);
+        try self.bind(ResourceQuotaRecord, ResourceQuotaSubscription, ResourceQuotasView, "resourcequotas", &self.resource_quota_projection, app.resourcequotas_view, configDataPlaneEnabled, resourceQuotaProjectionColumns);
+        try self.bind(LimitRangeRecord, LimitRangeSubscription, LimitRangesView, "limitranges", &self.limit_range_projection, app.limitranges_view, configDataPlaneEnabled, limitRangeProjectionColumns);
+        try self.bind(DeploymentRecord, DeploymentSubscription, DeploymentsView, "deployments", &self.deployment_projection, app.deployments_view, workloadsDataPlaneEnabled, deploymentProjectionColumns);
+        try self.bind(StatefulSetRecord, StatefulSetSubscription, StatefulSetsView, "statefulsets", &self.stateful_set_projection, app.statefulsets_view, workloadsDataPlaneEnabled, statefulSetProjectionColumns);
+        try self.bind(DaemonSetRecord, DaemonSetSubscription, DaemonSetsView, "daemonsets", &self.daemon_set_projection, app.daemonsets_view, workloadsDataPlaneEnabled, daemonSetProjectionColumns);
+        try self.bind(ReplicaSetRecord, ReplicaSetSubscription, ReplicaSetsView, "replicasets", &self.replica_set_projection, app.replicasets_view, workloadsDataPlaneEnabled, replicaSetProjectionColumns);
+        try self.bind(JobRecord, JobSubscription, JobsView, "jobs", &self.job_projection, app.jobs_view, batchDataPlaneEnabled, jobProjectionColumns);
+        try self.bind(CronJobRecord, CronJobSubscription, CronJobsView, "cronjobs", &self.cron_job_projection, app.cronjobs_view, batchDataPlaneEnabled, cronJobProjectionColumns);
+        try self.bind(HPARecord, HPASubscription, HPAView, "hpa", &self.hpa_projection, app.hpa_view, batchDataPlaneEnabled, hpaProjectionColumns);
+        try self.bind(PDBRecord, PDBSubscription, PodDisruptionBudgetsView, "poddisruptionbudgets", &self.pdb_projection, app.poddisruptionbudgets_view, batchDataPlaneEnabled, pdbProjectionColumns);
+        try self.bind(IngressRecord, IngressSubscription, IngressesView, "ingresses", &self.ingress_projection, app.ingresses_view, networkingDataPlaneEnabled, ingressProjectionColumns);
+        try self.bind(IngressClassRecord, IngressClassSubscription, IngressClassesView, "ingressclasses", &self.ingress_class_projection, app.ingressclasses_view, networkingDataPlaneEnabled, ingressClassProjectionColumns);
+        try self.bind(NetworkPolicyRecord, NetworkPolicySubscription, NetworkPoliciesView, "networkpolicies", &self.network_policy_projection, app.networkpolicies_view, networkingDataPlaneEnabled, networkPolicyProjectionColumns);
+        try self.bind(IPAddressRecord, IPAddressSubscription, IPAddressesView, "ipaddresses", &self.ip_address_projection, app.ipaddresses_view, networkingDataPlaneEnabled, ipAddressProjectionColumns);
+        try self.bind(ServiceCIDRRecord, ServiceCIDRSubscription, ServiceCIDRsView, "servicecidrs", &self.service_cidr_projection, app.servicecidrs_view, networkingDataPlaneEnabled, serviceCIDRProjectionColumns);
+        try self.bind(PVRecord, PVSubscription, PersistentVolumesView, "persistentvolumes", &self.pv_projection, app.persistentvolumes_view, storageDataPlaneEnabled, pvProjectionColumns);
+        try self.bind(PVCRecord, PVCSubscription, PersistentVolumeClaimsView, "persistentvolumeclaims", &self.pvc_projection, app.persistentvolumeclaims_view, storageDataPlaneEnabled, pvcProjectionColumns);
+        try self.bind(StorageClassRecord, StorageClassSubscription, StorageClassesView, "storageclasses", &self.storage_class_projection, app.storageclasses_view, storageDataPlaneEnabled, storageClassProjectionColumns);
+        try self.bind(VolumeAttributesClassRecord, VolumeAttributesClassSubscription, VolumeAttributesClassesView, "volumeattributesclasses", &self.volume_attributes_class_projection, app.volumeattributesclasses_view, storageDataPlaneEnabled, volumeAttributesClassProjectionColumns);
+        try self.bind(CSIDriverRecord, CSIDriverSubscription, CSIDriversView, "csidrivers", &self.csi_driver_projection, app.csidrivers_view, storageDataPlaneEnabled, csiDriverProjectionColumns);
+    }
+
+    fn deinit(self: *ResourceFamilies) void {
+        self.service_projection.deinit();
+        self.endpoint_projection.deinit();
+        self.endpoint_slice_projection.deinit();
+        self.config_map_projection.deinit();
+        self.secret_projection.deinit();
+        self.service_account_projection.deinit();
+        self.resource_quota_projection.deinit();
+        self.limit_range_projection.deinit();
+        self.deployment_projection.deinit();
+        self.stateful_set_projection.deinit();
+        self.daemon_set_projection.deinit();
+        self.replica_set_projection.deinit();
+        self.job_projection.deinit();
+        self.cron_job_projection.deinit();
+        self.hpa_projection.deinit();
+        self.pdb_projection.deinit();
+        self.ingress_projection.deinit();
+        self.ingress_class_projection.deinit();
+        self.network_policy_projection.deinit();
+        self.ip_address_projection.deinit();
+        self.service_cidr_projection.deinit();
+        self.pv_projection.deinit();
+        self.pvc_projection.deinit();
+        self.storage_class_projection.deinit();
+        self.volume_attributes_class_projection.deinit();
+        self.csi_driver_projection.deinit();
+        self.entries.deinit(self.allocator);
+    }
+};
+
 pub const App = struct {
+    pub const LifecycleInbox = lifecycle.LifecycleInbox;
+    pub const LifecycleProducer = lifecycle.LifecycleProducer;
+    pub const CancellationIntents = lifecycle.CancellationIntents;
+    pub const LifecycleCommand = lifecycle.LifecycleCommand;
+    pub const OwnedTaskSpec = lifecycle.OwnedTaskSpec;
+    pub const ChildControl = lifecycle.ChildControl;
+    pub const ChildKey = lifecycle.ChildKey;
+    pub const LifecycleSupervisor = lifecycle_supervisor.LifecycleSupervisor;
+
     allocator: std.mem.Allocator,
     perf_telemetry: PerfTelemetry,
     shared_event: *std.Io.Event,
     wakeup: *Wakeup,
     change_queue: *ChangeQueue,
     active_session_slot: *ActiveSessionSlot,
+    lifecycle_inbox: *LifecycleInbox,
+    cancellation_intents: *CancellationIntents,
+    lifecycle_producer: LifecycleProducer,
+    lifecycle_supervisor: *LifecycleSupervisor,
+    data_plane: *DataPlane,
+    pod_projection: *PodProjection,
+    node_projection: *NodeProjection,
+    namespace_projection: *NamespaceProjection,
+    resource_families: *ResourceFamilies,
+    active_pod_subscription: ?lifecycle.SubscriptionKey = null,
+    active_node_subscription: ?lifecycle.SubscriptionKey = null,
+    active_namespace_subscription: ?lifecycle.SubscriptionKey = null,
+    active_metrics_subscription: ?lifecycle.SubscriptionKey = null,
+    pod_metrics_started: bool = false,
+    pod_initial_batch_applied: bool = false,
+    pod_first_paint_emitted: bool = false,
+    pod_list_complete_revision: ?resource_key.Revision = null,
+    pod_complete_paint_emitted: bool = false,
+    pod_restart_pending: bool = false,
+    node_restart_pending: bool = false,
+    namespace_restart_pending: bool = false,
+    pending_context_switch: ?[]u8 = null,
+    pod_projection_sync_pending: bool = false,
+    pod_projection_apply_failed: bool = false,
+    lifecycle_root_await_count: usize = 0,
     terminal: Terminal,
     header: Header,
     footer: Footer,
@@ -294,6 +753,73 @@ pub const App = struct {
             allocator.destroy(active_session_slot);
         }
 
+        const lifecycle_inbox = try allocator.create(LifecycleInbox);
+        lifecycle_inbox.* = LifecycleInbox.init(runtime.io(), shared_event);
+        errdefer {
+            lifecycle_inbox.deinit(allocator);
+            allocator.destroy(lifecycle_inbox);
+        }
+
+        const cancellation_intents = try allocator.create(CancellationIntents);
+        cancellation_intents.* = CancellationIntents.init();
+        errdefer allocator.destroy(cancellation_intents);
+
+        const supervisor = try allocator.create(LifecycleSupervisor);
+        supervisor.* = try LifecycleSupervisor.init(
+            allocator,
+            runtime.io(),
+            shared_event,
+            lifecycle_inbox,
+            cancellation_intents,
+            active_session_slot,
+            change_queue,
+            @import("k8s/ActiveContextSession.zig").SessionFactory.production(),
+            null,
+        );
+        errdefer allocator.destroy(supervisor);
+
+        const lifecycle_producer = LifecycleProducer.init(
+            lifecycle_inbox,
+            cancellation_intents,
+            allocator,
+        );
+        const pod_projection = try allocator.create(PodProjection);
+        pod_projection.* = PodProjection.init(allocator, .{
+            .matchFn = podProjectionMatch,
+            .sortKeyFn = podProjectionSortKey,
+        });
+        errdefer {
+            pod_projection.deinit();
+            allocator.destroy(pod_projection);
+        }
+        const node_projection = try allocator.create(NodeProjection);
+        node_projection.* = NodeProjection.init(allocator, .{
+            .matchFn = nodeProjectionMatch,
+            .sortKeyFn = nodeProjectionSortKey,
+        });
+        errdefer {
+            node_projection.deinit();
+            allocator.destroy(node_projection);
+        }
+        const namespace_projection = try allocator.create(NamespaceProjection);
+        namespace_projection.* = NamespaceProjection.init(allocator, .{
+            .matchFn = namespaceProjectionMatch,
+            .sortKeyFn = namespaceProjectionSortKey,
+        });
+        errdefer {
+            namespace_projection.deinit();
+            allocator.destroy(namespace_projection);
+        }
+        const resource_families = try allocator.create(ResourceFamilies);
+        resource_families.* = ResourceFamilies.init(allocator);
+        errdefer {
+            resource_families.deinit();
+            allocator.destroy(resource_families);
+        }
+        const data_plane = try allocator.create(DataPlane);
+        data_plane.* = DataPlane.init(allocator, lifecycle_producer, change_queue);
+        errdefer allocator.destroy(data_plane);
+
         // Initialize terminal
         var term = try Terminal.init(allocator);
         errdefer term.deinit();
@@ -460,6 +986,15 @@ pub const App = struct {
             .wakeup = wakeup,
             .change_queue = change_queue,
             .active_session_slot = active_session_slot,
+            .lifecycle_inbox = lifecycle_inbox,
+            .cancellation_intents = cancellation_intents,
+            .lifecycle_producer = lifecycle_producer,
+            .lifecycle_supervisor = supervisor,
+            .data_plane = data_plane,
+            .pod_projection = pod_projection,
+            .node_projection = node_projection,
+            .namespace_projection = namespace_projection,
+            .resource_families = resource_families,
             .terminal = term,
             .header = header,
             .footer = footer,
@@ -547,6 +1082,15 @@ pub const App = struct {
         inline for (k8s_view_types) |entry| {
             @field(app, entry[0]).* = try entry[1].init(allocator, theme, app.k8s_service);
         }
+        app.pods_view.bindPodProjection(app.pod_projection);
+        app.nodes_view.bindProjection(NodesView.ProjectionAdapter.init(
+            NodeRecord,
+            app.node_projection,
+            nodeDataPlaneEnabled,
+            nodeProjectionColumns,
+        ));
+        app.namespaces_view.bindProjection(app.namespace_projection);
+        try app.resource_families.bindViews(app);
 
         // Register commands
         try app.registerCommands();
@@ -560,11 +1104,14 @@ pub const App = struct {
         // Push initial view (PodsView is the reference implementation with all features working)
         try app.view_manager.pushView(app.pods_view.createView());
 
+        try app.lifecycle_supervisor.startRoot();
         return app;
     }
 
     pub fn deinit(self: *App) void {
+        self.finishLifecycle();
         self.clearPendingInput();
+        if (self.pending_context_switch) |name| self.allocator.free(name);
 
         for (self.command_history.items) |cmd| self.allocator.free(cmd);
         self.command_history.deinit(self.allocator);
@@ -608,19 +1155,25 @@ pub const App = struct {
         self.allocator.free(self.command_names);
         self.command_registry.deinit();
 
-        const active_session = self.active_session_slot.invalidate(null) catch |err|
-            std.debug.panic("active session invalidation failed: {any}", .{err});
         self.k8s_service.detachSession();
-        if (active_session) |session| {
-            session.checkTeardownReady() catch |err|
-                std.debug.panic("active session teardown failed: {any}", .{err});
-            session.deinit();
-        }
         self.active_session_slot.deinit();
         self.allocator.destroy(self.active_session_slot);
 
+        self.lifecycle_inbox.deinit(self.allocator);
+        self.allocator.destroy(self.lifecycle_inbox);
+        self.allocator.destroy(self.cancellation_intents);
+        self.allocator.destroy(self.lifecycle_supervisor);
         self.change_queue.deinit();
         self.allocator.destroy(self.change_queue);
+        self.allocator.destroy(self.data_plane);
+        self.pod_projection.deinit();
+        self.allocator.destroy(self.pod_projection);
+        self.node_projection.deinit();
+        self.allocator.destroy(self.node_projection);
+        self.namespace_projection.deinit();
+        self.allocator.destroy(self.namespace_projection);
+        self.resource_families.deinit();
+        self.allocator.destroy(self.resource_families);
         self.wakeup.deinit();
         self.allocator.destroy(self.wakeup);
 
@@ -689,6 +1242,7 @@ pub const App = struct {
     }
 
     pub fn run(self: *App) !void {
+        defer self.finishLifecycle();
         try self.terminal.enterAlternateScreen();
         defer _ = self.terminal.exitAlternateScreen() catch {};
 
@@ -718,6 +1272,10 @@ pub const App = struct {
         self.prev_height = 0;
 
         while (self.running) {
+            if (self.lifecycle_inbox.isRootTerminated()) {
+                self.running = false;
+                continue;
+            }
             if (self.redraw_request.swap(false, .acq_rel)) self.dirty = true;
             self.renderIfNeeded() catch |err| {
                 Logger.err("Render error: {any}", .{err});
@@ -738,6 +1296,9 @@ pub const App = struct {
                 if (self.view_manager.getCurrentView()) |current_view| {
                     current_view.refresh() catch {};
                 }
+                self.serviceResourceSubscriptionRequests() catch |err| {
+                    Logger.err("resource subscription start failed: {any}", .{err});
+                };
                 self.markRefreshCompleted();
                 self.dirty = true;
                 self.renderIfNeeded() catch {};
@@ -806,27 +1367,531 @@ pub const App = struct {
         }
     }
 
+    pub fn finishLifecycle(self: *App) void {
+        if (self.lifecycle_supervisor.root_future == null) return;
+        self.cancelMetricsFeed();
+        if (self.active_pod_subscription) |key| {
+            _ = self.data_plane.cancelSubscription(key);
+            self.active_pod_subscription = null;
+            self.pods_view.markPodSubscriptionStopped();
+        }
+        if (self.active_node_subscription) |key| {
+            _ = self.data_plane.cancelSubscription(key);
+            self.active_node_subscription = null;
+            self.nodes_view.markSubscriptionStopped();
+        }
+        if (self.active_namespace_subscription) |key| {
+            _ = self.data_plane.cancelSubscription(key);
+            self.active_namespace_subscription = null;
+            self.namespaces_view.markSubscriptionStopped();
+        }
+        for (self.resource_families.registry.items()) |*entry| {
+            if (entry.active) |key| _ = self.data_plane.cancelSubscription(key);
+            entry.markStopped();
+        }
+        self.lifecycle_producer.enqueueShutdown() catch |err| switch (err) {
+            error.Closed => {},
+        };
+        if (self.lifecycle_supervisor.awaitRoot()) self.lifecycle_root_await_count += 1;
+        while (self.change_queue.hasPending()) self.drainChangeQueue();
+    }
+
+    fn acceptsActiveEnvelope(
+        self: *const App,
+        envelope: resource_key.Envelope,
+    ) bool {
+        return switch (envelope.target) {
+            .lifecycle => true,
+            .resource => |identity| matchesIdentity(self.active_pod_subscription, identity) or
+                matchesIdentity(self.active_metrics_subscription, identity) or
+                matchesIdentity(self.active_node_subscription, identity) or
+                matchesIdentity(self.active_namespace_subscription, identity) or
+                self.resource_families.registry.contains(identity),
+            else => false,
+        };
+    }
+
+    fn serviceResourceSubscriptionRequests(self: *App) !void {
+        try self.servicePodSubscriptionRequest();
+        try self.serviceNodeSubscriptionRequest();
+        try self.serviceNamespaceSubscriptionRequest();
+        try self.serviceResourceFamilyRequests();
+    }
+
+    fn servicePodSubscriptionRequest(self: *App) !void {
+        if (resource_view.active_pod_source == .legacy_list) return;
+        const request = self.pods_view.takePodSubscriptionRequest();
+        if (request == .none) return;
+        if (self.active_pod_subscription) |active| {
+            if (request == .start) return;
+            self.pod_restart_pending = true;
+            self.cancelMetricsFeed();
+            _ = self.data_plane.cancelSubscription(active);
+            return;
+        }
+        try self.startPodSubscription();
+    }
+
+    fn serviceNodeSubscriptionRequest(self: *App) !void {
+        if (resource_view.active_node_source == .legacy_list) return;
+        const request = self.nodes_view.takeSubscriptionRequest();
+        if (request == .none) return;
+        if (self.active_node_subscription) |active| {
+            if (request == .start) return;
+            self.node_restart_pending = true;
+            _ = self.data_plane.cancelSubscription(active);
+            return;
+        }
+        try self.startNodeSubscription();
+    }
+
+    fn serviceNamespaceSubscriptionRequest(self: *App) !void {
+        if (@import("view/NamespacesView.zig").active_namespace_source == .legacy_list) return;
+        const request = self.namespaces_view.takeSubscriptionRequest();
+        if (request == .none) return;
+        if (self.active_namespace_subscription) |active| {
+            if (request == .start) return;
+            self.namespace_restart_pending = true;
+            _ = self.data_plane.cancelSubscription(active);
+            return;
+        }
+        try self.startNamespaceSubscription();
+    }
+
+    fn serviceResourceFamilyRequests(self: *App) !void {
+        for (self.resource_families.registry.items(), 0..) |*entry, index| {
+            const request = entry.takeRequest();
+            if (request == .none) continue;
+            if (entry.active) |active| {
+                if (request == .start) continue;
+                entry.restart_pending = true;
+                _ = self.data_plane.cancelSubscription(active);
+                continue;
+            }
+            self.startResourceFamilySubscription(index) catch |err| {
+                markFamilyStartOutcome(entry, false);
+                Logger.err("{s} subscription failed: {any}", .{ entry.name, err });
+                continue;
+            };
+            markFamilyStartOutcome(entry, true);
+        }
+    }
+
+    fn beginContextSwitch(self: *App, context_name: []const u8) !void {
+        const owned_name = try self.allocator.dupe(u8, context_name);
+        errdefer self.allocator.free(owned_name);
+        if (self.pending_context_switch) |old_name| self.allocator.free(old_name);
+        self.pending_context_switch = owned_name;
+        self.pod_restart_pending = self.active_pod_subscription != null;
+        self.node_restart_pending = self.active_node_subscription != null;
+        self.namespace_restart_pending = self.active_namespace_subscription != null;
+        self.resource_families.registry.markForContextRestart();
+        self.cancelMetricsFeed();
+        if (self.active_pod_subscription) |active| _ = self.data_plane.cancelSubscription(active);
+        if (self.active_node_subscription) |active| _ = self.data_plane.cancelSubscription(active);
+        if (self.active_namespace_subscription) |active| _ = self.data_plane.cancelSubscription(active);
+        for (self.resource_families.registry.itemsConst()) |entry| {
+            if (entry.active) |active| _ = self.data_plane.cancelSubscription(active);
+        }
+        if (self.hasActiveResourceSubscriptions()) return;
+        try self.completeContextSwitch();
+    }
+
+    fn completeContextSwitch(self: *App) !void {
+        const context_name = self.pending_context_switch orelse return;
+        self.k8s_service.switchContext(context_name) catch |err| {
+            self.allocator.free(context_name);
+            self.pending_context_switch = null;
+            return err;
+        };
+        self.allocator.free(context_name);
+        self.pending_context_switch = null;
+        try self.contexts_view.refresh();
+        try self.switchToView(self.pre_contexts_view);
+        if (self.pod_restart_pending) {
+            self.pod_restart_pending = false;
+            if (self.active_pod_subscription == null) try self.startPodSubscription();
+        }
+        if (self.node_restart_pending) {
+            self.node_restart_pending = false;
+            if (self.active_node_subscription == null) try self.startNodeSubscription();
+        }
+        if (self.namespace_restart_pending) {
+            self.namespace_restart_pending = false;
+            if (self.active_namespace_subscription == null) try self.startNamespaceSubscription();
+        }
+        startPendingFamilyEntries(
+            &self.resource_families.registry,
+            @ptrCast(self),
+            struct {
+                fn start(raw: *anyopaque, index: usize) anyerror!void {
+                    const app: *App = @ptrCast(@alignCast(raw));
+                    try app.startResourceFamilySubscription(index);
+                }
+            }.start,
+            struct {
+                fn failed(_: *anyopaque, entry: *family_registry.Entry, err: anyerror) void {
+                    Logger.err("{s} subscription restart failed: {any}", .{ entry.name, err });
+                }
+            }.failed,
+        );
+        self.dirty = true;
+    }
+
+    fn startPodSubscription(self: *App) !void {
+        if (!self.k8s_service.connected) return;
+        const session_view = self.active_session_slot.view();
+        if (session_view.state != .active) return error.NoActiveSession;
+        const generation = session_view.generation;
+        const namespace: ?[]const u8 = if (self.pods_view.table.show_all_namespaces)
+            null
+        else
+            self.k8s_service.current_namespace;
+        var spec = try pod_subscription.ownedTaskSpec(self.allocator, .{
+            .namespace = namespace,
+            .context_name = self.k8s_service.context_name,
+            .projection = self.pod_projection,
+            .telemetry = &self.perf_telemetry,
+        });
+        errdefer spec.deinit(self.allocator);
+        const key = try self.data_plane.startSubscription(generation, &spec);
+        self.active_pod_subscription = key;
+        self.active_metrics_subscription = null;
+        self.pod_metrics_started = false;
+        self.pods_view.markPodSubscriptionStarted();
+        self.pod_initial_batch_applied = false;
+        self.pod_first_paint_emitted = false;
+        self.pod_list_complete_revision = null;
+        self.pod_complete_paint_emitted = false;
+        self.pod_projection_apply_failed = false;
+    }
+
+    fn startNodeSubscription(self: *App) !void {
+        if (!self.k8s_service.connected) return;
+        const session_view = self.active_session_slot.view();
+        if (session_view.state != .active) return error.NoActiveSession;
+        var spec = try NodeSubscription.ownedTaskSpec(self.allocator, .{
+            .context_name = self.k8s_service.context_name,
+            .projection = self.node_projection,
+        });
+        errdefer spec.deinit(self.allocator);
+        self.active_node_subscription = try self.data_plane.startSubscription(
+            session_view.generation,
+            &spec,
+        );
+        self.nodes_view.markSubscriptionStarted();
+    }
+
+    fn startNamespaceSubscription(self: *App) !void {
+        if (!self.k8s_service.connected) return;
+        const session_view = self.active_session_slot.view();
+        if (session_view.state != .active) return error.NoActiveSession;
+        var spec = try NamespaceSubscription.ownedTaskSpec(self.allocator, .{
+            .context_name = self.k8s_service.context_name,
+            .projection = self.namespace_projection,
+        });
+        errdefer spec.deinit(self.allocator);
+        self.active_namespace_subscription = try self.data_plane.startSubscription(
+            session_view.generation,
+            &spec,
+        );
+        self.namespaces_view.markSubscriptionStarted();
+    }
+
+    fn startResourceFamilySubscription(self: *App, index: usize) !void {
+        if (!self.k8s_service.connected) return;
+        const session_view = self.active_session_slot.view();
+        if (session_view.state != .active) return error.NoActiveSession;
+        const entry = self.resource_families.registry.entryAt(index) orelse return error.InvalidFamilyIndex;
+        const namespace = entry.namespace(self.k8s_service.current_namespace);
+        var spec = try entry.taskSpecFn(
+            self.allocator,
+            self.k8s_service.context_name,
+            namespace,
+            entry.projection,
+        );
+        errdefer spec.deinit(self.allocator);
+        entry.markStarted(try self.data_plane.startSubscription(
+            session_view.generation,
+            &spec,
+        ));
+    }
+
+    fn hasActiveResourceSubscriptions(self: *const App) bool {
+        return self.active_pod_subscription != null or
+            self.active_node_subscription != null or
+            self.active_namespace_subscription != null or
+            self.resource_families.registry.hasActive();
+    }
+
+    fn startMetricsFeed(self: *App) !void {
+        if (self.active_metrics_subscription != null) return;
+        const pod_key = self.active_pod_subscription orelse return;
+        const namespace: ?[]const u8 = if (self.pods_view.table.show_all_namespaces)
+            null
+        else
+            self.k8s_service.current_namespace;
+        var spec = try metrics_feed.ownedTaskSpec(self.allocator, .{
+            .namespace = namespace,
+            .projection = self.pod_projection,
+        });
+        errdefer spec.deinit(self.allocator);
+        self.active_metrics_subscription = try self.data_plane.startSubscription(
+            pod_key.generation,
+            &spec,
+        );
+        self.pod_metrics_started = true;
+    }
+
+    fn cancelMetricsFeed(self: *App) void {
+        if (self.active_metrics_subscription) |key| {
+            _ = self.data_plane.cancelSubscription(key);
+            self.active_metrics_subscription = null;
+        }
+    }
+
+    fn emitPodTelemetry(
+        self: *App,
+        kind: perf.EventKind,
+        revision: resource_key.Revision,
+    ) void {
+        self.perf_telemetry.emit(self.podTelemetryEvent(kind, revision));
+    }
+
+    fn emitMetricsTelemetry(self: *App, revision: resource_key.Revision) void {
+        var event = self.podTelemetryEvent(.metrics_ready, revision);
+        if (self.active_metrics_subscription) |key| {
+            event.generation = key.generation;
+            event.subscription_id = key.subscription_id;
+        }
+        self.perf_telemetry.emit(event);
+    }
+
+    fn podTelemetryEvent(
+        self: *App,
+        kind: perf.EventKind,
+        revision: resource_key.Revision,
+    ) perf.Event {
+        const key = self.active_pod_subscription orelse lifecycle.SubscriptionKey{
+            .generation = 0,
+            .subscription_id = 0,
+        };
+        return .{
+            .kind = kind,
+            .monotonic_ns = @intCast(@max(clock.nanoTimestamp(), 0)),
+            .context = self.k8s_service.context_name,
+            .resource = "pods",
+            .scope = if (self.pods_view.table.show_all_namespaces)
+                "all_namespaces"
+            else
+                self.k8s_service.current_namespace,
+            .generation = key.generation,
+            .subscription_id = key.subscription_id,
+            .applied_revision = revision,
+            .object_count = self.pod_projection.count(),
+            .queue_bytes = 0,
+        };
+    }
+
     fn drainChangeQueue(self: *App) void {
         var router = resource_key.UiRouter{
             .context = @ptrCast(self),
             .targetFn = appEnvelopeTarget,
+            .lifecycleFn = appObserveLifecycle,
         };
         var n: usize = 0;
         while (n < resource_key.Limits.default.drain_batches) : (n += 1) {
-            var envelope = self.change_queue.pop() orelse break;
+            var popped = self.change_queue.popForRetry() orelse break;
+            const envelope = &popped.envelope;
+            if (!self.data_plane.acceptsEnvelope(envelope.*) or
+                !self.acceptsActiveEnvelope(envelope.*))
+            {
+                popped.destroy(self.allocator);
+                continue;
+            }
+            const target = envelope.target;
+            const revision = envelope.revision;
+            const sync_kind = envelope.sync_kind;
+            const initial_changes = envelope.has_initial_changes;
+            const effects = decideResourceDrainEffects(
+                target,
+                self.active_pod_subscription,
+                self.active_metrics_subscription,
+                self.active_node_subscription,
+                self.active_namespace_subscription,
+                sync_kind,
+                initial_changes,
+                self.pod_projection.count(),
+                self.pod_metrics_started,
+            );
+            const is_pod_subscription = effects.sync_pod;
+            const is_node_subscription = effects.sync_node;
+            const is_namespace_subscription = effects.sync_namespace;
+            const service_identity: ?resource_key.ResourceIdentity = switch (target) {
+                .resource => |identity| if (self.resource_families.registry.contains(identity))
+                    identity
+                else
+                    null,
+                else => null,
+            };
             envelope.apply(&router, self.allocator) catch |err| {
                 Logger.err("envelope apply failed: {any}", .{err});
-                envelope.deinit(self.allocator);
+                if (is_pod_subscription) self.pod_projection_apply_failed = true;
+                self.change_queue.retryPopped(&popped) catch popped.destroy(self.allocator);
+                break;
             };
+            popped.finishConsumed();
+            if (target == .resource) {
+                if (effects.sync_pod or effects.sync_metrics) {
+                    self.pods_view.syncPodProjection() catch |err| {
+                        Logger.err("pod projection adapter failed: {any}", .{err});
+                        if (is_pod_subscription) self.pod_projection_apply_failed = true;
+                        self.pod_projection_sync_pending = true;
+                        self.dirty = true;
+                        continue;
+                    };
+                    self.pod_projection_sync_pending = false;
+                    if (effects.start_pod_metrics) {
+                        self.pod_initial_batch_applied = true;
+                        self.startMetricsFeed() catch |err| {
+                            Logger.warn("metrics feed start failed: {any}", .{err});
+                        };
+                    }
+                } else if (is_node_subscription) {
+                    self.nodes_view.syncProjection() catch |err| {
+                        Logger.err("node projection adapter failed: {any}", .{err});
+                        self.dirty = true;
+                        continue;
+                    };
+                } else if (is_namespace_subscription) {
+                    self.namespaces_view.syncProjection() catch |err| {
+                        Logger.err("namespace projection adapter failed: {any}", .{err});
+                        self.dirty = true;
+                        continue;
+                    };
+                } else if (service_identity) |identity| {
+                    _ = self.resource_families.registry.sync(identity) catch |err| {
+                        Logger.err("resource family projection adapter failed: {any}", .{err});
+                        self.dirty = true;
+                        continue;
+                    };
+                }
+                if (sync_kind) |kind| switch (kind) {
+                    .list_started => {},
+                    .list_complete => if (effects.emit_pod_list_complete) {
+                        self.pod_list_complete_revision = revision;
+                        self.emitPodTelemetry(.list_complete_received, revision);
+                    },
+                    .watch_connected => if (effects.emit_pod_watch_connected) {
+                        self.emitPodTelemetry(.watch_connected, revision);
+                    },
+                    .metrics_ready => if (effects.emit_metrics_ready)
+                        self.emitMetricsTelemetry(revision),
+                    .reconnecting => {},
+                };
+            }
             self.dirty = true;
         }
     }
 
-    fn appEnvelopeTarget(_: *anyopaque, _: resource_key.EnvelopeTarget) ?*anyopaque {
-        return null;
+    fn appEnvelopeTarget(raw: *anyopaque, target: resource_key.EnvelopeTarget) ?*anyopaque {
+        const self: *App = @ptrCast(@alignCast(raw));
+        return switch (target) {
+            .resource => |identity| blk: {
+                const active: ?lifecycle.SubscriptionKey, const projection: ?*anyopaque =
+                    if (matchesIdentity(self.active_pod_subscription, identity))
+                        .{ self.active_pod_subscription, @ptrCast(self.pod_projection) }
+                    else if (matchesIdentity(self.active_metrics_subscription, identity))
+                        .{ self.active_metrics_subscription, @ptrCast(self.pod_projection) }
+                    else if (matchesIdentity(self.active_node_subscription, identity))
+                        .{ self.active_node_subscription, @ptrCast(self.node_projection) }
+                    else if (matchesIdentity(self.active_namespace_subscription, identity))
+                        .{ self.active_namespace_subscription, @ptrCast(self.namespace_projection) }
+                    else if (self.resource_families.registry.projectionFor(identity)) |projection|
+                        .{ null, projection }
+                    else
+                        .{ null, null };
+                if (projection == null) break :blk null;
+                break :blk self.data_plane.resourceTarget(
+                    target,
+                    active orelse self.resource_families.registry.activeKeyFor(identity),
+                    projection.?,
+                );
+            },
+            .lifecycle => @ptrCast(self.data_plane),
+            else => null,
+        };
+    }
+
+    fn appObserveLifecycle(
+        raw: *anyopaque,
+        payload: *anyopaque,
+        identity: ?resource_key.ResourceIdentity,
+    ) void {
+        const self: *App = @ptrCast(@alignCast(raw));
+        const completion: *lifecycle.LifecycleCompletion = @ptrCast(@alignCast(payload));
+        if (isActivePodCompletion(self.active_metrics_subscription, identity, completion.*)) {
+            self.active_metrics_subscription = null;
+            return;
+        }
+        if (isActivePodCompletion(self.active_pod_subscription, identity, completion.*)) {
+            self.active_pod_subscription = null;
+            self.cancelMetricsFeed();
+            self.pods_view.markPodSubscriptionStopped();
+            if (self.pod_restart_pending and self.pending_context_switch == null) {
+                self.pod_restart_pending = false;
+                self.startPodSubscription() catch |err| {
+                    self.pods_view.table.setErrorFmt("Pod subscription failed: {any}", .{err}) catch {};
+                    self.dirty = true;
+                };
+            }
+        } else if (isActivePodCompletion(self.active_node_subscription, identity, completion.*)) {
+            self.active_node_subscription = null;
+            self.nodes_view.markSubscriptionStopped();
+            if (self.node_restart_pending and self.pending_context_switch == null) {
+                self.node_restart_pending = false;
+                self.startNodeSubscription() catch |err| {
+                    self.nodes_view.table.setErrorFmt("Node subscription failed: {any}", .{err}) catch {};
+                    self.dirty = true;
+                };
+            }
+        } else if (isActivePodCompletion(self.active_namespace_subscription, identity, completion.*)) {
+            self.active_namespace_subscription = null;
+            self.namespaces_view.markSubscriptionStopped();
+            if (self.namespace_restart_pending and self.pending_context_switch == null) {
+                self.namespace_restart_pending = false;
+                self.startNamespaceSubscription() catch |err| {
+                    self.namespaces_view.table.setErrorFmt("Namespace subscription failed: {any}", .{err}) catch {};
+                    self.dirty = true;
+                };
+            }
+        } else if (self.resource_families.registry.complete(identity, completion.*)) |index| {
+            const entry = self.resource_families.registry.entryAt(index) orelse return;
+            if (entry.enabled() and entry.restart_pending and self.pending_context_switch == null) {
+                self.startResourceFamilySubscription(index) catch |err| {
+                    markFamilyStartOutcome(entry, false);
+                    Logger.err("{s} subscription failed: {any}", .{ entry.name, err });
+                    self.dirty = true;
+                    return;
+                };
+                markFamilyStartOutcome(entry, true);
+            }
+        } else return;
+
+        if (self.pending_context_switch != null and !self.hasActiveResourceSubscriptions()) {
+            self.completeContextSwitch() catch |err| {
+                self.contexts_view.setError(err) catch {};
+                self.dirty = true;
+            };
+        }
     }
 
     fn renderIfNeeded(self: *App) !void {
+        if (self.pod_projection_sync_pending) {
+            try self.pods_view.syncPodProjection();
+            self.pod_projection_sync_pending = false;
+            self.dirty = true;
+        }
         const size = try self.terminal.getSize();
         const size_changed = self.prev_width != size.width or self.prev_height != size.height;
         if (!size_changed and !self.dirty) return;
@@ -849,7 +1914,8 @@ pub const App = struct {
 
         // Start DEC synchronized output mode
         try self.terminal.beginSyncOutput();
-        defer self.terminal.endSyncOutput() catch {};
+        var sync_output_open = true;
+        defer if (sync_output_open) self.terminal.endSyncOutput() catch {};
 
         const new_header_height = if (self.view_fullscreen) 0 else self.header.height();
         const header_height_changed = self.header_height != new_header_height;
@@ -1003,9 +2069,39 @@ pub const App = struct {
         }
 
         try self.terminal.flush();
+        try self.terminal.endSyncOutput();
+        sync_output_open = false;
+        self.markPodPaintsAfterFlush();
         self.prev_width = size.width;
         self.prev_height = size.height;
         self.dirty = false;
+    }
+
+    fn markPodPaintsAfterFlush(self: *App) void {
+        const current = self.view_manager.getCurrentView() orelse return;
+        const applied_revision = self.pod_projection.appliedRevision();
+        perf.emitPodPaintsAfterFlush(
+            &self.perf_telemetry,
+            &self.pod_first_paint_emitted,
+            &self.pod_complete_paint_emitted,
+            .{
+                .current_is_pods = std.mem.eql(u8, current.getName(), "pods"),
+                .initial_applied = self.pod_initial_batch_applied,
+                .loading = self.pods_view.table.loading,
+                .has_error = self.pods_view.table.error_message != null,
+                .visible_rows = self.pods_view.table.filtered_indices.items.len,
+                .flush_succeeded = true,
+                .close_succeeded = true,
+                .list_complete_revision = self.pod_list_complete_revision,
+                .applied_revision = applied_revision,
+                .apply_failed = self.pod_projection_apply_failed,
+            },
+            self.podTelemetryEvent(.first_usable_paint, applied_revision),
+            self.podTelemetryEvent(
+                .complete_sync_paint,
+                self.pod_list_complete_revision orelse applied_revision,
+            ),
+        );
     }
 
     fn updateHeaderMetrics(self: *App) void {
@@ -1471,6 +2567,12 @@ pub const App = struct {
 
     /// Central handler for view KeyResult values
     fn handleViewResult(self: *App, result: View.KeyResult, current_view: View, key: Key) !void {
+        defer self.serviceResourceSubscriptionRequests() catch |err| {
+            Logger.err("resource subscription transition failed: {any}", .{err});
+        };
+        if (readonlyAction(result)) |action| {
+            if (self.refuseIfReadonly(action)) return;
+        }
         switch (result) {
             .handled => self.dirty = true,
             .not_handled => {},
@@ -1490,16 +2592,8 @@ pub const App = struct {
                 self.dirty = true;
             },
             .context_switched => {
-                // Return to the pre-contexts view. Its onShow skips network
-                // refresh when data exists (instant-Esc guard), but that data
-                // is the OLD cluster's — force a refresh against the new one.
-                try self.switchToView(self.pre_contexts_view);
-                if (self.view_manager.getCurrentView()) |v| {
-                    v.refresh() catch |err| {
-                        Logger.err("Refresh after context switch failed: {any}", .{err});
-                    };
-                }
-                self.dirty = true;
+                const context_name = self.contexts_view.selectedContextName() orelse return;
+                try self.beginContextSwitch(context_name);
             },
             .namespace_switched => {
                 // Keep namespaces under pods so Esc returns to the namespace picker.
@@ -1612,6 +2706,11 @@ pub const App = struct {
                 try self.switchToView("pf");
             },
         }
+    }
+
+    pub fn dispatchViewResultForTest(self: *App, result: View.KeyResult) !void {
+        const current = self.view_manager.getCurrentView() orelse return error.NoCurrentView;
+        try self.handleViewResult(result, current, .unsupported);
     }
 
     fn showTrafficView(self: *App) !void {
@@ -1747,6 +2846,7 @@ pub const App = struct {
         _ = self.command_registry.execute(name, &ctx) catch |err| {
             Logger.err("switchToView({s}) failed: {any}", .{ name, err });
         };
+        try self.serviceResourceSubscriptionRequests();
         self.dirty = true;
     }
 
@@ -1862,6 +2962,20 @@ pub const App = struct {
 
     /// Apply the value typed at a pending input prompt.
     fn dispatchPendingInput(self: *App, value: []const u8) void {
+        if (self.k8s_service.readonly and self.pending_input != .none) {
+            const action: []const u8 = switch (self.pending_input) {
+                .set_image => "set-image",
+                .port_forward => "port-forward",
+                .transfer => "cp",
+                .sanitize => "sanitize",
+                .drain => "drain",
+                .scale => "scale",
+                .none => unreachable,
+            };
+            _ = self.refuseIfReadonly(action);
+            self.clearPendingInput();
+            return;
+        }
         switch (self.pending_input) {
             .set_image => self.doSetImage(value) catch |e| Logger.err("set image failed: {any}", .{e}),
             .port_forward => self.doPortForward(value) catch |e| Logger.err("port-forward failed: {any}", .{e}),
@@ -2242,6 +3356,18 @@ pub const App = struct {
         // Delete this guard and the render-loop status message when watch snapshots
         // deliver data via redraw_request from a background thread.
         if (self.view_manager.getCurrentView()) |v| {
+            if (!timerRefreshAllowed(
+                v.getName(),
+                resource_view.active_pod_source,
+                resource_view.active_node_source,
+                @import("view/NamespacesView.zig").active_namespace_source,
+                resource_view.active_services_source,
+                resource_view.active_config_source,
+                resource_view.active_workloads_source,
+                resource_view.active_batch_source,
+                resource_view.active_networking_source,
+                resource_view.active_storage_source,
+            )) return;
             if (v.showsAllNamespaces()) return;
         }
 
@@ -2607,6 +3733,9 @@ pub const App = struct {
                 Logger.err("Failed to refresh view: {any}", .{err});
             };
         }
+        self.serviceResourceSubscriptionRequests() catch |err| {
+            Logger.err("Failed to refresh resource subscription: {any}", .{err});
+        };
         self.markRefreshCompleted();
         self.dirty = true;
     }
@@ -2883,6 +4012,1688 @@ fn setupResizeHandler() !void {
         .flags = posix.SA.RESTART,
     };
     posix.sigaction(posix.SIG.WINCH, &sa, null);
+}
+
+fn podProjectionMatch(record: *const PodRecord, filter: []const u8) bool {
+    if (filter.len == 0) return true;
+    return containsIgnoreCase(record.key.name, filter) or
+        containsIgnoreCase(record.key.namespace, filter) or
+        containsIgnoreCase(record.phase, filter) or
+        containsIgnoreCase(record.status_reason, filter) or
+        containsIgnoreCase(record.node_name, filter) or
+        containsIgnoreCase(record.pod_ip, filter);
+}
+
+fn containsIgnoreCase(value: []const u8, needle: []const u8) bool {
+    if (needle.len > value.len) return false;
+    var index: usize = 0;
+    while (index + needle.len <= value.len) : (index += 1) {
+        if (std.ascii.eqlIgnoreCase(value[index .. index + needle.len], needle)) return true;
+    }
+    return false;
+}
+
+fn podProjectionSortKey(record: *const PodRecord, column: u8) []const u8 {
+    return switch (column) {
+        0 => record.key.namespace,
+        1 => record.key.name,
+        3 => if (record.status_reason.len > 0) record.status_reason else record.phase,
+        9 => record.pod_ip,
+        10 => record.node_name,
+        else => record.key.name,
+    };
+}
+
+fn nodeDataPlaneEnabled() bool {
+    return resource_view.active_node_source == .data_plane;
+}
+
+fn nodeProjectionColumns(
+    _: *NodeProjection,
+    record: *const NodeRecord,
+    allocator: std.mem.Allocator,
+) ![6][]const u8 {
+    return record.columns(allocator);
+}
+
+fn nodeProjectionMatch(record: *const NodeRecord, filter: []const u8) bool {
+    if (filter.len == 0) return true;
+    return containsIgnoreCase(record.key.name, filter);
+}
+
+fn nodeProjectionSortKey(record: *const NodeRecord, column: u8) []const u8 {
+    return switch (column) {
+        0 => record.key.name,
+        1 => record.status,
+        2 => record.roles,
+        3 => record.version,
+        4 => record.internal_ip,
+        5 => record.creation_timestamp orelse "",
+        else => record.key.name,
+    };
+}
+
+fn namespaceProjectionMatch(record: *const NamespaceRecord, filter: []const u8) bool {
+    return filter.len == 0 or containsIgnoreCase(record.key.name, filter);
+}
+
+fn namespaceProjectionSortKey(record: *const NamespaceRecord, column: u8) []const u8 {
+    return switch (column) {
+        0 => record.key.name,
+        1 => record.creation_timestamp orelse "",
+        2 => record.status,
+        else => record.key.name,
+    };
+}
+
+fn servicesDataPlaneEnabled() bool {
+    return resource_view.active_services_source == .data_plane;
+}
+
+fn serviceProjectionColumns(
+    _: *ServiceProjection,
+    record: *const ServiceRecord,
+    allocator: std.mem.Allocator,
+) ![7][]const u8 {
+    return record.columns(allocator);
+}
+
+fn endpointProjectionColumns(
+    _: *EndpointProjection,
+    record: *const EndpointRecord,
+    allocator: std.mem.Allocator,
+) ![4][]const u8 {
+    return record.columns(allocator);
+}
+
+fn endpointSliceProjectionColumns(
+    _: *EndpointSliceProjection,
+    record: *const EndpointSliceRecord,
+    allocator: std.mem.Allocator,
+) ![5][]const u8 {
+    return record.columns(allocator);
+}
+
+fn serviceProjectionMatch(record: *const ServiceRecord, filter: []const u8) bool {
+    return filter.len == 0 or
+        containsIgnoreCase(record.key.namespace, filter) or
+        containsIgnoreCase(record.key.name, filter);
+}
+
+fn endpointProjectionMatch(record: *const EndpointRecord, filter: []const u8) bool {
+    return filter.len == 0 or
+        containsIgnoreCase(record.key.namespace, filter) or
+        containsIgnoreCase(record.key.name, filter);
+}
+
+fn endpointSliceProjectionMatch(record: *const EndpointSliceRecord, filter: []const u8) bool {
+    return filter.len == 0 or
+        containsIgnoreCase(record.key.namespace, filter) or
+        containsIgnoreCase(record.key.name, filter);
+}
+
+fn serviceProjectionSortKey(record: *const ServiceRecord, column: u8) []const u8 {
+    return switch (column) {
+        0 => record.key.namespace,
+        1 => record.key.name,
+        2 => record.service_type,
+        3 => record.cluster_ip,
+        4 => record.external_ip,
+        5 => record.ports,
+        6 => record.creation_timestamp orelse "",
+        else => record.key.name,
+    };
+}
+
+fn endpointProjectionSortKey(record: *const EndpointRecord, column: u8) []const u8 {
+    return switch (column) {
+        0 => record.key.namespace,
+        1 => record.key.name,
+        2 => record.endpoints,
+        3 => record.creation_timestamp orelse "",
+        else => record.key.name,
+    };
+}
+
+fn endpointSliceProjectionSortKey(record: *const EndpointSliceRecord, column: u8) []const u8 {
+    return switch (column) {
+        0 => record.key.namespace,
+        1 => record.key.name,
+        2 => record.address_type,
+        3 => record.endpoints,
+        4 => record.creation_timestamp orelse "",
+        else => record.key.name,
+    };
+}
+
+fn configDataPlaneEnabled() bool {
+    return resource_view.active_config_source == .data_plane;
+}
+
+fn workloadsDataPlaneEnabled() bool {
+    return resource_view.active_workloads_source == .data_plane;
+}
+
+fn batchDataPlaneEnabled() bool {
+    return resource_view.active_batch_source == .data_plane;
+}
+
+fn networkingDataPlaneEnabled() bool {
+    return resource_view.active_networking_source == .data_plane;
+}
+
+fn storageDataPlaneEnabled() bool {
+    return resource_view.active_storage_source == .data_plane;
+}
+
+fn configMapProjectionColumns(
+    _: *ConfigMapProjection,
+    record: *const ConfigMapRecord,
+    allocator: std.mem.Allocator,
+) ![4][]const u8 {
+    return record.columns(allocator);
+}
+
+fn secretProjectionColumns(
+    _: *SecretProjection,
+    record: *const SecretRecord,
+    allocator: std.mem.Allocator,
+) ![5][]const u8 {
+    return record.columns(allocator);
+}
+
+fn serviceAccountProjectionColumns(
+    _: *ServiceAccountProjection,
+    record: *const ServiceAccountRecord,
+    allocator: std.mem.Allocator,
+) ![4][]const u8 {
+    return record.columns(allocator);
+}
+
+fn resourceQuotaProjectionColumns(
+    _: *ResourceQuotaProjection,
+    record: *const ResourceQuotaRecord,
+    allocator: std.mem.Allocator,
+) ![3][]const u8 {
+    return record.columns(allocator);
+}
+
+fn limitRangeProjectionColumns(
+    _: *LimitRangeProjection,
+    record: *const LimitRangeRecord,
+    allocator: std.mem.Allocator,
+) ![3][]const u8 {
+    return record.columns(allocator);
+}
+
+fn configMapProjectionMatch(record: *const ConfigMapRecord, filter: []const u8) bool {
+    return namespacedRecordMatches(record, filter);
+}
+
+fn secretProjectionMatch(record: *const SecretRecord, filter: []const u8) bool {
+    return namespacedRecordMatches(record, filter);
+}
+
+fn serviceAccountProjectionMatch(record: *const ServiceAccountRecord, filter: []const u8) bool {
+    return namespacedRecordMatches(record, filter);
+}
+
+fn resourceQuotaProjectionMatch(record: *const ResourceQuotaRecord, filter: []const u8) bool {
+    return namespacedRecordMatches(record, filter);
+}
+
+fn limitRangeProjectionMatch(record: *const LimitRangeRecord, filter: []const u8) bool {
+    return namespacedRecordMatches(record, filter);
+}
+
+fn namespacedRecordMatches(record: anytype, filter: []const u8) bool {
+    return filter.len == 0 or
+        containsIgnoreCase(record.key.namespace, filter) or
+        containsIgnoreCase(record.key.name, filter);
+}
+
+fn configMapProjectionSortKey(record: *const ConfigMapRecord, column: u8) []const u8 {
+    return switch (column) {
+        0 => record.key.namespace,
+        1 => record.key.name,
+        2 => &record.data_sort_key,
+        3 => record.creation_timestamp orelse "",
+        else => record.key.name,
+    };
+}
+
+fn secretProjectionSortKey(record: *const SecretRecord, column: u8) []const u8 {
+    return switch (column) {
+        0 => record.key.namespace,
+        1 => record.key.name,
+        2 => record.secret_type,
+        3 => &record.data_sort_key,
+        4 => record.creation_timestamp orelse "",
+        else => record.key.name,
+    };
+}
+
+fn serviceAccountProjectionSortKey(record: *const ServiceAccountRecord, column: u8) []const u8 {
+    return switch (column) {
+        0 => record.key.namespace,
+        1 => record.key.name,
+        2 => &record.secret_sort_key,
+        3 => record.creation_timestamp orelse "",
+        else => record.key.name,
+    };
+}
+
+fn resourceQuotaProjectionSortKey(record: *const ResourceQuotaRecord, column: u8) []const u8 {
+    return switch (column) {
+        0 => record.key.namespace,
+        1 => record.key.name,
+        2 => record.creation_timestamp orelse "",
+        else => record.key.name,
+    };
+}
+
+fn limitRangeProjectionSortKey(record: *const LimitRangeRecord, column: u8) []const u8 {
+    return switch (column) {
+        0 => record.key.namespace,
+        1 => record.key.name,
+        2 => record.creation_timestamp orelse "",
+        else => record.key.name,
+    };
+}
+
+fn deploymentProjectionColumns(
+    _: *DeploymentProjection,
+    record: *const DeploymentRecord,
+    allocator: std.mem.Allocator,
+) ![6][]const u8 {
+    return record.columns(allocator);
+}
+
+fn statefulSetProjectionColumns(
+    _: *StatefulSetProjection,
+    record: *const StatefulSetRecord,
+    allocator: std.mem.Allocator,
+) ![4][]const u8 {
+    return record.columns(allocator);
+}
+
+fn daemonSetProjectionColumns(
+    _: *DaemonSetProjection,
+    record: *const DaemonSetRecord,
+    allocator: std.mem.Allocator,
+) ![7][]const u8 {
+    return record.columns(allocator);
+}
+
+fn replicaSetProjectionColumns(
+    _: *ReplicaSetProjection,
+    record: *const ReplicaSetRecord,
+    allocator: std.mem.Allocator,
+) ![6][]const u8 {
+    return record.columns(allocator);
+}
+
+fn deploymentProjectionMatch(record: *const DeploymentRecord, filter: []const u8) bool {
+    return namespacedRecordMatches(record, filter);
+}
+
+fn statefulSetProjectionMatch(record: *const StatefulSetRecord, filter: []const u8) bool {
+    return namespacedRecordMatches(record, filter);
+}
+
+fn daemonSetProjectionMatch(record: *const DaemonSetRecord, filter: []const u8) bool {
+    return namespacedRecordMatches(record, filter);
+}
+
+fn replicaSetProjectionMatch(record: *const ReplicaSetRecord, filter: []const u8) bool {
+    return namespacedRecordMatches(record, filter);
+}
+
+fn deploymentProjectionSortKey(record: *const DeploymentRecord, column: u8) []const u8 {
+    return switch (column) {
+        0 => record.key.namespace,
+        1 => record.key.name,
+        2 => &record.ready_sort_key,
+        3 => &record.updated_sort_key,
+        4 => &record.available_sort_key,
+        5 => record.creation_timestamp orelse "",
+        else => record.key.name,
+    };
+}
+
+fn statefulSetProjectionSortKey(record: *const StatefulSetRecord, column: u8) []const u8 {
+    return switch (column) {
+        0 => record.key.namespace,
+        1 => record.key.name,
+        2 => &record.ready_sort_key,
+        3 => record.creation_timestamp orelse "",
+        else => record.key.name,
+    };
+}
+
+fn daemonSetProjectionSortKey(record: *const DaemonSetRecord, column: u8) []const u8 {
+    return switch (column) {
+        0 => record.key.namespace,
+        1 => record.key.name,
+        2 => &record.desired_sort_key,
+        3 => &record.current_sort_key,
+        4 => &record.ready_sort_key,
+        5 => &record.updated_sort_key,
+        6 => record.creation_timestamp orelse "",
+        else => record.key.name,
+    };
+}
+
+fn replicaSetProjectionSortKey(record: *const ReplicaSetRecord, column: u8) []const u8 {
+    return switch (column) {
+        0 => record.key.namespace,
+        1 => record.key.name,
+        2 => &record.desired_sort_key,
+        3 => &record.current_sort_key,
+        4 => &record.ready_sort_key,
+        5 => record.creation_timestamp orelse "",
+        else => record.key.name,
+    };
+}
+
+fn jobProjectionColumns(
+    _: *JobProjection,
+    record: *const JobRecord,
+    allocator: std.mem.Allocator,
+) ![5][]const u8 {
+    return record.columns(allocator);
+}
+
+fn cronJobProjectionColumns(
+    _: *CronJobProjection,
+    record: *const CronJobRecord,
+    allocator: std.mem.Allocator,
+) ![6][]const u8 {
+    return record.columns(allocator);
+}
+
+fn hpaProjectionColumns(
+    _: *HPAProjection,
+    record: *const HPARecord,
+    allocator: std.mem.Allocator,
+) ![6][]const u8 {
+    return record.columns(allocator);
+}
+
+fn pdbProjectionColumns(
+    _: *PDBProjection,
+    record: *const PDBRecord,
+    allocator: std.mem.Allocator,
+) ![6][]const u8 {
+    return record.columns(allocator);
+}
+
+fn jobProjectionMatch(record: *const JobRecord, filter: []const u8) bool {
+    return namespacedRecordMatches(record, filter);
+}
+
+fn cronJobProjectionMatch(record: *const CronJobRecord, filter: []const u8) bool {
+    return namespacedRecordMatches(record, filter);
+}
+
+fn hpaProjectionMatch(record: *const HPARecord, filter: []const u8) bool {
+    return namespacedRecordMatches(record, filter);
+}
+
+fn pdbProjectionMatch(record: *const PDBRecord, filter: []const u8) bool {
+    return namespacedRecordMatches(record, filter);
+}
+
+fn jobProjectionSortKey(record: *const JobRecord, column: u8) []const u8 {
+    return switch (column) {
+        0 => record.key.namespace,
+        1 => record.key.name,
+        2 => &record.completions_sort_key,
+        3 => record.start_time orelse "",
+        4 => record.creation_timestamp orelse "",
+        else => record.key.name,
+    };
+}
+
+fn cronJobProjectionSortKey(record: *const CronJobRecord, column: u8) []const u8 {
+    return switch (column) {
+        0 => record.key.namespace,
+        1 => record.key.name,
+        2 => record.schedule,
+        3 => if (record.@"suspend") "True" else "False",
+        4 => &record.active_sort_key,
+        5 => record.last_schedule_time orelse "",
+        else => record.key.name,
+    };
+}
+
+fn hpaProjectionSortKey(record: *const HPARecord, column: u8) []const u8 {
+    return switch (column) {
+        0 => record.key.namespace,
+        1 => record.key.name,
+        2 => &record.min_sort_key,
+        3 => &record.max_sort_key,
+        4 => &record.current_sort_key,
+        5 => record.creation_timestamp orelse "",
+        else => record.key.name,
+    };
+}
+
+fn pdbProjectionSortKey(record: *const PDBRecord, column: u8) []const u8 {
+    return switch (column) {
+        0 => record.key.namespace,
+        1 => record.key.name,
+        2 => &record.min_available_sort_key,
+        3 => &record.max_unavailable_sort_key,
+        4 => &record.allowed_sort_key,
+        5 => record.creation_timestamp orelse "",
+        else => record.key.name,
+    };
+}
+
+fn ingressProjectionColumns(
+    _: *IngressProjection,
+    record: *const IngressRecord,
+    allocator: std.mem.Allocator,
+) ![7][]const u8 {
+    return record.columns(allocator);
+}
+
+fn ingressClassProjectionColumns(
+    _: *IngressClassProjection,
+    record: *const IngressClassRecord,
+    allocator: std.mem.Allocator,
+) ![3][]const u8 {
+    return record.columns(allocator);
+}
+
+fn networkPolicyProjectionColumns(
+    _: *NetworkPolicyProjection,
+    record: *const NetworkPolicyRecord,
+    allocator: std.mem.Allocator,
+) ![4][]const u8 {
+    return record.columns(allocator);
+}
+
+fn ipAddressProjectionColumns(
+    _: *IPAddressProjection,
+    record: *const IPAddressRecord,
+    allocator: std.mem.Allocator,
+) ![3][]const u8 {
+    return record.columns(allocator);
+}
+
+fn serviceCIDRProjectionColumns(
+    _: *ServiceCIDRProjection,
+    record: *const ServiceCIDRRecord,
+    allocator: std.mem.Allocator,
+) ![3][]const u8 {
+    return record.columns(allocator);
+}
+
+fn ingressProjectionMatch(record: *const IngressRecord, filter: []const u8) bool {
+    return namespacedRecordMatches(record, filter);
+}
+
+fn ingressClassProjectionMatch(record: *const IngressClassRecord, filter: []const u8) bool {
+    return filter.len == 0 or
+        containsIgnoreCase(record.key.name, filter) or
+        containsIgnoreCase(record.controller, filter);
+}
+
+fn networkPolicyProjectionMatch(record: *const NetworkPolicyRecord, filter: []const u8) bool {
+    return namespacedRecordMatches(record, filter);
+}
+
+fn ipAddressProjectionMatch(record: *const IPAddressRecord, filter: []const u8) bool {
+    return filter.len == 0 or
+        containsIgnoreCase(record.key.name, filter) or
+        containsIgnoreCase(record.parent, filter);
+}
+
+fn serviceCIDRProjectionMatch(record: *const ServiceCIDRRecord, filter: []const u8) bool {
+    return filter.len == 0 or containsIgnoreCase(record.key.name, filter);
+}
+
+fn ingressProjectionSortKey(record: *const IngressRecord, column: u8) []const u8 {
+    return switch (column) {
+        0 => record.key.namespace,
+        1 => record.key.name,
+        2 => record.class,
+        3 => record.hosts,
+        4 => record.address,
+        5 => record.ports,
+        6 => record.creation_timestamp orelse "",
+        else => record.key.name,
+    };
+}
+
+fn ingressClassProjectionSortKey(record: *const IngressClassRecord, column: u8) []const u8 {
+    return switch (column) {
+        0 => record.key.name,
+        1 => record.controller,
+        2 => record.creation_timestamp orelse "",
+        else => record.key.name,
+    };
+}
+
+fn networkPolicyProjectionSortKey(record: *const NetworkPolicyRecord, column: u8) []const u8 {
+    return switch (column) {
+        0 => record.key.namespace,
+        1 => record.key.name,
+        2 => record.pod_selector,
+        3 => record.creation_timestamp orelse "",
+        else => record.key.name,
+    };
+}
+
+fn ipAddressProjectionSortKey(record: *const IPAddressRecord, column: u8) []const u8 {
+    return switch (column) {
+        0 => record.key.name,
+        1 => record.parent,
+        2 => record.creation_timestamp orelse "",
+        else => record.key.name,
+    };
+}
+
+fn serviceCIDRProjectionSortKey(record: *const ServiceCIDRRecord, column: u8) []const u8 {
+    return switch (column) {
+        0 => record.key.name,
+        1 => record.cidrs,
+        2 => record.creation_timestamp orelse "",
+        else => record.key.name,
+    };
+}
+
+fn pvProjectionColumns(_: *PVProjection, record: *const PVRecord, allocator: std.mem.Allocator) ![8][]const u8 {
+    return record.columns(allocator);
+}
+
+fn pvcProjectionColumns(_: *PVCProjection, record: *const PVCRecord, allocator: std.mem.Allocator) ![8][]const u8 {
+    return record.columns(allocator);
+}
+
+fn storageClassProjectionColumns(_: *StorageClassProjection, record: *const StorageClassRecord, allocator: std.mem.Allocator) ![6][]const u8 {
+    return record.columns(allocator);
+}
+
+fn volumeAttributesClassProjectionColumns(_: *VolumeAttributesClassProjection, record: *const VolumeAttributesClassRecord, allocator: std.mem.Allocator) ![3][]const u8 {
+    return record.columns(allocator);
+}
+
+fn csiDriverProjectionColumns(_: *CSIDriverProjection, record: *const CSIDriverRecord, allocator: std.mem.Allocator) ![4][]const u8 {
+    return record.columns(allocator);
+}
+
+fn pvProjectionMatch(record: *const PVRecord, filter: []const u8) bool {
+    return filter.len == 0 or containsIgnoreCase(record.key.name, filter) or containsIgnoreCase(record.claim, filter);
+}
+
+fn pvcProjectionMatch(record: *const PVCRecord, filter: []const u8) bool {
+    return namespacedRecordMatches(record, filter);
+}
+
+fn storageClassProjectionMatch(record: *const StorageClassRecord, filter: []const u8) bool {
+    return filter.len == 0 or containsIgnoreCase(record.key.name, filter) or containsIgnoreCase(record.provisioner, filter);
+}
+
+fn volumeAttributesClassProjectionMatch(record: *const VolumeAttributesClassRecord, filter: []const u8) bool {
+    return filter.len == 0 or containsIgnoreCase(record.key.name, filter) or containsIgnoreCase(record.driver, filter);
+}
+
+fn csiDriverProjectionMatch(record: *const CSIDriverRecord, filter: []const u8) bool {
+    return filter.len == 0 or containsIgnoreCase(record.key.name, filter);
+}
+
+fn pvProjectionSortKey(record: *const PVRecord, column: u8) []const u8 {
+    return switch (column) {
+        0 => record.key.name,
+        1 => &record.capacity_sort_key,
+        2 => record.access,
+        3 => record.reclaim,
+        4 => record.status,
+        5 => record.claim,
+        6 => record.storage_class,
+        7 => record.creation_timestamp orelse "",
+        else => record.key.name,
+    };
+}
+
+fn pvcProjectionSortKey(record: *const PVCRecord, column: u8) []const u8 {
+    return switch (column) {
+        0 => record.key.namespace,
+        1 => record.key.name,
+        2 => record.status,
+        3 => record.volume,
+        4 => &record.capacity_sort_key,
+        5 => record.access,
+        6 => record.storage_class,
+        7 => record.creation_timestamp orelse "",
+        else => record.key.name,
+    };
+}
+
+fn storageClassProjectionSortKey(record: *const StorageClassRecord, column: u8) []const u8 {
+    return switch (column) {
+        0 => record.key.name,
+        1 => record.provisioner,
+        2 => record.reclaim_policy,
+        3 => record.bind_mode,
+        4 => if (record.expansion) "true" else "false",
+        5 => record.creation_timestamp orelse "",
+        else => record.key.name,
+    };
+}
+
+fn volumeAttributesClassProjectionSortKey(record: *const VolumeAttributesClassRecord, column: u8) []const u8 {
+    return switch (column) {
+        0 => record.key.name,
+        1 => record.driver,
+        2 => record.creation_timestamp orelse "",
+        else => record.key.name,
+    };
+}
+
+fn csiDriverProjectionSortKey(record: *const CSIDriverRecord, column: u8) []const u8 {
+    return switch (column) {
+        0 => record.key.name,
+        1 => if (record.attach_required) "true" else "false",
+        2 => if (record.pod_info) "true" else "false",
+        3 => record.creation_timestamp orelse "",
+        else => record.key.name,
+    };
+}
+
+fn matchesPodEnvelope(
+    active: ?lifecycle.SubscriptionKey,
+    envelope: resource_key.Envelope,
+) bool {
+    return switch (envelope.target) {
+        .lifecycle => true,
+        .resource => |identity| if (active) |key|
+            key.generation == identity.generation and
+                key.subscription_id == identity.subscription_id
+        else
+            false,
+        else => false,
+    };
+}
+
+fn readonlyAction(result: View.KeyResult) ?[]const u8 {
+    return switch (result) {
+        .request_delete => "delete",
+        .request_kill => "kill",
+        .request_edit => "edit",
+        .request_shell => "shell",
+        .request_attach => "attach",
+        .request_port_forward => "port-forward",
+        .request_set_image => "set-image",
+        .request_sanitize => "sanitize",
+        .request_transfer => "cp",
+        .request_kill_finalizers => "kill-finalizers",
+        .request_drain => "drain",
+        .request_cordon => "cordon",
+        .request_uncordon => "uncordon",
+        .request_restart => "restart",
+        .request_scale => "scale",
+        .request_suspend => "suspend",
+        .request_trigger => "trigger",
+        .request_rollback => "rollback",
+        else => null,
+    };
+}
+
+fn shouldStartMetricsFeed(
+    is_pod_subscription: bool,
+    initial_changes: bool,
+    pod_count: usize,
+    already_started: bool,
+) bool {
+    return is_pod_subscription and initial_changes and pod_count > 0 and !already_started;
+}
+
+fn markFamilyStartOutcome(entry: *family_registry.Entry, succeeded: bool) void {
+    if (succeeded) entry.restart_pending = false;
+}
+
+fn startPendingFamilyEntries(
+    registry: *family_registry.Registry,
+    context: *anyopaque,
+    startFn: *const fn (*anyopaque, usize) anyerror!void,
+    failureFn: *const fn (*anyopaque, *family_registry.Entry, anyerror) void,
+) void {
+    for (registry.items(), 0..) |*entry, index| {
+        if (!entry.restart_pending or !entry.enabled() or entry.active != null) continue;
+        startFn(context, index) catch |err| {
+            markFamilyStartOutcome(entry, false);
+            failureFn(context, entry, err);
+            continue;
+        };
+        markFamilyStartOutcome(entry, true);
+    }
+}
+
+const ResourceDrainEffects = struct {
+    sync_pod: bool = false,
+    sync_metrics: bool = false,
+    sync_node: bool = false,
+    sync_namespace: bool = false,
+    start_pod_metrics: bool = false,
+    emit_pod_list_complete: bool = false,
+    emit_pod_watch_connected: bool = false,
+    emit_metrics_ready: bool = false,
+};
+
+fn decideResourceDrainEffects(
+    target: resource_key.EnvelopeTarget,
+    pod: ?lifecycle.SubscriptionKey,
+    metrics: ?lifecycle.SubscriptionKey,
+    node: ?lifecycle.SubscriptionKey,
+    namespace: ?lifecycle.SubscriptionKey,
+    sync_kind: ?resource_key.SyncKind,
+    initial_changes: bool,
+    pod_count: usize,
+    pod_metrics_started: bool,
+) ResourceDrainEffects {
+    const identity = switch (target) {
+        .resource => |value| value,
+        else => return .{},
+    };
+    const sync_pod = matchesIdentity(pod, identity);
+    const sync_metrics = matchesIdentity(metrics, identity);
+    const sync_node = matchesIdentity(node, identity);
+    const sync_namespace = matchesIdentity(namespace, identity);
+    return .{
+        .sync_pod = sync_pod,
+        .sync_metrics = sync_metrics,
+        .sync_node = sync_node,
+        .sync_namespace = sync_namespace,
+        .start_pod_metrics = shouldStartMetricsFeed(
+            sync_pod,
+            initial_changes,
+            pod_count,
+            pod_metrics_started,
+        ),
+        .emit_pod_list_complete = sync_pod and sync_kind == .list_complete,
+        .emit_pod_watch_connected = sync_pod and sync_kind == .watch_connected,
+        .emit_metrics_ready = sync_metrics and sync_kind == .metrics_ready,
+    };
+}
+
+test "metrics feed starts only after first applied real pod batch and only once" {
+    try std.testing.expect(!shouldStartMetricsFeed(false, true, 1, false));
+    try std.testing.expect(!shouldStartMetricsFeed(true, false, 0, false));
+    try std.testing.expect(!shouldStartMetricsFeed(true, true, 0, false));
+    try std.testing.expect(shouldStartMetricsFeed(true, true, 1, false));
+    try std.testing.expect(!shouldStartMetricsFeed(true, true, 1, true));
+}
+
+test "family restart pending clears only after successful start" {
+    var entry: family_registry.Entry = undefined;
+    entry.restart_pending = true;
+    markFamilyStartOutcome(&entry, false);
+    try std.testing.expect(entry.restart_pending);
+    markFamilyStartOutcome(&entry, true);
+    try std.testing.expect(!entry.restart_pending);
+}
+
+test "one family start failure does not block later registry entries" {
+    const enabled = struct {
+        fn call() bool {
+            return true;
+        }
+    }.call;
+    var entries = [_]family_registry.Entry{ undefined, undefined };
+    for (&entries, 0..) |*entry, index| {
+        entry.name = if (index == 0) "first" else "second";
+        entry.active = null;
+        entry.restart_pending = true;
+        entry.enabledFn = enabled;
+    }
+    var registry = family_registry.Registry{ .entries = &entries };
+    var started: usize = 0;
+    startPendingFamilyEntries(
+        &registry,
+        @ptrCast(&started),
+        struct {
+            fn start(raw: *anyopaque, index: usize) !void {
+                if (index == 0) return error.InjectedStartFailure;
+                const count: *usize = @ptrCast(@alignCast(raw));
+                count.* += 1;
+            }
+        }.start,
+        struct {
+            fn failed(_: *anyopaque, _: *family_registry.Entry, _: anyerror) void {}
+        }.failed,
+    );
+    try std.testing.expect(entries[0].restart_pending);
+    try std.testing.expect(!entries[1].restart_pending);
+    try std.testing.expectEqual(@as(usize, 1), started);
+}
+
+test "unified resource registry contains cutover family entries with exact projections" {
+    var app = try App.init(std.testing.allocator, .{});
+    defer app.deinit();
+    const expected = [_][]const u8{
+        "services",
+        "endpoints",
+        "endpointslices",
+        "configmaps",
+        "secrets",
+        "serviceaccounts",
+        "resourcequotas",
+        "limitranges",
+        "deployments",
+        "statefulsets",
+        "daemonsets",
+        "replicasets",
+        "jobs",
+        "cronjobs",
+        "hpa",
+        "poddisruptionbudgets",
+        "ingresses",
+        "ingressclasses",
+        "networkpolicies",
+        "ipaddresses",
+        "servicecidrs",
+        "persistentvolumes",
+        "persistentvolumeclaims",
+        "storageclasses",
+        "volumeattributesclasses",
+        "csidrivers",
+    };
+    try std.testing.expectEqual(expected.len, app.resource_families.registry.itemsConst().len);
+    for (app.resource_families.registry.items(), 0..) |*entry, index| {
+        try std.testing.expectEqualStrings(expected[index], entry.name);
+        const key = lifecycle.SubscriptionKey{
+            .generation = 17,
+            .subscription_id = @intCast(index + 1),
+        };
+        entry.markStarted(key);
+        const identity = resource_key.ResourceIdentity{
+            .generation = key.generation,
+            .subscription_id = key.subscription_id,
+        };
+        try std.testing.expect(app.resource_families.registry.projectionFor(identity) == entry.projection);
+        entry.markStopped();
+    }
+}
+
+test "networking views preserve scope and request exact restarts" {
+    var app = try App.init(std.testing.allocator, .{});
+    defer app.deinit();
+    inline for (.{ app.ingresses_view, app.networkpolicies_view }) |view| {
+        try std.testing.expect(!view.table.show_all_namespaces);
+        view.markSubscriptionStarted();
+        _ = try @TypeOf(view.*).handleKey(view, .{ .char = '0' });
+        try std.testing.expect(view.table.show_all_namespaces);
+        try std.testing.expectEqual(.restart, view.takeSubscriptionRequest());
+        view.markSubscriptionStarted();
+        _ = try @TypeOf(view.*).handleKey(view, .ctrl_r);
+        try std.testing.expectEqual(.restart, view.takeSubscriptionRequest());
+    }
+    inline for (.{ app.ingressclasses_view, app.ipaddresses_view, app.servicecidrs_view }) |view| {
+        try std.testing.expect(!@TypeOf(view.*).view_config.is_namespaced);
+        view.markSubscriptionStarted();
+        _ = try @TypeOf(view.*).handleKey(view, .ctrl_r);
+        try std.testing.expectEqual(.restart, view.takeSubscriptionRequest());
+    }
+}
+
+test "storage views preserve scope and request exact restarts" {
+    var app = try App.init(std.testing.allocator, .{});
+    defer app.deinit();
+    try std.testing.expect(!app.persistentvolumeclaims_view.table.show_all_namespaces);
+    app.persistentvolumeclaims_view.markSubscriptionStarted();
+    _ = try PersistentVolumeClaimsView.handleKey(app.persistentvolumeclaims_view, .{ .char = '0' });
+    try std.testing.expect(app.persistentvolumeclaims_view.table.show_all_namespaces);
+    try std.testing.expectEqual(.restart, app.persistentvolumeclaims_view.takeSubscriptionRequest());
+    app.persistentvolumeclaims_view.markSubscriptionStarted();
+    _ = try PersistentVolumeClaimsView.handleKey(app.persistentvolumeclaims_view, .ctrl_r);
+    try std.testing.expectEqual(.restart, app.persistentvolumeclaims_view.takeSubscriptionRequest());
+    inline for (.{
+        app.persistentvolumes_view,
+        app.storageclasses_view,
+        app.volumeattributesclasses_view,
+        app.csidrivers_view,
+    }) |view| {
+        try std.testing.expect(!@TypeOf(view.*).view_config.is_namespaced);
+        view.markSubscriptionStarted();
+        _ = try @TypeOf(view.*).handleKey(view, .ctrl_r);
+        try std.testing.expectEqual(.restart, view.takeSubscriptionRequest());
+    }
+}
+
+test "batch views preserve default scope and request exact restart on toggle" {
+    var app = try App.init(std.testing.allocator, .{});
+    defer app.deinit();
+    inline for (.{
+        .{ app.jobs_view, false },
+        .{ app.cronjobs_view, false },
+        .{ app.hpa_view, true },
+        .{ app.poddisruptionbudgets_view, true },
+    }) |case| {
+        const view = case[0];
+        try std.testing.expectEqual(case[1], view.table.show_all_namespaces);
+        view.markSubscriptionStarted();
+        _ = try @TypeOf(view.*).handleKey(view, .{ .char = '0' });
+        try std.testing.expectEqual(!case[1], view.table.show_all_namespaces);
+        try std.testing.expectEqual(.restart, view.takeSubscriptionRequest());
+        view.markSubscriptionStarted();
+        _ = try @TypeOf(view.*).handleKey(view, .ctrl_r);
+        try std.testing.expectEqual(.restart, view.takeSubscriptionRequest());
+    }
+}
+
+test "workload views preserve default scope and request exact restart on toggle" {
+    var app = try App.init(std.testing.allocator, .{});
+    defer app.deinit();
+    inline for (.{
+        .{ app.deployments_view, false },
+        .{ app.statefulsets_view, false },
+        .{ app.daemonsets_view, true },
+        .{ app.replicasets_view, false },
+    }) |case| {
+        const view = case[0];
+        try std.testing.expectEqual(case[1], view.table.show_all_namespaces);
+        view.markSubscriptionStarted();
+        _ = try @TypeOf(view.*).handleKey(view, .{ .char = '0' });
+        try std.testing.expectEqual(!case[1], view.table.show_all_namespaces);
+        try std.testing.expectEqual(.restart, view.takeSubscriptionRequest());
+        view.markSubscriptionStarted();
+        _ = try @TypeOf(view.*).handleKey(view, .ctrl_r);
+        try std.testing.expectEqual(.restart, view.takeSubscriptionRequest());
+    }
+}
+
+test "config views preserve default scope and request exact restart on toggle" {
+    var app = try App.init(std.testing.allocator, .{});
+    defer app.deinit();
+    inline for (.{
+        .{ app.configmaps_view, true },
+        .{ app.secrets_view, false },
+        .{ app.serviceaccounts_view, false },
+        .{ app.resourcequotas_view, true },
+        .{ app.limitranges_view, true },
+    }) |case| {
+        const view = case[0];
+        try std.testing.expectEqual(case[1], view.table.show_all_namespaces);
+        view.markSubscriptionStarted();
+        _ = try @TypeOf(view.*).handleKey(view, .{ .char = '0' });
+        try std.testing.expectEqual(!case[1], view.table.show_all_namespaces);
+        try std.testing.expectEqual(.restart, view.takeSubscriptionRequest());
+        view.markSubscriptionStarted();
+        _ = try @TypeOf(view.*).handleKey(view, .ctrl_r);
+        try std.testing.expectEqual(.restart, view.takeSubscriptionRequest());
+    }
+}
+
+test "config count columns use numeric projection sort keys" {
+    const low_config = ConfigMapRecord{ .key = undefined, .data_count = 2, .data_sort_key = ConfigMapRecord.numericSortKey(2) };
+    const high_config = ConfigMapRecord{ .key = undefined, .data_count = 10, .data_sort_key = ConfigMapRecord.numericSortKey(10) };
+    try std.testing.expect(std.mem.order(
+        u8,
+        configMapProjectionSortKey(&low_config, 2),
+        configMapProjectionSortKey(&high_config, 2),
+    ) == .lt);
+
+    const low_secret = SecretRecord{
+        .key = undefined,
+        .secret_type = undefined,
+        .data_count = 2,
+        .data_sort_key = ConfigMapRecord.numericSortKey(2),
+    };
+    const high_secret = SecretRecord{
+        .key = undefined,
+        .secret_type = undefined,
+        .data_count = 10,
+        .data_sort_key = ConfigMapRecord.numericSortKey(10),
+    };
+    try std.testing.expect(std.mem.order(
+        u8,
+        secretProjectionSortKey(&low_secret, 3),
+        secretProjectionSortKey(&high_secret, 3),
+    ) == .lt);
+
+    const low_account = ServiceAccountRecord{
+        .key = undefined,
+        .secret_count = 2,
+        .secret_sort_key = ConfigMapRecord.numericSortKey(2),
+    };
+    const high_account = ServiceAccountRecord{
+        .key = undefined,
+        .secret_count = 10,
+        .secret_sort_key = ConfigMapRecord.numericSortKey(10),
+    };
+    try std.testing.expect(std.mem.order(
+        u8,
+        serviceAccountProjectionSortKey(&low_account, 2),
+        serviceAccountProjectionSortKey(&high_account, 2),
+    ) == .lt);
+}
+
+test "workload replica columns use numeric projection sort keys" {
+    const low_deployment = DeploymentRecord{
+        .key = undefined,
+        .ready_replicas = 2,
+        .desired_replicas = 10,
+        .updated_replicas = 2,
+        .available_replicas = 2,
+        .ready_sort_key = DeploymentRecord.ratioSortKey(2, 10),
+        .updated_sort_key = DeploymentRecord.countSortKey(2),
+        .available_sort_key = DeploymentRecord.countSortKey(2),
+    };
+    const high_deployment = DeploymentRecord{
+        .key = undefined,
+        .ready_replicas = 10,
+        .desired_replicas = 10,
+        .updated_replicas = 10,
+        .available_replicas = 10,
+        .ready_sort_key = DeploymentRecord.ratioSortKey(10, 10),
+        .updated_sort_key = DeploymentRecord.countSortKey(10),
+        .available_sort_key = DeploymentRecord.countSortKey(10),
+    };
+    inline for (2..5) |column| {
+        try std.testing.expect(std.mem.order(
+            u8,
+            deploymentProjectionSortKey(&low_deployment, column),
+            deploymentProjectionSortKey(&high_deployment, column),
+        ) == .lt);
+    }
+
+    const low_stateful = StatefulSetRecord{
+        .key = undefined,
+        .ready_replicas = 2,
+        .desired_replicas = 10,
+        .ready_sort_key = DeploymentRecord.ratioSortKey(2, 10),
+    };
+    const high_stateful = StatefulSetRecord{
+        .key = undefined,
+        .ready_replicas = 10,
+        .desired_replicas = 10,
+        .ready_sort_key = DeploymentRecord.ratioSortKey(10, 10),
+    };
+    try std.testing.expect(std.mem.order(
+        u8,
+        statefulSetProjectionSortKey(&low_stateful, 2),
+        statefulSetProjectionSortKey(&high_stateful, 2),
+    ) == .lt);
+
+    const low_daemon = DaemonSetRecord{
+        .key = undefined,
+        .desired = 2,
+        .current = 2,
+        .ready = 2,
+        .updated = 2,
+        .desired_sort_key = DeploymentRecord.countSortKey(2),
+        .current_sort_key = DeploymentRecord.countSortKey(2),
+        .ready_sort_key = DeploymentRecord.countSortKey(2),
+        .updated_sort_key = DeploymentRecord.countSortKey(2),
+    };
+    const high_daemon = DaemonSetRecord{
+        .key = undefined,
+        .desired = 10,
+        .current = 10,
+        .ready = 10,
+        .updated = 10,
+        .desired_sort_key = DeploymentRecord.countSortKey(10),
+        .current_sort_key = DeploymentRecord.countSortKey(10),
+        .ready_sort_key = DeploymentRecord.countSortKey(10),
+        .updated_sort_key = DeploymentRecord.countSortKey(10),
+    };
+    inline for (2..6) |column| {
+        try std.testing.expect(std.mem.order(
+            u8,
+            daemonSetProjectionSortKey(&low_daemon, column),
+            daemonSetProjectionSortKey(&high_daemon, column),
+        ) == .lt);
+    }
+
+    const low_replica = ReplicaSetRecord{
+        .key = undefined,
+        .desired = 2,
+        .current = 2,
+        .ready = 2,
+        .desired_sort_key = DeploymentRecord.countSortKey(2),
+        .current_sort_key = DeploymentRecord.countSortKey(2),
+        .ready_sort_key = DeploymentRecord.countSortKey(2),
+    };
+    const high_replica = ReplicaSetRecord{
+        .key = undefined,
+        .desired = 10,
+        .current = 10,
+        .ready = 10,
+        .desired_sort_key = DeploymentRecord.countSortKey(10),
+        .current_sort_key = DeploymentRecord.countSortKey(10),
+        .ready_sort_key = DeploymentRecord.countSortKey(10),
+    };
+    inline for (2..5) |column| {
+        try std.testing.expect(std.mem.order(
+            u8,
+            replicaSetProjectionSortKey(&low_replica, column),
+            replicaSetProjectionSortKey(&high_replica, column),
+        ) == .lt);
+    }
+}
+
+test "batch count columns use numeric projection sort keys" {
+    const low_job = JobRecord{
+        .key = undefined,
+        .succeeded = 2,
+        .desired = 10,
+        .completions_sort_key = JobRecord.ratioSortKey(2, 10),
+    };
+    const high_job = JobRecord{
+        .key = undefined,
+        .succeeded = 10,
+        .desired = 10,
+        .completions_sort_key = JobRecord.ratioSortKey(10, 10),
+    };
+    try std.testing.expect(std.mem.order(
+        u8,
+        jobProjectionSortKey(&low_job, 2),
+        jobProjectionSortKey(&high_job, 2),
+    ) == .lt);
+
+    const low_cron = CronJobRecord{
+        .key = undefined,
+        .schedule = undefined,
+        .@"suspend" = false,
+        .active = 2,
+        .active_sort_key = CronJobRecord.countSortKey(2),
+    };
+    const high_cron = CronJobRecord{
+        .key = undefined,
+        .schedule = undefined,
+        .@"suspend" = false,
+        .active = 10,
+        .active_sort_key = CronJobRecord.countSortKey(10),
+    };
+    try std.testing.expect(std.mem.order(
+        u8,
+        cronJobProjectionSortKey(&low_cron, 4),
+        cronJobProjectionSortKey(&high_cron, 4),
+    ) == .lt);
+
+    const low_hpa = HPARecord{
+        .key = undefined,
+        .min_replicas = 2,
+        .max_replicas = 2,
+        .current_replicas = 2,
+        .min_sort_key = HPARecord.countSortKey(2),
+        .max_sort_key = HPARecord.countSortKey(2),
+        .current_sort_key = HPARecord.countSortKey(2),
+    };
+    const high_hpa = HPARecord{
+        .key = undefined,
+        .min_replicas = 10,
+        .max_replicas = 10,
+        .current_replicas = 10,
+        .min_sort_key = HPARecord.countSortKey(10),
+        .max_sort_key = HPARecord.countSortKey(10),
+        .current_sort_key = HPARecord.countSortKey(10),
+    };
+    inline for (2..5) |column| {
+        try std.testing.expect(std.mem.order(
+            u8,
+            hpaProjectionSortKey(&low_hpa, column),
+            hpaProjectionSortKey(&high_hpa, column),
+        ) == .lt);
+    }
+
+    const low_pdb = PDBRecord{
+        .key = undefined,
+        .min_available = undefined,
+        .max_unavailable = undefined,
+        .min_available_sort_key = PDBRecord.intOrStringSortKey("2"),
+        .max_unavailable_sort_key = PDBRecord.intOrStringSortKey("2"),
+        .allowed_disruptions = 2,
+        .allowed_sort_key = PDBRecord.countSortKey(2),
+    };
+    const high_pdb = PDBRecord{
+        .key = undefined,
+        .min_available = undefined,
+        .max_unavailable = undefined,
+        .min_available_sort_key = PDBRecord.intOrStringSortKey("10"),
+        .max_unavailable_sort_key = PDBRecord.intOrStringSortKey("10"),
+        .allowed_disruptions = 10,
+        .allowed_sort_key = PDBRecord.countSortKey(10),
+    };
+    inline for (2..5) |column| {
+        try std.testing.expect(std.mem.order(
+            u8,
+            pdbProjectionSortKey(&low_pdb, column),
+            pdbProjectionSortKey(&high_pdb, column),
+        ) == .lt);
+    }
+}
+
+test "storage capacity columns use padded numeric projection sort keys" {
+    const low_key = PVRecord.capacitySortKey("2Gi");
+    const high_key = PVRecord.capacitySortKey("10Gi");
+    const low = PVCRecord{
+        .key = undefined,
+        .status = undefined,
+        .volume = undefined,
+        .capacity = undefined,
+        .capacity_sort_key = low_key,
+        .access = undefined,
+        .storage_class = undefined,
+    };
+    const high = PVCRecord{
+        .key = undefined,
+        .status = undefined,
+        .volume = undefined,
+        .capacity = undefined,
+        .capacity_sort_key = high_key,
+        .access = undefined,
+        .storage_class = undefined,
+    };
+    try std.testing.expect(std.mem.order(
+        u8,
+        pvcProjectionSortKey(&low, 4),
+        pvcProjectionSortKey(&high, 4),
+    ) == .lt);
+}
+
+test "resource family identities isolate envelopes and pod side effects" {
+    const pod = lifecycle.SubscriptionKey{ .generation = 8, .subscription_id = 1 };
+    const node = lifecycle.SubscriptionKey{ .generation = 8, .subscription_id = 2 };
+    const namespace = lifecycle.SubscriptionKey{ .generation = 8, .subscription_id = 3 };
+    try std.testing.expect(matchesIdentity(pod, .{
+        .generation = 8,
+        .subscription_id = 1,
+    }));
+    try std.testing.expect(!matchesIdentity(pod, .{
+        .generation = 8,
+        .subscription_id = 2,
+    }));
+    try std.testing.expect(matchesIdentity(node, .{
+        .generation = 8,
+        .subscription_id = 2,
+    }));
+    try std.testing.expect(matchesIdentity(namespace, .{
+        .generation = 8,
+        .subscription_id = 3,
+    }));
+    try std.testing.expect(!shouldStartMetricsFeed(false, true, 2, false));
+
+    const families = [_]struct {
+        key: lifecycle.SubscriptionKey,
+        expect_node: bool,
+        expect_namespace: bool,
+    }{
+        .{ .key = node, .expect_node = true, .expect_namespace = false },
+        .{ .key = namespace, .expect_node = false, .expect_namespace = true },
+    };
+    for (families) |family| {
+        const effects = decideResourceDrainEffects(
+            .{ .resource = .{
+                .generation = family.key.generation,
+                .subscription_id = family.key.subscription_id,
+            } },
+            pod,
+            .{ .generation = 8, .subscription_id = 4 },
+            node,
+            namespace,
+            .list_complete,
+            true,
+            2,
+            false,
+        );
+        try std.testing.expectEqual(family.expect_node, effects.sync_node);
+        try std.testing.expectEqual(family.expect_namespace, effects.sync_namespace);
+        try std.testing.expect(!effects.sync_pod);
+        try std.testing.expect(!effects.sync_metrics);
+        try std.testing.expect(!effects.start_pod_metrics);
+        try std.testing.expect(!effects.emit_pod_list_complete);
+        try std.testing.expect(!effects.emit_pod_watch_connected);
+        try std.testing.expect(!effects.emit_metrics_ready);
+    }
+
+    const service_identity = resource_key.ResourceIdentity{
+        .generation = 8,
+        .subscription_id = 5,
+    };
+    const service_effects = decideResourceDrainEffects(
+        .{ .resource = service_identity },
+        pod,
+        .{ .generation = 8, .subscription_id = 4 },
+        node,
+        namespace,
+        .list_complete,
+        true,
+        2,
+        false,
+    );
+    try std.testing.expectEqual(ResourceDrainEffects{}, service_effects);
+
+    var app = try App.init(std.testing.allocator, .{});
+    defer app.deinit();
+    const entry = app.resource_families.registry.entryAt(3).?;
+    entry.markStarted(.{ .generation = 8, .subscription_id = 5 });
+    defer entry.markStopped();
+    try std.testing.expect(app.resource_families.registry.contains(service_identity));
+    try std.testing.expect(!app.resource_families.registry.contains(.{
+        .generation = pod.generation,
+        .subscription_id = pod.subscription_id,
+    }));
+
+    const batch_entry = app.resource_families.registry.entryAt(12).?;
+    const batch_identity = resource_key.ResourceIdentity{
+        .generation = 8,
+        .subscription_id = 6,
+    };
+    batch_entry.markStarted(.{
+        .generation = batch_identity.generation,
+        .subscription_id = batch_identity.subscription_id,
+    });
+    defer batch_entry.markStopped();
+    try std.testing.expect(app.resource_families.registry.contains(batch_identity));
+    try std.testing.expect(!matchesIdentity(pod, batch_identity));
+    try std.testing.expectEqual(ResourceDrainEffects{}, decideResourceDrainEffects(
+        .{ .resource = batch_identity },
+        pod,
+        .{ .generation = 8, .subscription_id = 4 },
+        node,
+        namespace,
+        .list_complete,
+        true,
+        2,
+        false,
+    ));
+
+    const networking_entry = app.resource_families.registry.entryAt(16).?;
+    const networking_identity = resource_key.ResourceIdentity{
+        .generation = 8,
+        .subscription_id = 7,
+    };
+    networking_entry.markStarted(.{
+        .generation = networking_identity.generation,
+        .subscription_id = networking_identity.subscription_id,
+    });
+    defer networking_entry.markStopped();
+    try std.testing.expect(app.resource_families.registry.contains(networking_identity));
+    try std.testing.expect(!matchesIdentity(pod, networking_identity));
+    try std.testing.expectEqual(ResourceDrainEffects{}, decideResourceDrainEffects(
+        .{ .resource = networking_identity },
+        pod,
+        .{ .generation = 8, .subscription_id = 4 },
+        node,
+        namespace,
+        .list_complete,
+        true,
+        2,
+        false,
+    ));
+
+    const storage_entry = app.resource_families.registry.entryAt(21).?;
+    const storage_identity = resource_key.ResourceIdentity{
+        .generation = 8,
+        .subscription_id = 8,
+    };
+    storage_entry.markStarted(.{
+        .generation = storage_identity.generation,
+        .subscription_id = storage_identity.subscription_id,
+    });
+    defer storage_entry.markStopped();
+    try std.testing.expect(app.resource_families.registry.contains(storage_identity));
+    try std.testing.expect(!matchesIdentity(pod, storage_identity));
+    try std.testing.expectEqual(ResourceDrainEffects{}, decideResourceDrainEffects(
+        .{ .resource = storage_identity },
+        pod,
+        .{ .generation = 8, .subscription_id = 4 },
+        node,
+        namespace,
+        .list_complete,
+        true,
+        2,
+        false,
+    ));
+}
+
+test "readonly dispatch classification exhaustively gates mutations and permits reads" {
+    const mutations = [_]View.KeyResult{
+        .request_delete,
+        .request_kill,
+        .request_edit,
+        .request_shell,
+        .request_attach,
+        .request_port_forward,
+        .request_set_image,
+        .request_sanitize,
+        .request_transfer,
+        .request_kill_finalizers,
+        .request_drain,
+        .request_cordon,
+        .request_uncordon,
+        .request_restart,
+        .request_scale,
+        .request_suspend,
+        .request_trigger,
+        .request_rollback,
+    };
+    for (mutations) |result| try std.testing.expect(readonlyAction(result) != null);
+
+    const reads = [_]View.KeyResult{
+        .handled,
+        .request_describe,
+        .request_yaml,
+        .request_logs,
+        .request_logs_previous,
+        .request_decode,
+        .request_traffic,
+        .request_show_node,
+        .request_show_port_forwards,
+        .request_copy,
+        .request_copy_namespace,
+        .request_warp,
+        .request_jump_owner,
+        .request_used_by,
+        .request_view_replicasets,
+    };
+    for (reads) |result| try std.testing.expect(readonlyAction(result) == null);
+}
+
+fn matchesIdentity(
+    active: ?lifecycle.SubscriptionKey,
+    identity: resource_key.ResourceIdentity,
+) bool {
+    const key = active orelse return false;
+    return key.generation == identity.generation and
+        key.subscription_id == identity.subscription_id;
+}
+
+fn matchesEitherEnvelope(
+    first: ?lifecycle.SubscriptionKey,
+    second: ?lifecycle.SubscriptionKey,
+    envelope: resource_key.Envelope,
+) bool {
+    return switch (envelope.target) {
+        .lifecycle => true,
+        .resource => |identity| matchesIdentity(first, identity) or
+            matchesIdentity(second, identity),
+        else => false,
+    };
+}
+
+fn timerRefreshAllowed(
+    view_name: []const u8,
+    pod_source: resource_view.Source,
+    node_source: resource_view.Source,
+    namespace_source: resource_view.Source,
+    services_source: resource_view.Source,
+    config_source: resource_view.Source,
+    workloads_source: resource_view.Source,
+    batch_source: resource_view.Source,
+    networking_source: resource_view.Source,
+    storage_source: resource_view.Source,
+) bool {
+    if (std.mem.eql(u8, view_name, "pods")) return pod_source != .data_plane;
+    if (std.mem.eql(u8, view_name, "nodes")) return node_source != .data_plane;
+    if (std.mem.eql(u8, view_name, "namespaces")) return namespace_source != .data_plane;
+    if (services_source == .data_plane and
+        (std.mem.eql(u8, view_name, "services") or
+            std.mem.eql(u8, view_name, "endpoints") or
+            std.mem.eql(u8, view_name, "endpointslices")))
+        return false;
+    if (config_source == .data_plane and
+        (std.mem.eql(u8, view_name, "configmaps") or
+            std.mem.eql(u8, view_name, "secrets") or
+            std.mem.eql(u8, view_name, "serviceaccounts") or
+            std.mem.eql(u8, view_name, "resourcequotas") or
+            std.mem.eql(u8, view_name, "limitranges")))
+        return false;
+    if (workloads_source == .data_plane and
+        (std.mem.eql(u8, view_name, "deployments") or
+            std.mem.eql(u8, view_name, "statefulsets") or
+            std.mem.eql(u8, view_name, "daemonsets") or
+            std.mem.eql(u8, view_name, "replicasets")))
+        return false;
+    if (batch_source == .data_plane and
+        (std.mem.eql(u8, view_name, "jobs") or
+            std.mem.eql(u8, view_name, "cronjobs") or
+            std.mem.eql(u8, view_name, "hpa") or
+            std.mem.eql(u8, view_name, "poddisruptionbudgets")))
+        return false;
+    if (networking_source == .data_plane and
+        (std.mem.eql(u8, view_name, "ingresses") or
+            std.mem.eql(u8, view_name, "ingressclasses") or
+            std.mem.eql(u8, view_name, "networkpolicies") or
+            std.mem.eql(u8, view_name, "ipaddresses") or
+            std.mem.eql(u8, view_name, "servicecidrs")))
+        return false;
+    if (storage_source == .data_plane and
+        (std.mem.eql(u8, view_name, "persistentvolumes") or
+            std.mem.eql(u8, view_name, "persistentvolumeclaims") or
+            std.mem.eql(u8, view_name, "storageclasses") or
+            std.mem.eql(u8, view_name, "volumeattributesclasses") or
+            std.mem.eql(u8, view_name, "csidrivers")))
+        return false;
+    return true;
+}
+
+fn isActivePodCompletion(
+    active: ?lifecycle.SubscriptionKey,
+    identity: ?resource_key.ResourceIdentity,
+    completion: lifecycle.LifecycleCompletion,
+) bool {
+    switch (completion) {
+        .subscription_stopped, .start_rejected => {},
+        else => return false,
+    }
+    const active_key = active orelse return false;
+    const completed = identity orelse return false;
+    return active_key.generation == completed.generation and
+        active_key.subscription_id == completed.subscription_id;
+}
+
+test "pod envelope routing requires exact active identity" {
+    const active = lifecycle.SubscriptionKey{ .generation = 4, .subscription_id = 7 };
+    try std.testing.expect(matchesPodEnvelope(active, .{
+        .generation = 4,
+        .subscription_id = 7,
+        .target = .{ .resource = .{
+            .generation = 4,
+            .subscription_id = 7,
+        } },
+    }));
+    try std.testing.expect(!matchesPodEnvelope(active, .{
+        .target = .{ .resource = .{
+            .generation = 3,
+            .subscription_id = 7,
+        } },
+    }));
+    try std.testing.expect(!matchesPodEnvelope(active, .{
+        .target = .{ .resource = .{
+            .generation = 4,
+            .subscription_id = 8,
+        } },
+    }));
+    try std.testing.expect(!matchesPodEnvelope(null, .{
+        .target = .{ .resource = .{
+            .generation = 4,
+            .subscription_id = 7,
+        } },
+    }));
+    try std.testing.expect(matchesPodEnvelope(active, .{ .target = .lifecycle }));
+}
+
+test "pod paint gates require applied data and revisions" {
+    const ready = perf.PodPaintEvidence{
+        .current_is_pods = true,
+        .initial_applied = true,
+        .loading = false,
+        .has_error = false,
+        .visible_rows = 1,
+        .flush_succeeded = true,
+        .close_succeeded = true,
+        .list_complete_revision = 11,
+        .applied_revision = 11,
+        .apply_failed = false,
+    };
+    try std.testing.expect(perf.shouldMarkFirstPodPaint(false, ready));
+    try std.testing.expect(perf.shouldMarkCompletePodPaint(false, ready));
+    var hidden = ready;
+    hidden.visible_rows = 0;
+    try std.testing.expect(!perf.shouldMarkFirstPodPaint(false, hidden));
+    var failed = ready;
+    failed.apply_failed = true;
+    try std.testing.expect(!perf.shouldMarkCompletePodPaint(false, failed));
+    var failed_close = ready;
+    failed_close.close_succeeded = false;
+    try std.testing.expect(!perf.shouldMarkFirstPodPaint(false, failed_close));
+    try std.testing.expect(!perf.shouldMarkCompletePodPaint(false, failed_close));
+}
+
+test "pod transitions require the exact subscription completion" {
+    const active = lifecycle.SubscriptionKey{ .generation = 4, .subscription_id = 7 };
+    const exact = resource_key.ResourceIdentity{ .generation = 4, .subscription_id = 7 };
+    const unrelated = resource_key.ResourceIdentity{ .generation = 4, .subscription_id = 8 };
+    try std.testing.expect(isActivePodCompletion(active, exact, .{
+        .subscription_stopped = .{ .key = active, .detail = null },
+    }));
+    try std.testing.expect(isActivePodCompletion(active, exact, .{
+        .start_rejected = .{
+            .child_key = .{ .slot = 2, .generation = 3 },
+            .code = .stale_generation,
+        },
+    }));
+    try std.testing.expect(!isActivePodCompletion(active, unrelated, .{
+        .subscription_stopped = .{ .key = .{ .generation = 4, .subscription_id = 8 }, .detail = null },
+    }));
+    try std.testing.expect(!isActivePodCompletion(active, exact, .shutdown_complete));
+}
+
+test "timer auto-refresh does not restart live data-plane watches" {
+    try std.testing.expect(!timerRefreshAllowed("pods", .data_plane, .data_plane, .data_plane, .data_plane, .data_plane, .data_plane, .data_plane, .data_plane, .data_plane));
+    try std.testing.expect(timerRefreshAllowed("pods", .legacy_list, .data_plane, .data_plane, .data_plane, .data_plane, .data_plane, .data_plane, .data_plane, .data_plane));
+    try std.testing.expect(!timerRefreshAllowed("nodes", .data_plane, .data_plane, .data_plane, .data_plane, .data_plane, .data_plane, .data_plane, .data_plane, .data_plane));
+    try std.testing.expect(!timerRefreshAllowed("namespaces", .data_plane, .data_plane, .data_plane, .data_plane, .data_plane, .data_plane, .data_plane, .data_plane, .data_plane));
+    try std.testing.expect(!timerRefreshAllowed("services", .data_plane, .data_plane, .data_plane, .data_plane, .data_plane, .data_plane, .data_plane, .data_plane, .data_plane));
+    try std.testing.expect(!timerRefreshAllowed("endpoints", .data_plane, .data_plane, .data_plane, .data_plane, .data_plane, .data_plane, .data_plane, .data_plane, .data_plane));
+    try std.testing.expect(!timerRefreshAllowed("endpointslices", .data_plane, .data_plane, .data_plane, .data_plane, .data_plane, .data_plane, .data_plane, .data_plane, .data_plane));
+    try std.testing.expect(timerRefreshAllowed("services", .data_plane, .data_plane, .data_plane, .legacy_list, .data_plane, .data_plane, .data_plane, .data_plane, .data_plane));
+    inline for (.{ "configmaps", "secrets", "serviceaccounts", "resourcequotas", "limitranges" }) |name| {
+        try std.testing.expect(!timerRefreshAllowed(name, .data_plane, .data_plane, .data_plane, .data_plane, .data_plane, .data_plane, .data_plane, .data_plane, .data_plane));
+        try std.testing.expect(timerRefreshAllowed(name, .data_plane, .data_plane, .data_plane, .data_plane, .legacy_list, .data_plane, .data_plane, .data_plane, .data_plane));
+    }
+    inline for (.{ "deployments", "statefulsets", "daemonsets", "replicasets" }) |name| {
+        try std.testing.expect(!timerRefreshAllowed(name, .data_plane, .data_plane, .data_plane, .data_plane, .data_plane, .data_plane, .data_plane, .data_plane, .data_plane));
+        try std.testing.expect(timerRefreshAllowed(name, .data_plane, .data_plane, .data_plane, .data_plane, .data_plane, .legacy_list, .data_plane, .data_plane, .data_plane));
+    }
+    inline for (.{ "jobs", "cronjobs", "hpa", "poddisruptionbudgets" }) |name| {
+        try std.testing.expect(!timerRefreshAllowed(name, .data_plane, .data_plane, .data_plane, .data_plane, .data_plane, .data_plane, .data_plane, .data_plane, .data_plane));
+        try std.testing.expect(timerRefreshAllowed(name, .data_plane, .data_plane, .data_plane, .data_plane, .data_plane, .data_plane, .legacy_list, .data_plane, .data_plane));
+    }
+    inline for (.{ "ingresses", "ingressclasses", "networkpolicies", "ipaddresses", "servicecidrs" }) |name| {
+        try std.testing.expect(!timerRefreshAllowed(name, .data_plane, .data_plane, .data_plane, .data_plane, .data_plane, .data_plane, .data_plane, .data_plane, .data_plane));
+        try std.testing.expect(timerRefreshAllowed(name, .data_plane, .data_plane, .data_plane, .data_plane, .data_plane, .data_plane, .data_plane, .legacy_list, .data_plane));
+    }
+    inline for (.{ "persistentvolumes", "persistentvolumeclaims", "storageclasses", "volumeattributesclasses", "csidrivers" }) |name| {
+        try std.testing.expect(!timerRefreshAllowed(name, .data_plane, .data_plane, .data_plane, .data_plane, .data_plane, .data_plane, .data_plane, .data_plane, .data_plane));
+        try std.testing.expect(timerRefreshAllowed(name, .data_plane, .data_plane, .data_plane, .data_plane, .data_plane, .data_plane, .data_plane, .data_plane, .legacy_list));
+    }
 }
 
 test "shouldAutoRefresh: interval, disabling, and clock sanity" {
