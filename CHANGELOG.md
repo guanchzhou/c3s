@@ -10,6 +10,38 @@ The release workflow extracts the section matching the git tag (`vX.Y.Z` →
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-09-09
+
+### Added
+
+- A supervised Kubernetes data plane streams LIST and WATCH updates for pods,
+  namespaces, nodes, and every resource-family view through exact identities.
+- Direct HTTPS readonly transport with bounded proxy fallback, pagination guards,
+  request auditing, cancellation, and redacted Task 15 diagnostics.
+- Projected metadata labels and k9s-compatible substring, inverse, fuzzy, label,
+  and faults-only filtering across resource views.
+- Monotonic performance telemetry and deterministic integration gates for
+  lifecycle, ordering, allocation, restart, rollback, shutdown, and ancillary
+  request behavior.
+
+### Changed
+
+- Resource views now subscribe to the shared data plane instead of issuing
+  independent timer-driven Kubernetes LIST requests.
+- Incremental projections preserve rows during relists, retain selection in the
+  visible viewport, and render pod metrics and sorting from projected records.
+- Readonly live startup uses paginated LIST requests and cached exec credentials
+  to meet the validated first-paint and complete-sync latency budgets.
+
+### Security
+
+- Active contexts are matched to their resolved cluster identity before live
+  readonly validation.
+- Interactive kubectl commands pin both kubeconfig and context and remain fenced
+  by the service-layer readonly guard.
+- Lifecycle shutdown drains owned envelopes and cannot silently drop identities
+  when control or delivery queues are saturated.
+
 ## [0.1.0] - 2026-08-30
 
 First tagged release.
@@ -44,5 +76,6 @@ First tagged release.
 - Port-forward, set-image, transfer, and kill-finalizers refuse under `--readonly`
   before prompting.
 
-[Unreleased]: https://github.com/guanchzhou/c3s/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/guanchzhou/c3s/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/guanchzhou/c3s/releases/tag/v0.2.0
 [0.1.0]: https://github.com/guanchzhou/c3s/releases/tag/v0.1.0
