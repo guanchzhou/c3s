@@ -10,12 +10,7 @@ handler: []u8,
 creation_timestamp: ?[]u8 = null,
 
 pub fn fromRuntimeClass(allocator: std.mem.Allocator, item: klient.RuntimeClass) !RuntimeClassRecord {
-    const uid = item.metadata.uid orelse return error.MissingUid;
-    var key = try (keys.ObjectKey{
-        .uid = uid,
-        .namespace = item.metadata.namespace orelse "",
-        .name = item.metadata.name,
-    }).clone(allocator);
+    var key = try keys.fromMetadata(allocator, item.metadata, "");
     errdefer key.deinit(allocator);
     const handler = try allocator.dupe(u8, item.handler);
     errdefer allocator.free(handler);

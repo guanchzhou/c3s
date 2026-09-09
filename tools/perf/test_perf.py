@@ -205,6 +205,22 @@ class TelemetryParser(unittest.TestCase):
         self.assertEqual(result["t_complete_sync_paint_s"], 0.75)
         self.assertTrue(result["authoritative_markers_ok"])
 
+    def test_markers_match_latest_sync_identity(self) -> None:
+        summarize = require_harness_attr(self, "summarize_telemetry")
+        events = [
+            telemetry_event("sync_start", monotonic_ns=1_000_000_000, subscription_id=1),
+            telemetry_event("complete_sync_paint", monotonic_ns=1_050_000_000, subscription_id=1),
+            telemetry_event("sync_start", monotonic_ns=1_200_000_000, subscription_id=3),
+            telemetry_event("first_usable_paint", monotonic_ns=1_400_000_000, subscription_id=3),
+            telemetry_event("complete_sync_paint", monotonic_ns=1_800_000_000, subscription_id=3),
+        ]
+        result = summarize(events, process_start_ns=900_000_000, t_screen_hint_s=None)
+        self.assertEqual(result["t_first_usable_paint_s"], 0.5)
+        self.assertEqual(result["t_complete_sync_paint_s"], 0.9)
+        self.assertEqual(result["t_list_to_first_usable_paint_s"], 0.2)
+        self.assertEqual(result["t_list_to_complete_sync_paint_s"], 0.6)
+        self.assertTrue(result["authoritative_markers_ok"])
+
     def test_partial_line_is_never_accepted(self) -> None:
         parser_type = require_harness_attr(self, "TelemetryStreamParser")
         parser = parser_type()

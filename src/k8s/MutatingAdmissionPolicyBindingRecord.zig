@@ -11,10 +11,7 @@ pub fn fromMutatingAdmissionPolicyBinding(
     const policy_name: []const u8 = if (value.spec) |spec| spec.policyName else "<none>";
     return MutatingAdmissionPolicyBindingRecord.init(
         allocator,
-        value.metadata.uid,
-        null,
-        value.metadata.name,
+        value.metadata,
         .{ .value = policy_name },
-        value.metadata.creationTimestamp,
     );
 }

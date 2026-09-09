@@ -13,12 +13,7 @@ pub fn fromStorageVersionMigration(
     allocator: std.mem.Allocator,
     item: klient.StorageVersionMigration,
 ) !StorageVersionMigrationRecord {
-    const uid = item.metadata.uid orelse return error.MissingUid;
-    var key = try (keys.ObjectKey{
-        .uid = uid,
-        .namespace = item.metadata.namespace orelse "",
-        .name = item.metadata.name,
-    }).clone(allocator);
+    var key = try keys.fromMetadata(allocator, item.metadata, "");
     errdefer key.deinit(allocator);
     const resource_version = try allocator.dupe(u8, jsonStringField(item.status, "resourceVersion") orelse "<none>");
     errdefer allocator.free(resource_version);

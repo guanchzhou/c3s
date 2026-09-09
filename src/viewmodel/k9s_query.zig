@@ -71,28 +71,10 @@ pub fn parseCommand(raw: []const u8) CommandExtras {
     return extras;
 }
 
-/// Flatten a metadata.labels JSON object to `k=v,k=v`. Empty / non-object → "".
-/// Caller owns a non-empty result.
-pub fn formatLabels(allocator: std.mem.Allocator, value: std.json.Value) ![]const u8 {
-    if (value != .object) return &.{};
-    if (value.object.count() == 0) return &.{};
-
-    var buf: std.ArrayListUnmanaged(u8) = .empty;
-    errdefer buf.deinit(allocator);
-    var first = true;
-    var iter = value.object.iterator();
-    while (iter.next()) |entry| {
-        if (!first) try buf.append(allocator, ',');
-        first = false;
-        try buf.appendSlice(allocator, entry.key_ptr.*);
-        try buf.append(allocator, '=');
-        if (entry.value_ptr.* == .string) {
-            try buf.appendSlice(allocator, entry.value_ptr.string);
-        }
-    }
-    return buf.toOwnedSlice(allocator);
-}
-
+/// Labels reaching this module are already flattened to `k=v,k=v` by
+/// `k8s/ResourceKey.zig`, which is the only place allowed to allocate them so
+/// the per-object retention stays bounded.
+///
 /// AND of comma-separated `k=v` pairs: each pair must appear in `labels`.
 pub fn labelsMatch(labels: []const u8, selector: []const u8) bool {
     const sel = std.mem.trim(u8, selector, " \t");
@@ -101,7 +83,15 @@ pub fn labelsMatch(labels: []const u8, selector: []const u8) bool {
     while (it.next()) |pair| {
         const p = std.mem.trim(u8, pair, " \t");
         if (p.len == 0) continue;
-        if (std.mem.indexOf(u8, labels, p) == null) return false;
+        var stored = std.mem.splitScalar(u8, labels, ',');
+        var found = false;
+        while (stored.next()) |candidate| {
+            if (std.mem.eql(u8, candidate, p)) {
+                found = true;
+                break;
+            }
+        }
+        if (!found) return false;
     }
     return true;
 }
@@ -306,6 +296,7 @@ test "matchSearchable substring inverse fuzzy labels" {
     try std.testing.expect(!matchSearchable(&cols, "app=web", "-f zzz"));
     try std.testing.expect(matchSearchable(&cols, "app=web,env=prod", "-l app=web"));
     try std.testing.expect(!matchSearchable(&cols, "app=web", "-l app=db"));
+    try std.testing.expect(!matchSearchable(&cols, "myapp=web", "-l app=web"));
     try std.testing.expect(matchSearchable(&cols, "app=web", ""));
     try std.testing.expect(matchSearchable(&cols, "app=web", "!"));
 }
@@ -330,17 +321,6 @@ test "firstOwnerRef and viewForOwnerKind" {
     try std.testing.expectEqualStrings("web-7d9f", owner.name);
     try std.testing.expectEqualStrings("replicasets", viewForOwnerKind(owner.kind).?);
     try std.testing.expect(viewForOwnerKind("SomeCRD") == null);
-}
-
-test "formatLabels flattens object" {
-    const allocator = std.testing.allocator;
-    const json = "{\"app\":\"nginx\",\"env\":\"prod\"}";
-    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, json, .{});
-    defer parsed.deinit();
-    const s = try formatLabels(allocator, parsed.value);
-    defer if (s.len > 0) allocator.free(s);
-    try std.testing.expect(std.mem.indexOf(u8, s, "app=nginx") != null);
-    try std.testing.expect(std.mem.indexOf(u8, s, "env=prod") != null);
 }
 
 test "specSuspend reads spec.suspend" {

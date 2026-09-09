@@ -56,9 +56,44 @@ pub const RetryHooks = struct {
     }
 };
 
+pub const DiagnosticKind = enum {
+    list_start,
+    list_page,
+    list_complete,
+    watch_http_established,
+    watch_event,
+    watch_bookmark,
+    watch_disconnect,
+    reconnect_attempt,
+    reconnect_success,
+    gone_410,
+    relist,
+    terminal_forbidden,
+    terminal_unauthorized,
+    terminal_absent,
+    terminal_malformed,
+    retries_exhausted,
+    transport_retry,
+};
+
+pub const DiagnosticObserver = struct {
+    context: *anyopaque,
+    notify_fn: *const fn (*anyopaque, DiagnosticKind, usize, []const u8) void,
+
+    pub fn notify(
+        self: DiagnosticObserver,
+        kind: DiagnosticKind,
+        count: usize,
+        fingerprint_source: []const u8,
+    ) void {
+        self.notify_fn(self.context, kind, count, fingerprint_source);
+    }
+};
+
 pub const Failure = union(enum) {
     unauthorized,
     forbidden,
+    absent,
     gone,
     throttled: ?u64,
     server,
@@ -85,6 +120,7 @@ pub fn WatchEvent(comptime Record: type) type {
         modified: ?Record,
         deleted: ?ObjectKey,
         bookmark: OwnedBytes,
+        established,
 
         pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
             switch (self.*) {
@@ -92,6 +128,7 @@ pub fn WatchEvent(comptime Record: type) type {
                 .modified => |*record| if (record.*) |*value| value.deinit(allocator),
                 .deleted => |*key| if (key.*) |*value| value.deinit(allocator),
                 .bookmark => |*rv| rv.deinit(allocator),
+                .established => {},
             }
         }
     };
@@ -146,7 +183,7 @@ pub fn Source(comptime Record: type) type {
 pub fn BatchSink(comptime Record: type) type {
     return struct {
         context: *anyopaque,
-        /// Takes ownership of the batch on success.
+        /// Takes ownership of the batch on every return path.
         emit_fn: *const fn (*anyopaque, *TypedBatch(Record)) anyerror!void,
 
         pub fn emit(self: @This(), batch: *TypedBatch(Record)) !void {
@@ -159,9 +196,21 @@ pub const RunOutcome = union(enum) {
     canceled,
     unauthorized,
     forbidden,
+    absent,
     malformed: ErrorDetail,
     retries_exhausted: DataError,
 };
+
+pub fn detailForRunOutcome(outcome: RunOutcome) ?ErrorDetail {
+    return switch (outcome) {
+        .canceled => null,
+        .unauthorized => .{ .code = .unauthorized, .http_status = 401 },
+        .forbidden => .{ .code = .forbidden, .http_status = 403 },
+        .absent => .{ .code = .absent, .http_status = 404 },
+        .malformed => |detail| detail,
+        .retries_exhausted => |code| .{ .code = code },
+    };
+}
 
 pub fn Driver(comptime Record: type) type {
     return struct {
@@ -182,6 +231,9 @@ pub fn Driver(comptime Record: type) type {
         change_kind: enum { initial, watch } = .initial,
         /// True once the current watch session delivered a valid event or bookmark.
         watch_progressed: bool = false,
+        observer: ?DiagnosticObserver = null,
+        list_pages: usize = 0,
+        reconnecting: bool = false,
 
         const Self = @This();
 
@@ -201,6 +253,8 @@ pub fn Driver(comptime Record: type) type {
                 if (needs_list) {
                     self.change_kind = .initial;
                     self.list_object_count = 0;
+                    self.list_pages = 0;
+                    self.observe(if (self.resource_version.bytes.len == 0) .list_start else .relist, 0, self.resource_version.bytes);
                     try self.emitSync(.list_started);
 
                     var list_outcome = try self.source.list(
@@ -222,6 +276,7 @@ pub fn Driver(comptime Record: type) type {
                                 .resource_version = sync_rv,
                                 .object_count = self.list_object_count,
                             } });
+                            self.observe(.list_complete, self.list_object_count, self.resource_version.bytes);
                             retry_attempt = 0;
                             needs_list = false;
                         },
@@ -229,6 +284,7 @@ pub fn Driver(comptime Record: type) type {
                             self.clearPending();
                             switch (failure) {
                                 .gone => {
+                                    self.observe(.gone_410, 0, self.resource_version.bytes);
                                     self.resource_version.deinit(self.allocator);
                                     continue;
                                 },
@@ -243,11 +299,6 @@ pub fn Driver(comptime Record: type) type {
 
                 self.change_kind = .watch;
                 self.watch_progressed = false;
-                // This boundary means LIST-to-WATCH handoff, immediately before
-                // the blocking watch call. Released zig-klient has no callback
-                // for "HTTP 200 response established"; keep this pre-call meaning
-                // until that API exists.
-                try self.emitSync(.watch_connected);
                 const watch_outcome = try self.source.watch(
                     self.resource_version.bytes,
                     self.cancel,
@@ -259,11 +310,13 @@ pub fn Driver(comptime Record: type) type {
 
                 switch (watch_outcome) {
                     .gone => {
+                        self.observe(.gone_410, 0, self.resource_version.bytes);
                         self.resource_version.deinit(self.allocator);
                         retry_attempt = 0;
                         needs_list = true;
                     },
                     else => {
+                        self.observe(.watch_disconnect, 0, self.resource_version.bytes);
                         // A session that delivered events made forward progress, so
                         // its transient failure starts a fresh retry budget rather
                         // than consuming the budget of a stream that never worked.
@@ -284,6 +337,8 @@ pub fn Driver(comptime Record: type) type {
 
         fn flushListChunk(raw: *anyopaque) anyerror!void {
             const self: *Self = @ptrCast(@alignCast(raw));
+            self.list_pages +|= 1;
+            self.observe(.list_page, self.list_pages, "");
             try self.flush();
         }
 
@@ -294,23 +349,36 @@ pub fn Driver(comptime Record: type) type {
                     const owned = record.* orelse return error.MalformedWatchEvent;
                     record.* = null;
                     try self.appendChange(.{ .watch_upsert = owned });
+                    self.observe(.watch_event, 1, "");
                 },
                 .modified => |*record| {
                     const owned = record.* orelse return error.MalformedWatchEvent;
                     record.* = null;
                     try self.appendChange(.{ .watch_upsert = owned });
+                    self.observe(.watch_event, 1, "");
                 },
                 .deleted => |*key| {
                     const owned = key.* orelse return error.MalformedWatchEvent;
                     key.* = null;
                     try self.appendChange(.{ .delete = owned });
+                    self.observe(.watch_event, 1, "");
                 },
                 .bookmark => |*rv| {
                     try self.setResourceVersion(rv.bytes);
                     rv.deinit(self.allocator);
+                    self.observe(.watch_bookmark, 0, self.resource_version.bytes);
+                },
+                .established => {
+                    try self.emitSync(.watch_connected);
+                    self.observe(
+                        if (self.reconnecting) .reconnect_success else .watch_http_established,
+                        0,
+                        self.resource_version.bytes,
+                    );
+                    self.reconnecting = false;
                 },
             }
-            self.watch_progressed = true;
+            if (event.* != .established) self.watch_progressed = true;
         }
 
         fn appendChange(self: *Self, change: TypedChange(Record)) !void {
@@ -341,10 +409,7 @@ pub fn Driver(comptime Record: type) type {
                 .owned_bytes = self.pending_bytes,
             };
             self.pending_bytes = 0;
-            self.sink.emit(&batch) catch |err| {
-                batch.deinit(self.allocator);
-                return err;
-            };
+            try self.sink.emit(&batch);
         }
 
         fn emitSync(self: *Self, sync: resource_key.SyncBoundary) !void {
@@ -360,10 +425,7 @@ pub fn Driver(comptime Record: type) type {
                 .sync = sync,
                 .owned_bytes = owned_bytes,
             };
-            self.sink.emit(&batch) catch |err| {
-                batch.deinit(self.allocator);
-                return err;
-            };
+            try self.sink.emit(&batch);
         }
 
         fn nextRevision(self: *Self) Revision {
@@ -384,27 +446,59 @@ pub fn Driver(comptime Record: type) type {
         ) !?RunOutcome {
             switch (failure) {
                 .canceled => return RunOutcome.canceled,
-                .unauthorized => return RunOutcome.unauthorized,
-                .forbidden => return RunOutcome.forbidden,
-                .malformed => |detail| return RunOutcome{ .malformed = detail },
+                .unauthorized => {
+                    self.observe(.terminal_unauthorized, 0, "");
+                    return RunOutcome.unauthorized;
+                },
+                .forbidden => {
+                    self.observe(.terminal_forbidden, 0, "");
+                    return RunOutcome.forbidden;
+                },
+                .absent => {
+                    self.observe(.terminal_absent, 0, "");
+                    return RunOutcome.absent;
+                },
+                .malformed => |detail| {
+                    self.observe(.terminal_malformed, 0, "");
+                    return RunOutcome{ .malformed = detail };
+                },
                 .gone => unreachable,
                 .throttled => |retry_after_ns| {
-                    if (retry_attempt.* >= self.backoff.max_attempts)
+                    self.observe(.transport_retry, retry_attempt.*, "");
+                    self.reconnecting = true;
+                    self.observe(.reconnect_attempt, retry_attempt.* + 1, "");
+                    if (retry_attempt.* >= self.backoff.max_attempts) {
+                        self.observe(.retries_exhausted, retry_attempt.*, "");
                         return RunOutcome{ .retries_exhausted = .throttled };
+                    }
                     const delay_ns = retry_after_ns orelse self.backoff.delay(retry_attempt.*);
                     retry_attempt.* += 1;
                     if (!try self.retry_hooks.wait(delay_ns, self.cancel)) return RunOutcome.canceled;
                 },
                 .server, .transport => {
+                    self.observe(.transport_retry, retry_attempt.*, "");
+                    self.reconnecting = true;
+                    self.observe(.reconnect_attempt, retry_attempt.* + 1, "");
                     const code: DataError = if (failure == .server) .server else .transport;
-                    if (retry_attempt.* >= self.backoff.max_attempts)
+                    if (retry_attempt.* >= self.backoff.max_attempts) {
+                        self.observe(.retries_exhausted, retry_attempt.*, "");
                         return RunOutcome{ .retries_exhausted = code };
+                    }
                     const delay_ns = self.backoff.delay(retry_attempt.*);
                     retry_attempt.* += 1;
                     if (!try self.retry_hooks.wait(delay_ns, self.cancel)) return RunOutcome.canceled;
                 },
             }
             return null;
+        }
+
+        fn observe(
+            self: *Self,
+            kind: DiagnosticKind,
+            count: usize,
+            fingerprint_source: []const u8,
+        ) void {
+            if (self.observer) |observer| observer.notify(kind, count, fingerprint_source);
         }
 
         fn clearPending(self: *Self) void {
@@ -419,15 +513,16 @@ fn estimateChangeBytes(comptime Record: type, change: *const TypedChange(Record)
     return switch (change.*) {
         .initial_upsert, .watch_upsert => |record| @sizeOf(TypedChange(Record)) +
             if (record) |value| recordOwnedBytes(Record, value) else 0,
-        .delete => |key| @sizeOf(TypedChange(Record)) + key.uid.len + key.namespace.len + key.name.len,
+        .delete => |key| @sizeOf(TypedChange(Record)) +
+            key.uid.len + key.namespace.len + key.name.len + key.labels.len,
         .metrics => |metrics| @sizeOf(TypedChange(Record)) +
             metrics.namespace.len + metrics.name.len,
     };
 }
 
 fn recordOwnedBytes(comptime Record: type, record: Record) usize {
-    if (@hasDecl(Record, "ownedBytes")) return record.ownedBytes();
-    return @sizeOf(Record);
+    const base = if (@hasDecl(Record, "ownedBytes")) record.ownedBytes() else @sizeOf(Record);
+    return base + if (@hasField(Record, "key")) record.key.labels.len else 0;
 }
 
 pub fn failureFromKlient(outcome: klient.WatchOutcome) ?Failure {
@@ -444,8 +539,19 @@ pub fn failureFromKlient(outcome: klient.WatchOutcome) ?Failure {
         .http_server_error => .server,
         .transport_error => .transport,
         .malformed_event, .decode_error => |detail| .{ .malformed = detailFromKlient(detail) },
-        .status_error => |detail| classifyStatusCode(detail.code),
+        .status_error => |detail| classifyStatusDetail(detail),
         .http_error => |status| classifyStatusCode(@intFromEnum(status)),
+    };
+}
+
+fn classifyStatusDetail(detail: klient.WatchErrorDetail) Failure {
+    return switch (detail.code orelse return .{ .malformed = detailFromKlient(detail) }) {
+        401 => .unauthorized,
+        403 => .forbidden,
+        404 => .absent,
+        410 => .gone,
+        429 => .{ .throttled = null },
+        else => .{ .malformed = detailFromKlient(detail) },
     };
 }
 
@@ -453,6 +559,7 @@ fn classifyStatusCode(code: ?u16) Failure {
     return switch (code orelse return .server) {
         401 => .unauthorized,
         403 => .forbidden,
+        404 => .absent,
         410 => .gone,
         429 => .{ .throttled = null },
         else => .server,
@@ -571,6 +678,8 @@ const Script = struct {
         self.watch_calls += 1;
         self.watched_rv_len = @min(resource_version.len, self.watched_rv.len);
         @memcpy(self.watched_rv[0..self.watched_rv_len], resource_version[0..self.watched_rv_len]);
+        var established: WatchEvent(TestRecord) = .established;
+        try receiver(receiver_context, &established);
 
         switch (self.scenario) {
             .normal => {
@@ -654,15 +763,29 @@ fn malformedDetail(message: []const u8) ErrorDetail {
 }
 
 const Sink = struct {
+    const Observed = enum {
+        list_started,
+        initial_upsert,
+        list_complete,
+        watch_connected,
+        watch_upsert,
+        delete,
+    };
+
     allocator: std.mem.Allocator,
     batches: usize = 0,
     max_changes: usize = 0,
     initial_upserts: usize = 0,
     watch_upserts: usize = 0,
     deletes: usize = 0,
+    list_started_count: usize = 0,
+    list_complete_boundaries: usize = 0,
+    watch_connected_count: usize = 0,
     list_complete_count: usize = 0,
     list_complete_rv_len: usize = 0,
     list_complete_rv: [32]u8 = [_]u8{0} ** 32,
+    observed: [32]Observed = undefined,
+    observed_len: usize = 0,
 
     fn batchSink(self: *Sink) BatchSink(TestRecord) {
         return .{ .context = self, .emit_fn = emit };
@@ -673,13 +796,28 @@ const Sink = struct {
         self.batches += 1;
         self.max_changes = @max(self.max_changes, batch.changes.len);
         for (batch.changes) |change| switch (change) {
-            .initial_upsert => self.initial_upserts += 1,
-            .watch_upsert => self.watch_upserts += 1,
-            .delete => self.deletes += 1,
+            .initial_upsert => {
+                self.initial_upserts += 1;
+                self.observe(.initial_upsert);
+            },
+            .watch_upsert => {
+                self.watch_upserts += 1;
+                self.observe(.watch_upsert);
+            },
+            .delete => {
+                self.deletes += 1;
+                self.observe(.delete);
+            },
             .metrics => {},
         };
         if (batch.sync) |sync| switch (sync) {
+            .list_started => {
+                self.list_started_count += 1;
+                self.observe(.list_started);
+            },
             .list_complete => |complete| {
+                self.list_complete_boundaries += 1;
+                self.observe(.list_complete);
                 self.list_complete_count = complete.object_count;
                 self.list_complete_rv_len = @min(
                     complete.resource_version.bytes.len,
@@ -690,9 +828,19 @@ const Sink = struct {
                     complete.resource_version.bytes[0..self.list_complete_rv_len],
                 );
             },
+            .watch_connected => {
+                self.watch_connected_count += 1;
+                self.observe(.watch_connected);
+            },
             else => {},
         };
         batch.deinit(self.allocator);
+    }
+
+    fn observe(self: *Sink, value: Observed) void {
+        if (self.observed_len >= self.observed.len) return;
+        self.observed[self.observed_len] = value;
+        self.observed_len += 1;
     }
 };
 
@@ -739,6 +887,124 @@ fn runScenario(
         try std.testing.expectEqualStrings("11", driver.resource_version.bytes);
     }
     return outcome;
+}
+
+pub fn runTask15DiagnosticGate() !void {
+    const Probe = struct {
+        bookmarks: usize = 0,
+        bookmark_fingerprint: u64 = 0,
+
+        fn observe(
+            raw: *anyopaque,
+            kind: DiagnosticKind,
+            _: usize,
+            value: []const u8,
+        ) void {
+            const self: *@This() = @ptrCast(@alignCast(raw));
+            if (kind != .watch_bookmark) return;
+            self.bookmarks += 1;
+            self.bookmark_fingerprint = std.hash.Wyhash.hash(1, value);
+        }
+    };
+    var script = Script{ .allocator = std.testing.allocator, .scenario = .normal };
+    var sink = Sink{ .allocator = std.testing.allocator };
+    var waiter = Waiter{};
+    var probe = Probe{};
+    script.sink = &sink;
+    var driver = Driver(TestRecord){
+        .allocator = std.testing.allocator,
+        .source = script.source(),
+        .sink = sink.batchSink(),
+        .retry_hooks = waiter.hooks(),
+        .cancel = CancelToken.never(),
+        .generation = 1,
+        .subscription_id = 1,
+        .observer = .{ .context = &probe, .notify_fn = Probe.observe },
+    };
+    defer driver.deinit();
+    const outcome = try driver.run();
+    try std.testing.expect(outcome == .canceled);
+    try std.testing.expectEqual(@as(usize, 1), probe.bookmarks);
+    try std.testing.expect(probe.bookmark_fingerprint != 0);
+
+    try std.testing.expect(failureFromKlient(.{
+        .status_error = .{ .code = 403 },
+    }).? == .forbidden);
+    try std.testing.expect(failureFromKlient(.{
+        .status_error = .{ .code = 404 },
+    }).? == .absent);
+    const malformed = failureFromKlient(.{
+        .status_error = .{ .code = 422 },
+    }).?;
+    try std.testing.expect(malformed == .malformed);
+}
+
+pub fn runTask14OrderingGate() !void {
+    const allocator = std.testing.allocator;
+    var normal = Script{ .allocator = allocator, .scenario = .normal };
+    var normal_sink = Sink{ .allocator = allocator };
+    var normal_waiter = Waiter{};
+    const normal_outcome = try runScenario(
+        allocator,
+        &normal,
+        &normal_sink,
+        &normal_waiter,
+        2,
+        .{},
+    );
+    try std.testing.expect(normal_outcome == .canceled);
+    try std.testing.expectEqual(@as(usize, 1), normal.list_calls);
+    try std.testing.expectEqual(@as(usize, 1), normal.watch_calls);
+    try std.testing.expectEqual(@as(usize, 1), normal_sink.list_started_count);
+    try std.testing.expectEqual(@as(usize, 1), normal_sink.list_complete_boundaries);
+    try std.testing.expectEqual(@as(usize, 1), normal_sink.watch_connected_count);
+    try std.testing.expectEqualStrings(
+        "10",
+        normal.watched_rv[0..normal.watched_rv_len],
+    );
+    try std.testing.expectEqualStrings(
+        "10",
+        normal_sink.list_complete_rv[0..normal_sink.list_complete_rv_len],
+    );
+    try std.testing.expectEqual(@as(usize, 5), normal_sink.initial_upserts);
+    try std.testing.expectEqual(@as(usize, 2), normal_sink.watch_upserts);
+    try std.testing.expectEqual(@as(usize, 1), normal_sink.deletes);
+    try std.testing.expectEqualSlices(
+        Sink.Observed,
+        &.{
+            .list_started,
+            .initial_upsert,
+            .initial_upsert,
+            .initial_upsert,
+            .initial_upsert,
+            .initial_upsert,
+            .list_complete,
+            .watch_connected,
+            .watch_upsert,
+            .watch_upsert,
+            .delete,
+        },
+        normal_sink.observed[0..normal_sink.observed_len],
+    );
+
+    var gone = Script{ .allocator = allocator, .scenario = .gone };
+    var gone_sink = Sink{ .allocator = allocator };
+    var gone_waiter = Waiter{};
+    const gone_outcome = try runScenario(
+        allocator,
+        &gone,
+        &gone_sink,
+        &gone_waiter,
+        8,
+        .{},
+    );
+    try std.testing.expect(gone_outcome == .canceled);
+    try std.testing.expectEqual(@as(usize, 2), gone.list_calls);
+    try std.testing.expectEqual(@as(usize, 2), gone.watch_calls);
+    try std.testing.expectEqual(@as(usize, 2), gone_sink.list_started_count);
+    try std.testing.expectEqual(@as(usize, 2), gone_sink.list_complete_boundaries);
+    try std.testing.expectEqual(@as(usize, 2), gone_sink.watch_connected_count);
+    try std.testing.expectEqualStrings("20", gone.watched_rv[0..gone.watched_rv_len]);
 }
 
 test "streaming LIST batches hand final RV exactly to WATCH and process events" {

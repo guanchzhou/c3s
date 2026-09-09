@@ -12,12 +12,7 @@ data_sort_key: [20]u8 = [_]u8{'0'} ** 20,
 creation_timestamp: ?[]u8 = null,
 
 pub fn fromSecret(allocator: std.mem.Allocator, value: klient.Secret) !SecretRecord {
-    const uid = value.metadata.uid orelse return error.MissingUid;
-    var key = try (keys.ObjectKey{
-        .uid = uid,
-        .namespace = value.metadata.namespace orelse "default",
-        .name = value.metadata.name,
-    }).clone(allocator);
+    var key = try keys.fromMetadata(allocator, value.metadata, "default");
     errdefer key.deinit(allocator);
     const secret_type = try allocator.dupe(u8, value.type orelse "Opaque");
     errdefer allocator.free(secret_type);

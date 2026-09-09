@@ -14,12 +14,7 @@ ports: []u8,
 creation_timestamp: ?[]u8 = null,
 
 pub fn fromService(allocator: std.mem.Allocator, service: klient.Service) !ServiceRecord {
-    const uid = service.metadata.uid orelse return error.MissingUid;
-    var key = try (keys.ObjectKey{
-        .uid = uid,
-        .namespace = service.metadata.namespace orelse "default",
-        .name = service.metadata.name,
-    }).clone(allocator);
+    var key = try keys.fromMetadata(allocator, service.metadata, "default");
     errdefer key.deinit(allocator);
 
     const service_type = try allocator.dupe(

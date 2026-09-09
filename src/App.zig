@@ -15,14 +15,23 @@ const Config = @import("model/config.zig");
 const Logger = @import("core/logger.zig");
 const PerfTelemetry = @import("core/perf_telemetry.zig").PerfTelemetry;
 const perf = @import("core/perf_telemetry.zig");
+const task15 = @import("task15_diagnostics.zig");
 const Wakeup = @import("core/Wakeup.zig").Wakeup;
 const sys = @import("core/sys.zig");
 const ChangeQueue = @import("k8s/ChangeQueue.zig").ChangeQueue;
 const resource_key = @import("k8s/ResourceKey.zig");
+const read_transport = @import("k8s/ReadTransport.zig");
+const list_watch = @import("k8s/ListWatch.zig");
 const lifecycle = @import("k8s/LifecycleInbox.zig");
 const lifecycle_supervisor = @import("k8s/LifecycleSupervisor.zig");
 const data_plane_mod = @import("k8s/DataPlane.zig");
 const DataPlane = data_plane_mod.DataPlane;
+const AncillaryRequests = @import("k8s/AncillaryRequests.zig").AncillaryRequests;
+const header_metrics_request = @import("k8s/HeaderMetricsRequest.zig");
+const traffic_request = @import("k8s/TrafficRequest.zig");
+const detail_request = @import("k8s/DetailRequest.zig");
+const logs_request = @import("k8s/LogsRequest.zig");
+const authorization_request = @import("k8s/AuthorizationRequest.zig");
 const PodRecord = @import("k8s/PodRecord.zig");
 const PodProjection = @import("k8s/ResourceProjection.zig").ResourceProjection(PodRecord);
 const pod_subscription = @import("k8s/PodSubscription.zig");
@@ -204,6 +213,100 @@ const PVCSubscription = resource_subscription.ResourceSubscription(klient.Persis
 const StorageClassSubscription = resource_subscription.ResourceSubscription(klient.StorageClass, StorageClassRecord, StorageClassRecord.fromStorageClass);
 const VolumeAttributesClassSubscription = resource_subscription.ResourceSubscription(klient.VolumeAttributesClass, VolumeAttributesClassRecord, VolumeAttributesClassRecord.fromVolumeAttributesClass);
 const CSIDriverSubscription = resource_subscription.ResourceSubscription(klient.CSIDriver, CSIDriverRecord, CSIDriverRecord.fromCSIDriver);
+const GatewayClassRecord = @import("k8s/GatewayClassRecord.zig");
+const GatewayRecord = @import("k8s/GatewayRecord.zig");
+const HTTPRouteRecord = @import("k8s/HTTPRouteRecord.zig");
+const GRPCRouteRecord = @import("k8s/GRPCRouteRecord.zig");
+const ReferenceGrantRecord = @import("k8s/ReferenceGrantRecord.zig");
+const TCPRouteRecord = @import("k8s/TCPRouteRecord.zig");
+const TLSRouteRecord = @import("k8s/TLSRouteRecord.zig");
+const UDPRouteRecord = @import("k8s/UDPRouteRecord.zig");
+const BackendTLSPolicyRecord = @import("k8s/BackendTLSPolicyRecord.zig");
+const ListenerSetRecord = @import("k8s/ListenerSetRecord.zig");
+const GatewayClassProjection = @import("k8s/ResourceProjection.zig").ResourceProjection(GatewayClassRecord);
+const GatewayProjection = @import("k8s/ResourceProjection.zig").ResourceProjection(GatewayRecord);
+const HTTPRouteProjection = @import("k8s/ResourceProjection.zig").ResourceProjection(HTTPRouteRecord);
+const GRPCRouteProjection = @import("k8s/ResourceProjection.zig").ResourceProjection(GRPCRouteRecord);
+const ReferenceGrantProjection = @import("k8s/ResourceProjection.zig").ResourceProjection(ReferenceGrantRecord);
+const TCPRouteProjection = @import("k8s/ResourceProjection.zig").ResourceProjection(TCPRouteRecord);
+const TLSRouteProjection = @import("k8s/ResourceProjection.zig").ResourceProjection(TLSRouteRecord);
+const UDPRouteProjection = @import("k8s/ResourceProjection.zig").ResourceProjection(UDPRouteRecord);
+const BackendTLSPolicyProjection = @import("k8s/ResourceProjection.zig").ResourceProjection(BackendTLSPolicyRecord);
+const ListenerSetProjection = @import("k8s/ResourceProjection.zig").ResourceProjection(ListenerSetRecord);
+const GatewayClassSubscription = resource_subscription.ResourceSubscription(klient.GatewayClass, GatewayClassRecord, GatewayClassRecord.fromGatewayClass);
+const GatewaySubscription = resource_subscription.ResourceSubscription(klient.Gateway, GatewayRecord, GatewayRecord.fromGateway);
+const HTTPRouteSubscription = resource_subscription.ResourceSubscription(klient.HTTPRoute, HTTPRouteRecord, HTTPRouteRecord.fromHTTPRoute);
+const GRPCRouteSubscription = resource_subscription.ResourceSubscription(klient.GRPCRoute, GRPCRouteRecord, GRPCRouteRecord.fromGRPCRoute);
+const ReferenceGrantSubscription = resource_subscription.ResourceSubscription(klient.ReferenceGrant, ReferenceGrantRecord, ReferenceGrantRecord.fromReferenceGrant);
+const TCPRouteSubscription = resource_subscription.ResourceSubscription(klient.TCPRoute, TCPRouteRecord, TCPRouteRecord.fromTCPRoute);
+const TLSRouteSubscription = resource_subscription.ResourceSubscription(klient.TLSRoute, TLSRouteRecord, TLSRouteRecord.fromTLSRoute);
+const UDPRouteSubscription = resource_subscription.ResourceSubscription(klient.UDPRoute, UDPRouteRecord, UDPRouteRecord.fromUDPRoute);
+const BackendTLSPolicySubscription = resource_subscription.ResourceSubscription(klient.BackendTLSPolicy, BackendTLSPolicyRecord, BackendTLSPolicyRecord.fromBackendTLSPolicy);
+const ListenerSetSubscription = resource_subscription.ResourceSubscription(klient.ListenerSet, ListenerSetRecord, ListenerSetRecord.fromListenerSet);
+const role_record = @import("k8s/RoleRecord.zig");
+const role_binding_record = @import("k8s/RoleBindingRecord.zig");
+const cluster_role_record = @import("k8s/ClusterRoleRecord.zig");
+const cluster_role_binding_record = @import("k8s/ClusterRoleBindingRecord.zig");
+const RoleRecord = role_record.RoleRecord;
+const RoleBindingRecord = role_binding_record.RoleBindingRecord;
+const ClusterRoleRecord = cluster_role_record.ClusterRoleRecord;
+const ClusterRoleBindingRecord = cluster_role_binding_record.ClusterRoleBindingRecord;
+const RoleProjection = @import("k8s/ResourceProjection.zig").ResourceProjection(RoleRecord);
+const RoleBindingProjection = @import("k8s/ResourceProjection.zig").ResourceProjection(RoleBindingRecord);
+const ClusterRoleProjection = @import("k8s/ResourceProjection.zig").ResourceProjection(ClusterRoleRecord);
+const ClusterRoleBindingProjection = @import("k8s/ResourceProjection.zig").ResourceProjection(ClusterRoleBindingRecord);
+const RoleSubscription = resource_subscription.ResourceSubscription(klient.Role, RoleRecord, role_record.fromRole);
+const RoleBindingSubscription = resource_subscription.ResourceSubscription(klient.RoleBinding, RoleBindingRecord, role_binding_record.fromRoleBinding);
+const ClusterRoleSubscription = resource_subscription.ResourceSubscription(klient.ClusterRole, ClusterRoleRecord, cluster_role_record.fromClusterRole);
+const ClusterRoleBindingSubscription = resource_subscription.ResourceSubscription(klient.ClusterRoleBinding, ClusterRoleBindingRecord, cluster_role_binding_record.fromClusterRoleBinding);
+const validating_admission_policy_record = @import("k8s/ValidatingAdmissionPolicyRecord.zig");
+const validating_admission_policy_binding_record = @import("k8s/ValidatingAdmissionPolicyBindingRecord.zig");
+const mutating_admission_policy_record = @import("k8s/MutatingAdmissionPolicyRecord.zig");
+const mutating_admission_policy_binding_record = @import("k8s/MutatingAdmissionPolicyBindingRecord.zig");
+const validating_webhook_configuration_record = @import("k8s/ValidatingWebhookConfigurationRecord.zig");
+const mutating_webhook_configuration_record = @import("k8s/MutatingWebhookConfigurationRecord.zig");
+const ValidatingAdmissionPolicyRecord = validating_admission_policy_record.ValidatingAdmissionPolicyRecord;
+const ValidatingAdmissionPolicyBindingRecord = validating_admission_policy_binding_record.ValidatingAdmissionPolicyBindingRecord;
+const MutatingAdmissionPolicyRecord = mutating_admission_policy_record.MutatingAdmissionPolicyRecord;
+const MutatingAdmissionPolicyBindingRecord = mutating_admission_policy_binding_record.MutatingAdmissionPolicyBindingRecord;
+const ValidatingWebhookConfigurationRecord = validating_webhook_configuration_record.ValidatingWebhookConfigurationRecord;
+const MutatingWebhookConfigurationRecord = mutating_webhook_configuration_record.MutatingWebhookConfigurationRecord;
+const ValidatingAdmissionPolicyProjection = @import("k8s/ResourceProjection.zig").ResourceProjection(ValidatingAdmissionPolicyRecord);
+const ValidatingAdmissionPolicyBindingProjection = @import("k8s/ResourceProjection.zig").ResourceProjection(ValidatingAdmissionPolicyBindingRecord);
+const MutatingAdmissionPolicyProjection = @import("k8s/ResourceProjection.zig").ResourceProjection(MutatingAdmissionPolicyRecord);
+const MutatingAdmissionPolicyBindingProjection = @import("k8s/ResourceProjection.zig").ResourceProjection(MutatingAdmissionPolicyBindingRecord);
+const ValidatingWebhookConfigurationProjection = @import("k8s/ResourceProjection.zig").ResourceProjection(ValidatingWebhookConfigurationRecord);
+const MutatingWebhookConfigurationProjection = @import("k8s/ResourceProjection.zig").ResourceProjection(MutatingWebhookConfigurationRecord);
+const ValidatingAdmissionPolicySubscription = resource_subscription.ResourceSubscription(klient.ValidatingAdmissionPolicy, ValidatingAdmissionPolicyRecord, validating_admission_policy_record.fromValidatingAdmissionPolicy);
+const ValidatingAdmissionPolicyBindingSubscription = resource_subscription.ResourceSubscription(klient.ValidatingAdmissionPolicyBinding, ValidatingAdmissionPolicyBindingRecord, validating_admission_policy_binding_record.fromValidatingAdmissionPolicyBinding);
+const MutatingAdmissionPolicySubscription = resource_subscription.ResourceSubscription(klient.MutatingAdmissionPolicy, MutatingAdmissionPolicyRecord, mutating_admission_policy_record.fromMutatingAdmissionPolicy);
+const MutatingAdmissionPolicyBindingSubscription = resource_subscription.ResourceSubscription(klient.MutatingAdmissionPolicyBinding, MutatingAdmissionPolicyBindingRecord, mutating_admission_policy_binding_record.fromMutatingAdmissionPolicyBinding);
+const ValidatingWebhookConfigurationSubscription = resource_subscription.ResourceSubscription(klient.ValidatingWebhookConfiguration, ValidatingWebhookConfigurationRecord, validating_webhook_configuration_record.fromValidatingWebhookConfiguration);
+const MutatingWebhookConfigurationSubscription = resource_subscription.ResourceSubscription(klient.MutatingWebhookConfiguration, MutatingWebhookConfigurationRecord, mutating_webhook_configuration_record.fromMutatingWebhookConfiguration);
+const ResourceClaimRecord = @import("k8s/ResourceClaimRecord.zig");
+const DeviceClassRecord = @import("k8s/DeviceClassRecord.zig");
+const PriorityClassRecord = @import("k8s/PriorityClassRecord.zig");
+const RuntimeClassRecord = @import("k8s/RuntimeClassRecord.zig");
+const LeaseRecord = @import("k8s/LeaseRecord.zig");
+const CSRRecord = @import("k8s/CSRRecord.zig");
+const StorageVersionMigrationRecord = @import("k8s/StorageVersionMigrationRecord.zig");
+const EventRecord = @import("k8s/EventRecord.zig");
+const ResourceClaimProjection = @import("k8s/ResourceProjection.zig").ResourceProjection(ResourceClaimRecord);
+const DeviceClassProjection = @import("k8s/ResourceProjection.zig").ResourceProjection(DeviceClassRecord);
+const PriorityClassProjection = @import("k8s/ResourceProjection.zig").ResourceProjection(PriorityClassRecord);
+const RuntimeClassProjection = @import("k8s/ResourceProjection.zig").ResourceProjection(RuntimeClassRecord);
+const LeaseProjection = @import("k8s/ResourceProjection.zig").ResourceProjection(LeaseRecord);
+const CSRProjection = @import("k8s/ResourceProjection.zig").ResourceProjection(CSRRecord);
+const StorageVersionMigrationProjection = @import("k8s/ResourceProjection.zig").ResourceProjection(StorageVersionMigrationRecord);
+const EventProjection = @import("k8s/ResourceProjection.zig").ResourceProjection(EventRecord);
+const ResourceClaimSubscription = resource_subscription.ResourceSubscription(klient.ResourceClaim, ResourceClaimRecord, ResourceClaimRecord.fromResourceClaim);
+const DeviceClassSubscription = resource_subscription.ResourceSubscription(klient.DeviceClass, DeviceClassRecord, DeviceClassRecord.fromDeviceClass);
+const PriorityClassSubscription = resource_subscription.ResourceSubscription(klient.PriorityClass, PriorityClassRecord, PriorityClassRecord.fromPriorityClass);
+const RuntimeClassSubscription = resource_subscription.ResourceSubscription(klient.RuntimeClass, RuntimeClassRecord, RuntimeClassRecord.fromRuntimeClass);
+const LeaseSubscription = resource_subscription.ResourceSubscription(klient.Lease, LeaseRecord, LeaseRecord.fromLease);
+const CSRSubscription = resource_subscription.ResourceSubscription(klient.CertificateSigningRequest, CSRRecord, CSRRecord.fromCSR);
+const StorageVersionMigrationSubscription = resource_subscription.ResourceSubscription(klient.StorageVersionMigration, StorageVersionMigrationRecord, StorageVersionMigrationRecord.fromStorageVersionMigration);
+const EventSubscription = resource_subscription.ResourceSubscription(klient.Event, EventRecord, EventRecord.fromEvent);
 const family_registry = @import("k8s/ResourceFamilyRegistry.zig");
 const resource_view = @import("view/resource_view.zig");
 const version = @import("model/version.zig");
@@ -223,7 +326,6 @@ const ServicesView = rc.ServicesView;
 const NamespacesView = @import("view/NamespacesView.zig").NamespacesView;
 const PortForwardsView = @import("view/PortForwardsView.zig").PortForwardsView;
 const PortForwardRegistry = @import("services/PortForwardRegistry.zig").PortForwardRegistry;
-const secret_decode = @import("viewmodel/secret_decode.zig");
 const NodesView = rc.NodesView;
 const StatefulSetsView = rc.StatefulSetsView;
 const DaemonSetsView = rc.DaemonSetsView;
@@ -296,6 +398,9 @@ const view_mod = @import("viewmodel/view.zig");
 const ResourceInfo = view_mod.ResourceInfo;
 const k9s_query = @import("viewmodel/k9s_query.zig");
 const ActiveSessionSlot = @import("k8s/ActiveSessionSlot.zig").ActiveSessionSlot;
+const ActiveContextSession = @import("k8s/ActiveContextSession.zig").ActiveContextSession;
+const ContextSpec = @import("k8s/ActiveContextSession.zig").ContextSpec;
+const SessionFactory = @import("k8s/ActiveContextSession.zig").SessionFactory;
 
 // Global flag for terminal resize signal
 var terminal_resized: std.atomic.Value(bool) = std.atomic.Value(bool).init(false);
@@ -330,6 +435,34 @@ const ResourceFamilies = struct {
     storage_class_projection: StorageClassProjection,
     volume_attributes_class_projection: VolumeAttributesClassProjection,
     csi_driver_projection: CSIDriverProjection,
+    gateway_class_projection: GatewayClassProjection,
+    gateway_projection: GatewayProjection,
+    http_route_projection: HTTPRouteProjection,
+    grpc_route_projection: GRPCRouteProjection,
+    reference_grant_projection: ReferenceGrantProjection,
+    tcp_route_projection: TCPRouteProjection,
+    tls_route_projection: TLSRouteProjection,
+    udp_route_projection: UDPRouteProjection,
+    backend_tls_policy_projection: BackendTLSPolicyProjection,
+    listener_set_projection: ListenerSetProjection,
+    role_projection: RoleProjection,
+    role_binding_projection: RoleBindingProjection,
+    cluster_role_projection: ClusterRoleProjection,
+    cluster_role_binding_projection: ClusterRoleBindingProjection,
+    validating_admission_policy_projection: ValidatingAdmissionPolicyProjection,
+    validating_admission_policy_binding_projection: ValidatingAdmissionPolicyBindingProjection,
+    mutating_admission_policy_projection: MutatingAdmissionPolicyProjection,
+    mutating_admission_policy_binding_projection: MutatingAdmissionPolicyBindingProjection,
+    validating_webhook_configuration_projection: ValidatingWebhookConfigurationProjection,
+    mutating_webhook_configuration_projection: MutatingWebhookConfigurationProjection,
+    resource_claim_projection: ResourceClaimProjection,
+    device_class_projection: DeviceClassProjection,
+    priority_class_projection: PriorityClassProjection,
+    runtime_class_projection: RuntimeClassProjection,
+    lease_projection: LeaseProjection,
+    csr_projection: CSRProjection,
+    storage_version_migration_projection: StorageVersionMigrationProjection,
+    event_projection: EventProjection,
     entries: std.ArrayListUnmanaged(family_registry.Entry) = .empty,
     registry: family_registry.Registry = undefined,
 
@@ -440,6 +573,34 @@ const ResourceFamilies = struct {
                 .matchFn = csiDriverProjectionMatch,
                 .sortKeyFn = csiDriverProjectionSortKey,
             }),
+            .gateway_class_projection = GatewayClassProjection.init(allocator, .{ .matchFn = gatewayClassProjectionMatch, .sortKeyFn = gatewayClassProjectionSortKey }),
+            .gateway_projection = GatewayProjection.init(allocator, .{ .matchFn = gatewayProjectionMatch, .sortKeyFn = gatewayProjectionSortKey }),
+            .http_route_projection = HTTPRouteProjection.init(allocator, .{ .matchFn = httpRouteProjectionMatch, .sortKeyFn = httpRouteProjectionSortKey }),
+            .grpc_route_projection = GRPCRouteProjection.init(allocator, .{ .matchFn = grpcRouteProjectionMatch, .sortKeyFn = grpcRouteProjectionSortKey }),
+            .reference_grant_projection = ReferenceGrantProjection.init(allocator, .{ .matchFn = referenceGrantProjectionMatch, .sortKeyFn = referenceGrantProjectionSortKey }),
+            .tcp_route_projection = TCPRouteProjection.init(allocator, .{ .matchFn = tcpRouteProjectionMatch, .sortKeyFn = tcpRouteProjectionSortKey }),
+            .tls_route_projection = TLSRouteProjection.init(allocator, .{ .matchFn = tlsRouteProjectionMatch, .sortKeyFn = tlsRouteProjectionSortKey }),
+            .udp_route_projection = UDPRouteProjection.init(allocator, .{ .matchFn = udpRouteProjectionMatch, .sortKeyFn = udpRouteProjectionSortKey }),
+            .backend_tls_policy_projection = BackendTLSPolicyProjection.init(allocator, .{ .matchFn = backendTLSPolicyProjectionMatch, .sortKeyFn = backendTLSPolicyProjectionSortKey }),
+            .listener_set_projection = ListenerSetProjection.init(allocator, .{ .matchFn = listenerSetProjectionMatch, .sortKeyFn = listenerSetProjectionSortKey }),
+            .role_projection = RoleProjection.init(allocator, .{ .matchFn = roleProjectionMatch, .sortKeyFn = roleProjectionSortKey }),
+            .role_binding_projection = RoleBindingProjection.init(allocator, .{ .matchFn = roleBindingProjectionMatch, .sortKeyFn = roleBindingProjectionSortKey }),
+            .cluster_role_projection = ClusterRoleProjection.init(allocator, .{ .matchFn = clusterRoleProjectionMatch, .sortKeyFn = clusterRoleProjectionSortKey }),
+            .cluster_role_binding_projection = ClusterRoleBindingProjection.init(allocator, .{ .matchFn = clusterRoleBindingProjectionMatch, .sortKeyFn = clusterRoleBindingProjectionSortKey }),
+            .validating_admission_policy_projection = ValidatingAdmissionPolicyProjection.init(allocator, .{ .matchFn = validatingAdmissionPolicyProjectionMatch, .sortKeyFn = validatingAdmissionPolicyProjectionSortKey }),
+            .validating_admission_policy_binding_projection = ValidatingAdmissionPolicyBindingProjection.init(allocator, .{ .matchFn = validatingAdmissionPolicyBindingProjectionMatch, .sortKeyFn = validatingAdmissionPolicyBindingProjectionSortKey }),
+            .mutating_admission_policy_projection = MutatingAdmissionPolicyProjection.init(allocator, .{ .matchFn = mutatingAdmissionPolicyProjectionMatch, .sortKeyFn = mutatingAdmissionPolicyProjectionSortKey }),
+            .mutating_admission_policy_binding_projection = MutatingAdmissionPolicyBindingProjection.init(allocator, .{ .matchFn = mutatingAdmissionPolicyBindingProjectionMatch, .sortKeyFn = mutatingAdmissionPolicyBindingProjectionSortKey }),
+            .validating_webhook_configuration_projection = ValidatingWebhookConfigurationProjection.init(allocator, .{ .matchFn = validatingWebhookConfigurationProjectionMatch, .sortKeyFn = validatingWebhookConfigurationProjectionSortKey }),
+            .mutating_webhook_configuration_projection = MutatingWebhookConfigurationProjection.init(allocator, .{ .matchFn = mutatingWebhookConfigurationProjectionMatch, .sortKeyFn = mutatingWebhookConfigurationProjectionSortKey }),
+            .resource_claim_projection = ResourceClaimProjection.init(allocator, .{ .matchFn = resourceClaimProjectionMatch, .sortKeyFn = resourceClaimProjectionSortKey }),
+            .device_class_projection = DeviceClassProjection.init(allocator, .{ .matchFn = deviceClassProjectionMatch, .sortKeyFn = deviceClassProjectionSortKey }),
+            .priority_class_projection = PriorityClassProjection.init(allocator, .{ .matchFn = priorityClassProjectionMatch, .sortKeyFn = priorityClassProjectionSortKey }),
+            .runtime_class_projection = RuntimeClassProjection.init(allocator, .{ .matchFn = runtimeClassProjectionMatch, .sortKeyFn = runtimeClassProjectionSortKey }),
+            .lease_projection = LeaseProjection.init(allocator, .{ .matchFn = leaseProjectionMatch, .sortKeyFn = leaseProjectionSortKey }),
+            .csr_projection = CSRProjection.init(allocator, .{ .matchFn = csrProjectionMatch, .sortKeyFn = csrProjectionSortKey }),
+            .storage_version_migration_projection = StorageVersionMigrationProjection.init(allocator, .{ .matchFn = storageVersionMigrationProjectionMatch, .sortKeyFn = storageVersionMigrationProjectionSortKey }),
+            .event_projection = EventProjection.init(allocator, .{ .matchFn = eventProjectionMatch, .sortKeyFn = eventProjectionSortKey }),
         };
     }
 
@@ -451,13 +612,11 @@ const ResourceFamilies = struct {
         name: []const u8,
         projection: *@import("k8s/ResourceProjection.zig").ResourceProjection(Record),
         view: *ResourceViewType,
-        comptime enabled_fn: fn () bool,
         comptime columns_fn: anytype,
     ) !void {
         view.bindProjection(ResourceViewType.ProjectionAdapter.init(
             Record,
             projection,
-            enabled_fn,
             columns_fn,
         ));
         try self.entries.append(
@@ -469,7 +628,6 @@ const ResourceFamilies = struct {
                 name,
                 projection,
                 view,
-                enabled_fn,
             ),
         );
         self.registry.rebind();
@@ -478,32 +636,60 @@ const ResourceFamilies = struct {
     fn bindViews(self: *ResourceFamilies, app: anytype) !void {
         try self.entries.ensureTotalCapacity(self.allocator, planned_family_capacity);
         self.registry = family_registry.Registry.initDynamic(&self.entries);
-        try self.bind(ServiceRecord, ServiceSubscription, ServicesView, "services", &self.service_projection, app.services_view, servicesDataPlaneEnabled, serviceProjectionColumns);
-        try self.bind(EndpointRecord, EndpointSubscription, EndpointsView, "endpoints", &self.endpoint_projection, app.endpoints_view, servicesDataPlaneEnabled, endpointProjectionColumns);
-        try self.bind(EndpointSliceRecord, EndpointSliceSubscription, EndpointSlicesView, "endpointslices", &self.endpoint_slice_projection, app.endpointslices_view, servicesDataPlaneEnabled, endpointSliceProjectionColumns);
-        try self.bind(ConfigMapRecord, ConfigMapSubscription, ConfigMapsView, "configmaps", &self.config_map_projection, app.configmaps_view, configDataPlaneEnabled, configMapProjectionColumns);
-        try self.bind(SecretRecord, SecretSubscription, SecretsView, "secrets", &self.secret_projection, app.secrets_view, configDataPlaneEnabled, secretProjectionColumns);
-        try self.bind(ServiceAccountRecord, ServiceAccountSubscription, ServiceAccountsView, "serviceaccounts", &self.service_account_projection, app.serviceaccounts_view, configDataPlaneEnabled, serviceAccountProjectionColumns);
-        try self.bind(ResourceQuotaRecord, ResourceQuotaSubscription, ResourceQuotasView, "resourcequotas", &self.resource_quota_projection, app.resourcequotas_view, configDataPlaneEnabled, resourceQuotaProjectionColumns);
-        try self.bind(LimitRangeRecord, LimitRangeSubscription, LimitRangesView, "limitranges", &self.limit_range_projection, app.limitranges_view, configDataPlaneEnabled, limitRangeProjectionColumns);
-        try self.bind(DeploymentRecord, DeploymentSubscription, DeploymentsView, "deployments", &self.deployment_projection, app.deployments_view, workloadsDataPlaneEnabled, deploymentProjectionColumns);
-        try self.bind(StatefulSetRecord, StatefulSetSubscription, StatefulSetsView, "statefulsets", &self.stateful_set_projection, app.statefulsets_view, workloadsDataPlaneEnabled, statefulSetProjectionColumns);
-        try self.bind(DaemonSetRecord, DaemonSetSubscription, DaemonSetsView, "daemonsets", &self.daemon_set_projection, app.daemonsets_view, workloadsDataPlaneEnabled, daemonSetProjectionColumns);
-        try self.bind(ReplicaSetRecord, ReplicaSetSubscription, ReplicaSetsView, "replicasets", &self.replica_set_projection, app.replicasets_view, workloadsDataPlaneEnabled, replicaSetProjectionColumns);
-        try self.bind(JobRecord, JobSubscription, JobsView, "jobs", &self.job_projection, app.jobs_view, batchDataPlaneEnabled, jobProjectionColumns);
-        try self.bind(CronJobRecord, CronJobSubscription, CronJobsView, "cronjobs", &self.cron_job_projection, app.cronjobs_view, batchDataPlaneEnabled, cronJobProjectionColumns);
-        try self.bind(HPARecord, HPASubscription, HPAView, "hpa", &self.hpa_projection, app.hpa_view, batchDataPlaneEnabled, hpaProjectionColumns);
-        try self.bind(PDBRecord, PDBSubscription, PodDisruptionBudgetsView, "poddisruptionbudgets", &self.pdb_projection, app.poddisruptionbudgets_view, batchDataPlaneEnabled, pdbProjectionColumns);
-        try self.bind(IngressRecord, IngressSubscription, IngressesView, "ingresses", &self.ingress_projection, app.ingresses_view, networkingDataPlaneEnabled, ingressProjectionColumns);
-        try self.bind(IngressClassRecord, IngressClassSubscription, IngressClassesView, "ingressclasses", &self.ingress_class_projection, app.ingressclasses_view, networkingDataPlaneEnabled, ingressClassProjectionColumns);
-        try self.bind(NetworkPolicyRecord, NetworkPolicySubscription, NetworkPoliciesView, "networkpolicies", &self.network_policy_projection, app.networkpolicies_view, networkingDataPlaneEnabled, networkPolicyProjectionColumns);
-        try self.bind(IPAddressRecord, IPAddressSubscription, IPAddressesView, "ipaddresses", &self.ip_address_projection, app.ipaddresses_view, networkingDataPlaneEnabled, ipAddressProjectionColumns);
-        try self.bind(ServiceCIDRRecord, ServiceCIDRSubscription, ServiceCIDRsView, "servicecidrs", &self.service_cidr_projection, app.servicecidrs_view, networkingDataPlaneEnabled, serviceCIDRProjectionColumns);
-        try self.bind(PVRecord, PVSubscription, PersistentVolumesView, "persistentvolumes", &self.pv_projection, app.persistentvolumes_view, storageDataPlaneEnabled, pvProjectionColumns);
-        try self.bind(PVCRecord, PVCSubscription, PersistentVolumeClaimsView, "persistentvolumeclaims", &self.pvc_projection, app.persistentvolumeclaims_view, storageDataPlaneEnabled, pvcProjectionColumns);
-        try self.bind(StorageClassRecord, StorageClassSubscription, StorageClassesView, "storageclasses", &self.storage_class_projection, app.storageclasses_view, storageDataPlaneEnabled, storageClassProjectionColumns);
-        try self.bind(VolumeAttributesClassRecord, VolumeAttributesClassSubscription, VolumeAttributesClassesView, "volumeattributesclasses", &self.volume_attributes_class_projection, app.volumeattributesclasses_view, storageDataPlaneEnabled, volumeAttributesClassProjectionColumns);
-        try self.bind(CSIDriverRecord, CSIDriverSubscription, CSIDriversView, "csidrivers", &self.csi_driver_projection, app.csidrivers_view, storageDataPlaneEnabled, csiDriverProjectionColumns);
+        try self.bind(ServiceRecord, ServiceSubscription, ServicesView, "services", &self.service_projection, app.services_view, serviceProjectionColumns);
+        try self.bind(EndpointRecord, EndpointSubscription, EndpointsView, "endpoints", &self.endpoint_projection, app.endpoints_view, endpointProjectionColumns);
+        try self.bind(EndpointSliceRecord, EndpointSliceSubscription, EndpointSlicesView, "endpointslices", &self.endpoint_slice_projection, app.endpointslices_view, endpointSliceProjectionColumns);
+        try self.bind(ConfigMapRecord, ConfigMapSubscription, ConfigMapsView, "configmaps", &self.config_map_projection, app.configmaps_view, configMapProjectionColumns);
+        try self.bind(SecretRecord, SecretSubscription, SecretsView, "secrets", &self.secret_projection, app.secrets_view, secretProjectionColumns);
+        try self.bind(ServiceAccountRecord, ServiceAccountSubscription, ServiceAccountsView, "serviceaccounts", &self.service_account_projection, app.serviceaccounts_view, serviceAccountProjectionColumns);
+        try self.bind(ResourceQuotaRecord, ResourceQuotaSubscription, ResourceQuotasView, "resourcequotas", &self.resource_quota_projection, app.resourcequotas_view, resourceQuotaProjectionColumns);
+        try self.bind(LimitRangeRecord, LimitRangeSubscription, LimitRangesView, "limitranges", &self.limit_range_projection, app.limitranges_view, limitRangeProjectionColumns);
+        try self.bind(DeploymentRecord, DeploymentSubscription, DeploymentsView, "deployments", &self.deployment_projection, app.deployments_view, deploymentProjectionColumns);
+        try self.bind(StatefulSetRecord, StatefulSetSubscription, StatefulSetsView, "statefulsets", &self.stateful_set_projection, app.statefulsets_view, statefulSetProjectionColumns);
+        try self.bind(DaemonSetRecord, DaemonSetSubscription, DaemonSetsView, "daemonsets", &self.daemon_set_projection, app.daemonsets_view, daemonSetProjectionColumns);
+        try self.bind(ReplicaSetRecord, ReplicaSetSubscription, ReplicaSetsView, "replicasets", &self.replica_set_projection, app.replicasets_view, replicaSetProjectionColumns);
+        try self.bind(JobRecord, JobSubscription, JobsView, "jobs", &self.job_projection, app.jobs_view, jobProjectionColumns);
+        try self.bind(CronJobRecord, CronJobSubscription, CronJobsView, "cronjobs", &self.cron_job_projection, app.cronjobs_view, cronJobProjectionColumns);
+        try self.bind(HPARecord, HPASubscription, HPAView, "hpa", &self.hpa_projection, app.hpa_view, hpaProjectionColumns);
+        try self.bind(PDBRecord, PDBSubscription, PodDisruptionBudgetsView, "poddisruptionbudgets", &self.pdb_projection, app.poddisruptionbudgets_view, pdbProjectionColumns);
+        try self.bind(IngressRecord, IngressSubscription, IngressesView, "ingresses", &self.ingress_projection, app.ingresses_view, ingressProjectionColumns);
+        try self.bind(IngressClassRecord, IngressClassSubscription, IngressClassesView, "ingressclasses", &self.ingress_class_projection, app.ingressclasses_view, ingressClassProjectionColumns);
+        try self.bind(NetworkPolicyRecord, NetworkPolicySubscription, NetworkPoliciesView, "networkpolicies", &self.network_policy_projection, app.networkpolicies_view, networkPolicyProjectionColumns);
+        try self.bind(IPAddressRecord, IPAddressSubscription, IPAddressesView, "ipaddresses", &self.ip_address_projection, app.ipaddresses_view, ipAddressProjectionColumns);
+        try self.bind(ServiceCIDRRecord, ServiceCIDRSubscription, ServiceCIDRsView, "servicecidrs", &self.service_cidr_projection, app.servicecidrs_view, serviceCIDRProjectionColumns);
+        try self.bind(PVRecord, PVSubscription, PersistentVolumesView, "persistentvolumes", &self.pv_projection, app.persistentvolumes_view, pvProjectionColumns);
+        try self.bind(PVCRecord, PVCSubscription, PersistentVolumeClaimsView, "persistentvolumeclaims", &self.pvc_projection, app.persistentvolumeclaims_view, pvcProjectionColumns);
+        try self.bind(StorageClassRecord, StorageClassSubscription, StorageClassesView, "storageclasses", &self.storage_class_projection, app.storageclasses_view, storageClassProjectionColumns);
+        try self.bind(VolumeAttributesClassRecord, VolumeAttributesClassSubscription, VolumeAttributesClassesView, "volumeattributesclasses", &self.volume_attributes_class_projection, app.volumeattributesclasses_view, volumeAttributesClassProjectionColumns);
+        try self.bind(CSIDriverRecord, CSIDriverSubscription, CSIDriversView, "csidrivers", &self.csi_driver_projection, app.csidrivers_view, csiDriverProjectionColumns);
+        try self.bind(GatewayClassRecord, GatewayClassSubscription, GatewayClassesView, "gatewayclasses", &self.gateway_class_projection, app.gatewayclasses_view, gatewayClassProjectionColumns);
+        try self.bind(GatewayRecord, GatewaySubscription, GatewaysView, "gateways", &self.gateway_projection, app.gateways_view, gatewayProjectionColumns);
+        try self.bind(HTTPRouteRecord, HTTPRouteSubscription, HTTPRoutesView, "httproutes", &self.http_route_projection, app.httproutes_view, httpRouteProjectionColumns);
+        try self.bind(GRPCRouteRecord, GRPCRouteSubscription, GRPCRoutesView, "grpcroutes", &self.grpc_route_projection, app.grpcroutes_view, grpcRouteProjectionColumns);
+        try self.bind(ReferenceGrantRecord, ReferenceGrantSubscription, ReferenceGrantsView, "referencegrants", &self.reference_grant_projection, app.referencegrants_view, referenceGrantProjectionColumns);
+        try self.bind(TCPRouteRecord, TCPRouteSubscription, TCPRoutesView, "tcproutes", &self.tcp_route_projection, app.tcproutes_view, tcpRouteProjectionColumns);
+        try self.bind(TLSRouteRecord, TLSRouteSubscription, TLSRoutesView, "tlsroutes", &self.tls_route_projection, app.tlsroutes_view, tlsRouteProjectionColumns);
+        try self.bind(UDPRouteRecord, UDPRouteSubscription, UDPRoutesView, "udproutes", &self.udp_route_projection, app.udproutes_view, udpRouteProjectionColumns);
+        try self.bind(BackendTLSPolicyRecord, BackendTLSPolicySubscription, BackendTLSPoliciesView, "backendtlspolicies", &self.backend_tls_policy_projection, app.backendtlspolicies_view, backendTLSPolicyProjectionColumns);
+        try self.bind(ListenerSetRecord, ListenerSetSubscription, ListenerSetsView, "listenersets", &self.listener_set_projection, app.listenersets_view, listenerSetProjectionColumns);
+        try self.bind(RoleRecord, RoleSubscription, RolesView, "roles", &self.role_projection, app.roles_view, roleProjectionColumns);
+        try self.bind(RoleBindingRecord, RoleBindingSubscription, RoleBindingsView, "rolebindings", &self.role_binding_projection, app.rolebindings_view, roleBindingProjectionColumns);
+        try self.bind(ClusterRoleRecord, ClusterRoleSubscription, ClusterRolesView, "clusterroles", &self.cluster_role_projection, app.clusterroles_view, clusterRoleProjectionColumns);
+        try self.bind(ClusterRoleBindingRecord, ClusterRoleBindingSubscription, ClusterRoleBindingsView, "clusterrolebindings", &self.cluster_role_binding_projection, app.clusterrolebindings_view, clusterRoleBindingProjectionColumns);
+        try self.bind(ValidatingAdmissionPolicyRecord, ValidatingAdmissionPolicySubscription, ValidatingAdmissionPoliciesView, "validatingadmissionpolicies", &self.validating_admission_policy_projection, app.validatingadmissionpolicies_view, validatingAdmissionPolicyProjectionColumns);
+        try self.bind(ValidatingAdmissionPolicyBindingRecord, ValidatingAdmissionPolicyBindingSubscription, ValidatingAdmissionPolicyBindingsView, "validatingadmissionpolicybindings", &self.validating_admission_policy_binding_projection, app.validatingadmissionpolicybindings_view, validatingAdmissionPolicyBindingProjectionColumns);
+        try self.bind(MutatingAdmissionPolicyRecord, MutatingAdmissionPolicySubscription, MutatingAdmissionPoliciesView, "mutatingadmissionpolicies", &self.mutating_admission_policy_projection, app.mutatingadmissionpolicies_view, mutatingAdmissionPolicyProjectionColumns);
+        try self.bind(MutatingAdmissionPolicyBindingRecord, MutatingAdmissionPolicyBindingSubscription, MutatingAdmissionPolicyBindingsView, "mutatingadmissionpolicybindings", &self.mutating_admission_policy_binding_projection, app.mutatingadmissionpolicybindings_view, mutatingAdmissionPolicyBindingProjectionColumns);
+        try self.bind(ValidatingWebhookConfigurationRecord, ValidatingWebhookConfigurationSubscription, ValidatingWebhookConfigurationsView, "validatingwebhookconfigurations", &self.validating_webhook_configuration_projection, app.validatingwebhookconfigurations_view, validatingWebhookConfigurationProjectionColumns);
+        try self.bind(MutatingWebhookConfigurationRecord, MutatingWebhookConfigurationSubscription, MutatingWebhookConfigurationsView, "mutatingwebhookconfigurations", &self.mutating_webhook_configuration_projection, app.mutatingwebhookconfigurations_view, mutatingWebhookConfigurationProjectionColumns);
+        try self.bind(ResourceClaimRecord, ResourceClaimSubscription, ResourceClaimsView, "resourceclaims", &self.resource_claim_projection, app.resourceclaims_view, resourceClaimProjectionColumns);
+        try self.bind(DeviceClassRecord, DeviceClassSubscription, DeviceClassesView, "deviceclasses", &self.device_class_projection, app.deviceclasses_view, deviceClassProjectionColumns);
+        try self.bind(PriorityClassRecord, PriorityClassSubscription, PriorityClassesView, "priorityclasses", &self.priority_class_projection, app.priorityclasses_view, priorityClassProjectionColumns);
+        try self.bind(RuntimeClassRecord, RuntimeClassSubscription, RuntimeClassesView, "runtimeclasses", &self.runtime_class_projection, app.runtimeclasses_view, runtimeClassProjectionColumns);
+        try self.bind(LeaseRecord, LeaseSubscription, LeasesView, "leases", &self.lease_projection, app.leases_view, leaseProjectionColumns);
+        try self.bind(CSRRecord, CSRSubscription, CertificateSigningRequestsView, "certificatesigningrequests", &self.csr_projection, app.certificatesigningrequests_view, csrProjectionColumns);
+        try self.bind(StorageVersionMigrationRecord, StorageVersionMigrationSubscription, StorageVersionMigrationsView, "storageversionmigrations", &self.storage_version_migration_projection, app.storageversionmigrations_view, storageVersionMigrationProjectionColumns);
+        try self.bind(EventRecord, EventSubscription, EventsView, "events", &self.event_projection, app.events_view, eventProjectionColumns);
     }
 
     fn deinit(self: *ResourceFamilies) void {
@@ -533,8 +719,56 @@ const ResourceFamilies = struct {
         self.storage_class_projection.deinit();
         self.volume_attributes_class_projection.deinit();
         self.csi_driver_projection.deinit();
+        self.gateway_class_projection.deinit();
+        self.gateway_projection.deinit();
+        self.http_route_projection.deinit();
+        self.grpc_route_projection.deinit();
+        self.reference_grant_projection.deinit();
+        self.tcp_route_projection.deinit();
+        self.tls_route_projection.deinit();
+        self.udp_route_projection.deinit();
+        self.backend_tls_policy_projection.deinit();
+        self.listener_set_projection.deinit();
+        self.role_projection.deinit();
+        self.role_binding_projection.deinit();
+        self.cluster_role_projection.deinit();
+        self.cluster_role_binding_projection.deinit();
+        self.validating_admission_policy_projection.deinit();
+        self.validating_admission_policy_binding_projection.deinit();
+        self.mutating_admission_policy_projection.deinit();
+        self.mutating_admission_policy_binding_projection.deinit();
+        self.validating_webhook_configuration_projection.deinit();
+        self.mutating_webhook_configuration_projection.deinit();
+        self.resource_claim_projection.deinit();
+        self.device_class_projection.deinit();
+        self.priority_class_projection.deinit();
+        self.runtime_class_projection.deinit();
+        self.lease_projection.deinit();
+        self.csr_projection.deinit();
+        self.storage_version_migration_projection.deinit();
+        self.event_projection.deinit();
         self.entries.deinit(self.allocator);
     }
+};
+
+pub const Task14Injection = struct {
+    spec_allocator: ?std.mem.Allocator = null,
+    drain_allocator: ?std.mem.Allocator = null,
+    transport: ?read_transport.ReadTransport = null,
+    hold_watch: bool = false,
+    deinit_counter: ?*std.atomic.Value(usize) = null,
+    retry_wait_entered: ?*std.atomic.Value(bool) = null,
+    fail_family_index: ?usize = null,
+    retry_family_index: ?usize = null,
+    retry_transport: ?read_transport.ReadTransport = null,
+    metrics_transport: ?read_transport.ReadTransport = null,
+    metrics_poll_interval_ns: ?u64 = null,
+    header_transport: ?read_transport.ReadTransport = null,
+    auth_backend: ?authorization_request.Backend = null,
+    convert_allocator: ?std.mem.Allocator = null,
+    emit_allocator: ?std.mem.Allocator = null,
+    drain_batch_limit: ?usize = null,
+    cancel_flag: ?*std.atomic.Value(bool) = null,
 };
 
 pub const App = struct {
@@ -549,6 +783,7 @@ pub const App = struct {
 
     allocator: std.mem.Allocator,
     perf_telemetry: PerfTelemetry,
+    diagnostic_writer: task15.Writer,
     shared_event: *std.Io.Event,
     wakeup: *Wakeup,
     change_queue: *ChangeQueue,
@@ -558,6 +793,7 @@ pub const App = struct {
     lifecycle_producer: LifecycleProducer,
     lifecycle_supervisor: *LifecycleSupervisor,
     data_plane: *DataPlane,
+    ancillary_requests: *AncillaryRequests,
     pod_projection: *PodProjection,
     node_projection: *NodeProjection,
     namespace_projection: *NamespaceProjection,
@@ -566,6 +802,18 @@ pub const App = struct {
     active_node_subscription: ?lifecycle.SubscriptionKey = null,
     active_namespace_subscription: ?lifecycle.SubscriptionKey = null,
     active_metrics_subscription: ?lifecycle.SubscriptionKey = null,
+    active_header_metrics_request: ?resource_key.RequestKey = null,
+    last_header_metrics_ns: i128 = 0,
+    active_traffic_request: ?resource_key.RequestKey = null,
+    last_traffic_ns: i128 = 0,
+    traffic_relaunch_pending: bool = false,
+    active_detail_request: ?resource_key.RequestKey = null,
+    detail_request_serial: u64 = 0,
+    detail_request_target: detail_request.UiTarget = undefined,
+    active_logs_request: ?resource_key.RequestKey = null,
+    logs_request_serial: u64 = 0,
+    logs_request_target: logs_request.UiTarget = undefined,
+    authorization_request_target: authorization_request.UiTarget = undefined,
     pod_metrics_started: bool = false,
     pod_initial_batch_applied: bool = false,
     pod_first_paint_emitted: bool = false,
@@ -574,7 +822,17 @@ pub const App = struct {
     pod_restart_pending: bool = false,
     node_restart_pending: bool = false,
     namespace_restart_pending: bool = false,
+    task15_control_exercised: bool = false,
+    task15_control_not_before_ns: i128 = 0,
+    task15_last_snapshot_ns: i128 = 0,
+    task15_last_active_identities: usize = std.math.maxInt(usize),
+    task15_first_paint_pending: u32 = 0,
+    task15_complete_paint_pending: u32 = 0,
     pending_context_switch: ?[]u8 = null,
+    task14: Task14Injection = .{},
+    task14_cancel_intents_before_await: usize = 0,
+    task14_context_install_after_drain: bool = false,
+    task14_views_alive_after_await: bool = false,
     pod_projection_sync_pending: bool = false,
     pod_projection_apply_failed: bool = false,
     lifecycle_root_await_count: usize = 0,
@@ -596,14 +854,6 @@ pub const App = struct {
     /// null when nothing is pending. Keeps a dropped frame from waiting on the full
     /// resize-poll timeout.
     pending_frame_ms: ?i32 = null,
-    /// Wall-clock nanos of the last automatic refresh.
-    ///
-    /// --refresh was parsed, unit-tested, and read NOWHERE, while --help advertised a
-    /// 2-second default that did not exist: data only updated on `r`, `0`, connect,
-    /// context switch, or onShow-when-empty. So a pod going CrashLoopBackOff never
-    /// appeared until the user pressed a key -- the opposite of what a cluster monitor
-    /// is for.
-    last_auto_refresh_ns: i128 = 0,
     min_frame_time_ns: i128 = 16_666_667, // ~60 FPS (16.67ms)
     current_theme_name: []const u8,
 
@@ -721,6 +971,7 @@ pub const App = struct {
     pub fn init(allocator: std.mem.Allocator, config: Cli.Config) !App {
         var perf_telemetry = PerfTelemetry.initFromEnv();
         errdefer perf_telemetry.deinit();
+        const diagnostic_writer = task15.Writer.initFromEnv();
 
         const shared_event = try allocator.create(std.Io.Event);
         shared_event.* = .unset;
@@ -819,6 +1070,13 @@ pub const App = struct {
         const data_plane = try allocator.create(DataPlane);
         data_plane.* = DataPlane.init(allocator, lifecycle_producer, change_queue);
         errdefer allocator.destroy(data_plane);
+        const ancillary_requests = try allocator.create(AncillaryRequests);
+        ancillary_requests.* = AncillaryRequests.init(
+            allocator,
+            lifecycle_producer,
+            change_queue,
+        );
+        errdefer allocator.destroy(ancillary_requests);
 
         // Initialize terminal
         var term = try Terminal.init(allocator);
@@ -850,6 +1108,7 @@ pub const App = struct {
         // --readonly was previously parsed and never consulted, so it blocked nothing.
         // The service rejects mutations; the UI additionally declines to prompt.
         k8s_service.readonly = config.readonly;
+        if (config.namespace) |namespace| try k8s_service.setConfiguredNamespace(namespace);
         k8s_service.setKubeconfigPath(config.kubeconfig);
         k8s_service.bindSessionSlot(active_session_slot);
         errdefer k8s_service.deinit();
@@ -963,7 +1222,7 @@ pub const App = struct {
 
         // Initialize header — connection is deferred, so start with placeholder
         var header = try Header.initWithData(allocator, theme, .{
-            .context = "connecting...",
+            .context = config.context orelse "connecting...",
             .cluster = "...",
             .user = "...",
             .k8s_version = "...",
@@ -982,6 +1241,7 @@ pub const App = struct {
         var app = App{
             .allocator = allocator,
             .perf_telemetry = perf_telemetry,
+            .diagnostic_writer = diagnostic_writer,
             .shared_event = shared_event,
             .wakeup = wakeup,
             .change_queue = change_queue,
@@ -991,6 +1251,7 @@ pub const App = struct {
             .lifecycle_producer = lifecycle_producer,
             .lifecycle_supervisor = supervisor,
             .data_plane = data_plane,
+            .ancillary_requests = ancillary_requests,
             .pod_projection = pod_projection,
             .node_projection = node_projection,
             .namespace_projection = namespace_projection,
@@ -1081,12 +1342,16 @@ pub const App = struct {
         aliases_view.* = try AliasesView.init(allocator, theme, app.k8s_service);
         inline for (k8s_view_types) |entry| {
             @field(app, entry[0]).* = try entry[1].init(allocator, theme, app.k8s_service);
+            if (config.all_namespaces and @hasDecl(entry[1], "view_config") and
+                entry[1].view_config.is_namespaced)
+            {
+                @field(app, entry[0]).table.show_all_namespaces = true;
+            }
         }
         app.pods_view.bindPodProjection(app.pod_projection);
         app.nodes_view.bindProjection(NodesView.ProjectionAdapter.init(
             NodeRecord,
             app.node_projection,
-            nodeDataPlaneEnabled,
             nodeProjectionColumns,
         ));
         app.namespaces_view.bindProjection(app.namespace_projection);
@@ -1105,7 +1370,63 @@ pub const App = struct {
         try app.view_manager.pushView(app.pods_view.createView());
 
         try app.lifecycle_supervisor.startRoot();
+        app.emitTask15LaunchStatus();
         return app;
+    }
+
+    fn emitTask15LaunchStatus(self: *App) void {
+        const context = self.config.context orelse "";
+        const scope = if (self.config.all_namespaces)
+            "all-namespaces"
+        else
+            self.config.namespace orelse self.k8s_service.current_namespace;
+        self.diagnostic_writer.emit(.{
+            .event = .readonly_status,
+            .context = context,
+            .scope = scope,
+            .readonly = self.config.readonly,
+        });
+        self.emitTask15Snapshot();
+    }
+
+    fn emitTask15Snapshot(self: *App) void {
+        const stats = self.change_queue.snapshot();
+        self.diagnostic_writer.emit(.{
+            .event = .diagnostics_snapshot,
+            .context = self.config.context orelse "",
+            .scope = if (self.config.all_namespaces) "all-namespaces" else self.k8s_service.current_namespace,
+            .snapshot = .{
+                .queue = .{
+                    .count = stats.count,
+                    .bytes = stats.bytes,
+                    .high_water_count = stats.high_water_count,
+                    .high_water_bytes = stats.high_water_bytes,
+                    .retries = stats.retries,
+                    .drops = stats.drops,
+                },
+                .supervisor = .{
+                    .live = self.lifecycle_supervisor.liveChildren(),
+                    .launched = self.lifecycle_supervisor.metrics.launched,
+                    .reaped = self.lifecycle_supervisor.metrics.reaped,
+                    .canceled = self.lifecycle_supervisor.metrics.canceled,
+                    .max_live = self.lifecycle_supervisor.metrics.max_live,
+                    .active_identities = self.activeIdentityCount(),
+                },
+                .leases = .{
+                    .active = self.active_session_slot.leaseCount(),
+                    .retiring = self.lifecycle_supervisor.retiringLeaseCount(),
+                },
+            },
+        });
+    }
+
+    pub fn activeIdentityCount(self: *const App) usize {
+        return @intFromBool(self.active_pod_subscription != null) +
+            @intFromBool(self.active_node_subscription != null) +
+            @intFromBool(self.active_namespace_subscription != null) +
+            @intFromBool(self.active_metrics_subscription != null) +
+            self.resource_families.registry.activeIdentityCount() +
+            self.ancillary_requests.activeIdentityCount();
     }
 
     pub fn deinit(self: *App) void {
@@ -1163,6 +1484,8 @@ pub const App = struct {
         self.allocator.destroy(self.lifecycle_inbox);
         self.allocator.destroy(self.cancellation_intents);
         self.allocator.destroy(self.lifecycle_supervisor);
+        self.ancillary_requests.deinit();
+        self.allocator.destroy(self.ancillary_requests);
         self.change_queue.deinit();
         self.allocator.destroy(self.change_queue);
         self.allocator.destroy(self.data_plane);
@@ -1299,15 +1622,16 @@ pub const App = struct {
                 self.serviceResourceSubscriptionRequests() catch |err| {
                     Logger.err("resource subscription start failed: {any}", .{err});
                 };
-                self.markRefreshCompleted();
+                self.task15_control_not_before_ns = clock.nanoTimestamp() + std.time.ns_per_s;
                 self.dirty = true;
                 self.renderIfNeeded() catch {};
 
-                // Now fetch the slower header extras (server version + node
-                // metrics) and repaint the header. Deferred so they never block
-                // the initial data render.
+                // Server version remains a deferred UI update. Header metrics
+                // are submitted as a supervised one-shot child.
                 self.header.updateK8sVersion(self.k8s_service.getServerVersion()) catch {};
-                self.updateHeaderMetrics();
+                self.startHeaderMetricsRequest() catch |err| {
+                    Logger.warn("header metrics start failed: {any}", .{err});
+                };
                 self.dirty = true;
             }
 
@@ -1316,6 +1640,8 @@ pub const App = struct {
                 terminal_resized.store(false, .release);
                 self.dirty = true;
             }
+            self.maybeRunTask15Control();
+            self.maybeEmitTask15Snapshot();
 
             const poll_timeout: i32 = self.pending_frame_ms orelse 100;
             const poll = sys.pollInputAndWakeup(
@@ -1338,7 +1664,7 @@ pub const App = struct {
             }
 
             if (poll.readiness == .timeout) {
-                self.maybeAutoRefresh();
+                self.servicePollTimeout();
                 continue;
             }
 
@@ -1350,49 +1676,72 @@ pub const App = struct {
                     self.handleKey(key) catch |err| {
                         Logger.err("handleKey error: {any}", .{err});
                     };
-                    // Paint loading feedback before a deferred list fetch blocks.
+                    self.serviceAuthorizationRequest();
+                    // Paint loading feedback before a subscription restart is queued.
                     self.renderIfNeeded() catch |err| {
                         Logger.err("Render error: {any}", .{err});
                     };
-                    if (self.view_manager.getCurrentView()) |v| {
-                        if (v.flushPendingRefresh()) {
-                            self.dirty = true;
-                            self.renderIfNeeded() catch |err| {
-                                Logger.err("Render error: {any}", .{err});
-                            };
-                        }
-                    }
                 }
             }
         }
     }
 
+    fn servicePollTimeout(self: *App) void {
+        self.maybeRefreshHeaderMetrics();
+        self.serviceTrafficRequest();
+        self.serviceAuthorizationRequest();
+    }
+
     pub fn finishLifecycle(self: *App) void {
         if (self.lifecycle_supervisor.root_future == null) return;
-        self.cancelMetricsFeed();
+        if (self.task14.cancel_flag) |flag| flag.store(true, .release);
+        var intents: usize = 0;
+        if (self.active_metrics_subscription) |key| {
+            if (self.data_plane.cancelSubscription(key) == .requested) intents += 1;
+            self.active_metrics_subscription = null;
+        }
+        intents += self.ancillary_requests.cancelAll();
         if (self.active_pod_subscription) |key| {
-            _ = self.data_plane.cancelSubscription(key);
+            if (self.data_plane.cancelSubscription(key) == .requested) intents += 1;
             self.active_pod_subscription = null;
             self.pods_view.markPodSubscriptionStopped();
         }
         if (self.active_node_subscription) |key| {
-            _ = self.data_plane.cancelSubscription(key);
+            if (self.data_plane.cancelSubscription(key) == .requested) intents += 1;
             self.active_node_subscription = null;
             self.nodes_view.markSubscriptionStopped();
         }
         if (self.active_namespace_subscription) |key| {
-            _ = self.data_plane.cancelSubscription(key);
+            if (self.data_plane.cancelSubscription(key) == .requested) intents += 1;
             self.active_namespace_subscription = null;
             self.namespaces_view.markSubscriptionStopped();
         }
         for (self.resource_families.registry.items()) |*entry| {
-            if (entry.active) |key| _ = self.data_plane.cancelSubscription(key);
+            if (entry.active) |key| {
+                if (self.data_plane.cancelSubscription(key) == .requested) intents += 1;
+            }
             entry.markStopped();
         }
         self.lifecycle_producer.enqueueShutdown() catch |err| switch (err) {
             error.Closed => {},
         };
-        if (self.lifecycle_supervisor.awaitRoot()) self.lifecycle_root_await_count += 1;
+        self.task14_cancel_intents_before_await = intents;
+        while (!self.lifecycle_inbox.isRootTerminated()) {
+            self.drainChangeQueueForShutdown();
+            if (self.lifecycle_inbox.isRootTerminated()) break;
+            runtime.io().sleep(.{ .nanoseconds = std.time.ns_per_ms }, .awake) catch {};
+        }
+        if (self.lifecycle_supervisor.awaitRoot()) {
+            self.lifecycle_root_await_count += 1;
+            if (self.task14.transport != null) {
+                _ = self.pod_projection.count();
+                _ = self.node_projection.count();
+                _ = self.namespace_projection.count();
+                _ = self.pods_view.table.items.items.len;
+                _ = self.resource_families.registry.itemsConst().len;
+                self.task14_views_alive_after_await = true;
+            }
+        }
         while (self.change_queue.hasPending()) self.drainChangeQueue();
     }
 
@@ -1407,7 +1756,7 @@ pub const App = struct {
                 matchesIdentity(self.active_node_subscription, identity) or
                 matchesIdentity(self.active_namespace_subscription, identity) or
                 self.resource_families.registry.contains(identity),
-            else => false,
+            else => self.ancillary_requests.acceptsEnvelope(envelope),
         };
     }
 
@@ -1418,8 +1767,64 @@ pub const App = struct {
         try self.serviceResourceFamilyRequests();
     }
 
+    fn maybeRunTask15Control(self: *App) void {
+        if (self.task15_control_exercised or self.config.diagnostic_control == null) return;
+        if (clock.nanoTimestamp() < self.task15_control_not_before_ns) return;
+        const control = self.config.diagnostic_control.?;
+        const family = switch (control) {
+            .reconnect => |value| value,
+            .stale_rv => |value| value,
+        };
+        if (control == .stale_rv) task15.armStaleRv(family);
+        switch (family) {
+            .pod => if (self.active_pod_subscription) |key| {
+                self.pod_restart_pending = true;
+                self.cancelMetricsFeed();
+                _ = self.data_plane.cancelSubscription(key);
+            },
+            .node => if (self.active_node_subscription) |key| {
+                self.node_restart_pending = true;
+                _ = self.data_plane.cancelSubscription(key);
+            },
+            .namespace => if (self.active_namespace_subscription) |key| {
+                self.namespace_restart_pending = true;
+                _ = self.data_plane.cancelSubscription(key);
+            },
+            else => for (self.resource_families.registry.items()) |*entry| {
+                if (task15.familyForResource(entry.name) != family) continue;
+                if (entry.active) |key| {
+                    entry.restart_pending = true;
+                    _ = self.data_plane.cancelSubscription(key);
+                }
+            },
+        }
+        self.diagnostic_writer.emit(.{
+            .event = switch (control) {
+                .reconnect => .diagnostic_reconnect,
+                .stale_rv => .diagnostic_stale_rv,
+            },
+            .context = self.config.context orelse "",
+            .scope = self.k8s_service.current_namespace,
+            .family = family,
+        });
+        self.task15_control_exercised = true;
+    }
+
+    fn maybeEmitTask15Snapshot(self: *App) void {
+        const now = clock.nanoTimestamp();
+        const active_identities = self.activeIdentityCount();
+        if (active_identities != self.task15_last_active_identities) {
+            self.task15_last_active_identities = active_identities;
+            self.task15_last_snapshot_ns = now;
+            self.emitTask15Snapshot();
+            return;
+        }
+        if (now - self.task15_last_snapshot_ns < std.time.ns_per_s) return;
+        self.task15_last_snapshot_ns = now;
+        self.emitTask15Snapshot();
+    }
+
     fn servicePodSubscriptionRequest(self: *App) !void {
-        if (resource_view.active_pod_source == .legacy_list) return;
         const request = self.pods_view.takePodSubscriptionRequest();
         if (request == .none) return;
         if (self.active_pod_subscription) |active| {
@@ -1433,7 +1838,6 @@ pub const App = struct {
     }
 
     fn serviceNodeSubscriptionRequest(self: *App) !void {
-        if (resource_view.active_node_source == .legacy_list) return;
         const request = self.nodes_view.takeSubscriptionRequest();
         if (request == .none) return;
         if (self.active_node_subscription) |active| {
@@ -1446,7 +1850,6 @@ pub const App = struct {
     }
 
     fn serviceNamespaceSubscriptionRequest(self: *App) !void {
-        if (@import("view/NamespacesView.zig").active_namespace_source == .legacy_list) return;
         const request = self.namespaces_view.takeSubscriptionRequest();
         if (request == .none) return;
         if (self.active_namespace_subscription) |active| {
@@ -1478,6 +1881,7 @@ pub const App = struct {
     }
 
     fn beginContextSwitch(self: *App, context_name: []const u8) !void {
+        if (task15.isLiveMode()) return error.Task15ContextSwitchDisabled;
         const owned_name = try self.allocator.dupe(u8, context_name);
         errdefer self.allocator.free(owned_name);
         if (self.pending_context_switch) |old_name| self.allocator.free(old_name);
@@ -1487,6 +1891,19 @@ pub const App = struct {
         self.namespace_restart_pending = self.active_namespace_subscription != null;
         self.resource_families.registry.markForContextRestart();
         self.cancelMetricsFeed();
+        const session_view = self.active_session_slot.view();
+        if (session_view.state == .active) {
+            _ = self.ancillary_requests.invalidateGeneration(session_view.generation);
+        }
+        self.active_detail_request = null;
+        self.detail_request_serial +%= 1;
+        self.active_logs_request = null;
+        self.logs_request_serial +%= 1;
+        inline for (.{ AuthorizationView.Tab.access_review, .policy_browser, .condition_inspector }) |tab| {
+            self.authorization_view.activeKey(tab).* = null;
+            _ = self.authorization_view.beginRequest(tab);
+            self.authorization_view.loading = false;
+        }
         if (self.active_pod_subscription) |active| _ = self.data_plane.cancelSubscription(active);
         if (self.active_node_subscription) |active| _ = self.data_plane.cancelSubscription(active);
         if (self.active_namespace_subscription) |active| _ = self.data_plane.cancelSubscription(active);
@@ -1494,11 +1911,66 @@ pub const App = struct {
             if (entry.active) |active| _ = self.data_plane.cancelSubscription(active);
         }
         if (self.hasActiveResourceSubscriptions()) return;
-        try self.completeContextSwitch();
+        self.tryFinishContextSwitch();
+    }
+
+    fn tryFinishContextSwitch(self: *App) void {
+        if (self.pending_context_switch == null) return;
+        if (self.lifecycle_supervisor.liveChildren() != 0) return;
+        if (self.active_session_slot.leaseCount() != 0) return;
+        if (self.change_queue.hasPending()) return;
+        if (self.hasActiveResourceSubscriptions() or self.active_metrics_subscription != null) {
+            self.active_pod_subscription = null;
+            self.active_metrics_subscription = null;
+            self.active_node_subscription = null;
+            self.active_namespace_subscription = null;
+            for (self.resource_families.registry.items()) |*entry| {
+                if (entry.active != null) entry.markStopped();
+            }
+        }
+        self.completeContextSwitch() catch |err| {
+            self.contexts_view.setError(err) catch {};
+            self.dirty = true;
+        };
+    }
+
+    fn task14SpecAllocator(self: *const App) std.mem.Allocator {
+        return self.task14.spec_allocator orelse self.allocator;
+    }
+
+    fn task14FamilyExtras(self: *const App, index: usize) ?family_registry.Task14SpecExtras {
+        if (self.task14.retry_family_index) |retry_index| {
+            if (index == retry_index) {
+                const transport = self.task14.retry_transport orelse return null;
+                return .{
+                    .transport = transport,
+                    .hold_watch = false,
+                    .deinit_counter = self.task14.deinit_counter,
+                    .retry_wait_entered = self.task14.retry_wait_entered,
+                    .convert_allocator = self.task14.convert_allocator,
+                    .emit_allocator = self.task14.emit_allocator,
+                };
+            }
+        }
+        const transport = self.task14.transport orelse return null;
+        return .{
+            .transport = transport,
+            .hold_watch = self.task14.hold_watch,
+            .deinit_counter = self.task14.deinit_counter,
+            .retry_wait_entered = null,
+            .convert_allocator = self.task14.convert_allocator,
+            .emit_allocator = self.task14.emit_allocator,
+        };
     }
 
     fn completeContextSwitch(self: *App) !void {
         const context_name = self.pending_context_switch orelse return;
+        if (self.task14.transport != null) {
+            self.task14_context_install_after_drain =
+                self.lifecycle_supervisor.liveChildren() == 0 and
+                self.active_session_slot.leaseCount() == 0 and
+                !self.change_queue.hasPending();
+        }
         self.k8s_service.switchContext(context_name) catch |err| {
             self.allocator.free(context_name);
             self.pending_context_switch = null;
@@ -1547,13 +2019,19 @@ pub const App = struct {
             null
         else
             self.k8s_service.current_namespace;
-        var spec = try pod_subscription.ownedTaskSpec(self.allocator, .{
+        const spec_allocator = self.task14SpecAllocator();
+        var spec = try pod_subscription.ownedTaskSpec(spec_allocator, .{
             .namespace = namespace,
             .context_name = self.k8s_service.context_name,
             .projection = self.pod_projection,
             .telemetry = &self.perf_telemetry,
+            .transport_override = self.task14.transport,
+            .hold_watch = self.task14.hold_watch,
+            .deinit_counter = self.task14.deinit_counter,
+            .convert_allocator = self.task14.convert_allocator,
+            .emit_allocator = self.task14.emit_allocator,
         });
-        errdefer spec.deinit(self.allocator);
+        errdefer spec.deinit(spec_allocator);
         const key = try self.data_plane.startSubscription(generation, &spec);
         self.active_pod_subscription = key;
         self.active_metrics_subscription = null;
@@ -1570,11 +2048,17 @@ pub const App = struct {
         if (!self.k8s_service.connected) return;
         const session_view = self.active_session_slot.view();
         if (session_view.state != .active) return error.NoActiveSession;
-        var spec = try NodeSubscription.ownedTaskSpec(self.allocator, .{
+        const spec_allocator = self.task14SpecAllocator();
+        var spec = try NodeSubscription.ownedTaskSpec(spec_allocator, .{
             .context_name = self.k8s_service.context_name,
             .projection = self.node_projection,
+            .transport_override = self.task14.transport,
+            .hold_watch = self.task14.hold_watch,
+            .deinit_counter = self.task14.deinit_counter,
+            .convert_allocator = self.task14.convert_allocator,
+            .emit_allocator = self.task14.emit_allocator,
         });
-        errdefer spec.deinit(self.allocator);
+        errdefer spec.deinit(spec_allocator);
         self.active_node_subscription = try self.data_plane.startSubscription(
             session_view.generation,
             &spec,
@@ -1586,11 +2070,17 @@ pub const App = struct {
         if (!self.k8s_service.connected) return;
         const session_view = self.active_session_slot.view();
         if (session_view.state != .active) return error.NoActiveSession;
-        var spec = try NamespaceSubscription.ownedTaskSpec(self.allocator, .{
+        const spec_allocator = self.task14SpecAllocator();
+        var spec = try NamespaceSubscription.ownedTaskSpec(spec_allocator, .{
             .context_name = self.k8s_service.context_name,
             .projection = self.namespace_projection,
+            .transport_override = self.task14.transport,
+            .hold_watch = self.task14.hold_watch,
+            .deinit_counter = self.task14.deinit_counter,
+            .convert_allocator = self.task14.convert_allocator,
+            .emit_allocator = self.task14.emit_allocator,
         });
-        errdefer spec.deinit(self.allocator);
+        errdefer spec.deinit(spec_allocator);
         self.active_namespace_subscription = try self.data_plane.startSubscription(
             session_view.generation,
             &spec,
@@ -1603,14 +2093,30 @@ pub const App = struct {
         const session_view = self.active_session_slot.view();
         if (session_view.state != .active) return error.NoActiveSession;
         const entry = self.resource_families.registry.entryAt(index) orelse return error.InvalidFamilyIndex;
+        if (self.task14.fail_family_index) |fail_index| {
+            if (index == fail_index) {
+                self.task14.fail_family_index = null;
+                return error.InjectedStartFailure;
+            }
+        }
         const namespace = entry.namespace(self.k8s_service.current_namespace);
-        var spec = try entry.taskSpecFn(
-            self.allocator,
-            self.k8s_service.context_name,
-            namespace,
-            entry.projection,
-        );
-        errdefer spec.deinit(self.allocator);
+        const spec_allocator = self.task14SpecAllocator();
+        var spec = if (self.task14FamilyExtras(index)) |extras|
+            try entry.task14InjectedSpecFn(
+                spec_allocator,
+                self.k8s_service.context_name,
+                namespace,
+                entry.projection,
+                extras,
+            )
+        else
+            try entry.taskSpecFn(
+                spec_allocator,
+                self.k8s_service.context_name,
+                namespace,
+                entry.projection,
+            );
+        errdefer spec.deinit(spec_allocator);
         entry.markStarted(try self.data_plane.startSubscription(
             session_view.generation,
             &spec,
@@ -1631,11 +2137,15 @@ pub const App = struct {
             null
         else
             self.k8s_service.current_namespace;
-        var spec = try metrics_feed.ownedTaskSpec(self.allocator, .{
+        const spec_allocator = self.task14SpecAllocator();
+        var spec = try metrics_feed.ownedTaskSpec(spec_allocator, .{
             .namespace = namespace,
             .projection = self.pod_projection,
+            .poll_interval_ns = self.task14.metrics_poll_interval_ns orelse metrics_feed.default_poll_interval_ns,
+            .transport_override = self.task14.metrics_transport,
+            .deinit_counter = self.task14.deinit_counter,
         });
-        errdefer spec.deinit(self.allocator);
+        errdefer spec.deinit(spec_allocator);
         self.active_metrics_subscription = try self.data_plane.startSubscription(
             pod_key.generation,
             &spec,
@@ -1678,7 +2188,7 @@ pub const App = struct {
         };
         return .{
             .kind = kind,
-            .monotonic_ns = @intCast(@max(clock.nanoTimestamp(), 0)),
+            .monotonic_ns = @intCast(@max(clock.monotonicNanoTimestamp(), 0)),
             .context = self.k8s_service.context_name,
             .resource = "pods",
             .scope = if (self.pods_view.table.show_all_namespaces)
@@ -1694,19 +2204,30 @@ pub const App = struct {
     }
 
     fn drainChangeQueue(self: *App) void {
+        self.drainChangeQueueWithPolicy(false);
+    }
+
+    fn drainChangeQueueForShutdown(self: *App) void {
+        self.drainChangeQueueWithPolicy(true);
+    }
+
+    fn drainChangeQueueWithPolicy(self: *App, shutting_down: bool) void {
         var router = resource_key.UiRouter{
             .context = @ptrCast(self),
             .targetFn = appEnvelopeTarget,
             .lifecycleFn = appObserveLifecycle,
         };
         var n: usize = 0;
-        while (n < resource_key.Limits.default.drain_batches) : (n += 1) {
+        const drain_limit = self.task14.drain_batch_limit orelse
+            resource_key.Limits.default.drain_batches;
+        while (n < drain_limit) : (n += 1) {
             var popped = self.change_queue.popForRetry() orelse break;
             const envelope = &popped.envelope;
+            const apply_allocator = self.task14.drain_allocator orelse self.allocator;
             if (!self.data_plane.acceptsEnvelope(envelope.*) or
                 !self.acceptsActiveEnvelope(envelope.*))
             {
-                popped.destroy(self.allocator);
+                popped.destroy(apply_allocator);
                 continue;
             }
             const target = envelope.target;
@@ -1734,10 +2255,14 @@ pub const App = struct {
                     null,
                 else => null,
             };
-            envelope.apply(&router, self.allocator) catch |err| {
+            envelope.apply(&router, apply_allocator) catch |err| {
                 Logger.err("envelope apply failed: {any}", .{err});
                 if (is_pod_subscription) self.pod_projection_apply_failed = true;
-                self.change_queue.retryPopped(&popped) catch popped.destroy(self.allocator);
+                if (shutting_down or self.lifecycle_supervisor.root_future == null) {
+                    popped.destroy(apply_allocator);
+                } else {
+                    self.change_queue.retryPopped(&popped) catch popped.destroy(apply_allocator);
+                }
                 break;
             };
             popped.finishConsumed();
@@ -1789,9 +2314,32 @@ pub const App = struct {
                         self.emitMetricsTelemetry(revision),
                     .reconnecting => {},
                 };
+                if (self.task15FamilyForTarget(target)) |family| {
+                    const bit = @as(u32, 1) << @intFromEnum(family);
+                    if (initial_changes) self.task15_first_paint_pending |= bit;
+                    if (sync_kind == .list_complete) self.task15_complete_paint_pending |= bit;
+                }
             }
             self.dirty = true;
         }
+        self.tryFinishContextSwitch();
+    }
+
+    fn task15FamilyForTarget(self: *const App, target: resource_key.EnvelopeTarget) ?task15.Family {
+        const identity = switch (target) {
+            .resource => |value| value,
+            else => return null,
+        };
+        if (matchesIdentity(self.active_pod_subscription, identity)) return .pod;
+        if (matchesIdentity(self.active_node_subscription, identity)) return .node;
+        if (matchesIdentity(self.active_namespace_subscription, identity)) return .namespace;
+        for (self.resource_families.registry.itemsConst()) |entry| {
+            const active = entry.active orelse continue;
+            if (active.generation == identity.generation and
+                active.subscription_id == identity.subscription_id)
+                return task15.familyForResource(entry.name);
+        }
+        return null;
     }
 
     fn appEnvelopeTarget(raw: *anyopaque, target: resource_key.EnvelopeTarget) ?*anyopaque {
@@ -1819,25 +2367,135 @@ pub const App = struct {
                 );
             },
             .lifecycle => @ptrCast(self.data_plane),
-            else => null,
+            .header_metrics => |key| if (self.ancillary_requests.contains(key, .header_metrics))
+                @ptrCast(&self.header)
+            else
+                null,
+            .traffic => |key| if (self.ancillary_requests.contains(key, .traffic))
+                @ptrCast(self.traffic_view)
+            else
+                null,
+            .detail => |key| self.detailEnvelopeTarget(key, .detail),
+            .yaml => |key| self.detailEnvelopeTarget(key, .yaml),
+            .logs => |key| blk: {
+                const active = self.active_logs_request orelse break :blk null;
+                if (!active.eql(key) or !self.ancillary_requests.contains(key, .logs))
+                    break :blk null;
+                self.logs_request_target = .{
+                    .view = self.logs_view,
+                    .view_manager = &self.view_manager,
+                    .active_key = active,
+                    .active_serial = self.logs_request_serial,
+                    .dirty = &self.dirty,
+                };
+                break :blk @ptrCast(&self.logs_request_target);
+            },
+            .authorization => |key| blk: {
+                if (!self.ancillary_requests.contains(key, .authorization)) break :blk null;
+                var matched = false;
+                inline for (.{ AuthorizationView.Tab.access_review, .policy_browser, .condition_inspector }) |tab| {
+                    if (self.authorization_view.activeKey(tab).*) |active| {
+                        if (active.eql(key)) matched = true;
+                    }
+                }
+                if (!matched) break :blk null;
+                self.authorization_request_target = .{ .view = self.authorization_view };
+                break :blk @ptrCast(&self.authorization_request_target);
+            },
         };
     }
 
-    fn appObserveLifecycle(
+    fn detailEnvelopeTarget(
+        self: *App,
+        key: resource_key.RequestKey,
+        class: resource_key.RequestClass,
+    ) ?*anyopaque {
+        const active = self.active_detail_request orelse return null;
+        if (!active.eql(key) or !self.ancillary_requests.contains(key, class)) return null;
+        self.detail_request_target = .{
+            .view = self.detail_view,
+            .view_manager = &self.view_manager,
+            .active_key = active,
+            .active_serial = self.detail_request_serial,
+            .dirty = &self.dirty,
+        };
+        return @ptrCast(&self.detail_request_target);
+    }
+
+    pub fn appObserveLifecycle(
         raw: *anyopaque,
         payload: *anyopaque,
         identity: ?resource_key.ResourceIdentity,
     ) void {
         const self: *App = @ptrCast(@alignCast(raw));
+        defer if (task15.isLiveMode()) self.maybeEmitTask15Snapshot();
         const completion: *lifecycle.LifecycleCompletion = @ptrCast(@alignCast(payload));
+        if (self.ancillary_requests.handleCompletion(completion.*)) {
+            const key: ?resource_key.RequestKey = switch (completion.*) {
+                .request_finished => |finished| finished.key,
+                .start_rejected => |rejected| rejected.request_key,
+                else => null,
+            };
+            if (key) |completed| {
+                if (self.active_header_metrics_request) |active| {
+                    if (active.eql(completed)) {
+                        self.active_header_metrics_request = null;
+                        self.last_header_metrics_ns = clock.nanoTimestamp();
+                    }
+                }
+                if (self.active_traffic_request) |active| {
+                    if (active.eql(completed)) {
+                        self.active_traffic_request = null;
+                        self.last_traffic_ns = clock.nanoTimestamp();
+                        self.serviceTrafficRequest();
+                    }
+                }
+                if (self.active_detail_request) |active| {
+                    if (active.eql(completed)) self.active_detail_request = null;
+                }
+                if (self.active_logs_request) |active| {
+                    if (active.eql(completed)) self.active_logs_request = null;
+                }
+                var authorization_completed = false;
+                inline for (.{ AuthorizationView.Tab.access_review, .policy_browser, .condition_inspector }) |tab| {
+                    const active_ptr = self.authorization_view.activeKey(tab);
+                    if (active_ptr.*) |active| {
+                        if (active.eql(completed)) {
+                            active_ptr.* = null;
+                            authorization_completed = true;
+                        }
+                    }
+                }
+                if (authorization_completed) switch (completion.*) {
+                    .start_rejected => {
+                        if (self.authorization_view.error_message) |message|
+                            self.allocator.free(message);
+                        self.authorization_view.error_message = self.allocator.dupe(
+                            u8,
+                            "Authorization request could not start",
+                        ) catch null;
+                    },
+                    else => {},
+                };
+                self.authorization_view.loading = self.authorization_view.hasActiveRequests();
+            }
+            self.tryFinishContextSwitch();
+            return;
+        }
         if (isActivePodCompletion(self.active_metrics_subscription, identity, completion.*)) {
             self.active_metrics_subscription = null;
+            self.tryFinishContextSwitch();
             return;
         }
         if (isActivePodCompletion(self.active_pod_subscription, identity, completion.*)) {
             self.active_pod_subscription = null;
             self.cancelMetricsFeed();
             self.pods_view.markPodSubscriptionStopped();
+            if (task15TerminalMessage(completion.*)) |message| {
+                self.pods_view.table.loading = false;
+                self.pods_view.table.setError(message) catch {};
+                self.dirty = true;
+            }
             if (self.pod_restart_pending and self.pending_context_switch == null) {
                 self.pod_restart_pending = false;
                 self.startPodSubscription() catch |err| {
@@ -1848,6 +2506,11 @@ pub const App = struct {
         } else if (isActivePodCompletion(self.active_node_subscription, identity, completion.*)) {
             self.active_node_subscription = null;
             self.nodes_view.markSubscriptionStopped();
+            if (task15TerminalMessage(completion.*)) |message| {
+                self.nodes_view.table.loading = false;
+                self.nodes_view.table.setError(message) catch {};
+                self.dirty = true;
+            }
             if (self.node_restart_pending and self.pending_context_switch == null) {
                 self.node_restart_pending = false;
                 self.startNodeSubscription() catch |err| {
@@ -1858,6 +2521,11 @@ pub const App = struct {
         } else if (isActivePodCompletion(self.active_namespace_subscription, identity, completion.*)) {
             self.active_namespace_subscription = null;
             self.namespaces_view.markSubscriptionStopped();
+            if (task15TerminalMessage(completion.*)) |message| {
+                self.namespaces_view.table.loading = false;
+                self.namespaces_view.table.setError(message) catch {};
+                self.dirty = true;
+            }
             if (self.namespace_restart_pending and self.pending_context_switch == null) {
                 self.namespace_restart_pending = false;
                 self.startNamespaceSubscription() catch |err| {
@@ -1867,7 +2535,11 @@ pub const App = struct {
             }
         } else if (self.resource_families.registry.complete(identity, completion.*)) |index| {
             const entry = self.resource_families.registry.entryAt(index) orelse return;
-            if (entry.enabled() and entry.restart_pending and self.pending_context_switch == null) {
+            if (task15TerminalMessage(completion.*)) |message| {
+                entry.setError(message) catch {};
+                self.dirty = true;
+            }
+            if (entry.restart_pending and self.pending_context_switch == null) {
                 self.startResourceFamilySubscription(index) catch |err| {
                     markFamilyStartOutcome(entry, false);
                     Logger.err("{s} subscription failed: {any}", .{ entry.name, err });
@@ -1876,14 +2548,12 @@ pub const App = struct {
                 };
                 markFamilyStartOutcome(entry, true);
             }
-        } else return;
-
-        if (self.pending_context_switch != null and !self.hasActiveResourceSubscriptions()) {
-            self.completeContextSwitch() catch |err| {
-                self.contexts_view.setError(err) catch {};
-                self.dirty = true;
-            };
+        } else {
+            self.tryFinishContextSwitch();
+            return;
         }
+
+        self.tryFinishContextSwitch();
     }
 
     fn renderIfNeeded(self: *App) !void {
@@ -1917,7 +2587,8 @@ pub const App = struct {
         var sync_output_open = true;
         defer if (sync_output_open) self.terminal.endSyncOutput() catch {};
 
-        const new_header_height = if (self.view_fullscreen) 0 else self.header.height();
+        const safety_visible = self.config.readonly;
+        const new_header_height = if (self.view_fullscreen and !safety_visible) 0 else self.header.height();
         const header_height_changed = self.header_height != new_header_height;
         self.header_height = new_header_height;
         const footer_height: u16 = if (self.footer_visible and !self.view_fullscreen) 1 else 0;
@@ -1940,9 +2611,16 @@ pub const App = struct {
             self.header.updateClusterInfo(cluster_info.context, cluster_info.cluster, cluster_info.user) catch {};
             self.header.updateK8sVersion(self.k8s_service.getServerVersion()) catch {};
         }
+        const namespace_scope = if (self.view_manager.getCurrentView()) |current|
+            if (current.showsAllNamespaces()) "all-namespaces" else self.k8s_service.current_namespace
+        else if (self.config.all_namespaces)
+            "all-namespaces"
+        else
+            self.k8s_service.current_namespace;
+        try self.header.setReadonlyScope(self.config.readonly, namespace_scope);
 
         // Render header with hints from current view
-        if (!self.view_fullscreen and size.height >= self.header_height) {
+        if ((!self.view_fullscreen or safety_visible) and size.height >= self.header_height) {
             if (self.view_manager.getCurrentView()) |current_view| {
                 const hints = current_view.getHints();
                 try self.header.render(&self.terminal, 0, 0, size.width, self.header_height, hints);
@@ -2031,20 +2709,6 @@ pub const App = struct {
                 const view_hint = if (self.view_manager.getCurrentView()) |v| v.getStatusHint() else null;
                 if (view_hint) |hint| {
                     self.footer.setStatus(hint);
-                } else if (self.view_manager.getCurrentView()) |v| {
-                    // Bridge (labeled — remove with maybeAutoRefresh's all-ns guard):
-                    // Show a persistent hint when auto-refresh is intentionally deferred
-                    // for all-namespace views. Keeps the user aware that data is static
-                    // until they press r. Condition mirrors maybeAutoRefresh exactly.
-                    if (v.showsAllNamespaces() and self.k8s_service.isConnected() and self.config.refresh_rate > 0) {
-                        self.footer.setStatus("all-ns: press Ctrl-r to refresh");
-                    } else if (self.k8s_service.isConnected()) {
-                        self.footer.setStatus(null);
-                    } else if (!self.k8s_service.hasAttemptedConnect()) {
-                        self.footer.setStatus("Connecting...");
-                    } else {
-                        self.footer.setStatus("Not connected to Kubernetes cluster");
-                    }
                 } else if (self.k8s_service.isConnected()) {
                     self.footer.setStatus(null);
                 } else if (!self.k8s_service.hasAttemptedConnect()) {
@@ -2072,9 +2736,33 @@ pub const App = struct {
         try self.terminal.endSyncOutput();
         sync_output_open = false;
         self.markPodPaintsAfterFlush();
+        self.emitTask15PaintsAfterFlush();
         self.prev_width = size.width;
         self.prev_height = size.height;
         self.dirty = false;
+    }
+
+    fn emitTask15PaintsAfterFlush(self: *App) void {
+        const view = self.view_manager.getCurrentView() orelse return;
+        const family = task15.familyForResource(view.getName()) orelse return;
+        const bit = @as(u32, 1) << @intFromEnum(family);
+        const base: task15.Record = .{
+            .event = .first_usable_paint,
+            .context = self.config.context orelse self.k8s_service.context_name,
+            .scope = if (view.showsAllNamespaces()) "all-namespaces" else self.k8s_service.current_namespace,
+            .family = family,
+            .resource = view.getName(),
+        };
+        if (self.task15_first_paint_pending & bit != 0) {
+            self.diagnostic_writer.emit(base);
+            self.task15_first_paint_pending &= ~bit;
+        }
+        if (self.task15_complete_paint_pending & bit != 0) {
+            var complete = base;
+            complete.event = .complete_sync_paint;
+            self.diagnostic_writer.emit(complete);
+            self.task15_complete_paint_pending &= ~bit;
+        }
     }
 
     fn markPodPaintsAfterFlush(self: *App) void {
@@ -2104,61 +2792,131 @@ pub const App = struct {
         );
     }
 
-    fn updateHeaderMetrics(self: *App) void {
-        if (!self.k8s_service.isConnected()) return;
+    fn startHeaderMetricsRequest(self: *App) !void {
+        if (!self.k8s_service.isConnected() or self.active_header_metrics_request != null) return;
+        if (self.view_manager.getCurrentView()) |view| {
+            if (std.mem.eql(u8, view.getName(), "pods") and !self.pod_first_paint_emitted)
+                return;
+        }
+        const session_view = self.active_session_slot.view();
+        if (session_view.state != .active) return error.NoActiveSession;
+        var spec = try header_metrics_request.ownedTaskSpec(self.allocator, .{
+            .transport_override = self.task14.header_transport,
+        });
+        errdefer spec.deinit(self.allocator);
+        self.active_header_metrics_request = try self.ancillary_requests.startRequest(
+            .header_metrics,
+            session_view.generation,
+            &spec,
+        );
+    }
 
-        // Fetch node metrics via /apis/metrics.k8s.io/v1beta1/nodes
-        const body = self.k8s_service.kubectlRequest("/apis/metrics.k8s.io/v1beta1/nodes") catch return;
-        defer self.allocator.free(body);
+    fn maybeRefreshHeaderMetrics(self: *App) void {
+        if (!self.k8s_service.isConnected() or self.active_header_metrics_request != null) return;
+        const interval = self.config.refresh_rate;
+        if (!(interval > 0) or !std.math.isFinite(interval)) return;
+        const now = clock.nanoTimestamp();
+        if (self.last_header_metrics_ns != 0) {
+            const elapsed = now - self.last_header_metrics_ns;
+            if (elapsed < 0 or elapsed < @as(i128, @intFromFloat(interval * std.time.ns_per_s)))
+                return;
+        }
+        self.startHeaderMetricsRequest() catch |err| {
+            self.last_header_metrics_ns = now;
+            Logger.warn("header metrics refresh failed: {any}", .{err});
+        };
+    }
 
-        const parsed = std.json.parseFromSlice(std.json.Value, self.allocator, body, .{
-            .ignore_unknown_fields = true,
-        }) catch return;
-        defer parsed.deinit();
+    fn startTrafficRequest(self: *App) !void {
+        if (!self.k8s_service.isConnected() or self.active_traffic_request != null) return;
+        const session_view = self.active_session_slot.view();
+        if (session_view.state != .active) return error.NoActiveSession;
+        var spec = try traffic_request.ownedTaskSpec(self.allocator, .{
+            .workload = self.traffic_view.workload,
+            .namespace = self.traffic_view.namespace,
+        });
+        errdefer spec.deinit(self.allocator);
+        self.active_traffic_request = try self.ancillary_requests.startRequest(
+            .traffic,
+            session_view.generation,
+            &spec,
+        );
+    }
 
-        const items = if (parsed.value == .object)
-            if (parsed.value.object.get("items")) |it| if (it == .array) it.array.items else null else null
-        else
-            null;
-        if (items == null) return;
-
-        var total_cpu_millicores: u64 = 0;
-        var total_mem_bytes: u64 = 0;
-
-        for (items.?) |node| {
-            if (node != .object) continue;
-            const usage = node.object.get("usage") orelse continue;
-            if (usage != .object) continue;
-
-            if (usage.object.get("cpu")) |cpu_val| {
-                if (cpu_val == .string) {
-                    if (klient.MetricsClient.parseCpuMillicores(cpu_val.string)) |mc| {
-                        total_cpu_millicores += mc;
-                    }
-                }
+    fn serviceTrafficRequest(self: *App) void {
+        const shown = self.view_manager.isViewActive("traffic");
+        if (!shown) {
+            self.traffic_relaunch_pending = false;
+            if (self.active_traffic_request) |active| {
+                _ = self.ancillary_requests.cancelRequest(active);
             }
-            if (usage.object.get("memory")) |mem_val| {
-                if (mem_val == .string) {
-                    if (klient.MetricsClient.parseMemoryBytes(mem_val.string)) |bytes| {
-                        total_mem_bytes += bytes;
-                    }
-                }
+            return;
+        }
+        if (self.traffic_view.takeRefreshRequest()) {
+            self.traffic_relaunch_pending = true;
+            if (self.active_traffic_request) |active| {
+                _ = self.ancillary_requests.cancelRequest(active);
+                return;
             }
         }
+        if (self.active_traffic_request != null) return;
 
-        // Convert to approximate percentages (rough estimate based on typical node capacity)
-        // A more accurate approach would fetch node capacity and compute actual usage %
-        const node_count = items.?.len;
-        if (node_count == 0) return;
+        const now = clock.nanoTimestamp();
+        if (!self.traffic_relaunch_pending and self.last_traffic_ns != 0) {
+            const elapsed = now - self.last_traffic_ns;
+            if (elapsed >= 0 and elapsed < 5 * std.time.ns_per_s) return;
+        }
+        self.startTrafficRequest() catch |err| {
+            self.last_traffic_ns = now;
+            Logger.warn("traffic refresh failed: {any}", .{err});
+            return;
+        };
+        self.traffic_relaunch_pending = false;
+    }
 
-        // Rough heuristic: assume ~4 cores and ~16GB per node on average
-        const est_total_cpu = node_count * 4000; // millicores
-        const est_total_mem = node_count * 16 * 1024 * 1024 * 1024; // bytes
-
-        const cpu_pct: u8 = if (est_total_cpu > 0) @intCast(@min(total_cpu_millicores * 100 / est_total_cpu, 100)) else 0;
-        const mem_pct: u8 = if (est_total_mem > 0) @intCast(@min(total_mem_bytes * 100 / est_total_mem, 100)) else 0;
-
-        self.header.updateCpuMem(cpu_pct, mem_pct) catch {};
+    fn serviceAuthorizationRequest(self: *App) void {
+        var request = self.authorization_view.takeRefreshRequest() orelse return;
+        defer request.deinit(self.allocator);
+        const tab = std.meta.activeTag(request);
+        const session_view = self.active_session_slot.view();
+        if (session_view.state != .active) {
+            self.authorization_view.loading = false;
+            return;
+        }
+        const serial = self.authorization_view.beginRequest(tab);
+        const resource, const group = switch (request) {
+            .condition_inspector => |value| .{ value.resource, value.group },
+            else => .{ "", "" },
+        };
+        var spec = authorization_request.ownedTaskSpec(self.allocator, .{
+            .serial = serial,
+            .tab = tab,
+            .service = self.k8s_service,
+            .namespace = self.k8s_service.getCurrentNamespace(),
+            .resource = resource,
+            .group = group,
+            .conditional_auth_available = self.authorization_view.access_tab.conditional_auth_available,
+            .cedar_available = self.authorization_view.policy_tab.cedar_available,
+            .backend_override = self.task14.auth_backend,
+        }) catch |err| {
+            Logger.warn("authorization request build failed: {any}", .{err});
+            self.authorization_view.loading = false;
+            return;
+        };
+        defer spec.deinit(self.allocator);
+        const active_ptr = self.authorization_view.activeKey(tab);
+        if (active_ptr.*) |active| _ = self.ancillary_requests.cancelRequest(active);
+        active_ptr.* = null;
+        active_ptr.* = self.ancillary_requests.startRequest(
+            .authorization,
+            session_view.generation,
+            &spec,
+        ) catch |err| {
+            Logger.warn("authorization request start failed: {any}", .{err});
+            self.authorization_view.loading = false;
+            return;
+        };
+        self.dirty = true;
     }
 
     fn renderDisconnectedDialog(self: *App, x: u16, y: u16, w: u16, h: u16) !void {
@@ -2716,8 +3474,8 @@ pub const App = struct {
     fn showTrafficView(self: *App) !void {
         const info = self.getSelectedResourceFromCurrentView() orelse return;
         self.traffic_view.setTarget(info.name, info.namespace);
-        self.traffic_view.setWake(&self.redraw_request);
         try self.view_manager.pushView(self.traffic_view.createView());
+        self.serviceTrafficRequest();
         self.dirty = true;
     }
 
@@ -2725,22 +3483,12 @@ pub const App = struct {
     /// command with the inherited terminal (so $EDITOR / shell work), then
     /// restore the TUI and refresh. Used by edit/shell/attach.
     fn runInteractive(self: *App, argv: []const []const u8) !void {
-        // Pin kubectl to the app's active context: after an in-app context
-        // switch, the shell kubeconfig's current-context may point at a
-        // different cluster than the one the user is looking at.
-        var pinned = std.ArrayListUnmanaged([]const u8).empty;
-        defer pinned.deinit(self.allocator);
-        const ctx_name = self.k8s_service.context_name;
-        const final_argv = if (argv.len > 0 and
-            std.mem.eql(u8, argv[0], "kubectl") and
-            !std.mem.eql(u8, ctx_name, "unknown"))
-        blk: {
-            try pinned.append(self.allocator, "kubectl");
-            try pinned.append(self.allocator, "--context");
-            try pinned.append(self.allocator, ctx_name);
-            try pinned.appendSlice(self.allocator, argv[1..]);
-            break :blk pinned.items;
-        } else argv;
+        const owned_argv = if (argv.len > 0 and std.mem.eql(u8, argv[0], "kubectl"))
+            try self.k8s_service.buildInteractiveKubectlArgv(argv[1..])
+        else
+            null;
+        defer if (owned_argv) |args| self.allocator.free(args);
+        const final_argv = owned_argv orelse argv;
 
         self.terminal.disableRawMode();
         _ = self.terminal.exitAlternateScreen() catch {};
@@ -2763,10 +3511,8 @@ pub const App = struct {
     }
 
     fn runResourceEdit(self: *App) !void {
-        // `kubectl edit` is a mutation, and it does NOT go through K8sService -- it
-        // spawns kubectl directly, so the service-level --readonly guard never sees
-        // it. Without this check `c3s --readonly` still let you edit live objects,
-        // which is a hole in that guard rather than a separate feature gap.
+        // Refuse before selecting and formatting the target. runInteractive also
+        // enforces readonly through K8sService as the non-bypassable boundary.
         if (self.k8s_service.readonly) {
             self.footer.setStatus("Read-only mode: edit refused");
             self.dirty = true;
@@ -2847,6 +3593,7 @@ pub const App = struct {
             Logger.err("switchToView({s}) failed: {any}", .{ name, err });
         };
         try self.serviceResourceSubscriptionRequests();
+        self.serviceAuthorizationRequest();
         self.dirty = true;
     }
 
@@ -3098,47 +3845,32 @@ pub const App = struct {
         return null;
     }
 
-    /// Show detail view (describe or JSON)
+    /// Submit one supervised detail or YAML request.
     fn showDetailView(self: *App, describe: bool) !void {
         const resource_type = self.currentResourceType() orelse return;
         const info = self.getSelectedResourceFromCurrentView() orelse return;
-
-        // Fetch raw JSON from K8s API
-        const json_data = self.k8s_service.getRawJson(resource_type, info.name, info.namespace) catch |err| {
-            Logger.err("Failed to get resource JSON: {any}", .{err});
-            return;
-        };
-        defer self.allocator.free(json_data);
-
-        // Secrets' `data`/`stringData` are credentials. `y` used to dump them
-        // as raw JSON; `x` is the deliberate decode path. On parse failure we
-        // refuse to show the body at all -- a truncated dump is still a leak.
-        const display = if (resource_type == .secrets)
-            secret_decode.redactSecretJson(self.allocator, json_data) catch {
-                self.footer.setStatus("Secret response was not valid JSON");
-                self.dirty = true;
-                return;
-            }
-        else
-            json_data;
-        defer if (resource_type == .secrets) self.allocator.free(display);
-
-        // Set content on detail view
-        const title = if (describe)
-            try std.fmt.allocPrint(self.allocator, "Describe {s}/{s}", .{ resource_type.resourceName(), info.name })
-        else
-            try std.fmt.allocPrint(self.allocator, "YAML {s}/{s}", .{ resource_type.resourceName(), info.name });
-        defer self.allocator.free(title);
-
-        if (describe) {
-            try self.detail_view.setContentDescribe(display, title);
-        } else {
-            try self.detail_view.setContentJson(display, title);
+        const session_view = self.active_session_slot.view();
+        if (session_view.state != .active) return error.NoActiveSession;
+        self.detail_request_serial +%= 1;
+        if (self.detail_request_serial == 0) self.detail_request_serial = 1;
+        const serial = self.detail_request_serial;
+        var spec = try detail_request.ownedTaskSpec(self.allocator, .{
+            .serial = serial,
+            .kind = if (describe) .describe else .yaml,
+            .resource_type = resource_type,
+            .name = info.name,
+            .namespace = info.namespace,
+        });
+        errdefer spec.deinit(self.allocator);
+        if (self.active_detail_request) |active| {
+            _ = self.ancillary_requests.cancelRequest(active);
         }
-
-        // Push detail view as sub-view
-        try self.view_manager.pushView(self.detail_view.createView());
-        self.dirty = true;
+        self.active_detail_request = null;
+        self.active_detail_request = try self.ancillary_requests.startRequest(
+            if (describe) .detail else .yaml,
+            session_view.generation,
+            &spec,
+        );
     }
 
     /// Base64-decode the selected Secret and show it in the detail view.
@@ -3148,52 +3880,55 @@ pub const App = struct {
     fn showDecodedSecret(self: *App) !void {
         if (!std.mem.eql(u8, self.current_view_name, "secrets")) return;
         const info = self.getSelectedResourceFromCurrentView() orelse return;
-
-        const json_data = self.k8s_service.getRawJson(.secrets, info.name, info.namespace) catch |err| {
-            Logger.err("Failed to get secret JSON: {any}", .{err});
-            self.footer.setStatus("Could not read secret");
-            self.dirty = true;
-            return;
-        };
-        defer self.allocator.free(json_data);
-
-        const decoded = secret_decode.decodeSecretData(self.allocator, json_data) catch |err| {
-            // NotAnObject means the body was not a Secret at all -- an HTML error page
-            // from a TLS-intercepting proxy, or a metav1.Status. Saying "empty" here
-            // would be a lie about the user's cluster.
-            Logger.err("Failed to decode secret: {any}", .{err});
-            self.footer.setStatus("Secret response was not valid JSON");
-            self.dirty = true;
-            return;
-        };
-        defer self.allocator.free(decoded);
-
-        const title = try std.fmt.allocPrint(self.allocator, "Decoded secret/{s}", .{info.name});
-        defer self.allocator.free(title);
-
-        try self.detail_view.setContentText(decoded, title);
-        try self.view_manager.pushView(self.detail_view.createView());
-        self.dirty = true;
+        const session_view = self.active_session_slot.view();
+        if (session_view.state != .active) return error.NoActiveSession;
+        self.detail_request_serial +%= 1;
+        if (self.detail_request_serial == 0) self.detail_request_serial = 1;
+        const serial = self.detail_request_serial;
+        var spec = try detail_request.ownedTaskSpec(self.allocator, .{
+            .serial = serial,
+            .kind = .decoded_secret,
+            .resource_type = .secrets,
+            .name = info.name,
+            .namespace = info.namespace,
+        });
+        errdefer spec.deinit(self.allocator);
+        if (self.active_detail_request) |active| {
+            _ = self.ancillary_requests.cancelRequest(active);
+        }
+        self.active_detail_request = null;
+        self.active_detail_request = try self.ancillary_requests.startRequest(
+            .detail,
+            session_view.generation,
+            &spec,
+        );
     }
 
-    /// Show logs view for selected pod
+    /// Submit one supervised pod-log request.
     fn showLogsView(self: *App, previous: bool) !void {
         if (!std.mem.eql(u8, self.current_view_name, "pods")) return;
-
         const info = self.pods_view.getSelectedResourceInfo() orelse return;
-
-        // Fetch logs from K8s API (previous = the prior container instance).
-        const log_data = self.k8s_service.getPodLogs(info.name, info.namespace, previous) catch |err| {
-            Logger.err("Failed to get pod logs: {any}", .{err});
-            return;
-        };
-        defer self.allocator.free(log_data);
-
-        try self.logs_view.setContent(log_data, info.name);
-
-        // Push logs view as sub-view
-        try self.view_manager.pushView(self.logs_view.createView());
-        self.dirty = true;
+        const session_view = self.active_session_slot.view();
+        if (session_view.state != .active) return error.NoActiveSession;
+        self.logs_request_serial +%= 1;
+        if (self.logs_request_serial == 0) self.logs_request_serial = 1;
+        const serial = self.logs_request_serial;
+        var spec = try logs_request.ownedTaskSpec(self.allocator, .{
+            .serial = serial,
+            .pod_name = info.name,
+            .namespace = info.namespace,
+            .previous = previous,
+        });
+        errdefer spec.deinit(self.allocator);
+        if (self.active_logs_request) |active| {
+            _ = self.ancillary_requests.cancelRequest(active);
+        }
+        self.active_logs_request = null;
+        self.active_logs_request = try self.ancillary_requests.startRequest(
+            .logs,
+            session_view.generation,
+            &spec,
+        );
     }
 
     /// Handle delete request - enter confirmation mode
@@ -3322,113 +4057,6 @@ pub const App = struct {
         return false;
     }
 
-    /// Refresh the current view when the --refresh interval has elapsed.
-    ///
-    /// Called from the poll-timeout branch, which fires at least every 100 ms, so the
-    /// interval is honoured without adding a timer or a thread.
-    ///
-    /// Deliberately skipped while a prompt is open or a delete confirmation is
-    /// pending: refreshing under the user's cursor would move the selection out from
-    /// under a `y/n` they are about to answer, and a destructive confirmation must
-    /// stay pinned to the row it was opened for.
-    fn maybeAutoRefresh(self: *App) void {
-        if (!self.k8s_service.isConnected()) return;
-        // Never refresh under an open prompt or a pending delete confirmation:
-        // moving the selection while the user is answering y/n could retarget a
-        // destructive action at a different row.
-        if (self.command_input.visible or self.delete_pending) return;
-
-        // Bridge (labeled — remove when background LIST+WATCH lands):
-        //
-        // refreshCurrentView() is a synchronous blocking LIST. In all-namespace
-        // mode on large clusters (4 k+ pods) it takes 3–12 s. The main loop
-        // DOES reach poll() after the LIST returns, but with the pre-fix timestamp
-        // placement shouldAutoRefresh immediately re-fired on the next 100 ms tick
-        // (elapsed ≥ interval), causing near-continuous blocking with ~100 ms gaps.
-        //
-        // The timestamp fix (last = completion time) gives a responsive window after
-        // each LIST, but the LIST itself still blocks for 3–12 s, making the app feel
-        // unresponsive for the duration. Deferring auto-refresh for all-namespace
-        // views eliminates those stalls entirely; manual Ctrl-r still works. The footer
-        // shows "all-ns: press Ctrl-r to refresh" (set in the render loop) so the user
-        // knows data is not auto-refreshing.
-        //
-        // Delete this guard and the render-loop status message when watch snapshots
-        // deliver data via redraw_request from a background thread.
-        if (self.view_manager.getCurrentView()) |v| {
-            if (!timerRefreshAllowed(
-                v.getName(),
-                resource_view.active_pod_source,
-                resource_view.active_node_source,
-                @import("view/NamespacesView.zig").active_namespace_source,
-                resource_view.active_services_source,
-                resource_view.active_config_source,
-                resource_view.active_workloads_source,
-                resource_view.active_batch_source,
-                resource_view.active_networking_source,
-                resource_view.active_storage_source,
-            )) return;
-            if (v.showsAllNamespaces()) return;
-        }
-
-        _ = App.runAutoRefreshCycle(
-            self.config.refresh_rate,
-            &self.last_auto_refresh_ns,
-            clock.nanoTimestamp(),
-            *App,
-            self,
-            struct {
-                fn f(app: *App) void {
-                    app.refreshCurrentView();
-                }
-            }.f,
-            clock.nanoTimestamp,
-        );
-    }
-
-    /// Scheduling primitive for periodic refresh. Calls refreshFn when the
-    /// interval has elapsed; then records the time returned by clockFn — called
-    /// AFTER refreshFn returns — as the new *last_ns.
-    ///
-    /// Keeping the clock capture after the refresh is the invariant that prevents
-    /// a refresh storm: if refreshFn blocks longer than the interval, the next
-    /// deadline is still `interval` seconds from completion, not from start.
-    ///
-    /// clockFn is injectable so tests can supply a known completion timestamp and
-    /// assert that *last_ns holds that value (not the pre-call now_ns).
-    ///
-    /// Returns true when a refresh was performed.
-    pub fn runAutoRefreshCycle(
-        interval_s: f32,
-        last_ns: *i128,
-        now_ns: i128,
-        comptime Ctx: type,
-        ctx: Ctx,
-        comptime refreshFn: fn (Ctx) void,
-        comptime clockFn: fn () i128,
-    ) bool {
-        if (!shouldAutoRefresh(interval_s, last_ns.*, now_ns)) return false;
-        refreshFn(ctx);
-        last_ns.* = clockFn();
-        return true;
-    }
-
-    /// Whether the auto-refresh interval has elapsed.
-    ///
-    /// Split out as a pure function so the timing rules are unit-testable; the rest of
-    /// maybeAutoRefresh needs a live App and a cluster, and an untestable branch is
-    /// how --refresh came to be parsed-but-never-read in the first place.
-    ///
-    /// `interval_s <= 0` disables refreshing. `last_ns == 0` means "never refreshed",
-    /// which refreshes immediately rather than waiting out one interval first.
-    fn shouldAutoRefresh(interval_s: f32, last_ns: i128, now_ns: i128) bool {
-        if (!(interval_s > 0)) return false; // also rejects NaN
-        if (last_ns == 0) return true;
-        if (now_ns <= last_ns) return false; // clock went backwards; wait it out
-        const interval_ns: i128 = @intFromFloat(@as(f64, interval_s) * @as(f64, std.time.ns_per_s));
-        return now_ns - last_ns >= interval_ns;
-    }
-
     /// Cordon or uncordon the selected node.
     ///
     /// No confirmation prompt: cordon is reversible and affects no running workload
@@ -3455,7 +4083,7 @@ pub const App = struct {
         const extras = k9s_query.parseCommand(cmd_text);
         if (extras.context) |ctx_name| {
             if (ctx_name.len > 0) {
-                self.k8s_service.switchContext(ctx_name) catch {
+                self.beginContextSwitch(ctx_name) catch {
                     self.footer.setStatus("context switch failed");
                     self.dirty = true;
                     return;
@@ -3477,7 +4105,10 @@ pub const App = struct {
         if (record) try self.recordHistory(cmd_text);
 
         if (extras.namespace) |ns| {
-            try self.k8s_service.setCurrentNamespace(ns);
+            if (self.k8s_service.isConnected())
+                try self.k8s_service.setCurrentNamespace(ns)
+            else
+                try self.k8s_service.setConfiguredNamespace(ns);
             if (self.view_manager.getCurrentView()) |v| v.setShowAllNamespaces(false);
             self.refreshCurrentView();
         }
@@ -3489,6 +4120,7 @@ pub const App = struct {
         if (extras.filter) |f| {
             try self.applyFilterToCurrentView(f);
         }
+        try self.serviceResourceSubscriptionRequests();
     }
 
     fn recordHistory(self: *App, cmd: []const u8) !void {
@@ -3723,10 +4355,6 @@ pub const App = struct {
         self.dirty = true;
     }
 
-    fn markRefreshCompleted(self: *App) void {
-        self.last_auto_refresh_ns = clock.nanoTimestamp();
-    }
-
     fn refreshCurrentView(self: *App) void {
         if (self.view_manager.getCurrentView()) |current| {
             current.refresh() catch |err| {
@@ -3736,7 +4364,7 @@ pub const App = struct {
         self.serviceResourceSubscriptionRequests() catch |err| {
             Logger.err("Failed to refresh resource subscription: {any}", .{err});
         };
-        self.markRefreshCompleted();
+        self.serviceAuthorizationRequest();
         self.dirty = true;
     }
 
@@ -4044,10 +4672,6 @@ fn podProjectionSortKey(record: *const PodRecord, column: u8) []const u8 {
     };
 }
 
-fn nodeDataPlaneEnabled() bool {
-    return resource_view.active_node_source == .data_plane;
-}
-
 fn nodeProjectionColumns(
     _: *NodeProjection,
     record: *const NodeRecord,
@@ -4084,10 +4708,6 @@ fn namespaceProjectionSortKey(record: *const NamespaceRecord, column: u8) []cons
         2 => record.status,
         else => record.key.name,
     };
-}
-
-fn servicesDataPlaneEnabled() bool {
-    return resource_view.active_services_source == .data_plane;
 }
 
 fn serviceProjectionColumns(
@@ -4166,24 +4786,468 @@ fn endpointSliceProjectionSortKey(record: *const EndpointSliceRecord, column: u8
     };
 }
 
-fn configDataPlaneEnabled() bool {
-    return resource_view.active_config_source == .data_plane;
+fn resourceClaimProjectionColumns(_: *ResourceClaimProjection, record: *const ResourceClaimRecord, allocator: std.mem.Allocator) ![4][]const u8 {
+    return record.columns(allocator);
+}
+fn deviceClassProjectionColumns(_: *DeviceClassProjection, record: *const DeviceClassRecord, allocator: std.mem.Allocator) ![3][]const u8 {
+    return record.columns(allocator);
+}
+fn priorityClassProjectionColumns(_: *PriorityClassProjection, record: *const PriorityClassRecord, allocator: std.mem.Allocator) ![4][]const u8 {
+    return record.columns(allocator);
+}
+fn runtimeClassProjectionColumns(_: *RuntimeClassProjection, record: *const RuntimeClassRecord, allocator: std.mem.Allocator) ![3][]const u8 {
+    return record.columns(allocator);
+}
+fn leaseProjectionColumns(_: *LeaseProjection, record: *const LeaseRecord, allocator: std.mem.Allocator) ![4][]const u8 {
+    return record.columns(allocator);
+}
+fn csrProjectionColumns(_: *CSRProjection, record: *const CSRRecord, allocator: std.mem.Allocator) ![4][]const u8 {
+    return record.columns(allocator);
+}
+fn storageVersionMigrationProjectionColumns(_: *StorageVersionMigrationProjection, record: *const StorageVersionMigrationRecord, allocator: std.mem.Allocator) ![3][]const u8 {
+    return record.columns(allocator);
+}
+fn eventProjectionColumns(_: *EventProjection, record: *const EventRecord, allocator: std.mem.Allocator) ![7][]const u8 {
+    return record.columns(allocator);
 }
 
-fn workloadsDataPlaneEnabled() bool {
-    return resource_view.active_workloads_source == .data_plane;
+fn resourceClaimProjectionMatch(record: *const ResourceClaimRecord, filter: []const u8) bool {
+    return namespacedRecordMatches(record, filter) or containsIgnoreCase(record.status, filter);
+}
+fn deviceClassProjectionMatch(record: *const DeviceClassRecord, filter: []const u8) bool {
+    return filter.len == 0 or containsIgnoreCase(record.key.name, filter);
+}
+fn priorityClassProjectionMatch(record: *const PriorityClassRecord, filter: []const u8) bool {
+    return filter.len == 0 or containsIgnoreCase(record.key.name, filter);
+}
+fn runtimeClassProjectionMatch(record: *const RuntimeClassRecord, filter: []const u8) bool {
+    return filter.len == 0 or containsIgnoreCase(record.key.name, filter) or containsIgnoreCase(record.handler, filter);
+}
+fn leaseProjectionMatch(record: *const LeaseRecord, filter: []const u8) bool {
+    return namespacedRecordMatches(record, filter) or containsIgnoreCase(record.holder, filter);
+}
+fn csrProjectionMatch(record: *const CSRRecord, filter: []const u8) bool {
+    return filter.len == 0 or containsIgnoreCase(record.key.name, filter) or containsIgnoreCase(record.signer, filter);
+}
+fn storageVersionMigrationProjectionMatch(record: *const StorageVersionMigrationRecord, filter: []const u8) bool {
+    return filter.len == 0 or containsIgnoreCase(record.key.name, filter) or containsIgnoreCase(record.resource_version, filter);
+}
+fn eventProjectionMatch(record: *const EventRecord, filter: []const u8) bool {
+    return namespacedRecordMatches(record, filter) or
+        containsIgnoreCase(record.event_type, filter) or
+        containsIgnoreCase(record.reason, filter) or
+        containsIgnoreCase(record.object, filter) or
+        containsIgnoreCase(record.message, filter);
 }
 
-fn batchDataPlaneEnabled() bool {
-    return resource_view.active_batch_source == .data_plane;
+fn resourceClaimProjectionSortKey(record: *const ResourceClaimRecord, column: u8) []const u8 {
+    return switch (column) {
+        0 => record.key.namespace,
+        1 => record.key.name,
+        2 => record.status,
+        3 => record.creation_timestamp orelse "",
+        else => record.key.name,
+    };
+}
+fn deviceClassProjectionSortKey(record: *const DeviceClassRecord, column: u8) []const u8 {
+    return if (column == 2) record.creation_timestamp orelse "" else record.key.name;
+}
+fn priorityClassProjectionSortKey(record: *const PriorityClassRecord, column: u8) []const u8 {
+    return if (column == 3) record.creation_timestamp orelse "" else record.key.name;
+}
+fn runtimeClassProjectionSortKey(record: *const RuntimeClassRecord, column: u8) []const u8 {
+    return switch (column) {
+        1 => record.handler,
+        2 => record.creation_timestamp orelse "",
+        else => record.key.name,
+    };
+}
+fn leaseProjectionSortKey(record: *const LeaseRecord, column: u8) []const u8 {
+    return switch (column) {
+        0 => record.key.namespace,
+        1 => record.key.name,
+        2 => record.holder,
+        3 => record.creation_timestamp orelse "",
+        else => record.key.name,
+    };
+}
+fn csrProjectionSortKey(record: *const CSRRecord, column: u8) []const u8 {
+    return switch (column) {
+        1 => record.signer,
+        3 => record.creation_timestamp orelse "",
+        else => record.key.name,
+    };
+}
+fn storageVersionMigrationProjectionSortKey(record: *const StorageVersionMigrationRecord, column: u8) []const u8 {
+    return switch (column) {
+        1 => record.resource_version,
+        2 => record.creation_timestamp orelse "",
+        else => record.key.name,
+    };
+}
+fn eventProjectionSortKey(record: *const EventRecord, column: u8) []const u8 {
+    return switch (column) {
+        0 => record.key.namespace,
+        1 => record.last_seen_timestamp orelse "",
+        2 => record.event_type,
+        3 => record.reason,
+        4 => record.object,
+        6 => record.message,
+        else => record.key.name,
+    };
 }
 
-fn networkingDataPlaneEnabled() bool {
-    return resource_view.active_networking_source == .data_plane;
+fn validatingAdmissionPolicyProjectionColumns(_: *ValidatingAdmissionPolicyProjection, record: *const ValidatingAdmissionPolicyRecord, allocator: std.mem.Allocator) ![4][]const u8 {
+    return record.columns(allocator);
 }
 
-fn storageDataPlaneEnabled() bool {
-    return resource_view.active_storage_source == .data_plane;
+fn validatingAdmissionPolicyBindingProjectionColumns(_: *ValidatingAdmissionPolicyBindingProjection, record: *const ValidatingAdmissionPolicyBindingRecord, allocator: std.mem.Allocator) ![3][]const u8 {
+    return record.columns(allocator);
+}
+
+fn mutatingAdmissionPolicyProjectionColumns(_: *MutatingAdmissionPolicyProjection, record: *const MutatingAdmissionPolicyRecord, allocator: std.mem.Allocator) ![4][]const u8 {
+    return record.columns(allocator);
+}
+
+fn mutatingAdmissionPolicyBindingProjectionColumns(_: *MutatingAdmissionPolicyBindingProjection, record: *const MutatingAdmissionPolicyBindingRecord, allocator: std.mem.Allocator) ![3][]const u8 {
+    return record.columns(allocator);
+}
+
+fn validatingWebhookConfigurationProjectionColumns(_: *ValidatingWebhookConfigurationProjection, record: *const ValidatingWebhookConfigurationRecord, allocator: std.mem.Allocator) ![3][]const u8 {
+    return record.columns(allocator);
+}
+
+fn mutatingWebhookConfigurationProjectionColumns(_: *MutatingWebhookConfigurationProjection, record: *const MutatingWebhookConfigurationRecord, allocator: std.mem.Allocator) ![3][]const u8 {
+    return record.columns(allocator);
+}
+
+fn validatingAdmissionPolicyProjectionMatch(record: *const ValidatingAdmissionPolicyRecord, filter: []const u8) bool {
+    return filter.len == 0 or
+        containsIgnoreCase(record.key.name, filter) or
+        containsIgnoreCase(record.extra.failure_policy, filter);
+}
+
+fn mutatingAdmissionPolicyProjectionMatch(record: *const MutatingAdmissionPolicyRecord, filter: []const u8) bool {
+    return filter.len == 0 or
+        containsIgnoreCase(record.key.name, filter) or
+        containsIgnoreCase(record.extra.failure_policy, filter);
+}
+
+fn validatingAdmissionPolicyBindingProjectionMatch(record: *const ValidatingAdmissionPolicyBindingRecord, filter: []const u8) bool {
+    return filter.len == 0 or
+        containsIgnoreCase(record.key.name, filter) or
+        containsIgnoreCase(record.extra.value, filter);
+}
+
+fn mutatingAdmissionPolicyBindingProjectionMatch(record: *const MutatingAdmissionPolicyBindingRecord, filter: []const u8) bool {
+    return filter.len == 0 or
+        containsIgnoreCase(record.key.name, filter) or
+        containsIgnoreCase(record.extra.value, filter);
+}
+
+fn validatingWebhookConfigurationProjectionMatch(record: *const ValidatingWebhookConfigurationRecord, filter: []const u8) bool {
+    return filter.len == 0 or containsIgnoreCase(record.key.name, filter);
+}
+
+fn mutatingWebhookConfigurationProjectionMatch(record: *const MutatingWebhookConfigurationRecord, filter: []const u8) bool {
+    return filter.len == 0 or containsIgnoreCase(record.key.name, filter);
+}
+
+fn validatingAdmissionPolicyProjectionSortKey(record: *const ValidatingAdmissionPolicyRecord, column: u8) []const u8 {
+    return switch (column) {
+        1 => record.extra.failure_policy,
+        3 => record.creation_timestamp orelse "",
+        else => record.key.name,
+    };
+}
+
+fn mutatingAdmissionPolicyProjectionSortKey(record: *const MutatingAdmissionPolicyRecord, column: u8) []const u8 {
+    return switch (column) {
+        1 => record.extra.failure_policy,
+        3 => record.creation_timestamp orelse "",
+        else => record.key.name,
+    };
+}
+
+fn validatingAdmissionPolicyBindingProjectionSortKey(record: *const ValidatingAdmissionPolicyBindingRecord, column: u8) []const u8 {
+    return switch (column) {
+        1 => record.extra.value,
+        2 => record.creation_timestamp orelse "",
+        else => record.key.name,
+    };
+}
+
+fn mutatingAdmissionPolicyBindingProjectionSortKey(record: *const MutatingAdmissionPolicyBindingRecord, column: u8) []const u8 {
+    return switch (column) {
+        1 => record.extra.value,
+        2 => record.creation_timestamp orelse "",
+        else => record.key.name,
+    };
+}
+
+fn validatingWebhookConfigurationProjectionSortKey(record: *const ValidatingWebhookConfigurationRecord, column: u8) []const u8 {
+    return if (column == 2) record.creation_timestamp orelse "" else record.key.name;
+}
+
+fn mutatingWebhookConfigurationProjectionSortKey(record: *const MutatingWebhookConfigurationRecord, column: u8) []const u8 {
+    return if (column == 2) record.creation_timestamp orelse "" else record.key.name;
+}
+
+fn roleProjectionColumns(_: *RoleProjection, record: *const RoleRecord, allocator: std.mem.Allocator) ![3][]const u8 {
+    return record.columns(allocator);
+}
+
+fn roleBindingProjectionColumns(_: *RoleBindingProjection, record: *const RoleBindingRecord, allocator: std.mem.Allocator) ![4][]const u8 {
+    return record.columns(allocator);
+}
+
+fn clusterRoleProjectionColumns(_: *ClusterRoleProjection, record: *const ClusterRoleRecord, allocator: std.mem.Allocator) ![2][]const u8 {
+    return record.columns(allocator);
+}
+
+fn clusterRoleBindingProjectionColumns(_: *ClusterRoleBindingProjection, record: *const ClusterRoleBindingRecord, allocator: std.mem.Allocator) ![3][]const u8 {
+    return record.columns(allocator);
+}
+
+fn roleProjectionMatch(record: *const RoleRecord, filter: []const u8) bool {
+    return namespacedRecordMatches(record, filter);
+}
+
+fn roleBindingProjectionMatch(record: *const RoleBindingRecord, filter: []const u8) bool {
+    return namespacedRecordMatches(record, filter) or
+        containsIgnoreCase(record.extra.kind, filter) or
+        containsIgnoreCase(record.extra.name, filter);
+}
+
+fn clusterRoleProjectionMatch(record: *const ClusterRoleRecord, filter: []const u8) bool {
+    return filter.len == 0 or containsIgnoreCase(record.key.name, filter);
+}
+
+fn clusterRoleBindingProjectionMatch(record: *const ClusterRoleBindingRecord, filter: []const u8) bool {
+    return filter.len == 0 or
+        containsIgnoreCase(record.key.name, filter) or
+        containsIgnoreCase(record.extra.kind, filter) or
+        containsIgnoreCase(record.extra.name, filter);
+}
+
+fn roleProjectionSortKey(record: *const RoleRecord, column: u8) []const u8 {
+    return switch (column) {
+        0 => record.key.namespace,
+        1 => record.key.name,
+        2 => record.creation_timestamp orelse "",
+        else => record.key.name,
+    };
+}
+
+fn roleBindingProjectionSortKey(record: *const RoleBindingRecord, column: u8) []const u8 {
+    return switch (column) {
+        0 => record.key.namespace,
+        1 => record.key.name,
+        2 => record.extra.name,
+        3 => record.creation_timestamp orelse "",
+        else => record.key.name,
+    };
+}
+
+fn clusterRoleProjectionSortKey(record: *const ClusterRoleRecord, column: u8) []const u8 {
+    return switch (column) {
+        0 => record.key.name,
+        1 => record.creation_timestamp orelse "",
+        else => record.key.name,
+    };
+}
+
+fn clusterRoleBindingProjectionSortKey(record: *const ClusterRoleBindingRecord, column: u8) []const u8 {
+    return switch (column) {
+        0 => record.key.name,
+        1 => record.extra.name,
+        2 => record.creation_timestamp orelse "",
+        else => record.key.name,
+    };
+}
+
+fn gatewayClassProjectionColumns(_: *GatewayClassProjection, record: *const GatewayClassRecord, allocator: std.mem.Allocator) ![3][]const u8 {
+    return record.columns(allocator);
+}
+
+fn gatewayProjectionColumns(_: *GatewayProjection, record: *const GatewayRecord, allocator: std.mem.Allocator) ![5][]const u8 {
+    return record.columns(allocator);
+}
+
+fn httpRouteProjectionColumns(_: *HTTPRouteProjection, record: *const HTTPRouteRecord, allocator: std.mem.Allocator) ![5][]const u8 {
+    return record.columns(allocator);
+}
+
+fn grpcRouteProjectionColumns(_: *GRPCRouteProjection, record: *const GRPCRouteRecord, allocator: std.mem.Allocator) ![5][]const u8 {
+    return record.columns(allocator);
+}
+
+fn referenceGrantProjectionColumns(_: *ReferenceGrantProjection, record: *const ReferenceGrantRecord, allocator: std.mem.Allocator) ![5][]const u8 {
+    return record.columns(allocator);
+}
+
+fn tcpRouteProjectionColumns(_: *TCPRouteProjection, record: *const TCPRouteRecord, allocator: std.mem.Allocator) ![4][]const u8 {
+    return record.columns(allocator);
+}
+
+fn tlsRouteProjectionColumns(_: *TLSRouteProjection, record: *const TLSRouteRecord, allocator: std.mem.Allocator) ![5][]const u8 {
+    return record.columns(allocator);
+}
+
+fn udpRouteProjectionColumns(_: *UDPRouteProjection, record: *const UDPRouteRecord, allocator: std.mem.Allocator) ![4][]const u8 {
+    return record.columns(allocator);
+}
+
+fn backendTLSPolicyProjectionColumns(_: *BackendTLSPolicyProjection, record: *const BackendTLSPolicyRecord, allocator: std.mem.Allocator) ![4][]const u8 {
+    return record.columns(allocator);
+}
+
+fn listenerSetProjectionColumns(_: *ListenerSetProjection, record: *const ListenerSetRecord, allocator: std.mem.Allocator) ![5][]const u8 {
+    return record.columns(allocator);
+}
+
+fn gatewayClassProjectionMatch(record: *const GatewayClassRecord, filter: []const u8) bool {
+    return filter.len == 0 or containsIgnoreCase(record.key.name, filter) or containsIgnoreCase(record.controller, filter);
+}
+
+fn gatewayProjectionMatch(record: *const GatewayRecord, filter: []const u8) bool {
+    return namespacedRecordMatches(record, filter) or containsIgnoreCase(record.gateway_class, filter) or containsIgnoreCase(record.address, filter);
+}
+
+fn httpRouteProjectionMatch(record: *const HTTPRouteRecord, filter: []const u8) bool {
+    return namespacedRecordMatches(record, filter) or containsIgnoreCase(record.parent, filter) or containsIgnoreCase(record.hostnames, filter);
+}
+
+fn grpcRouteProjectionMatch(record: *const GRPCRouteRecord, filter: []const u8) bool {
+    return namespacedRecordMatches(record, filter) or containsIgnoreCase(record.parent, filter) or containsIgnoreCase(record.hostnames, filter);
+}
+
+fn referenceGrantProjectionMatch(record: *const ReferenceGrantRecord, filter: []const u8) bool {
+    return namespacedRecordMatches(record, filter) or containsIgnoreCase(record.from_kind, filter) or containsIgnoreCase(record.to_kind, filter);
+}
+
+fn tcpRouteProjectionMatch(record: *const TCPRouteRecord, filter: []const u8) bool {
+    return namespacedRecordMatches(record, filter) or containsIgnoreCase(record.parent, filter);
+}
+
+fn tlsRouteProjectionMatch(record: *const TLSRouteRecord, filter: []const u8) bool {
+    return namespacedRecordMatches(record, filter) or containsIgnoreCase(record.parent, filter) or containsIgnoreCase(record.hostnames, filter);
+}
+
+fn udpRouteProjectionMatch(record: *const UDPRouteRecord, filter: []const u8) bool {
+    return namespacedRecordMatches(record, filter) or containsIgnoreCase(record.parent, filter);
+}
+
+fn backendTLSPolicyProjectionMatch(record: *const BackendTLSPolicyRecord, filter: []const u8) bool {
+    return namespacedRecordMatches(record, filter) or containsIgnoreCase(record.target, filter);
+}
+
+fn listenerSetProjectionMatch(record: *const ListenerSetRecord, filter: []const u8) bool {
+    return namespacedRecordMatches(record, filter) or containsIgnoreCase(record.parent, filter);
+}
+
+fn gatewayClassProjectionSortKey(record: *const GatewayClassRecord, column: u8) []const u8 {
+    return switch (column) {
+        0 => record.key.name,
+        1 => record.controller,
+        2 => record.creation_timestamp orelse "",
+        else => record.key.name,
+    };
+}
+
+fn gatewayProjectionSortKey(record: *const GatewayRecord, column: u8) []const u8 {
+    return switch (column) {
+        0 => record.key.namespace,
+        1 => record.key.name,
+        2 => record.gateway_class,
+        3 => record.address,
+        4 => record.creation_timestamp orelse "",
+        else => record.key.name,
+    };
+}
+
+fn httpRouteProjectionSortKey(record: *const HTTPRouteRecord, column: u8) []const u8 {
+    return switch (column) {
+        0 => record.key.namespace,
+        1 => record.key.name,
+        2 => record.parent,
+        3 => record.hostnames,
+        4 => record.creation_timestamp orelse "",
+        else => record.key.name,
+    };
+}
+
+fn grpcRouteProjectionSortKey(record: *const GRPCRouteRecord, column: u8) []const u8 {
+    return switch (column) {
+        0 => record.key.namespace,
+        1 => record.key.name,
+        2 => record.parent,
+        3 => record.hostnames,
+        4 => record.creation_timestamp orelse "",
+        else => record.key.name,
+    };
+}
+
+fn referenceGrantProjectionSortKey(record: *const ReferenceGrantRecord, column: u8) []const u8 {
+    return switch (column) {
+        0 => record.key.namespace,
+        1 => record.key.name,
+        2 => record.from_kind,
+        3 => record.to_kind,
+        4 => record.creation_timestamp orelse "",
+        else => record.key.name,
+    };
+}
+
+fn tcpRouteProjectionSortKey(record: *const TCPRouteRecord, column: u8) []const u8 {
+    return switch (column) {
+        0 => record.key.namespace,
+        1 => record.key.name,
+        2 => record.parent,
+        3 => record.creation_timestamp orelse "",
+        else => record.key.name,
+    };
+}
+
+fn tlsRouteProjectionSortKey(record: *const TLSRouteRecord, column: u8) []const u8 {
+    return switch (column) {
+        0 => record.key.namespace,
+        1 => record.key.name,
+        2 => record.parent,
+        3 => record.hostnames,
+        4 => record.creation_timestamp orelse "",
+        else => record.key.name,
+    };
+}
+
+fn udpRouteProjectionSortKey(record: *const UDPRouteRecord, column: u8) []const u8 {
+    return switch (column) {
+        0 => record.key.namespace,
+        1 => record.key.name,
+        2 => record.parent,
+        3 => record.creation_timestamp orelse "",
+        else => record.key.name,
+    };
+}
+
+fn backendTLSPolicyProjectionSortKey(record: *const BackendTLSPolicyRecord, column: u8) []const u8 {
+    return switch (column) {
+        0 => record.key.namespace,
+        1 => record.key.name,
+        2 => record.target,
+        3 => record.creation_timestamp orelse "",
+        else => record.key.name,
+    };
+}
+
+fn listenerSetProjectionSortKey(record: *const ListenerSetRecord, column: u8) []const u8 {
+    return switch (column) {
+        0 => record.key.namespace,
+        1 => record.key.name,
+        2 => record.parent,
+        4 => record.creation_timestamp orelse "",
+        else => record.key.name,
+    };
 }
 
 fn configMapProjectionColumns(
@@ -4763,7 +5827,7 @@ fn startPendingFamilyEntries(
     failureFn: *const fn (*anyopaque, *family_registry.Entry, anyerror) void,
 ) void {
     for (registry.items(), 0..) |*entry, index| {
-        if (!entry.restart_pending or !entry.enabled() or entry.active != null) continue;
+        if (!entry.restart_pending or entry.active != null) continue;
         startFn(context, index) catch |err| {
             markFamilyStartOutcome(entry, false);
             failureFn(context, entry, err);
@@ -4820,6 +5884,1887 @@ fn decideResourceDrainEffects(
     };
 }
 
+fn task14ComposedRecord(
+    comptime Record: type,
+    allocator: std.mem.Allocator,
+    uid: []const u8,
+    name: []const u8,
+) !Record {
+    var key = try (resource_key.ObjectKey{
+        .uid = uid,
+        .namespace = if (Record == NodeRecord or Record == NamespaceRecord) "" else "default",
+        .name = name,
+    }).clone(allocator);
+    errdefer key.deinit(allocator);
+    if (Record == PodRecord) return .{ .key = key };
+    if (Record == ServiceRecord) {
+        const service_type = try allocator.dupe(u8, "ClusterIP");
+        errdefer allocator.free(service_type);
+        const cluster_ip = try allocator.dupe(u8, "10.96.0.10");
+        errdefer allocator.free(cluster_ip);
+        const external_ip = try allocator.dupe(u8, "<none>");
+        errdefer allocator.free(external_ip);
+        const ports = try allocator.dupe(u8, "80/TCP");
+        return .{
+            .key = key,
+            .service_type = service_type,
+            .cluster_ip = cluster_ip,
+            .external_ip = external_ip,
+            .ports = ports,
+        };
+    }
+    if (Record == NodeRecord) {
+        const status = try allocator.dupe(u8, "Ready");
+        errdefer allocator.free(status);
+        const roles = try allocator.dupe(u8, "worker");
+        errdefer allocator.free(roles);
+        const node_version = try allocator.dupe(u8, "v1.33.0");
+        errdefer allocator.free(node_version);
+        const internal_ip = try allocator.dupe(u8, "10.0.0.10");
+        return .{
+            .key = key,
+            .status = status,
+            .roles = roles,
+            .version = node_version,
+            .internal_ip = internal_ip,
+        };
+    }
+    if (Record == NamespaceRecord) {
+        return .{ .key = key, .status = try allocator.dupe(u8, "Active") };
+    }
+    if (Record == GatewayRecord) {
+        const gateway_class = try allocator.dupe(u8, "task-14");
+        errdefer allocator.free(gateway_class);
+        const address = try allocator.dupe(u8, "10.0.0.20");
+        return .{ .key = key, .gateway_class = gateway_class, .address = address };
+    }
+    @compileError("unsupported Task 14 composed record");
+}
+
+fn Task14ComposedWatch(comptime Record: type) type {
+    return struct {
+        allocator: std.mem.Allocator,
+        entered: *std.atomic.Value(usize),
+        observed_rv: *std.atomic.Value(bool),
+
+        fn source(self: *@This()) list_watch.Source(Record) {
+            return .{ .context = self, .list_fn = unusedList, .watch_fn = watch };
+        }
+
+        fn unusedList(
+            _: *anyopaque,
+            _: list_watch.CancelToken,
+            _: *anyopaque,
+            _: *const fn (*anyopaque, Record) anyerror!void,
+            _: *const fn (*anyopaque) anyerror!void,
+        ) anyerror!list_watch.ListOutcome {
+            return error.Unused;
+        }
+
+        fn watch(
+            raw: *anyopaque,
+            resource_version: []const u8,
+            _: list_watch.CancelToken,
+            receiver_context: *anyopaque,
+            receiver: *const fn (*anyopaque, *list_watch.WatchEvent(Record)) anyerror!void,
+        ) anyerror!list_watch.Failure {
+            const self: *@This() = @ptrCast(@alignCast(raw));
+            self.observed_rv.store(std.mem.eql(u8, resource_version, "10"), .release);
+            _ = self.entered.fetchAdd(1, .acq_rel);
+            var event: list_watch.WatchEvent(Record) = .{
+                .added = try task14ComposedRecord(
+                    Record,
+                    self.allocator,
+                    "watch-uid",
+                    "watch-resource",
+                ),
+            };
+            defer event.deinit(self.allocator);
+            try receiver(receiver_context, &event);
+            return .canceled;
+        }
+    };
+}
+
+fn Task14IdentitySource(comptime Record: type) type {
+    return struct {
+        allocator: std.mem.Allocator,
+        io: std.Io,
+        allow_finish: ?*std.atomic.Value(bool) = null,
+
+        fn source(self: *@This()) list_watch.Source(Record) {
+            return .{ .context = self, .list_fn = list, .watch_fn = watch };
+        }
+
+        fn list(
+            raw: *anyopaque,
+            _: list_watch.CancelToken,
+            receiver_context: *anyopaque,
+            receiver: *const fn (*anyopaque, Record) anyerror!void,
+            chunk_end: *const fn (*anyopaque) anyerror!void,
+        ) anyerror!list_watch.ListOutcome {
+            const self: *@This() = @ptrCast(@alignCast(raw));
+            try receiver(receiver_context, try task14ComposedRecord(
+                Record,
+                self.allocator,
+                if (Record == PodRecord) "pod-uid" else "family-uid",
+                if (Record == PodRecord) "pod-a" else "family-a",
+            ));
+            if (Record == PodRecord) {
+                try receiver(receiver_context, try task14ComposedRecord(
+                    Record,
+                    self.allocator,
+                    "other-pod-uid",
+                    "pod-b",
+                ));
+            }
+            try chunk_end(receiver_context);
+            return .{ .complete = try resource_key.OwnedBytes.clone(self.allocator, "14") };
+        }
+
+        fn watch(
+            raw: *anyopaque,
+            _: []const u8,
+            cancel: list_watch.CancelToken,
+            _: *anyopaque,
+            _: *const fn (*anyopaque, *list_watch.WatchEvent(Record)) anyerror!void,
+        ) anyerror!list_watch.Failure {
+            const self: *@This() = @ptrCast(@alignCast(raw));
+            if (self.allow_finish) |allowed| {
+                // Park the way a production held watch does: yield to the runtime on
+                // a 1ms cadence instead of spinning, so holding this task open cannot
+                // starve the metrics feed and family tasks sharing the same io.
+                while (!allowed.load(.acquire)) {
+                    if (cancel.isCanceled()) return .canceled;
+                    self.io.sleep(.{ .nanoseconds = std.time.ns_per_ms }, .awake) catch return .canceled;
+                }
+            }
+            return .canceled;
+        }
+    };
+}
+
+pub fn runTask14ComposedOrderingGate() !void {
+    const allocator = std.testing.allocator;
+    const io = runtime.io();
+    var app = try App.init(allocator, .{});
+    defer app.deinit();
+
+    const client = try allocator.create(klient.K8sClient);
+    var client_owned = true;
+    errdefer if (client_owned) allocator.destroy(client);
+    client.* = try klient.K8sClient.init(allocator, io, .{
+        .server = "http://127.0.0.1",
+        .namespace = "default",
+    });
+    errdefer if (client_owned) client.deinit();
+    const active_session = try @import("k8s/ActiveContextSession.zig").ActiveContextSession.adopt(
+        allocator,
+        io,
+        1,
+        .{
+            .context_name = "task-14",
+            .kubeconfig_path = null,
+            .default_namespace = "default",
+            .force_proxy = false,
+            .readonly = true,
+        },
+        .{
+            .shared_event = app.shared_event,
+            .client = client,
+            .cluster_name = "local",
+            .user_name = "test",
+            .readiness_verified = true,
+        },
+    );
+    client_owned = false;
+    _ = try app.active_session_slot.commit(active_session);
+    app.k8s_service.connected = true;
+
+    const PodFamily = resource_subscription.ResourceSubscription(
+        klient.Pod,
+        PodRecord,
+        struct {
+            fn convert(record_allocator: std.mem.Allocator, pod: klient.Pod) anyerror!PodRecord {
+                return PodRecord.fromPod(record_allocator, pod, .{});
+            }
+        }.convert,
+    );
+    var pod_fake = @import("k8s/FakeTransport.zig").FakeTransport.init(allocator, &.{.{ .body = resource_subscription.task14TypeShapedListBody(PodRecord) }});
+    defer pod_fake.deinit();
+    var service_fake = @import("k8s/FakeTransport.zig").FakeTransport.init(allocator, &.{.{ .body = resource_subscription.task14TypeShapedListBody(ServiceRecord) }});
+    defer service_fake.deinit();
+    var node_fake = @import("k8s/FakeTransport.zig").FakeTransport.init(allocator, &.{.{ .body = resource_subscription.task14TypeShapedListBody(NodeRecord) }});
+    defer node_fake.deinit();
+    var gateway_fake = @import("k8s/FakeTransport.zig").FakeTransport.init(allocator, &.{.{ .body = resource_subscription.task14TypeShapedListBody(GatewayRecord) }});
+    defer gateway_fake.deinit();
+
+    var service_index: usize = undefined;
+    var gateway_index: usize = undefined;
+    for (app.resource_families.registry.itemsConst(), 0..) |entry, index| {
+        if (std.mem.eql(u8, entry.name, "services")) service_index = index;
+        if (std.mem.eql(u8, entry.name, "gateways")) gateway_index = index;
+    }
+    const service_entry = app.resource_families.registry.entryAt(service_index).?;
+    const gateway_entry = app.resource_families.registry.entryAt(gateway_index).?;
+    const service_projection: *@import("k8s/ResourceProjection.zig").ResourceProjection(ServiceRecord) =
+        @ptrCast(@alignCast(service_entry.projection));
+    const gateway_projection: *@import("k8s/ResourceProjection.zig").ResourceProjection(GatewayRecord) =
+        @ptrCast(@alignCast(gateway_entry.projection));
+
+    var entered: std.atomic.Value(usize) = .init(0);
+    var rv_seen = [_]std.atomic.Value(bool){ .init(false), .init(false), .init(false), .init(false) };
+    var pod_watch = Task14ComposedWatch(PodRecord){ .allocator = allocator, .entered = &entered, .observed_rv = &rv_seen[0] };
+    var service_watch = Task14ComposedWatch(ServiceRecord){ .allocator = allocator, .entered = &entered, .observed_rv = &rv_seen[1] };
+    var node_watch = Task14ComposedWatch(NodeRecord){ .allocator = allocator, .entered = &entered, .observed_rv = &rv_seen[2] };
+    var gateway_watch = Task14ComposedWatch(GatewayRecord){ .allocator = allocator, .entered = &entered, .observed_rv = &rv_seen[3] };
+
+    var pod_spec = try PodFamily.ownedTaskSpec(allocator, .{
+        .context_name = "task-14",
+        .namespace = "default",
+        .projection = app.pod_projection,
+        .transport_override = pod_fake.transport(),
+        .watch_override = pod_watch.source(),
+    });
+    defer pod_spec.deinit(allocator);
+    const pod_key = try app.data_plane.startSubscription(1, &pod_spec);
+    app.active_pod_subscription = pod_key;
+    var service_spec = try ServiceSubscription.ownedTaskSpec(allocator, .{
+        .context_name = "task-14",
+        .namespace = "default",
+        .projection = service_projection,
+        .transport_override = service_fake.transport(),
+        .watch_override = service_watch.source(),
+    });
+    defer service_spec.deinit(allocator);
+    const service_key = try app.data_plane.startSubscription(1, &service_spec);
+    service_entry.markStarted(service_key);
+    var node_spec = try NodeSubscription.ownedTaskSpec(allocator, .{
+        .context_name = "task-14",
+        .projection = app.node_projection,
+        .transport_override = node_fake.transport(),
+        .watch_override = node_watch.source(),
+    });
+    defer node_spec.deinit(allocator);
+    const node_key = try app.data_plane.startSubscription(1, &node_spec);
+    app.active_node_subscription = node_key;
+    var gateway_spec = try GatewaySubscription.ownedTaskSpec(allocator, .{
+        .context_name = "task-14",
+        .namespace = "default",
+        .projection = gateway_projection,
+        .transport_override = gateway_fake.transport(),
+        .watch_override = gateway_watch.source(),
+    });
+    defer gateway_spec.deinit(allocator);
+    const gateway_key = try app.data_plane.startSubscription(1, &gateway_spec);
+    gateway_entry.markStarted(gateway_key);
+
+    var launch_attempts: usize = 0;
+    while (app.lifecycle_supervisor.metrics.max_live < 4 and launch_attempts < 10_000) : (launch_attempts += 1) {
+        try io.sleep(.{ .nanoseconds = std.time.ns_per_ms }, .awake);
+    }
+    try std.testing.expect(app.lifecycle_supervisor.metrics.max_live >= 4);
+    const identities = [_]lifecycle.SubscriptionKey{ pod_key, service_key, node_key, gateway_key };
+    var stages = [_]u8{0} ** identities.len;
+    var forced_failure = false;
+    var failed_sequence: u64 = 0;
+    var router = resource_key.UiRouter{
+        .context = @ptrCast(&app),
+        .targetFn = App.appEnvelopeTarget,
+        .lifecycleFn = App.appObserveLifecycle,
+    };
+    var attempts: usize = 0;
+    while (attempts < 30_000) : (attempts += 1) {
+        var popped = app.change_queue.popForRetry() orelse {
+            if (app.lifecycle_supervisor.metrics.reaped >= 4) break;
+            try io.sleep(.{ .nanoseconds = std.time.ns_per_ms }, .awake);
+            continue;
+        };
+        errdefer if (popped.active) popped.destroy(allocator);
+        const envelope = &popped.envelope;
+        const identity_index: ?usize = for (identities, 0..) |key, index| {
+            if (key.generation == envelope.generation and
+                key.subscription_id == envelope.subscription_id) break index;
+        } else null;
+        if (identity_index == 1 and envelope.has_initial_changes and !forced_failure) {
+            const before = service_projection.count();
+            var failing = std.testing.FailingAllocator.init(allocator, .{ .fail_index = 0 });
+            try std.testing.expectError(error.OutOfMemory, envelope.apply(&router, failing.allocator()));
+            try std.testing.expectEqual(before, service_projection.count());
+            failed_sequence = popped.sequence;
+            try app.change_queue.retryPopped(&popped);
+            forced_failure = true;
+            continue;
+        }
+        if (forced_failure and failed_sequence != 0 and identity_index == 1 and envelope.has_initial_changes) {
+            try std.testing.expectEqual(failed_sequence, popped.sequence);
+            failed_sequence = 0;
+        }
+        try envelope.apply(&router, allocator);
+        popped.finishConsumed();
+        if (identity_index) |index| {
+            if (envelope.sync_kind) |kind| switch (kind) {
+                .list_started => {
+                    try std.testing.expectEqual(@as(u8, 0), stages[index]);
+                    stages[index] = 1;
+                },
+                .list_complete => {
+                    try std.testing.expectEqual(@as(u8, 1), stages[index]);
+                    stages[index] = 2;
+                },
+                .watch_connected => {
+                    try std.testing.expectEqual(@as(u8, 2), stages[index]);
+                    stages[index] = 3;
+                },
+                else => {},
+            } else if (envelope.change_count > 0) {
+                if (envelope.has_initial_changes) {
+                    try std.testing.expectEqual(@as(u8, 1), stages[index]);
+                } else {
+                    try std.testing.expectEqual(@as(u8, 3), stages[index]);
+                    stages[index] = 4;
+                }
+            }
+            if (index == 0) try app.pods_view.syncPodProjection();
+            if (index == 1) _ = try app.resource_families.registry.sync(.{
+                .generation = service_key.generation,
+                .subscription_id = service_key.subscription_id,
+            });
+            if (index == 2) try app.nodes_view.syncProjection();
+            if (index == 3) _ = try app.resource_families.registry.sync(.{
+                .generation = gateway_key.generation,
+                .subscription_id = gateway_key.subscription_id,
+            });
+        }
+    }
+    try std.testing.expect(forced_failure);
+    try std.testing.expectEqual(@as(u64, 0), failed_sequence);
+    try std.testing.expect(app.lifecycle_supervisor.metrics.max_live >= 4);
+    for (stages) |stage| try std.testing.expectEqual(@as(u8, 4), stage);
+    for (&rv_seen) |*seen| try std.testing.expect(seen.load(.acquire));
+    try std.testing.expect(app.pods_view.table.items.items.len > 0);
+    try std.testing.expect(app.nodes_view.table.items.items.len > 0);
+    try std.testing.expect(service_projection.count() > 0);
+    try std.testing.expect(gateway_projection.count() > 0);
+}
+
+pub fn runTask14IdentityGate() !void {
+    const allocator = std.testing.allocator;
+    const io = runtime.io();
+    var app = try App.init(allocator, .{});
+
+    const client = try allocator.create(klient.K8sClient);
+    var client_owned = true;
+    errdefer if (client_owned) allocator.destroy(client);
+    client.* = try klient.K8sClient.init(allocator, io, .{
+        .server = "http://127.0.0.1",
+        .namespace = "default",
+    });
+    errdefer if (client_owned) client.deinit();
+    const active_session = try @import("k8s/ActiveContextSession.zig").ActiveContextSession.adopt(
+        allocator,
+        io,
+        1,
+        .{
+            .context_name = "task-14",
+            .kubeconfig_path = null,
+            .default_namespace = "default",
+            .force_proxy = false,
+            .readonly = true,
+        },
+        .{
+            .shared_event = app.shared_event,
+            .client = client,
+            .cluster_name = "local",
+            .user_name = "test",
+            .readiness_verified = true,
+        },
+    );
+    client_owned = false;
+    _ = try app.active_session_slot.commit(active_session);
+    app.k8s_service.connected = true;
+
+    var service_index: usize = undefined;
+    for (app.resource_families.registry.itemsConst(), 0..) |entry, index| {
+        if (std.mem.eql(u8, entry.name, "services")) service_index = index;
+    }
+    const service_entry = app.resource_families.registry.entryAt(service_index).?;
+    const service_projection: *ServiceProjection = @ptrCast(@alignCast(service_entry.projection));
+    const PodFamily = resource_subscription.ResourceSubscription(
+        klient.Pod,
+        PodRecord,
+        struct {
+            fn convert(record_allocator: std.mem.Allocator, pod: klient.Pod) anyerror!PodRecord {
+                return PodRecord.fromPod(record_allocator, pod, .{});
+            }
+        }.convert,
+    );
+    var pod_fake = @import("k8s/FakeTransport.zig").FakeTransport.init(allocator, &.{.{
+        .body = resource_subscription.task14TypeShapedListBody(PodRecord),
+    }});
+    defer pod_fake.deinit();
+    var service_fake = @import("k8s/FakeTransport.zig").FakeTransport.init(allocator, &.{.{
+        .body = resource_subscription.task14TypeShapedListBody(ServiceRecord),
+    }});
+    defer service_fake.deinit();
+    var node_fake = @import("k8s/FakeTransport.zig").FakeTransport.init(allocator, &.{.{
+        .body = resource_subscription.task14TypeShapedListBody(NodeRecord),
+    }});
+    defer node_fake.deinit();
+    var metrics_fake = @import("k8s/FakeTransport.zig").FakeTransport.init(allocator, &.{.{
+        .body =
+        \\{"items":[{"metadata":{"namespace":"default","name":"alpha-resource"},"containers":[{"usage":{"cpu":"321m","memory":"4Ki"}}]}]}
+        ,
+    }});
+    defer metrics_fake.deinit();
+    defer app.deinit();
+    var allow_pod_finish: std.atomic.Value(bool) = .init(false);
+    defer allow_pod_finish.store(true, .release);
+    var pod_source = Task14IdentitySource(PodRecord){
+        .allocator = allocator,
+        .io = io,
+        .allow_finish = &allow_pod_finish,
+    };
+    var service_source = Task14IdentitySource(ServiceRecord){ .allocator = allocator, .io = io };
+    var node_source = Task14IdentitySource(NodeRecord){ .allocator = allocator, .io = io };
+    var allow_metrics: std.atomic.Value(bool) = .init(false);
+    defer allow_metrics.store(true, .release);
+
+    var pod_spec = try PodFamily.ownedTaskSpec(allocator, .{
+        .namespace = "default",
+        .context_name = "task-14",
+        .projection = app.pod_projection,
+        .transport_override = pod_fake.transport(),
+        .watch_override = pod_source.source(),
+    });
+    defer pod_spec.deinit(allocator);
+    const pod = try app.data_plane.startSubscription(1, &pod_spec);
+    app.active_pod_subscription = pod;
+    var metrics_spec = try metrics_feed.ownedTaskSpec(allocator, .{
+        .namespace = "default",
+        .projection = app.pod_projection,
+        .transport_override = metrics_fake.transport(),
+        .poll_gate = &allow_metrics,
+        .poll_interval_ns = std.time.ns_per_hour,
+    });
+    defer metrics_spec.deinit(allocator);
+    const metrics = try app.data_plane.startSubscription(1, &metrics_spec);
+    app.active_metrics_subscription = metrics;
+    var service_spec = try ServiceSubscription.ownedTaskSpec(allocator, .{
+        .context_name = "task-14",
+        .namespace = "default",
+        .projection = service_projection,
+        .transport_override = service_fake.transport(),
+        .watch_override = service_source.source(),
+    });
+    defer service_spec.deinit(allocator);
+    const service = try app.data_plane.startSubscription(1, &service_spec);
+    service_entry.markStarted(service);
+    var node_spec = try NodeSubscription.ownedTaskSpec(allocator, .{
+        .context_name = "task-14",
+        .projection = app.node_projection,
+        .transport_override = node_fake.transport(),
+        .watch_override = node_source.source(),
+    });
+    defer node_spec.deinit(allocator);
+    const node = try app.data_plane.startSubscription(1, &node_spec);
+    app.active_node_subscription = node;
+
+    const service_identity = resource_key.ResourceIdentity{
+        .generation = service.generation,
+        .subscription_id = service.subscription_id,
+    };
+    const wrong_identity = resource_key.ResourceIdentity{
+        .generation = service.generation + 1,
+        .subscription_id = service.subscription_id,
+    };
+    try std.testing.expect(app.resource_families.registry.complete(
+        wrong_identity,
+        .{ .subscription_stopped = .{ .key = service, .detail = null } },
+    ) == null);
+    try std.testing.expectEqual(@as(?lifecycle.SubscriptionKey, pod), app.active_pod_subscription);
+    try std.testing.expectEqual(@as(?lifecycle.SubscriptionKey, metrics), app.active_metrics_subscription);
+    try std.testing.expectEqual(@as(?lifecycle.SubscriptionKey, node), app.active_node_subscription);
+    try std.testing.expect(app.resource_families.registry.contains(service_identity));
+
+    var router = resource_key.UiRouter{
+        .context = @ptrCast(&app),
+        .targetFn = App.appEnvelopeTarget,
+        .lifecycleFn = App.appObserveLifecycle,
+    };
+    const StalePayload = struct {
+        destroyed: *std.atomic.Value(usize),
+        fn preflight(
+            _: *@This(),
+            _: *resource_key.UiRouter,
+            _: std.mem.Allocator,
+        ) !resource_key.ApplyPlan {
+            return .{};
+        }
+        fn commit(_: *@This(), _: *resource_key.UiRouter, _: *resource_key.ApplyPlan) void {}
+        fn deinit(self: *@This(), _: std.mem.Allocator) void {
+            _ = self.destroyed.fetchAdd(1, .acq_rel);
+        }
+    };
+    const stale_handler = resource_key.PayloadHandler(StalePayload){
+        .preflight = StalePayload.preflight,
+        .commit = StalePayload.commit,
+        .deinit = StalePayload.deinit,
+    };
+    var stale_destroyed: std.atomic.Value(usize) = .init(0);
+    const stale_payload = try allocator.create(StalePayload);
+    stale_payload.* = .{ .destroyed = &stale_destroyed };
+    var stale = try resource_key.erasePayload(
+        StalePayload,
+        allocator,
+        .{ .resource = wrong_identity },
+        stale_payload,
+        &stale_handler,
+        wrong_identity.generation,
+        wrong_identity.subscription_id,
+        1,
+        @sizeOf(StalePayload),
+        null,
+    );
+    try std.testing.expect(!app.acceptsActiveEnvelope(stale));
+    stale.deinit(allocator);
+    try std.testing.expectEqual(@as(usize, 1), stale_destroyed.load(.acquire));
+
+    // The pod and metrics tasks are held open until every piece of evidence this
+    // gate exists to observe has been collected: the metrics envelope applied, the
+    // family reaching watch_connected (its terminal sync stage, not the earlier
+    // list_complete), the pod rows materialised in the view, and the metrics values
+    // rendered onto exactly the pod they belong to. Releasing on a partial set let
+    // the pod task finish -- which cancels the metrics feed -- while later envelopes
+    // were still being drained, so the isolation assertions raced teardown.
+    var saw_family_list_complete = false;
+    var saw_family_watch_connected = false;
+    var metrics_applied = false;
+    var released = false;
+    var attempts: usize = 0;
+    while (attempts < 30_000) : (attempts += 1) {
+        var envelope = app.change_queue.pop() orelse {
+            if (app.lifecycle_supervisor.metrics.reaped >= 4) break;
+            try io.sleep(.{ .nanoseconds = std.time.ns_per_ms }, .awake);
+            continue;
+        };
+        if (envelope.target == .resource) {
+            const original_target = envelope.target;
+            const identity = original_target.resource;
+            envelope.target = .{ .resource = .{
+                .generation = identity.generation + 1,
+                .subscription_id = identity.subscription_id,
+            } };
+            try std.testing.expect(!app.acceptsActiveEnvelope(envelope));
+            envelope.target = .{ .resource = .{
+                .generation = identity.generation,
+                .subscription_id = identity.subscription_id + 1000,
+            } };
+            try std.testing.expect(!app.acceptsActiveEnvelope(envelope));
+            envelope.target = original_target;
+        }
+        const target = envelope.target;
+        const sync_kind = envelope.sync_kind;
+        const initial_changes = envelope.has_initial_changes;
+        try envelope.apply(&router, allocator);
+        if (target == .resource) {
+            const identity = target.resource;
+            if (matchesIdentity(pod, identity)) {
+                try app.pods_view.syncPodProjection();
+                if (initial_changes) allow_metrics.store(true, .release);
+            } else if (matchesIdentity(metrics, identity)) {
+                try app.pods_view.syncPodProjection();
+                metrics_applied = true;
+                // A single polled envelope is the whole point of the feed here, so
+                // shut the gate again: any later poll must stay parked until the
+                // cancellation that follows the pod task finishing.
+                allow_metrics.store(false, .release);
+            } else if (matchesIdentity(node, identity)) {
+                try app.nodes_view.syncProjection();
+            } else if (app.resource_families.registry.contains(identity)) {
+                _ = try app.resource_families.registry.sync(identity);
+                if (sync_kind) |kind| switch (kind) {
+                    .list_complete => saw_family_list_complete = true,
+                    .watch_connected => {
+                        try std.testing.expect(saw_family_list_complete);
+                        saw_family_watch_connected = true;
+                    },
+                    else => {},
+                };
+            }
+            // Family traffic must never disturb the pod-side identities. This only
+            // holds while both tasks are still held open; once the gate is released
+            // the pod task finishes and cancelling the metrics feed is correct, so
+            // the live slots are no longer a meaningful invariant.
+            try std.testing.expect(!app.pod_metrics_started);
+            if (!released) {
+                try std.testing.expectEqual(
+                    @as(?lifecycle.SubscriptionKey, pod),
+                    app.active_pod_subscription,
+                );
+                try std.testing.expectEqual(
+                    @as(?lifecycle.SubscriptionKey, metrics),
+                    app.active_metrics_subscription,
+                );
+            }
+        }
+        if (!released and metrics_applied and saw_family_watch_connected and
+            task14IdentityMetricsDisplayed(&app))
+        {
+            released = true;
+            allow_pod_finish.store(true, .release);
+        }
+    }
+    try std.testing.expect(metrics_applied);
+    try std.testing.expect(saw_family_list_complete);
+    try std.testing.expect(saw_family_watch_connected);
+    try std.testing.expect(released);
+    try std.testing.expectEqual(@as(usize, 2), app.pod_projection.count());
+    try std.testing.expectEqual(@as(u64, 321), app.pod_projection.metricsFor("stable-uid").?.cpu_milli);
+    try std.testing.expectEqual(@as(u64, 4096), app.pod_projection.metricsFor("stable-uid").?.mem_bytes);
+    try std.testing.expectEqual(@as(u64, 0), app.pod_projection.metricsRevision("other-uid").?);
+    try std.testing.expect(task14IdentityMetricsDisplayed(&app));
+    try std.testing.expect(service_projection.count() > 0);
+    try std.testing.expect(app.node_projection.count() > 0);
+}
+
+/// True once the polled metrics have landed on `stable-uid` alone and the pods view
+/// renders them: the second pod must still show `n/a`, which is what proves the
+/// metrics envelope was routed by exact identity rather than sprayed across rows.
+fn task14IdentityMetricsDisplayed(app: *const App) bool {
+    const metrics = app.pod_projection.metricsFor("stable-uid") orelse return false;
+    if (metrics.revision == 0) return false;
+    if (metrics.cpu_milli != 321 or metrics.mem_bytes != 4096) return false;
+    if ((app.pod_projection.metricsRevision("other-uid") orelse return false) != 0) return false;
+    var saw_stable = false;
+    var saw_other = false;
+    for (app.pods_view.table.items.items) |row| {
+        if (std.mem.eql(u8, row.uid, "stable-uid")) {
+            if (!std.mem.eql(u8, row.columns[5], "321m")) return false;
+            if (!std.mem.eql(u8, row.columns[6], "4Ki")) return false;
+            saw_stable = true;
+        } else if (std.mem.eql(u8, row.uid, "other-uid")) {
+            if (!std.mem.eql(u8, row.columns[5], "n/a")) return false;
+            if (!std.mem.eql(u8, row.columns[6], "n/a")) return false;
+            saw_other = true;
+        }
+    }
+    return saw_stable and saw_other;
+}
+
+fn task14PrepareLocalSession(
+    _: *anyopaque,
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    shared_event: *std.Io.Event,
+    generation: resource_key.Generation,
+    spec: ContextSpec,
+) anyerror!*ActiveContextSession {
+    const client = try allocator.create(klient.K8sClient);
+    var client_owned = true;
+    errdefer if (client_owned) allocator.destroy(client);
+    client.* = try klient.K8sClient.init(allocator, io, .{
+        .server = "http://127.0.0.1",
+        .namespace = spec.default_namespace,
+    });
+    errdefer if (client_owned) client.deinit();
+    const session = try ActiveContextSession.adopt(
+        allocator,
+        io,
+        generation,
+        spec,
+        .{
+            .shared_event = shared_event,
+            .client = client,
+            .cluster_name = "local",
+            .user_name = "test",
+            .readiness_verified = true,
+        },
+    );
+    client_owned = false;
+    return session;
+}
+
+fn task14LocalSessionFactory() SessionFactory {
+    return .{
+        .context = @ptrFromInt(1),
+        .prepare_fn = task14PrepareLocalSession,
+    };
+}
+
+fn task14Pump(app: *App, io: std.Io) !void {
+    app.drainChangeQueue();
+    try io.sleep(.{ .nanoseconds = std.time.ns_per_ms }, .awake);
+}
+
+fn task14FamilyIndex(app: *const App, name: []const u8) !usize {
+    for (app.resource_families.registry.itemsConst(), 0..) |entry, index| {
+        if (std.mem.eql(u8, entry.name, name)) return index;
+    }
+    return error.MissingFamily;
+}
+
+fn task14HoldAuthBackend(cancel_flag: *std.atomic.Value(bool)) authorization_request.Backend {
+    const Adapter = struct {
+        fn connected(_: *anyopaque) bool {
+            return true;
+        }
+
+        fn check(
+            ctx: *anyopaque,
+            _: []const u8,
+            _: []const u8,
+            _: []const u8,
+            _: []const u8,
+        ) !K8sService.AccessCheckResult {
+            const flag: *std.atomic.Value(bool) = @ptrCast(@alignCast(ctx));
+            while (!flag.load(.acquire)) {
+                runtime.io().sleep(.{ .nanoseconds = std.time.ns_per_ms }, .awake) catch break;
+            }
+            return .{ .allowed = false, .conditional = false, .condition_count = 0 };
+        }
+
+        fn conditional(_: *anyopaque) !bool {
+            return false;
+        }
+
+        fn rbac(_: *anyopaque) ![]K8sService.PolicyInfo {
+            return &.{};
+        }
+
+        fn cedarAvailable(_: *anyopaque) !bool {
+            return false;
+        }
+
+        fn cedar(_: *anyopaque) ![]K8sService.PolicyInfo {
+            return &.{};
+        }
+
+        fn conditions(
+            _: *anyopaque,
+            _: []const u8,
+            _: []const u8,
+            _: []const u8,
+        ) ![]K8sService.ConditionInfo {
+            return &.{};
+        }
+    };
+    return .{
+        .context = cancel_flag,
+        .isConnectedFn = Adapter.connected,
+        .checkAccessFn = Adapter.check,
+        .detectConditionalFn = Adapter.conditional,
+        .listRbacFn = Adapter.rbac,
+        .detectCedarFn = Adapter.cedarAvailable,
+        .listCedarFn = Adapter.cedar,
+        .conditionsFn = Adapter.conditions,
+    };
+}
+
+pub fn runTask14ContextSwitchGate() !void {
+    const allocator = std.testing.allocator;
+    const io = runtime.io();
+    var lists = @import("k8s/FakeTransport.zig").PathListTransport.init(
+        allocator,
+        resource_subscription.task14ListBodyForPath,
+    );
+    defer lists.deinit();
+    var metrics_fake = @import("k8s/FakeTransport.zig").FakeTransport.init(allocator, &.{
+        .{ .body = "{\"items\":[]}" },
+        .{ .body = "{\"items\":[]}" },
+        .{ .body = "{\"items\":[]}" },
+        .{ .body = "{\"items\":[]}" },
+        .{ .body = "{\"items\":[]}" },
+        .{ .body = "{\"items\":[]}" },
+        .{ .body = "{\"items\":[]}" },
+        .{ .body = "{\"items\":[]}" },
+    });
+    defer metrics_fake.deinit();
+    var app = try App.init(allocator, .{});
+    defer app.deinit();
+
+    app.k8s_service.session_factory = task14LocalSessionFactory();
+    const gen1 = try task14PrepareLocalSession(
+        undefined,
+        allocator,
+        io,
+        app.shared_event,
+        1,
+        .{
+            .context_name = "gen-1",
+            .kubeconfig_path = null,
+            .default_namespace = "default",
+            .force_proxy = false,
+            .readonly = true,
+        },
+    );
+    _ = try app.active_session_slot.commit(gen1);
+    app.k8s_service.connected = true;
+
+    app.task14 = .{
+        .transport = lists.transport(),
+        .hold_watch = true,
+        .metrics_transport = metrics_fake.transport(),
+        .metrics_poll_interval_ns = metrics_feed.max_poll_interval_ns,
+    };
+
+    try app.startPodSubscription();
+    var row_attempts: usize = 0;
+    while (app.pod_projection.count() == 0 and row_attempts < 30_000) : (row_attempts += 1) {
+        try task14Pump(&app, io);
+    }
+    try std.testing.expectEqual(@as(usize, 2), app.pod_projection.count());
+    try std.testing.expect(app.pod_projection.selectUid("stable-uid"));
+
+    try app.startMetricsFeed();
+    try app.startNodeSubscription();
+    try app.startNamespaceSubscription();
+    for (0..app.resource_families.registry.items().len) |index| {
+        try app.startResourceFamilySubscription(index);
+    }
+
+    var launch_attempts: usize = 0;
+    while ((app.lifecycle_supervisor.liveChildren() != 58 or
+        app.active_metrics_subscription == null) and launch_attempts < 30_000) : (launch_attempts += 1)
+    {
+        if (app.active_metrics_subscription == null) app.startMetricsFeed() catch {};
+        try task14Pump(&app, io);
+    }
+    try std.testing.expectEqual(@as(usize, 58), app.lifecycle_supervisor.liveChildren());
+    try std.testing.expect(app.active_metrics_subscription != null);
+    try std.testing.expectEqual(@as(usize, 58), gen1.leaseCount());
+    try std.testing.expect(app.pod_projection.selectUid("stable-uid"));
+
+    var old_family_keys: [54]lifecycle.SubscriptionKey = undefined;
+    try std.testing.expectEqual(old_family_keys.len, app.resource_families.registry.items().len);
+    for (app.resource_families.registry.itemsConst(), 0..) |entry, index| {
+        old_family_keys[index] = entry.active orelse return error.MissingFamilyKey;
+    }
+    const old_pod = app.active_pod_subscription orelse return error.MissingPodKey;
+    const old_metrics = app.active_metrics_subscription orelse return error.MissingMetricsKey;
+    const old_node = app.active_node_subscription orelse return error.MissingNodeKey;
+    const old_namespace = app.active_namespace_subscription orelse return error.MissingNamespaceKey;
+
+    var queued_payload_destroyed: std.atomic.Value(usize) = .init(0);
+    var queued_gen1 = app.change_queue.popForRetry() orelse return error.MissingQueuedGen1Envelope;
+    errdefer if (queued_gen1.active) queued_gen1.destroy(allocator);
+    const queued_identity = queued_gen1.envelope.target.resource;
+    try std.testing.expect(queued_gen1.envelope.payload != null);
+    try std.testing.expect(app.data_plane.acceptsEnvelope(queued_gen1.envelope));
+    try std.testing.expect(app.acceptsActiveEnvelope(queued_gen1.envelope));
+    queued_gen1.envelope.destroy_counter = &queued_payload_destroyed;
+    try app.change_queue.retryPopped(&queued_gen1);
+
+    const injected_failure_index: usize = 17;
+    app.task14.fail_family_index = injected_failure_index;
+    try app.beginContextSwitch("gen-2");
+    try std.testing.expectEqual(@as(usize, 1), queued_payload_destroyed.load(.acquire));
+    try std.testing.expect(!app.data_plane.acceptsEnvelope(.{
+        .generation = queued_identity.generation,
+        .subscription_id = queued_identity.subscription_id,
+        .target = .{ .resource = queued_identity },
+    }));
+
+    var reap_attempts: usize = 0;
+    while (app.pending_context_switch != null and reap_attempts < 30_000) : (reap_attempts += 1) {
+        while (app.change_queue.hasPending()) app.drainChangeQueue();
+        try task14Pump(&app, io);
+    }
+    try std.testing.expect(app.pending_context_switch == null);
+    try std.testing.expectEqual(@as(usize, 0), gen1.leaseCount());
+    try std.testing.expect(app.task14_context_install_after_drain);
+
+    const session_view = app.active_session_slot.view();
+    try std.testing.expectEqual(@as(resource_key.Generation, 2), session_view.generation);
+    const new_pod = app.active_pod_subscription orelse return error.MissingGen2Pod;
+    try std.testing.expectEqual(@as(resource_key.Generation, 2), new_pod.generation);
+    try std.testing.expect(new_pod.subscription_id != old_pod.subscription_id);
+    try std.testing.expect(app.active_node_subscription.?.subscription_id != old_node.subscription_id);
+    try std.testing.expect(app.active_namespace_subscription.?.subscription_id != old_namespace.subscription_id);
+
+    var later_entry_started = false;
+    for (app.resource_families.registry.itemsConst(), 0..) |entry, index| {
+        if (index == injected_failure_index) {
+            try std.testing.expect(entry.restart_pending);
+            try std.testing.expect(entry.active == null);
+            continue;
+        }
+        const key = entry.active orelse return error.MissingGen2Family;
+        try std.testing.expectEqual(@as(resource_key.Generation, 2), key.generation);
+        try std.testing.expect(key.subscription_id != old_family_keys[index].subscription_id);
+        try std.testing.expect(!entry.restart_pending);
+        if (index > injected_failure_index) later_entry_started = true;
+    }
+    try std.testing.expect(later_entry_started);
+
+    var gen2_attempts: usize = 0;
+    while ((app.active_metrics_subscription == null or
+        app.active_metrics_subscription.?.generation != 2) and gen2_attempts < 30_000) : (gen2_attempts += 1)
+    {
+        if (app.active_metrics_subscription == null) app.startMetricsFeed() catch {};
+        try task14Pump(&app, io);
+    }
+    const new_metrics = app.active_metrics_subscription orelse return error.MissingGen2Metrics;
+    try std.testing.expectEqual(@as(resource_key.Generation, 2), new_metrics.generation);
+    try std.testing.expect(new_metrics.subscription_id != old_metrics.subscription_id);
+    var uid_attempts: usize = 0;
+    while (!app.pod_projection.selectUid("stable-uid") and uid_attempts < 30_000) : (uid_attempts += 1) {
+        try task14Pump(&app, io);
+    }
+    try std.testing.expect(app.pod_projection.selectUid("stable-uid"));
+
+    while (app.change_queue.hasPending()) app.drainChangeQueue();
+    try std.testing.expectEqual(@as(usize, 1), queued_payload_destroyed.load(.acquire));
+    var late_gen1 = resource_key.Envelope{
+        .generation = queued_identity.generation,
+        .subscription_id = queued_identity.subscription_id,
+        .target = .{ .resource = queued_identity },
+    };
+    try std.testing.expect(!app.acceptsActiveEnvelope(late_gen1));
+    late_gen1.deinit(allocator);
+
+    startPendingFamilyEntries(
+        &app.resource_families.registry,
+        @ptrCast(&app),
+        struct {
+            fn start(raw: *anyopaque, index: usize) anyerror!void {
+                const gate_app: *App = @ptrCast(@alignCast(raw));
+                try gate_app.startResourceFamilySubscription(index);
+            }
+        }.start,
+        struct {
+            fn failed(_: *anyopaque, _: *family_registry.Entry, _: anyerror) void {}
+        }.failed,
+    );
+    const retried = app.resource_families.registry.entryAt(injected_failure_index).?;
+    try std.testing.expect(!retried.restart_pending);
+    try std.testing.expectEqual(
+        @as(resource_key.Generation, 2),
+        retried.active.?.generation,
+    );
+    try std.testing.expect(retried.active.?.subscription_id != old_family_keys[injected_failure_index].subscription_id);
+}
+
+pub fn runTask14AllocationOrdinalsGate() !void {
+    const allocator = std.testing.allocator;
+    const io = runtime.io();
+    var lists = @import("k8s/FakeTransport.zig").PathListTransport.init(
+        allocator,
+        resource_subscription.task14ListBodyForPath,
+    );
+    defer lists.deinit();
+    var app = try App.init(allocator, .{});
+    defer app.deinit();
+
+    const session = try task14PrepareLocalSession(
+        undefined,
+        allocator,
+        io,
+        app.shared_event,
+        1,
+        .{
+            .context_name = "allocation",
+            .kubeconfig_path = null,
+            .default_namespace = "default",
+            .force_proxy = false,
+            .readonly = true,
+        },
+    );
+    _ = try app.active_session_slot.commit(session);
+    app.k8s_service.connected = true;
+
+    var destroyed: std.atomic.Value(usize) = .init(0);
+    app.task14 = .{
+        .transport = lists.transport(),
+        .hold_watch = true,
+        .deinit_counter = &destroyed,
+    };
+    const service_index = try task14FamilyIndex(&app, "services");
+    const gateway_index = try task14FamilyIndex(&app, "gateways");
+    const Representative = enum { pod, service, node, gateway };
+    const Matrix = struct {
+        fn rowCount(gate_app: *const App, kind: Representative) usize {
+            return switch (kind) {
+                .pod => gate_app.pod_projection.count(),
+                .service => gate_app.resource_families.service_projection.count(),
+                .node => gate_app.node_projection.count(),
+                .gateway => gate_app.resource_families.gateway_projection.count(),
+            };
+        }
+
+        fn tableCount(gate_app: *const App, kind: Representative) usize {
+            return switch (kind) {
+                .pod => gate_app.pods_view.table.items.items.len,
+                .service => gate_app.services_view.table.items.items.len,
+                .node => gate_app.nodes_view.table.items.items.len,
+                .gateway => gate_app.gateways_view.table.items.items.len,
+            };
+        }
+
+        fn start(gate_app: *App, kind: Representative, service: usize, gateway: usize) !void {
+            switch (kind) {
+                .pod => {
+                    try gate_app.startPodSubscription();
+                    gate_app.pod_metrics_started = true;
+                },
+                .service => try gate_app.startResourceFamilySubscription(service),
+                .node => try gate_app.startNodeSubscription(),
+                .gateway => try gate_app.startResourceFamilySubscription(gateway),
+            }
+        }
+
+        fn cancel(gate_app: *App, kind: Representative, service: usize, gateway: usize) void {
+            switch (kind) {
+                .pod => if (gate_app.active_pod_subscription) |key| {
+                    _ = gate_app.data_plane.cancelSubscription(key);
+                    gate_app.active_pod_subscription = null;
+                },
+                .service => if (gate_app.resource_families.registry.entryAt(service).?.active) |key| {
+                    _ = gate_app.data_plane.cancelSubscription(key);
+                    gate_app.resource_families.registry.entryAt(service).?.markStopped();
+                },
+                .node => if (gate_app.active_node_subscription) |key| {
+                    _ = gate_app.data_plane.cancelSubscription(key);
+                    gate_app.active_node_subscription = null;
+                },
+                .gateway => if (gate_app.resource_families.registry.entryAt(gateway).?.active) |key| {
+                    _ = gate_app.data_plane.cancelSubscription(key);
+                    gate_app.resource_families.registry.entryAt(gateway).?.markStopped();
+                },
+            }
+        }
+
+        fn reap(gate_app: *App, gate_io: std.Io) !void {
+            var attempts: usize = 0;
+            while ((gate_app.lifecycle_supervisor.liveChildren() != 0 or
+                gate_app.data_plane.trackedCount() != 0) and attempts < 30_000) : (attempts += 1)
+            {
+                try task14Pump(gate_app, gate_io);
+            }
+            if (gate_app.lifecycle_supervisor.liveChildren() != 0 or
+                gate_app.data_plane.trackedCount() != 0)
+            {
+                return error.AllocationChildDidNotReap;
+            }
+            while (gate_app.change_queue.hasPending()) gate_app.drainChangeQueue();
+        }
+    };
+
+    inline for (.{ Representative.pod, .service, .node, .gateway }) |kind| {
+        const prior_rows = Matrix.rowCount(&app, kind);
+        const prior_table_rows = Matrix.tableCount(&app, kind);
+        var ordinal: usize = 0;
+        var reached_success = false;
+        while (ordinal < 128) : (ordinal += 1) {
+            var failing = std.testing.FailingAllocator.init(allocator, .{ .fail_index = ordinal });
+            app.task14.convert_allocator = failing.allocator();
+            const destroyed_before = destroyed.load(.acquire);
+            try Matrix.start(&app, kind, service_index, gateway_index);
+            var attempts: usize = 0;
+            while (Matrix.rowCount(&app, kind) == prior_rows and attempts < 500) : (attempts += 1) {
+                try task14Pump(&app, io);
+            }
+            const success = Matrix.rowCount(&app, kind) > prior_rows;
+            Matrix.cancel(&app, kind, service_index, gateway_index);
+            try Matrix.reap(&app, io);
+            try std.testing.expectEqual(destroyed_before + 1, destroyed.load(.acquire));
+            if (failing.has_induced_failure) {
+                try std.testing.expect(!success);
+                try std.testing.expectEqual(prior_rows, Matrix.rowCount(&app, kind));
+                try std.testing.expectEqual(prior_table_rows, Matrix.tableCount(&app, kind));
+                continue;
+            }
+            try std.testing.expect(success);
+            reached_success = true;
+            break;
+        }
+        if (!reached_success) return error.ConversionAllocationNeverSucceeded;
+    }
+    app.task14.convert_allocator = null;
+    try @import("k8s/PodSubscription.zig").runTask14PodEmitAllocationOrdinalsGate();
+    try resource_subscription.runTask14ResourceEmitAllocationOrdinalsGate();
+
+    try app.startPodSubscription();
+    app.pod_metrics_started = true;
+
+    var launch_attempts: usize = 0;
+    while (!app.change_queue.hasPending() and launch_attempts < 30_000) : (launch_attempts += 1) {
+        try task14Pump(&app, io);
+    }
+    try std.testing.expect(app.change_queue.hasPending());
+
+    const preflight_revision = app.pod_projection.appliedRevision();
+    var first_popped = app.change_queue.popForRetry() orelse return error.MissingPreflightEnvelope;
+    errdefer if (first_popped.active) first_popped.destroy(allocator);
+    const preflight_sequence = first_popped.sequence;
+    const preflight_payload = first_popped.envelope.payload orelse return error.MissingPreflightPayload;
+    try app.change_queue.retryPopped(&first_popped);
+    app.task14.drain_batch_limit = 1;
+    var preflight_ordinal: usize = 0;
+    var preflight_reached_success = false;
+    while (preflight_ordinal < 128) : (preflight_ordinal += 1) {
+        var failing = std.testing.FailingAllocator.init(allocator, .{
+            .fail_index = preflight_ordinal,
+        });
+        app.task14.drain_allocator = failing.allocator();
+        app.drainChangeQueue();
+        var next = app.change_queue.popForRetry() orelse {
+            try std.testing.expect(!failing.has_induced_failure);
+            preflight_reached_success = true;
+            break;
+        };
+        errdefer if (next.active) next.destroy(allocator);
+        const same_envelope = next.sequence == preflight_sequence;
+        if (same_envelope) {
+            try std.testing.expect(failing.has_induced_failure);
+            try std.testing.expectEqual(preflight_payload, next.envelope.payload.?);
+            try std.testing.expectEqual(preflight_revision, app.pod_projection.appliedRevision());
+            try app.change_queue.retryPopped(&next);
+            continue;
+        }
+        try std.testing.expect(!failing.has_induced_failure);
+        try std.testing.expect(next.sequence > preflight_sequence);
+        try app.change_queue.retryPopped(&next);
+        preflight_reached_success = true;
+        break;
+    }
+    if (!preflight_reached_success) return error.PreflightAllocationNeverSucceeded;
+    app.task14.drain_allocator = null;
+    app.task14.drain_batch_limit = null;
+
+    if (app.resource_families.registry.entryAt(service_index).?.active == null)
+        try app.startResourceFamilySubscription(service_index);
+    var row_attempts: usize = 0;
+    while (app.services_view.table.items.items.len == 0 and row_attempts < 30_000) : (row_attempts += 1) {
+        try task14Pump(&app, io);
+    }
+    try app.services_view.syncProjection();
+    const old_service_rows = app.services_view.table.items.items.len;
+    try std.testing.expect(old_service_rows > 0);
+    const saved_table_allocator = app.services_view.table.allocator;
+    var view_ordinal: usize = 0;
+    var view_saw_failure = false;
+    while (view_ordinal < 128) : (view_ordinal += 1) {
+        var view_failing = std.testing.FailingAllocator.init(allocator, .{
+            .fail_index = view_ordinal,
+        });
+        app.services_view.table.allocator = view_failing.allocator();
+        const result = app.services_view.syncProjection();
+        app.services_view.table.allocator = saved_table_allocator;
+        if (result) |_| {
+            break;
+        } else |err| {
+            try std.testing.expectEqual(error.OutOfMemory, err);
+            view_saw_failure = true;
+            try std.testing.expectEqual(old_service_rows, app.services_view.table.items.items.len);
+        }
+    } else return error.ViewAllocationNeverSucceeded;
+    try std.testing.expect(view_saw_failure);
+    try std.testing.expectEqual(old_service_rows, app.services_view.table.items.items.len);
+
+    const service_entry = app.resource_families.registry.entryAt(service_index).?;
+    service_entry.restart_pending = false;
+    _ = app.data_plane.cancelSubscription(service_entry.active.?);
+    var restart_attempts: usize = 0;
+    while (service_entry.active != null and restart_attempts < 30_000) : (restart_attempts += 1) {
+        try task14Pump(&app, io);
+    }
+    try std.testing.expect(service_entry.active == null);
+    service_entry.restart_pending = true;
+    var restart_ordinal: usize = 0;
+    var restart_saw_failure = false;
+    while (restart_ordinal < 128) : (restart_ordinal += 1) {
+        var restart_failing = std.testing.FailingAllocator.init(allocator, .{
+            .fail_index = restart_ordinal,
+        });
+        app.task14.spec_allocator = restart_failing.allocator();
+        app.startResourceFamilySubscription(service_index) catch |err| {
+            try std.testing.expectEqual(error.OutOfMemory, err);
+            restart_saw_failure = true;
+            try std.testing.expect(service_entry.restart_pending);
+            try std.testing.expect(service_entry.active == null);
+            continue;
+        };
+        markFamilyStartOutcome(service_entry, true);
+        break;
+    } else return error.RestartAllocationNeverSucceeded;
+    app.task14.spec_allocator = null;
+    try std.testing.expect(restart_saw_failure);
+    try std.testing.expect(!service_entry.restart_pending);
+    try std.testing.expect(service_entry.active != null);
+
+    const destroyed_before_shutdown = destroyed.load(.acquire);
+    app.finishLifecycle();
+    try std.testing.expectEqual(@as(usize, 1), app.lifecycle_root_await_count);
+    try std.testing.expect(destroyed.load(.acquire) > destroyed_before_shutdown);
+    try std.testing.expectEqual(@as(usize, 0), app.lifecycle_supervisor.liveChildren());
+    try std.testing.expect(!app.change_queue.hasPending());
+    app.finishLifecycle();
+    try std.testing.expectEqual(@as(usize, 1), app.lifecycle_root_await_count);
+}
+
+pub fn runTask14ShutdownGate() !void {
+    const allocator = std.testing.allocator;
+    const io = runtime.io();
+    var lists = @import("k8s/FakeTransport.zig").PathListTransport.init(
+        allocator,
+        resource_subscription.task14ListBodyForPath,
+    );
+    defer lists.deinit();
+    var metrics_fake = @import("k8s/FakeTransport.zig").FakeTransport.init(allocator, &.{
+        .{ .body = "{\"items\":[]}" },
+        .{ .body = "{\"items\":[]}" },
+        .{ .body = "{\"items\":[]}" },
+        .{ .body = "{\"items\":[]}" },
+        .{ .body = "{\"items\":[]}" },
+        .{ .body = "{\"items\":[]}" },
+        .{ .body = "{\"items\":[]}" },
+        .{ .body = "{\"items\":[]}" },
+    });
+    defer metrics_fake.deinit();
+    var retry_fake = @import("k8s/FakeTransport.zig").FakeTransport.init(allocator, &.{
+        .{ .status = .internal_server_error, .body = "{}" },
+    });
+    defer retry_fake.deinit();
+    var header_hold = @import("k8s/FakeTransport.zig").FakeTransport.init(allocator, &.{.{}});
+    header_hold.block_until_cancel = true;
+    defer header_hold.deinit();
+    var traffic_hold = @import("k8s/FakeTransport.zig").FakeTransport.init(allocator, &.{.{}});
+    traffic_hold.block_until_cancel = true;
+    defer traffic_hold.deinit();
+    var detail_hold = @import("k8s/FakeTransport.zig").FakeTransport.init(allocator, &.{.{}});
+    detail_hold.block_until_cancel = true;
+    defer detail_hold.deinit();
+    var yaml_hold = @import("k8s/FakeTransport.zig").FakeTransport.init(allocator, &.{.{}});
+    yaml_hold.block_until_cancel = true;
+    defer yaml_hold.deinit();
+    var logs_hold = @import("k8s/FakeTransport.zig").FakeTransport.init(allocator, &.{.{}});
+    logs_hold.block_until_cancel = true;
+    defer logs_hold.deinit();
+    var app = try App.init(allocator, .{});
+    defer app.deinit();
+
+    const active_session = try task14PrepareLocalSession(
+        undefined,
+        allocator,
+        io,
+        app.shared_event,
+        1,
+        .{
+            .context_name = "task-14",
+            .kubeconfig_path = null,
+            .default_namespace = "default",
+            .force_proxy = false,
+            .readonly = true,
+        },
+    );
+    _ = try app.active_session_slot.commit(active_session);
+    app.k8s_service.connected = true;
+
+    var destroyed: std.atomic.Value(usize) = .init(0);
+    var retry_wait_entered: std.atomic.Value(bool) = .init(false);
+    var cancel_flag: std.atomic.Value(bool) = .init(false);
+    header_hold.cancel_flag = &cancel_flag;
+    traffic_hold.cancel_flag = &cancel_flag;
+    detail_hold.cancel_flag = &cancel_flag;
+    yaml_hold.cancel_flag = &cancel_flag;
+    logs_hold.cancel_flag = &cancel_flag;
+    const retry_family_index: usize = 3;
+    app.task14 = .{
+        .transport = lists.transport(),
+        .hold_watch = true,
+        .deinit_counter = &destroyed,
+        .retry_wait_entered = &retry_wait_entered,
+        .retry_family_index = retry_family_index,
+        .retry_transport = retry_fake.transport(),
+        .metrics_transport = metrics_fake.transport(),
+        .metrics_poll_interval_ns = metrics_feed.max_poll_interval_ns,
+        .cancel_flag = &cancel_flag,
+    };
+
+    try app.startResourceFamilySubscription(retry_family_index);
+    var retry_attempts: usize = 0;
+    while (!retry_wait_entered.load(.acquire) and retry_attempts < 30_000) : (retry_attempts += 1) {
+        try task14Pump(&app, io);
+    }
+    try std.testing.expect(retry_wait_entered.load(.acquire));
+
+    try app.startPodSubscription();
+    try app.startNodeSubscription();
+    try app.startNamespaceSubscription();
+    for (0..app.resource_families.registry.items().len) |index| {
+        if (index == retry_family_index) continue;
+        try app.startResourceFamilySubscription(index);
+    }
+    try app.startMetricsFeed();
+
+    var header_spec = try header_metrics_request.ownedTaskSpec(allocator, .{
+        .transport_override = header_hold.transport(),
+    });
+    _ = try app.ancillary_requests.startRequest(.header_metrics, 1, &header_spec);
+    var traffic_spec = try traffic_request.ownedTaskSpec(allocator, .{
+        .workload = "web",
+        .namespace = "default",
+        .transport_override = traffic_hold.transport(),
+    });
+    _ = try app.ancillary_requests.startRequest(.traffic, 1, &traffic_spec);
+    var detail_spec = try detail_request.ownedTaskSpec(allocator, .{
+        .serial = 1,
+        .kind = .describe,
+        .resource_type = .pods,
+        .name = "alpha-resource",
+        .namespace = "default",
+        .transport_override = detail_hold.transport(),
+    });
+    _ = try app.ancillary_requests.startRequest(.detail, 1, &detail_spec);
+    var yaml_spec = try detail_request.ownedTaskSpec(allocator, .{
+        .serial = 2,
+        .kind = .yaml,
+        .resource_type = .pods,
+        .name = "alpha-resource",
+        .namespace = "default",
+        .transport_override = yaml_hold.transport(),
+    });
+    _ = try app.ancillary_requests.startRequest(.yaml, 1, &yaml_spec);
+    var logs_spec = try logs_request.ownedTaskSpec(allocator, .{
+        .serial = 1,
+        .pod_name = "alpha-resource",
+        .namespace = "default",
+        .previous = false,
+        .transport_override = logs_hold.transport(),
+    });
+    _ = try app.ancillary_requests.startRequest(.logs, 1, &logs_spec);
+    var auth_spec = try authorization_request.ownedTaskSpec(allocator, .{
+        .serial = 1,
+        .tab = .access_review,
+        .service = app.k8s_service,
+        .namespace = "default",
+        .backend_override = task14HoldAuthBackend(&cancel_flag),
+    });
+    _ = try app.ancillary_requests.startRequest(.authorization, 1, &auth_spec);
+
+    var wait_attempts: usize = 0;
+    while ((!retry_wait_entered.load(.acquire) or
+        app.lifecycle_supervisor.deliveryReadyCount() == 0 or
+        app.lifecycle_supervisor.liveChildren() < 64) and wait_attempts < 30_000) : (wait_attempts += 1)
+    {
+        try task14Pump(&app, io);
+    }
+    try std.testing.expect(retry_wait_entered.load(.acquire));
+    try std.testing.expect(app.lifecycle_supervisor.deliveryReadyCount() > 0);
+    try std.testing.expectEqual(@as(usize, 64), app.lifecycle_supervisor.liveChildren());
+
+    for (0..resource_key.Limits.default.ordinary_control_batches) |_| {
+        const payload = try allocator.create(u8);
+        payload.* = 1;
+        var envelope = resource_key.erasePayload(
+            u8,
+            allocator,
+            .lifecycle,
+            payload,
+            &resource_key.test_noop_u8_handler,
+            0,
+            0,
+            0,
+            1,
+            null,
+        ) catch |err| {
+            allocator.destroy(payload);
+            return err;
+        };
+        app.change_queue.tryPushControl(envelope) catch |err| {
+            envelope.deinit(allocator);
+            if (err == error.Full) break;
+            return err;
+        };
+    }
+
+    app.finishLifecycle();
+    try std.testing.expectEqual(@as(usize, 64), app.task14_cancel_intents_before_await);
+    try std.testing.expectEqual(@as(usize, 1), app.lifecycle_root_await_count);
+    try std.testing.expect(app.task14_views_alive_after_await);
+    try std.testing.expectEqual(@as(usize, 58), destroyed.load(.acquire));
+    try std.testing.expectEqual(@as(usize, 64), app.lifecycle_supervisor.taskSpecsDestroyed());
+    try std.testing.expectEqual(@as(usize, 0), app.lifecycle_supervisor.liveChildren());
+    try std.testing.expectEqual(
+        app.lifecycle_supervisor.metrics.launched,
+        app.lifecycle_supervisor.metrics.reaped,
+    );
+    try std.testing.expectEqual(@as(usize, 0), active_session.leaseCount());
+    try std.testing.expect(!app.change_queue.hasPending());
+    app.finishLifecycle();
+    try std.testing.expectEqual(@as(usize, 1), app.lifecycle_root_await_count);
+}
+
+pub fn runTask14RollbackIsolationGate() !void {
+    const allocator = std.testing.allocator;
+    const io = runtime.io();
+    var lists = @import("k8s/FakeTransport.zig").PathListTransport.init(
+        allocator,
+        resource_subscription.task14ListBodyForPath,
+    );
+    defer lists.deinit();
+    var app = try App.init(allocator, .{});
+    defer app.deinit();
+
+    const active_session = try task14PrepareLocalSession(
+        undefined,
+        allocator,
+        io,
+        app.shared_event,
+        1,
+        .{
+            .context_name = "rollback",
+            .kubeconfig_path = null,
+            .default_namespace = "default",
+            .force_proxy = false,
+            .readonly = true,
+        },
+    );
+    _ = try app.active_session_slot.commit(active_session);
+    app.k8s_service.connected = true;
+    app.task14 = .{ .transport = lists.transport(), .hold_watch = true };
+
+    const service_index = try task14FamilyIndex(&app, "services");
+    const gateway_index = try task14FamilyIndex(&app, "gateways");
+    const storage_index = try task14FamilyIndex(&app, "persistentvolumes");
+    try app.startResourceFamilySubscription(service_index);
+    try app.startResourceFamilySubscription(gateway_index);
+
+    var attempts: usize = 0;
+    while (app.lifecycle_supervisor.liveChildren() != 2 and attempts < 30_000) : (attempts += 1) {
+        try task14Pump(&app, io);
+    }
+    try std.testing.expectEqual(@as(usize, 2), app.lifecycle_supervisor.liveChildren());
+    const service_key = app.resource_families.registry.entryAt(service_index).?.active.?;
+    const gateway_key = app.resource_families.registry.entryAt(gateway_index).?.active.?;
+
+    // Source gate rollback removed: storage always uses data-plane. Verify that
+    // starting a storage subscription does not disturb existing service/gateway.
+    const storage_entry = app.resource_families.registry.entryAt(storage_index).?;
+    _ = storage_entry.takeRequest();
+    try storage_entry.refresh();
+    try std.testing.expectEqual(family_registry.Request.start, storage_entry.takeRequest());
+    try app.startResourceFamilySubscription(storage_index);
+    try std.testing.expectEqual(service_key, app.resource_families.registry.entryAt(service_index).?.active.?);
+    try std.testing.expectEqual(gateway_key, app.resource_families.registry.entryAt(gateway_index).?.active.?);
+    try std.testing.expectEqual(@as(usize, 3), app.data_plane.activeCount());
+
+    const service_entry = app.resource_families.registry.entryAt(service_index).?;
+    try service_entry.refresh();
+    try app.serviceResourceFamilyRequests();
+    attempts = 0;
+    while (attempts < 30_000) : (attempts += 1) {
+        try task14Pump(&app, io);
+        const active = service_entry.active orelse continue;
+        if (active.subscription_id != service_key.subscription_id) break;
+    }
+    const restarted_service_key = service_entry.active orelse return error.ServiceRestartMissing;
+    try std.testing.expect(restarted_service_key.subscription_id != service_key.subscription_id);
+    try std.testing.expectEqual(gateway_key, app.resource_families.registry.entryAt(gateway_index).?.active.?);
+    try std.testing.expect(storage_entry.active != null);
+    try std.testing.expectEqual(@as(usize, 3), app.data_plane.activeCount());
+
+    app.finishLifecycle();
+    try std.testing.expectEqual(@as(usize, 0), app.lifecycle_supervisor.liveChildren());
+    try std.testing.expectEqual(@as(usize, 0), active_session.leaseCount());
+    try std.testing.expect(!app.change_queue.hasPending());
+}
+
+pub fn runTask14PersistentApplyShutdownGate() !void {
+    const Payload = struct {
+        destroyed: *usize,
+    };
+    const Handler = struct {
+        fn preflight(
+            _: *Payload,
+            _: *resource_key.UiRouter,
+            _: std.mem.Allocator,
+        ) anyerror!resource_key.ApplyPlan {
+            return error.PersistentApplyFailure;
+        }
+        fn commit(
+            _: *Payload,
+            _: *resource_key.UiRouter,
+            _: *resource_key.ApplyPlan,
+        ) void {
+            unreachable;
+        }
+        fn deinit(payload: *Payload, _: std.mem.Allocator) void {
+            payload.destroyed.* += 1;
+        }
+        const handler = resource_key.PayloadHandler(Payload){
+            .preflight = preflight,
+            .commit = commit,
+            .deinit = deinit,
+        };
+    };
+
+    const allocator = std.testing.allocator;
+    var app = try App.init(allocator, .{});
+    defer app.deinit();
+    var destroyed: usize = 0;
+    const payload = try allocator.create(Payload);
+    payload.* = .{ .destroyed = &destroyed };
+    var envelope = resource_key.erasePayload(
+        Payload,
+        allocator,
+        .lifecycle,
+        payload,
+        &Handler.handler,
+        0,
+        0,
+        0,
+        @sizeOf(Payload),
+        null,
+    ) catch |err| {
+        allocator.destroy(payload);
+        return err;
+    };
+    app.change_queue.tryPushControl(envelope) catch |err| {
+        envelope.deinit(allocator);
+        return err;
+    };
+    app.drainChangeQueue();
+    try std.testing.expect(app.change_queue.hasPending());
+    try std.testing.expectEqual(@as(usize, 0), destroyed);
+
+    app.finishLifecycle();
+    try std.testing.expectEqual(@as(usize, 1), destroyed);
+    try std.testing.expect(!app.change_queue.hasPending());
+    try std.testing.expectEqual(@as(usize, 1), app.lifecycle_root_await_count);
+}
+
+pub fn runTask14ShutdownDrainAllocationOrdinalsGate() !void {
+    const Payload = struct {
+        committed: *bool,
+        destroyed: *usize,
+    };
+    const Scratch = struct {
+        bytes: []u8,
+    };
+    const Handler = struct {
+        fn preflight(
+            _: *Payload,
+            _: *resource_key.UiRouter,
+            allocator: std.mem.Allocator,
+        ) anyerror!resource_key.ApplyPlan {
+            const scratch = try allocator.create(Scratch);
+            errdefer allocator.destroy(scratch);
+            scratch.* = .{ .bytes = try allocator.alloc(u8, 32) };
+            return .{
+                .scratch = scratch,
+                .scratch_alignment = .of(Scratch),
+                .deinitFn = destroyPlan,
+            };
+        }
+        fn destroyPlan(
+            raw: ?*anyopaque,
+            _: std.mem.Alignment,
+            allocator: std.mem.Allocator,
+        ) void {
+            const scratch: *Scratch = @ptrCast(@alignCast(raw.?));
+            allocator.free(scratch.bytes);
+            allocator.destroy(scratch);
+        }
+        fn commit(
+            payload: *Payload,
+            _: *resource_key.UiRouter,
+            _: *resource_key.ApplyPlan,
+        ) void {
+            payload.committed.* = true;
+        }
+        fn deinit(payload: *Payload, _: std.mem.Allocator) void {
+            payload.destroyed.* += 1;
+        }
+        const handler = resource_key.PayloadHandler(Payload){
+            .preflight = preflight,
+            .commit = commit,
+            .deinit = deinit,
+        };
+    };
+    const Exercise = struct {
+        fn run(failing_allocator: std.mem.Allocator, backing: std.mem.Allocator) !void {
+            var app = try App.init(backing, .{});
+            defer app.deinit();
+            var committed = false;
+            var destroyed: usize = 0;
+            const payload = try failing_allocator.create(Payload);
+            payload.* = .{ .committed = &committed, .destroyed = &destroyed };
+            var envelope = resource_key.erasePayload(
+                Payload,
+                failing_allocator,
+                .lifecycle,
+                payload,
+                &Handler.handler,
+                0,
+                0,
+                0,
+                @sizeOf(Payload),
+                null,
+            ) catch |err| {
+                failing_allocator.destroy(payload);
+                return err;
+            };
+            app.change_queue.tryPushControl(envelope) catch |err| {
+                envelope.deinit(failing_allocator);
+                return err;
+            };
+            app.task14.drain_allocator = failing_allocator;
+            app.finishLifecycle();
+            try std.testing.expectEqual(@as(usize, 1), destroyed);
+            try std.testing.expect(!app.change_queue.hasPending());
+            if (!committed) return error.OutOfMemory;
+        }
+    };
+    try std.testing.checkAllAllocationFailures(
+        std.testing.allocator,
+        Exercise.run,
+        .{std.testing.allocator},
+    );
+}
+
+pub fn runTask14MalformedProductionGate() !void {
+    const allocator = std.testing.allocator;
+    const io = runtime.io();
+    var fake = @import("k8s/FakeTransport.zig").FakeTransport.init(allocator, &.{.{
+        .body =
+        \\{"apiVersion":"v1","kind":"ServiceList","metadata":{"resourceVersion":"10"},"items":[{"metadata":{"namespace":"default","name":"valid","uid":"valid-uid"},"spec":{"type":"ClusterIP","clusterIP":"10.0.0.1"}},{"metadata":{"namespace":"default","name":"broken"},"spec":{"type":"ClusterIP","clusterIP":"10.0.0.2"}}]}
+        ,
+    }});
+    defer fake.deinit();
+    var app = try App.init(allocator, .{});
+    defer app.deinit();
+    const active_session = try task14PrepareLocalSession(
+        undefined,
+        allocator,
+        io,
+        app.shared_event,
+        1,
+        .{
+            .context_name = "malformed",
+            .kubeconfig_path = null,
+            .default_namespace = "default",
+            .force_proxy = false,
+            .readonly = true,
+        },
+    );
+    _ = try app.active_session_slot.commit(active_session);
+    app.k8s_service.connected = true;
+    app.task14 = .{ .transport = fake.transport() };
+    const service_index = try task14FamilyIndex(&app, "services");
+    try app.startResourceFamilySubscription(service_index);
+
+    var attempts: usize = 0;
+    while (app.resource_families.registry.entryAt(service_index).?.active != null and
+        attempts < 30_000) : (attempts += 1)
+    {
+        try task14Pump(&app, io);
+    }
+    try std.testing.expect(app.resource_families.registry.entryAt(service_index).?.active == null);
+    try std.testing.expectEqual(@as(usize, 0), app.resource_families.service_projection.count());
+    try std.testing.expectEqual(@as(usize, 0), app.services_view.table.items.items.len);
+    try std.testing.expectEqual(@as(usize, 1), fake.requests.items.len);
+    try std.testing.expectEqual(@as(usize, 1), app.lifecycle_supervisor.metrics.launched);
+    try std.testing.expectEqual(@as(usize, 1), app.lifecycle_supervisor.metrics.reaped);
+    try std.testing.expect(!app.change_queue.hasPending());
+    app.finishLifecycle();
+}
+
+pub fn runTask14MalformedWatchProductionGate() !void {
+    const allocator = std.testing.allocator;
+    const io = runtime.io();
+    const empty_list = "{\"metadata\":{\"resourceVersion\":\"10\"},\"items\":[]}";
+    var service_fake = @import("k8s/FakeTransport.zig").FakeTransport.init(
+        allocator,
+        &.{.{ .body = empty_list }},
+    );
+    defer service_fake.deinit();
+    var node_fake = @import("k8s/FakeTransport.zig").FakeTransport.init(
+        allocator,
+        &.{.{ .body = empty_list }},
+    );
+    defer node_fake.deinit();
+    var gateway_fake = @import("k8s/FakeTransport.zig").FakeTransport.init(
+        allocator,
+        &.{.{ .body = empty_list }},
+    );
+    defer gateway_fake.deinit();
+    var app = try App.init(allocator, .{});
+    defer app.deinit();
+    const active_session = try task14PrepareLocalSession(
+        undefined,
+        allocator,
+        io,
+        app.shared_event,
+        1,
+        .{
+            .context_name = "malformed-watch",
+            .kubeconfig_path = null,
+            .default_namespace = "default",
+            .force_proxy = false,
+            .readonly = true,
+        },
+    );
+    _ = try app.active_session_slot.commit(active_session);
+    app.k8s_service.connected = true;
+
+    var service_script = ServiceSubscription.Task14MalformedWatch{ .allocator = allocator };
+    var service_destroyed: std.atomic.Value(usize) = .init(0);
+    var service_retry: std.atomic.Value(bool) = .init(false);
+    var service_spec = try ServiceSubscription.ownedTaskSpec(allocator, .{
+        .context_name = "malformed-watch",
+        .namespace = "default",
+        .projection = &app.resource_families.service_projection,
+        .deinit_counter = &service_destroyed,
+        .retry_wait_entered = &service_retry,
+        .transport_override = service_fake.transport(),
+        .watch_override = service_script.source(),
+    });
+    const service_key = try app.data_plane.startSubscription(1, &service_spec);
+    const service_index = try task14FamilyIndex(&app, "services");
+    app.resource_families.registry.entryAt(service_index).?.markStarted(service_key);
+
+    var attempts: usize = 0;
+    while (app.resource_families.registry.entryAt(service_index).?.active != null and
+        attempts < 30_000) : (attempts += 1)
+    {
+        try task14Pump(&app, io);
+    }
+    try std.testing.expect(app.resource_families.registry.entryAt(service_index).?.active == null);
+    try std.testing.expectEqual(@as(usize, 0), app.resource_families.service_projection.count());
+    try std.testing.expectEqual(@as(usize, 0), app.services_view.table.items.items.len);
+    try std.testing.expectEqual(@as(usize, 1), service_script.watch_calls);
+    try std.testing.expect(!service_retry.load(.acquire));
+    try std.testing.expectEqual(@as(usize, 1), service_destroyed.load(.acquire));
+
+    var node_script = NodeSubscription.Task14MalformedWatch{ .allocator = allocator };
+    var node_destroyed: std.atomic.Value(usize) = .init(0);
+    var node_retry: std.atomic.Value(bool) = .init(false);
+    var node_spec = try NodeSubscription.ownedTaskSpec(allocator, .{
+        .context_name = "malformed-watch",
+        .projection = app.node_projection,
+        .deinit_counter = &node_destroyed,
+        .retry_wait_entered = &node_retry,
+        .transport_override = node_fake.transport(),
+        .watch_override = node_script.source(),
+    });
+    app.active_node_subscription = try app.data_plane.startSubscription(1, &node_spec);
+    attempts = 0;
+    while (app.active_node_subscription != null and attempts < 30_000) : (attempts += 1) {
+        try task14Pump(&app, io);
+    }
+    try std.testing.expect(app.active_node_subscription == null);
+    try std.testing.expectEqual(@as(usize, 0), app.node_projection.count());
+    try std.testing.expectEqual(@as(usize, 0), app.nodes_view.table.items.items.len);
+    try std.testing.expectEqual(@as(usize, 1), node_script.watch_calls);
+    try std.testing.expect(!node_retry.load(.acquire));
+    try std.testing.expectEqual(@as(usize, 1), node_destroyed.load(.acquire));
+
+    var gateway_script = GatewaySubscription.Task14MalformedWatch{ .allocator = allocator };
+    var gateway_destroyed: std.atomic.Value(usize) = .init(0);
+    var gateway_retry: std.atomic.Value(bool) = .init(false);
+    var gateway_spec = try GatewaySubscription.ownedTaskSpec(allocator, .{
+        .context_name = "malformed-watch",
+        .namespace = "default",
+        .projection = &app.resource_families.gateway_projection,
+        .deinit_counter = &gateway_destroyed,
+        .retry_wait_entered = &gateway_retry,
+        .transport_override = gateway_fake.transport(),
+        .watch_override = gateway_script.source(),
+    });
+    const gateway_key = try app.data_plane.startSubscription(1, &gateway_spec);
+    const gateway_index = try task14FamilyIndex(&app, "gateways");
+    app.resource_families.registry.entryAt(gateway_index).?.markStarted(gateway_key);
+    attempts = 0;
+    while (app.resource_families.registry.entryAt(gateway_index).?.active != null and
+        attempts < 30_000) : (attempts += 1)
+    {
+        try task14Pump(&app, io);
+    }
+    try std.testing.expect(app.resource_families.registry.entryAt(gateway_index).?.active == null);
+    try std.testing.expectEqual(@as(usize, 0), app.resource_families.gateway_projection.count());
+    try std.testing.expectEqual(@as(usize, 0), app.gateways_view.table.items.items.len);
+    try std.testing.expectEqual(@as(usize, 1), gateway_script.watch_calls);
+    try std.testing.expect(!gateway_retry.load(.acquire));
+    try std.testing.expectEqual(@as(usize, 1), gateway_destroyed.load(.acquire));
+
+    try std.testing.expectEqual(@as(usize, 1), service_fake.requests.items.len);
+    try std.testing.expectEqual(@as(usize, 1), node_fake.requests.items.len);
+    try std.testing.expectEqual(@as(usize, 1), gateway_fake.requests.items.len);
+    try std.testing.expectEqual(@as(usize, 3), app.lifecycle_supervisor.metrics.launched);
+    try std.testing.expectEqual(
+        app.lifecycle_supervisor.metrics.launched,
+        app.lifecycle_supervisor.metrics.reaped,
+    );
+    try std.testing.expectEqual(@as(usize, 0), app.data_plane.trackedCount());
+    try std.testing.expect(!app.change_queue.hasPending());
+    app.finishLifecycle();
+    try std.testing.expectEqual(@as(usize, 0), app.lifecycle_supervisor.liveChildren());
+    try std.testing.expectEqual(@as(usize, 0), active_session.leaseCount());
+}
+
+pub fn runTask14HeaderPeriodicGate() !void {
+    const allocator = std.testing.allocator;
+    const io = runtime.io();
+    const scripts = [_]@import("k8s/FakeTransport.zig").ResponseScript{
+        .{ .body = "{\"items\":[{\"usage\":{\"cpu\":\"1\",\"memory\":\"2Gi\"}}]}" },
+        .{ .body = "{\"items\":[{\"status\":{\"capacity\":{\"cpu\":\"4\",\"memory\":\"8Gi\"}}}]}" },
+        .{ .body = "{\"items\":[{\"usage\":{\"cpu\":\"2\",\"memory\":\"4Gi\"}}]}" },
+        .{ .body = "{\"items\":[{\"status\":{\"capacity\":{\"cpu\":\"4\",\"memory\":\"8Gi\"}}}]}" },
+    };
+    var fake = @import("k8s/FakeTransport.zig").FakeTransport.init(allocator, &scripts);
+    defer fake.deinit();
+    var app = try App.init(allocator, .{});
+    defer app.deinit();
+
+    const session = try task14PrepareLocalSession(
+        undefined,
+        allocator,
+        io,
+        app.shared_event,
+        1,
+        .{
+            .context_name = "header",
+            .kubeconfig_path = null,
+            .default_namespace = "default",
+            .force_proxy = false,
+            .readonly = true,
+        },
+    );
+    _ = try app.active_session_slot.commit(session);
+    app.k8s_service.connected = true;
+    app.pod_first_paint_emitted = true;
+
+    app.task14.header_transport = fake.transport();
+    app.last_header_metrics_ns = 0;
+    app.maybeRefreshHeaderMetrics();
+
+    var first_id: ?resource_key.SubscriptionId = null;
+    var attempts: usize = 0;
+    while (attempts < 30_000) : (attempts += 1) {
+        if (app.active_header_metrics_request) |key| first_id = key.subscription_id;
+        try task14Pump(&app, io);
+        if (first_id != null and app.active_header_metrics_request == null) break;
+    }
+    const first = first_id orelse return error.MissingFirstHeaderRequest;
+    const first_cpu = app.header.cpu_usage;
+    try std.testing.expect(first_cpu > 0);
+
+    app.last_header_metrics_ns = 1;
+    app.maybeRefreshHeaderMetrics();
+    var second_id: ?resource_key.SubscriptionId = null;
+    attempts = 0;
+    while (attempts < 30_000) : (attempts += 1) {
+        if (app.active_header_metrics_request) |key| second_id = key.subscription_id;
+        try task14Pump(&app, io);
+        if (second_id != null and app.active_header_metrics_request == null) break;
+    }
+    const second = second_id orelse return error.MissingSecondHeaderRequest;
+    try std.testing.expect(second != first);
+    try std.testing.expect(app.header.cpu_usage != first_cpu);
+}
+
 test "metrics feed starts only after first applied real pod batch and only once" {
     try std.testing.expect(!shouldStartMetricsFeed(false, true, 1, false));
     try std.testing.expect(!shouldStartMetricsFeed(true, false, 0, false));
@@ -4838,17 +7783,11 @@ test "family restart pending clears only after successful start" {
 }
 
 test "one family start failure does not block later registry entries" {
-    const enabled = struct {
-        fn call() bool {
-            return true;
-        }
-    }.call;
     var entries = [_]family_registry.Entry{ undefined, undefined };
     for (&entries, 0..) |*entry, index| {
         entry.name = if (index == 0) "first" else "second";
         entry.active = null;
         entry.restart_pending = true;
-        entry.enabledFn = enabled;
     }
     var registry = family_registry.Registry{ .entries = &entries };
     var started: usize = 0;
@@ -4901,6 +7840,34 @@ test "unified resource registry contains cutover family entries with exact proje
         "storageclasses",
         "volumeattributesclasses",
         "csidrivers",
+        "gatewayclasses",
+        "gateways",
+        "httproutes",
+        "grpcroutes",
+        "referencegrants",
+        "tcproutes",
+        "tlsroutes",
+        "udproutes",
+        "backendtlspolicies",
+        "listenersets",
+        "roles",
+        "rolebindings",
+        "clusterroles",
+        "clusterrolebindings",
+        "validatingadmissionpolicies",
+        "validatingadmissionpolicybindings",
+        "mutatingadmissionpolicies",
+        "mutatingadmissionpolicybindings",
+        "validatingwebhookconfigurations",
+        "mutatingwebhookconfigurations",
+        "resourceclaims",
+        "deviceclasses",
+        "priorityclasses",
+        "runtimeclasses",
+        "leases",
+        "certificatesigningrequests",
+        "storageversionmigrations",
+        "events",
     };
     try std.testing.expectEqual(expected.len, app.resource_families.registry.itemsConst().len);
     for (app.resource_families.registry.items(), 0..) |*entry, index| {
@@ -4956,6 +7923,101 @@ test "storage views preserve scope and request exact restarts" {
         app.storageclasses_view,
         app.volumeattributesclasses_view,
         app.csidrivers_view,
+    }) |view| {
+        try std.testing.expect(!@TypeOf(view.*).view_config.is_namespaced);
+        view.markSubscriptionStarted();
+        _ = try @TypeOf(view.*).handleKey(view, .ctrl_r);
+        try std.testing.expectEqual(.restart, view.takeSubscriptionRequest());
+    }
+}
+
+test "gateway core and extension views preserve scope and request exact restarts" {
+    var app = try App.init(std.testing.allocator, .{});
+    defer app.deinit();
+    inline for (.{
+        app.gateways_view,
+        app.httproutes_view,
+        app.grpcroutes_view,
+        app.referencegrants_view,
+        app.tcproutes_view,
+        app.tlsroutes_view,
+        app.udproutes_view,
+        app.backendtlspolicies_view,
+        app.listenersets_view,
+    }) |view| {
+        try std.testing.expect(@TypeOf(view.*).view_config.is_namespaced);
+        view.markSubscriptionStarted();
+        _ = try @TypeOf(view.*).handleKey(view, .{ .char = '0' });
+        try std.testing.expect(view.table.show_all_namespaces);
+        try std.testing.expectEqual(.restart, view.takeSubscriptionRequest());
+        view.markSubscriptionStarted();
+        _ = try @TypeOf(view.*).handleKey(view, .ctrl_r);
+        try std.testing.expectEqual(.restart, view.takeSubscriptionRequest());
+    }
+    try std.testing.expect(!GatewayClassesView.view_config.is_namespaced);
+    app.gatewayclasses_view.markSubscriptionStarted();
+    _ = try GatewayClassesView.handleKey(app.gatewayclasses_view, .ctrl_r);
+    try std.testing.expectEqual(.restart, app.gatewayclasses_view.takeSubscriptionRequest());
+}
+
+test "RBAC views preserve scope and request exact restarts" {
+    var app = try App.init(std.testing.allocator, .{});
+    defer app.deinit();
+    inline for (.{ app.roles_view, app.rolebindings_view }) |view| {
+        try std.testing.expect(@TypeOf(view.*).view_config.is_namespaced);
+        try std.testing.expect(!view.table.show_all_namespaces);
+        view.markSubscriptionStarted();
+        _ = try @TypeOf(view.*).handleKey(view, .{ .char = '0' });
+        try std.testing.expect(view.table.show_all_namespaces);
+        try std.testing.expectEqual(.restart, view.takeSubscriptionRequest());
+        view.markSubscriptionStarted();
+        _ = try @TypeOf(view.*).handleKey(view, .ctrl_r);
+        try std.testing.expectEqual(.restart, view.takeSubscriptionRequest());
+    }
+    inline for (.{ app.clusterroles_view, app.clusterrolebindings_view }) |view| {
+        try std.testing.expect(!@TypeOf(view.*).view_config.is_namespaced);
+        view.markSubscriptionStarted();
+        _ = try @TypeOf(view.*).handleKey(view, .ctrl_r);
+        try std.testing.expectEqual(.restart, view.takeSubscriptionRequest());
+    }
+}
+
+test "admission views preserve cluster scope and request exact restarts" {
+    var app = try App.init(std.testing.allocator, .{});
+    defer app.deinit();
+    inline for (.{
+        app.validatingadmissionpolicies_view,
+        app.validatingadmissionpolicybindings_view,
+        app.mutatingadmissionpolicies_view,
+        app.mutatingadmissionpolicybindings_view,
+        app.validatingwebhookconfigurations_view,
+        app.mutatingwebhookconfigurations_view,
+    }) |view| {
+        try std.testing.expect(!@TypeOf(view.*).view_config.is_namespaced);
+        try std.testing.expect(!view.table.show_all_namespaces);
+        view.markSubscriptionStarted();
+        _ = try @TypeOf(view.*).handleKey(view, .ctrl_r);
+        try std.testing.expectEqual(.restart, view.takeSubscriptionRequest());
+    }
+}
+
+test "DRA and platform views preserve scope and request exact restarts" {
+    var app = try App.init(std.testing.allocator, .{});
+    defer app.deinit();
+    inline for (.{ app.resourceclaims_view, app.leases_view, app.events_view }) |view| {
+        try std.testing.expect(@TypeOf(view.*).view_config.is_namespaced);
+        view.markSubscriptionStarted();
+        _ = try @TypeOf(view.*).handleKey(view, .ctrl_r);
+        try std.testing.expectEqual(.restart, view.takeSubscriptionRequest());
+    }
+    try std.testing.expect(app.events_view.table.show_all_namespaces);
+    try std.testing.expectEqual(@as(u8, 4), EventsView.view_config.name_column);
+    inline for (.{
+        app.deviceclasses_view,
+        app.priorityclasses_view,
+        app.runtimeclasses_view,
+        app.certificatesigningrequests_view,
+        app.storageversionmigrations_view,
     }) |view| {
         try std.testing.expect(!@TypeOf(view.*).view_config.is_namespaced);
         view.markSubscriptionStarted();
@@ -5450,6 +8512,106 @@ test "resource family identities isolate envelopes and pod side effects" {
         2,
         false,
     ));
+
+    inline for (.{ @as(usize, 26), @as(usize, 31) }, 0..) |entry_index, offset| {
+        const gateway_entry = app.resource_families.registry.entryAt(entry_index).?;
+        const gateway_identity = resource_key.ResourceIdentity{
+            .generation = 8,
+            .subscription_id = @intCast(9 + offset),
+        };
+        gateway_entry.markStarted(.{
+            .generation = gateway_identity.generation,
+            .subscription_id = gateway_identity.subscription_id,
+        });
+        defer gateway_entry.markStopped();
+        try std.testing.expect(app.resource_families.registry.contains(gateway_identity));
+        try std.testing.expect(!matchesIdentity(pod, gateway_identity));
+        try std.testing.expectEqual(ResourceDrainEffects{}, decideResourceDrainEffects(
+            .{ .resource = gateway_identity },
+            pod,
+            .{ .generation = 8, .subscription_id = 4 },
+            node,
+            namespace,
+            .list_complete,
+            true,
+            2,
+            false,
+        ));
+    }
+
+    const rbac_entry = app.resource_families.registry.entryAt(36).?;
+    const rbac_identity = resource_key.ResourceIdentity{
+        .generation = 8,
+        .subscription_id = 11,
+    };
+    rbac_entry.markStarted(.{
+        .generation = rbac_identity.generation,
+        .subscription_id = rbac_identity.subscription_id,
+    });
+    defer rbac_entry.markStopped();
+    try std.testing.expect(app.resource_families.registry.contains(rbac_identity));
+    try std.testing.expect(!matchesIdentity(pod, rbac_identity));
+    try std.testing.expectEqual(ResourceDrainEffects{}, decideResourceDrainEffects(
+        .{ .resource = rbac_identity },
+        pod,
+        .{ .generation = 8, .subscription_id = 4 },
+        node,
+        namespace,
+        .list_complete,
+        true,
+        2,
+        false,
+    ));
+
+    const admission_entry = app.resource_families.registry.entryAt(40).?;
+    const admission_identity = resource_key.ResourceIdentity{
+        .generation = 8,
+        .subscription_id = 12,
+    };
+    admission_entry.markStarted(.{
+        .generation = admission_identity.generation,
+        .subscription_id = admission_identity.subscription_id,
+    });
+    defer admission_entry.markStopped();
+    try std.testing.expect(app.resource_families.registry.contains(admission_identity));
+    try std.testing.expect(!matchesIdentity(pod, admission_identity));
+    try std.testing.expectEqual(ResourceDrainEffects{}, decideResourceDrainEffects(
+        .{ .resource = admission_identity },
+        pod,
+        .{ .generation = 8, .subscription_id = 4 },
+        node,
+        namespace,
+        .list_complete,
+        true,
+        2,
+        false,
+    ));
+
+    inline for (.{ @as(usize, 46), @as(usize, 48) }, 0..) |entry_index, offset| {
+        const family_entry = app.resource_families.registry.entryAt(entry_index).?;
+        const family_identity = resource_key.ResourceIdentity{
+            .generation = 8,
+            .subscription_id = @intCast(13 + offset),
+        };
+        family_entry.markStarted(.{
+            .generation = family_identity.generation,
+            .subscription_id = family_identity.subscription_id,
+        });
+        defer family_entry.markStopped();
+        try std.testing.expect(app.resource_families.registry.contains(family_identity));
+        try std.testing.expect(!matchesIdentity(pod, family_identity));
+        try std.testing.expectEqual(ResourceDrainEffects{}, decideResourceDrainEffects(
+            .{ .resource = family_identity },
+            pod,
+            .{ .generation = 8, .subscription_id = 4 },
+            node,
+            namespace,
+            .list_complete,
+            true,
+            2,
+            false,
+        ));
+    }
 }
 
 test "readonly dispatch classification exhaustively gates mutations and permits reads" {
@@ -5517,62 +8679,6 @@ fn matchesEitherEnvelope(
     };
 }
 
-fn timerRefreshAllowed(
-    view_name: []const u8,
-    pod_source: resource_view.Source,
-    node_source: resource_view.Source,
-    namespace_source: resource_view.Source,
-    services_source: resource_view.Source,
-    config_source: resource_view.Source,
-    workloads_source: resource_view.Source,
-    batch_source: resource_view.Source,
-    networking_source: resource_view.Source,
-    storage_source: resource_view.Source,
-) bool {
-    if (std.mem.eql(u8, view_name, "pods")) return pod_source != .data_plane;
-    if (std.mem.eql(u8, view_name, "nodes")) return node_source != .data_plane;
-    if (std.mem.eql(u8, view_name, "namespaces")) return namespace_source != .data_plane;
-    if (services_source == .data_plane and
-        (std.mem.eql(u8, view_name, "services") or
-            std.mem.eql(u8, view_name, "endpoints") or
-            std.mem.eql(u8, view_name, "endpointslices")))
-        return false;
-    if (config_source == .data_plane and
-        (std.mem.eql(u8, view_name, "configmaps") or
-            std.mem.eql(u8, view_name, "secrets") or
-            std.mem.eql(u8, view_name, "serviceaccounts") or
-            std.mem.eql(u8, view_name, "resourcequotas") or
-            std.mem.eql(u8, view_name, "limitranges")))
-        return false;
-    if (workloads_source == .data_plane and
-        (std.mem.eql(u8, view_name, "deployments") or
-            std.mem.eql(u8, view_name, "statefulsets") or
-            std.mem.eql(u8, view_name, "daemonsets") or
-            std.mem.eql(u8, view_name, "replicasets")))
-        return false;
-    if (batch_source == .data_plane and
-        (std.mem.eql(u8, view_name, "jobs") or
-            std.mem.eql(u8, view_name, "cronjobs") or
-            std.mem.eql(u8, view_name, "hpa") or
-            std.mem.eql(u8, view_name, "poddisruptionbudgets")))
-        return false;
-    if (networking_source == .data_plane and
-        (std.mem.eql(u8, view_name, "ingresses") or
-            std.mem.eql(u8, view_name, "ingressclasses") or
-            std.mem.eql(u8, view_name, "networkpolicies") or
-            std.mem.eql(u8, view_name, "ipaddresses") or
-            std.mem.eql(u8, view_name, "servicecidrs")))
-        return false;
-    if (storage_source == .data_plane and
-        (std.mem.eql(u8, view_name, "persistentvolumes") or
-            std.mem.eql(u8, view_name, "persistentvolumeclaims") or
-            std.mem.eql(u8, view_name, "storageclasses") or
-            std.mem.eql(u8, view_name, "volumeattributesclasses") or
-            std.mem.eql(u8, view_name, "csidrivers")))
-        return false;
-    return true;
-}
-
 fn isActivePodCompletion(
     active: ?lifecycle.SubscriptionKey,
     identity: ?resource_key.ResourceIdentity,
@@ -5586,6 +8692,25 @@ fn isActivePodCompletion(
     const completed = identity orelse return false;
     return active_key.generation == completed.generation and
         active_key.subscription_id == completed.subscription_id;
+}
+
+fn task15TerminalMessage(completion: lifecycle.LifecycleCompletion) ?[]const u8 {
+    const detail = switch (completion) {
+        .subscription_stopped => |stopped| stopped.detail orelse return null,
+        else => return null,
+    };
+    return switch (detail.code) {
+        .unauthorized => "Unauthorized: credentials were rejected",
+        .forbidden => "Forbidden: access denied for this resource",
+        .absent => "Unavailable: API or CRD is not installed",
+        .malformed_event, .decode => "Terminal watch error: malformed server event",
+        .throttled => "Retry budget exhausted after throttling",
+        .server => "Retry budget exhausted after server errors",
+        .transport => "Retry budget exhausted after transport errors",
+        .expired => "Resource version expired",
+        .limit => "Terminal response limit exceeded",
+        .canceled => return null,
+    };
 }
 
 test "pod envelope routing requires exact active identity" {
@@ -5665,119 +8790,65 @@ test "pod transitions require the exact subscription completion" {
     try std.testing.expect(!isActivePodCompletion(active, exact, .shutdown_complete));
 }
 
-test "timer auto-refresh does not restart live data-plane watches" {
-    try std.testing.expect(!timerRefreshAllowed("pods", .data_plane, .data_plane, .data_plane, .data_plane, .data_plane, .data_plane, .data_plane, .data_plane, .data_plane));
-    try std.testing.expect(timerRefreshAllowed("pods", .legacy_list, .data_plane, .data_plane, .data_plane, .data_plane, .data_plane, .data_plane, .data_plane, .data_plane));
-    try std.testing.expect(!timerRefreshAllowed("nodes", .data_plane, .data_plane, .data_plane, .data_plane, .data_plane, .data_plane, .data_plane, .data_plane, .data_plane));
-    try std.testing.expect(!timerRefreshAllowed("namespaces", .data_plane, .data_plane, .data_plane, .data_plane, .data_plane, .data_plane, .data_plane, .data_plane, .data_plane));
-    try std.testing.expect(!timerRefreshAllowed("services", .data_plane, .data_plane, .data_plane, .data_plane, .data_plane, .data_plane, .data_plane, .data_plane, .data_plane));
-    try std.testing.expect(!timerRefreshAllowed("endpoints", .data_plane, .data_plane, .data_plane, .data_plane, .data_plane, .data_plane, .data_plane, .data_plane, .data_plane));
-    try std.testing.expect(!timerRefreshAllowed("endpointslices", .data_plane, .data_plane, .data_plane, .data_plane, .data_plane, .data_plane, .data_plane, .data_plane, .data_plane));
-    try std.testing.expect(timerRefreshAllowed("services", .data_plane, .data_plane, .data_plane, .legacy_list, .data_plane, .data_plane, .data_plane, .data_plane, .data_plane));
-    inline for (.{ "configmaps", "secrets", "serviceaccounts", "resourcequotas", "limitranges" }) |name| {
-        try std.testing.expect(!timerRefreshAllowed(name, .data_plane, .data_plane, .data_plane, .data_plane, .data_plane, .data_plane, .data_plane, .data_plane, .data_plane));
-        try std.testing.expect(timerRefreshAllowed(name, .data_plane, .data_plane, .data_plane, .data_plane, .legacy_list, .data_plane, .data_plane, .data_plane, .data_plane));
+test "poll timeout cannot restart resource subscriptions" {
+    var app = try App.init(std.testing.allocator, .{});
+    defer app.deinit();
+
+    _ = app.pods_view.takeSubscriptionRequest();
+    _ = app.nodes_view.takeSubscriptionRequest();
+    _ = app.namespaces_view.takeSubscriptionRequest();
+    for (app.resource_families.registry.items()) |*entry| {
+        _ = entry.takeRequest();
     }
-    inline for (.{ "deployments", "statefulsets", "daemonsets", "replicasets" }) |name| {
-        try std.testing.expect(!timerRefreshAllowed(name, .data_plane, .data_plane, .data_plane, .data_plane, .data_plane, .data_plane, .data_plane, .data_plane, .data_plane));
-        try std.testing.expect(timerRefreshAllowed(name, .data_plane, .data_plane, .data_plane, .data_plane, .data_plane, .legacy_list, .data_plane, .data_plane, .data_plane));
-    }
-    inline for (.{ "jobs", "cronjobs", "hpa", "poddisruptionbudgets" }) |name| {
-        try std.testing.expect(!timerRefreshAllowed(name, .data_plane, .data_plane, .data_plane, .data_plane, .data_plane, .data_plane, .data_plane, .data_plane, .data_plane));
-        try std.testing.expect(timerRefreshAllowed(name, .data_plane, .data_plane, .data_plane, .data_plane, .data_plane, .data_plane, .legacy_list, .data_plane, .data_plane));
-    }
-    inline for (.{ "ingresses", "ingressclasses", "networkpolicies", "ipaddresses", "servicecidrs" }) |name| {
-        try std.testing.expect(!timerRefreshAllowed(name, .data_plane, .data_plane, .data_plane, .data_plane, .data_plane, .data_plane, .data_plane, .data_plane, .data_plane));
-        try std.testing.expect(timerRefreshAllowed(name, .data_plane, .data_plane, .data_plane, .data_plane, .data_plane, .data_plane, .data_plane, .legacy_list, .data_plane));
-    }
-    inline for (.{ "persistentvolumes", "persistentvolumeclaims", "storageclasses", "volumeattributesclasses", "csidrivers" }) |name| {
-        try std.testing.expect(!timerRefreshAllowed(name, .data_plane, .data_plane, .data_plane, .data_plane, .data_plane, .data_plane, .data_plane, .data_plane, .data_plane));
-        try std.testing.expect(timerRefreshAllowed(name, .data_plane, .data_plane, .data_plane, .data_plane, .data_plane, .data_plane, .data_plane, .data_plane, .legacy_list));
+
+    app.servicePollTimeout();
+
+    try std.testing.expectEqual(@as(@TypeOf(app.pods_view.takeSubscriptionRequest()), .none), app.pods_view.takeSubscriptionRequest());
+    try std.testing.expectEqual(@as(@TypeOf(app.nodes_view.takeSubscriptionRequest()), .none), app.nodes_view.takeSubscriptionRequest());
+    try std.testing.expectEqual(@as(@TypeOf(app.namespaces_view.takeSubscriptionRequest()), .none), app.namespaces_view.takeSubscriptionRequest());
+    for (app.resource_families.registry.items()) |*entry| {
+        try std.testing.expectEqual(family_registry.Request.none, entry.takeRequest());
     }
 }
 
-test "shouldAutoRefresh: interval, disabling, and clock sanity" {
-    const ns = std.time.ns_per_s;
-
-    // Never refreshed yet -> refresh now, rather than waiting out one interval.
-    try std.testing.expect(App.shouldAutoRefresh(2.0, 0, 12345));
-
-    // Inside the interval -> no.
-    try std.testing.expect(!App.shouldAutoRefresh(2.0, 1000 * ns, 1001 * ns));
-    // Exactly at the interval -> yes.
-    try std.testing.expect(App.shouldAutoRefresh(2.0, 1000 * ns, 1002 * ns));
-    // Past it -> yes.
-    try std.testing.expect(App.shouldAutoRefresh(2.0, 1000 * ns, 1005 * ns));
-
-    // Sub-second intervals must work; truncating to whole seconds would silently
-    // turn --refresh 0.5 into "never".
-    try std.testing.expect(App.shouldAutoRefresh(0.5, 1000 * ns, 1000 * ns + 600_000_000));
-    try std.testing.expect(!App.shouldAutoRefresh(0.5, 1000 * ns, 1000 * ns + 400_000_000));
-
-    // 0 is the documented way to disable it; negatives and NaN must not enable it.
-    try std.testing.expect(!App.shouldAutoRefresh(0, 1000 * ns, 9999 * ns));
-    try std.testing.expect(!App.shouldAutoRefresh(-1, 1000 * ns, 9999 * ns));
-    try std.testing.expect(!App.shouldAutoRefresh(std.math.nan(f32), 1000 * ns, 9999 * ns));
-
-    // A backwards clock must not trigger a refresh storm.
-    try std.testing.expect(!App.shouldAutoRefresh(2.0, 1000 * ns, 900 * ns));
-}
-
-test "runAutoRefreshCycle: last_ns stores completion time, not pre-refresh start time" {
-    // Mutation-effective regression for the refresh-storm bug.
-    //
-    // The bug: maybeAutoRefresh wrote `last_auto_refresh_ns = now` BEFORE calling
-    // refreshCurrentView(). On a large cluster a single LIST call takes 3–12 s —
-    // well above the default 2 s interval. With last set at T_start:
-    //
-    //   now_after_list = T_start + 3 s
-    //   shouldAutoRefresh(2.0, T_start, now_after_list) → elapsed 3 s ≥ 2 s → true
-    //
-    // The main loop does reach poll() after the LIST returns, but the very next
-    // 100 ms timeout immediately fires another blocking LIST. Near-continuous
-    // blocking with ~100 ms gaps leaves the app effectively unresponsive.
-    //
-    // The fix: last_ns = clockFn(), called AFTER refreshFn() returns.
-    //
-    // This test fails if the assignment order is reversed (last_ns would become
-    // now_ns = 1000*ns instead of the injected clock value 1003*ns).
-    const ns = std.time.ns_per_s;
-
-    const MockClock = struct {
-        fn now() i128 {
-            return 1003 * std.time.ns_per_s; // simulates a 3 s blocking LIST
-        }
-    };
-    const MockRefresh = struct {
-        fn run(count: *usize) void {
-            count.* += 1;
-        }
-    };
-
-    var refresh_count: usize = 0;
-    var last_ns: i128 = 0;
-
-    const fired = App.runAutoRefreshCycle(
-        2.0,
-        &last_ns,
-        1000 * ns, // now = T+1s; last=0 (never refreshed) → should fire
-        *usize,
-        &refresh_count,
-        MockRefresh.run,
-        MockClock.now,
+test "palette resource switch starts subscription without another key" {
+    const allocator = std.testing.allocator;
+    const io = runtime.io();
+    var lists = @import("k8s/FakeTransport.zig").PathListTransport.init(
+        allocator,
+        resource_subscription.task14ListBodyForPath,
     );
+    defer lists.deinit();
+    var app = try App.init(allocator, .{});
+    defer app.deinit();
 
-    try std.testing.expect(fired);
-    try std.testing.expectEqual(@as(usize, 1), refresh_count);
+    const active_session = try task14PrepareLocalSession(
+        undefined,
+        allocator,
+        io,
+        app.shared_event,
+        1,
+        .{
+            .context_name = "palette-test",
+            .kubeconfig_path = null,
+            .default_namespace = "default",
+            .force_proxy = false,
+            .readonly = true,
+        },
+    );
+    _ = try app.active_session_slot.commit(active_session);
+    app.k8s_service.connected = true;
+    app.task14 = .{ .transport = lists.transport(), .hold_watch = true };
 
-    // last_ns must equal MockClock.now() — the value returned AFTER the refresh.
-    // If assignment happens before refreshFn (old bug), last_ns == 1000*ns here
-    // and the expectEqual below fails, catching the regression.
-    try std.testing.expectEqual(@as(i128, 1003 * ns), last_ns);
+    try app.executePaletteCommand("deploy", false);
 
-    // Consequence: 100 ms after completion, the interval (2 s) has not elapsed.
-    // No re-entry fire — this is the responsive window the fix provides.
-    try std.testing.expect(!App.shouldAutoRefresh(2.0, last_ns, @as(i128, 1003 * ns) + 100_000_000));
+    const deployment_index = try task14FamilyIndex(&app, "deployments");
+    try std.testing.expect(app.resource_families.registry.entryAt(deployment_index).?.active != null);
+    try std.testing.expect(app.deployments_view.table.loading);
+
+    app.finishLifecycle();
+    try std.testing.expectEqual(@as(usize, 0), app.lifecycle_supervisor.liveChildren());
+    try std.testing.expectEqual(@as(usize, 0), active_session.leaseCount());
 }
 
 test "shouldLiveFilter refuses every prompt that is not a live filter" {

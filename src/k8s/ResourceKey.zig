@@ -23,6 +23,9 @@ pub const ObjectKey = struct {
     uid: []const u8,
     namespace: []const u8,
     name: []const u8,
+    /// Flattened metadata labels used by projected k9s label filters.
+    /// Empty is not allocated; non-empty data is capped by formatLabels.
+    labels: []const u8 = &.{},
 
     pub fn eql(self: ObjectKey, other: ObjectKey) bool {
         return std.mem.eql(u8, self.uid, other.uid);
@@ -34,16 +37,99 @@ pub const ObjectKey = struct {
         const namespace = try allocator.dupe(u8, self.namespace);
         errdefer allocator.free(namespace);
         const name = try allocator.dupe(u8, self.name);
-        return .{ .uid = uid, .namespace = namespace, .name = name };
+        errdefer allocator.free(name);
+        const labels: []const u8 = if (self.labels.len > 0)
+            try allocator.dupe(u8, self.labels)
+        else
+            &.{};
+        return .{ .uid = uid, .namespace = namespace, .name = name, .labels = labels };
     }
 
     pub fn deinit(self: *ObjectKey, allocator: std.mem.Allocator) void {
         allocator.free(self.uid);
         allocator.free(self.namespace);
         allocator.free(self.name);
+        if (self.labels.len > 0) allocator.free(self.labels);
         self.* = undefined;
     }
 };
+
+pub const max_projected_label_bytes: usize = 64 * 1024;
+
+/// Own the identity and bounded labels carried by typed Kubernetes metadata.
+/// `default_namespace` is `"default"` for namespaced resources and `""` for
+/// cluster-scoped resources.
+pub fn fromMetadata(
+    allocator: std.mem.Allocator,
+    metadata: anytype,
+    default_namespace: []const u8,
+) (error{MissingUid} || std.mem.Allocator.Error)!ObjectKey {
+    const uid = try requireUid(metadata.uid);
+    var key = try (ObjectKey{
+        .uid = uid,
+        .namespace = metadata.namespace orelse default_namespace,
+        .name = metadata.name,
+    }).clone(allocator);
+    errdefer key.deinit(allocator);
+    key.labels = try formatLabels(allocator, metadata.labels);
+    return key;
+}
+
+pub fn auditMetadataConstructors(comptime record_names: []const []const u8) !void {
+    const support_source = @embedFile("RbacAdmissionRecordSupport.zig");
+    try testing.expect(std.mem.indexOf(u8, support_source, "keys.fromMetadata(") != null);
+    inline for (record_names) |name| {
+        const source = @embedFile(name ++ ".zig");
+        const production_end = std.mem.indexOf(u8, source, "\ntest \"") orelse source.len;
+        const production_source = source[0..production_end];
+        const uses_helper = std.mem.indexOf(u8, production_source, "fromMetadata(") != null;
+        const delegates_typed_metadata = std.mem.indexOf(
+            u8,
+            production_source,
+            ".init(\n        allocator,\n        value.metadata,",
+        ) != null;
+        try testing.expect(uses_helper or delegates_typed_metadata);
+    }
+}
+
+/// Flatten metadata.labels to complete `k=v` pairs while bounding retained
+/// memory per projected object. Pairs that do not fit are omitted atomically.
+pub fn formatLabels(
+    allocator: std.mem.Allocator,
+    value: ?std.json.Value,
+) std.mem.Allocator.Error![]const u8 {
+    const labels = value orelse return &.{};
+    if (labels != .object or labels.object.count() == 0) return &.{};
+
+    var result: std.ArrayListUnmanaged(u8) = .empty;
+    errdefer result.deinit(allocator);
+    var iterator = labels.object.iterator();
+    while (iterator.next()) |entry| {
+        const label_value = if (entry.value_ptr.* == .string)
+            entry.value_ptr.string
+        else
+            "";
+        const separator_len: usize = @intFromBool(result.items.len > 0);
+        const remaining = max_projected_label_bytes -| result.items.len -| separator_len;
+        if (entry.key_ptr.*.len >= remaining) continue;
+        if (label_value.len > remaining - entry.key_ptr.*.len - 1) continue;
+        if (separator_len > 0) try result.append(allocator, ',');
+        try result.appendSlice(allocator, entry.key_ptr.*);
+        try result.append(allocator, '=');
+        try result.appendSlice(allocator, label_value);
+    }
+    if (result.items.len == 0) {
+        result.deinit(allocator);
+        return &.{};
+    }
+    return result.toOwnedSlice(allocator);
+}
+
+pub fn requireUid(uid: ?[]const u8) error{MissingUid}![]const u8 {
+    const value = uid orelse return error.MissingUid;
+    if (value.len == 0) return error.MissingUid;
+    return value;
+}
 
 pub const ChangeKind = enum {
     initial_upsert,
@@ -159,9 +245,17 @@ pub const ResourceIdentity = struct {
     subscription_id: SubscriptionId,
 };
 
-pub const EnvelopeTarget = union(enum) {
-    resource: ResourceIdentity,
-    lifecycle,
+pub const RequestKey = struct {
+    generation: Generation,
+    subscription_id: SubscriptionId,
+
+    pub fn eql(self: RequestKey, other: RequestKey) bool {
+        return self.generation == other.generation and
+            self.subscription_id == other.subscription_id;
+    }
+};
+
+pub const RequestClass = enum {
     header_metrics,
     traffic,
     detail,
@@ -169,6 +263,41 @@ pub const EnvelopeTarget = union(enum) {
     logs,
     authorization,
 };
+
+pub const EnvelopeTarget = union(enum) {
+    resource: ResourceIdentity,
+    lifecycle,
+    header_metrics: RequestKey,
+    traffic: RequestKey,
+    detail: RequestKey,
+    yaml: RequestKey,
+    logs: RequestKey,
+    authorization: RequestKey,
+};
+
+pub fn requestKey(target: EnvelopeTarget) ?RequestKey {
+    return switch (target) {
+        .header_metrics => |key| key,
+        .traffic => |key| key,
+        .detail => |key| key,
+        .yaml => |key| key,
+        .logs => |key| key,
+        .authorization => |key| key,
+        .resource, .lifecycle => null,
+    };
+}
+
+pub fn requestClass(target: EnvelopeTarget) ?RequestClass {
+    return switch (target) {
+        .header_metrics => .header_metrics,
+        .traffic => .traffic,
+        .detail => .detail,
+        .yaml => .yaml,
+        .logs => .logs,
+        .authorization => .authorization,
+        .resource, .lifecycle => null,
+    };
+}
 
 pub const ApplyPlan = struct {
     scratch: ?*anyopaque = null,
@@ -228,6 +357,7 @@ pub const Envelope = struct {
     payload_alignment: std.mem.Alignment = .@"1",
     vtable: *const VTable = &empty_vtable,
     state: State = .queued,
+    destroy_counter: ?*std.atomic.Value(usize) = null,
 
     pub const State = enum { queued, applying, consumed };
 
@@ -269,6 +399,7 @@ pub const Envelope = struct {
                 if (self.payload) |payload| {
                     self.vtable.destroy(payload, self.payload_alignment, allocator);
                     self.payload = null;
+                    if (self.destroy_counter) |counter| _ = counter.fetchAdd(1, .acq_rel);
                 }
                 self.state = .consumed;
             },
@@ -498,6 +629,7 @@ pub const Limits = struct {
 pub const DataError = enum {
     unauthorized,
     forbidden,
+    absent,
     expired,
     throttled,
     server,
@@ -573,6 +705,150 @@ test "ObjectKey identity is UID, not namespace/name" {
     const c = ObjectKey{ .uid = "uid-2", .namespace = "ns-a", .name = "web" };
     try testing.expect(a.eql(b));
     try testing.expect(!a.eql(c));
+}
+
+test "fromMetadata owns identity, defaults namespace, and bounds labels" {
+    const Metadata = struct {
+        uid: ?[]const u8,
+        namespace: ?[]const u8,
+        name: []const u8,
+        labels: ?std.json.Value,
+    };
+    const parsed = try std.json.parseFromSlice(
+        std.json.Value,
+        testing.allocator,
+        \\{"app":"web","environment":"production"}
+    ,
+        .{},
+    );
+    defer parsed.deinit();
+
+    var namespaced = try fromMetadata(testing.allocator, Metadata{
+        .uid = "uid",
+        .namespace = null,
+        .name = "name",
+        .labels = parsed.value,
+    }, "default");
+    defer namespaced.deinit(testing.allocator);
+    try testing.expectEqualStrings("default", namespaced.namespace);
+    try testing.expect(std.mem.indexOf(u8, namespaced.labels, "app=web") != null);
+    try testing.expect(namespaced.labels.len <= max_projected_label_bytes);
+
+    var cluster = try fromMetadata(testing.allocator, Metadata{
+        .uid = "cluster-uid",
+        .namespace = null,
+        .name = "cluster-name",
+        .labels = parsed.value,
+    }, "");
+    defer cluster.deinit(testing.allocator);
+    try testing.expectEqualStrings("", cluster.namespace);
+}
+
+const LabeledMetadata = struct {
+    uid: ?[]const u8,
+    namespace: ?[]const u8,
+    name: []const u8,
+    labels: ?std.json.Value,
+};
+
+fn labeledKeyCloneExercise(allocator: std.mem.Allocator) !void {
+    const source = ObjectKey{
+        .uid = "uid-1",
+        .namespace = "team-a",
+        .name = "web",
+        .labels = "app=web,environment=production",
+    };
+    var copy = try source.clone(allocator);
+    defer copy.deinit(allocator);
+    try testing.expectEqualStrings(source.labels, copy.labels);
+}
+
+fn labeledMetadataExercise(allocator: std.mem.Allocator, labels: std.json.Value) !void {
+    var key = try fromMetadata(allocator, LabeledMetadata{
+        .uid = "uid-1",
+        .namespace = "team-a",
+        .name = "web",
+        .labels = labels,
+    }, "default");
+    defer key.deinit(allocator);
+    try testing.expectEqualStrings("app=web,environment=production", key.labels);
+}
+
+test "labeled keys survive allocation failure on every clone and projection step" {
+    // The labels slice is the one ObjectKey field that is conditionally owned, so
+    // a failure after it is duped -- or before -- must still leave nothing behind.
+    try testing.checkAllAllocationFailures(testing.allocator, labeledKeyCloneExercise, .{});
+
+    const parsed = try std.json.parseFromSlice(
+        std.json.Value,
+        testing.allocator,
+        \\{"app":"web","environment":"production"}
+    ,
+        .{},
+    );
+    defer parsed.deinit();
+    try testing.checkAllAllocationFailures(
+        testing.allocator,
+        labeledMetadataExercise,
+        .{parsed.value},
+    );
+}
+
+test "formatLabels flattens only complete string pairs" {
+    const parsed = try std.json.parseFromSlice(
+        std.json.Value,
+        testing.allocator,
+        \\{"app":"nginx","env":"prod","replicas":3}
+    ,
+        .{},
+    );
+    defer parsed.deinit();
+    const labels = try formatLabels(testing.allocator, parsed.value);
+    defer if (labels.len > 0) testing.allocator.free(labels);
+    try testing.expectEqualStrings("app=nginx,env=prod,replicas=", labels);
+
+    // Absent, non-object, and empty label maps all project to an unallocated slice.
+    const empty_object = try std.json.parseFromSlice(std.json.Value, testing.allocator, "{}", .{});
+    defer empty_object.deinit();
+    try testing.expectEqual(@as(usize, 0), (try formatLabels(testing.allocator, null)).len);
+    try testing.expectEqual(
+        @as(usize, 0),
+        (try formatLabels(testing.allocator, std.json.Value{ .string = "not-an-object" })).len,
+    );
+    try testing.expectEqual(@as(usize, 0), (try formatLabels(testing.allocator, empty_object.value)).len);
+}
+
+test "formatLabels omits oversized pairs without partial output" {
+    const oversized_value = try testing.allocator.alloc(u8, max_projected_label_bytes);
+    defer testing.allocator.free(oversized_value);
+    @memset(oversized_value, 'x');
+    const json = try std.fmt.allocPrint(
+        testing.allocator,
+        "{{\"oversized\":\"{s}\",\"kept\":\"yes\"}}",
+        .{oversized_value},
+    );
+    defer testing.allocator.free(json);
+    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, json, .{});
+    defer parsed.deinit();
+
+    const labels = try formatLabels(testing.allocator, parsed.value);
+    defer if (labels.len > 0) testing.allocator.free(labels);
+    try testing.expectEqualStrings("kept=yes", labels);
+    try testing.expect(labels.len <= max_projected_label_bytes);
+}
+
+test "RequestKey is a sibling identity and ancillary helpers are total" {
+    try testing.expect(RequestKey != ResourceIdentity);
+    const key = RequestKey{ .generation = 4, .subscription_id = 9 };
+    try testing.expect(key.eql(.{ .generation = 4, .subscription_id = 9 }));
+    try testing.expect(!key.eql(.{ .generation = 4, .subscription_id = 10 }));
+    try testing.expectEqual(key, requestKey(.{ .header_metrics = key }).?);
+    try testing.expectEqual(RequestClass.header_metrics, requestClass(.{ .header_metrics = key }).?);
+    try testing.expect(requestKey(.lifecycle) == null);
+    try testing.expect(requestClass(.{ .resource = .{
+        .generation = key.generation,
+        .subscription_id = key.subscription_id,
+    } }) == null);
 }
 
 test "takeRecord nulls the upsert so destroy skips it" {
@@ -681,14 +957,15 @@ const scratch_handler = PayloadHandler(ScratchPayload){
 
 test "preflight allocation failure frees partial scratch and leaves target unchanged" {
     const backing = testing.allocator;
+    const key = RequestKey{ .generation = 1, .subscription_id = 1 };
     const ancillary = [_]EnvelopeTarget{
         .lifecycle,
-        .header_metrics,
-        .traffic,
-        .detail,
-        .yaml,
-        .logs,
-        .authorization,
+        .{ .header_metrics = key },
+        .{ .traffic = key },
+        .{ .detail = key },
+        .{ .yaml = key },
+        .{ .logs = key },
+        .{ .authorization = key },
     };
     for (ancillary) |target| {
         var fail_index: usize = 0;
@@ -798,14 +1075,15 @@ pub const test_noop_u8_handler = PayloadHandler(u8){
 
 test "erasePayload covers every ancillary target class" {
     const allocator = testing.allocator;
+    const key = RequestKey{ .generation = 1, .subscription_id = 1 };
     const targets = [_]EnvelopeTarget{
         .lifecycle,
-        .header_metrics,
-        .traffic,
-        .detail,
-        .yaml,
-        .logs,
-        .authorization,
+        .{ .header_metrics = key },
+        .{ .traffic = key },
+        .{ .detail = key },
+        .{ .yaml = key },
+        .{ .logs = key },
+        .{ .authorization = key },
     };
     for (targets) |target| {
         const payload = try allocator.create(u8);
@@ -834,7 +1112,7 @@ test "payload alignment is recorded from the box type" {
     var envelope = try erasePayload(
         u8,
         allocator,
-        .yaml,
+        .{ .yaml = .{ .generation = 0, .subscription_id = 0 } },
         payload,
         &test_noop_u8_handler,
         0,

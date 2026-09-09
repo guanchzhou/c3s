@@ -1,6 +1,7 @@
 const std = @import("std");
 const klient = @import("klient");
 const age_util = @import("../viewmodel/age.zig");
+const k9s_query = @import("../viewmodel/k9s_query.zig");
 const keys = @import("ResourceKey.zig");
 
 pub const ConfigMapRecord = @This();
@@ -11,12 +12,7 @@ data_sort_key: [20]u8 = [_]u8{'0'} ** 20,
 creation_timestamp: ?[]u8 = null,
 
 pub fn fromConfigMap(allocator: std.mem.Allocator, value: klient.ConfigMap) !ConfigMapRecord {
-    const uid = value.metadata.uid orelse return error.MissingUid;
-    var key = try (keys.ObjectKey{
-        .uid = uid,
-        .namespace = value.metadata.namespace orelse "default",
-        .name = value.metadata.name,
-    }).clone(allocator);
+    var key = try keys.fromMetadata(allocator, value.metadata, "default");
     errdefer key.deinit(allocator);
     const creation_timestamp = if (value.metadata.creationTimestamp) |timestamp|
         try allocator.dupe(u8, timestamp)
@@ -83,7 +79,7 @@ test "config map record preserves legacy columns and rejects missing UID" {
     var parsed = try std.json.parseFromSlice(
         klient.ConfigMap,
         std.testing.allocator,
-        \\{"metadata":{"uid":"cm-1","namespace":"team","name":"settings","creationTimestamp":"2024-01-01T00:00:00Z"},"data":{"one":"1","two":"2"},"binaryData":{"ignored":"AA=="}}
+        \\{"metadata":{"uid":"cm-1","namespace":"team","name":"settings","labels":{"app":"web"},"creationTimestamp":"2024-01-01T00:00:00Z"},"data":{"one":"1","two":"2"},"binaryData":{"ignored":"AA=="}}
     ,
         .{ .ignore_unknown_fields = true },
     );
@@ -91,6 +87,12 @@ test "config map record preserves legacy columns and rejects missing UID" {
     var record = try fromConfigMap(std.testing.allocator, parsed.value);
     defer record.deinit(std.testing.allocator);
     try std.testing.expectEqual(@as(usize, 2), record.data_count);
+    try std.testing.expectEqualStrings("app=web", record.key.labels);
+    try std.testing.expect(k9s_query.matchSearchable(
+        &.{ record.key.namespace, record.key.name },
+        record.key.labels,
+        "-l app=web",
+    ));
     try std.testing.expectError(
         error.MissingUid,
         fromConfigMap(std.testing.allocator, .{ .metadata = .{ .name = "bad" } }),
@@ -103,6 +105,7 @@ fn cloneAllocationExercise(allocator: std.mem.Allocator) !void {
             .uid = "cm-1",
             .namespace = "team",
             .name = "settings",
+            .labels = "app=web,env=prod",
         }).clone(allocator);
         errdefer key.deinit(allocator);
         const timestamp = try allocator.dupe(u8, "2024-01-01T00:00:00Z");
@@ -114,7 +117,8 @@ fn cloneAllocationExercise(allocator: std.mem.Allocator) !void {
     };
     defer source.deinit(allocator);
     var copy = try source.clone(allocator);
-    copy.deinit(allocator);
+    defer copy.deinit(allocator);
+    try std.testing.expectEqualStrings("app=web,env=prod", copy.key.labels);
 }
 
 test "config map clone is allocation-failure safe" {
@@ -122,5 +126,27 @@ test "config map clone is allocation-failure safe" {
         std.testing.allocator,
         cloneAllocationExercise,
         .{},
+    );
+}
+
+fn labeledDecodeExercise(allocator: std.mem.Allocator, value: klient.ConfigMap) !void {
+    var record = try fromConfigMap(allocator, value);
+    defer record.deinit(allocator);
+    try std.testing.expectEqualStrings("app=web,env=prod", record.key.labels);
+}
+
+test "labeled config map decode is allocation-failure safe" {
+    var parsed = try std.json.parseFromSlice(
+        klient.ConfigMap,
+        std.testing.allocator,
+        \\{"metadata":{"uid":"cm-1","namespace":"team","name":"settings","labels":{"app":"web","env":"prod"},"creationTimestamp":"2024-01-01T00:00:00Z"},"data":{"one":"1"}}
+    ,
+        .{ .ignore_unknown_fields = true },
+    );
+    defer parsed.deinit();
+    try std.testing.checkAllAllocationFailures(
+        std.testing.allocator,
+        labeledDecodeExercise,
+        .{parsed.value},
     );
 }

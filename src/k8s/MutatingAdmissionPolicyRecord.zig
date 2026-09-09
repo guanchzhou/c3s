@@ -15,10 +15,7 @@ pub fn fromMutatingAdmissionPolicy(
         0;
     return MutatingAdmissionPolicyRecord.init(
         allocator,
-        value.metadata.uid,
-        null,
-        value.metadata.name,
+        value.metadata,
         .{ .failure_policy = failure_policy, .count = mutation_count },
-        value.metadata.creationTimestamp,
     );
 }

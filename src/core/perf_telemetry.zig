@@ -7,11 +7,23 @@ pub const max_record_bytes: usize = 512;
 
 pub const EventKind = enum {
     sync_start,
+    list_start,
+    list_page,
+    list_continue,
     first_batch_queued,
     first_usable_paint,
     list_complete_received,
     complete_sync_paint,
     watch_connected,
+    watch_event,
+    watch_bookmark,
+    watch_disconnect,
+    gone_410,
+    relist,
+    terminal_forbidden,
+    terminal_unauthorized,
+    terminal_absent,
+    transport_retry,
     metrics_ready,
     reconnect_start,
     reconnect_complete,
@@ -29,6 +41,10 @@ pub const Event = struct {
     applied_revision: u64,
     object_count: usize,
     queue_bytes: usize,
+    page: usize = 0,
+    status: ?u16 = null,
+    rv_fingerprint: u64 = 0,
+    continue_fingerprint: u64 = 0,
 };
 
 pub const PodPaintEvidence = struct {
@@ -161,6 +177,16 @@ fn encodeRecord(event: Event, counters: ?Counters, record: *Record) ?[]const u8 
     record.appendInt(event.object_count);
     record.append(",\"queue_bytes\":");
     record.appendInt(event.queue_bytes);
+    record.append(",\"page\":");
+    record.appendInt(event.page);
+    if (event.status) |status| {
+        record.append(",\"status\":");
+        record.appendInt(status);
+    }
+    record.append(",\"rv_fingerprint\":");
+    record.appendInt(event.rv_fingerprint);
+    record.append(",\"continue_fingerprint\":");
+    record.appendInt(event.continue_fingerprint);
     if (counters) |snapshot| {
         record.append(",\"dropped_oversize\":");
         record.appendInt(snapshot.dropped_oversize);

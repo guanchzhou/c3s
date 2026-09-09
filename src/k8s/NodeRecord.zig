@@ -13,12 +13,7 @@ internal_ip: []u8,
 creation_timestamp: ?[]u8 = null,
 
 pub fn fromNode(allocator: std.mem.Allocator, node: klient.Node) !NodeRecord {
-    const uid = node.metadata.uid orelse return error.MissingUid;
-    var key = try (keys.ObjectKey{
-        .uid = uid,
-        .namespace = "",
-        .name = node.metadata.name,
-    }).clone(allocator);
+    var key = try keys.fromMetadata(allocator, node.metadata, "");
     errdefer key.deinit(allocator);
 
     const status = try nodeStatus(allocator, node);

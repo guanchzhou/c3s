@@ -7,10 +7,7 @@ pub const ClusterRoleBindingRecord = support.Record(support.RoleRefExtra, false,
 pub fn fromClusterRoleBinding(allocator: std.mem.Allocator, value: klient.ClusterRoleBinding) !ClusterRoleBindingRecord {
     return ClusterRoleBindingRecord.init(
         allocator,
-        value.metadata.uid,
-        null,
-        value.metadata.name,
+        value.metadata,
         .{ .kind = value.roleRef.kind, .name = value.roleRef.name },
-        value.metadata.creationTimestamp,
     );
 }

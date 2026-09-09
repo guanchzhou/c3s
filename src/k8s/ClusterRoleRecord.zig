@@ -7,10 +7,7 @@ pub const ClusterRoleRecord = support.Record(support.NoExtra, false, 0);
 pub fn fromClusterRole(allocator: std.mem.Allocator, value: klient.ClusterRole) !ClusterRoleRecord {
     return ClusterRoleRecord.init(
         allocator,
-        value.metadata.uid,
-        null,
-        value.metadata.name,
+        value.metadata,
         .{},
-        value.metadata.creationTimestamp,
     );
 }

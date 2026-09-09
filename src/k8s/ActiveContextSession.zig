@@ -1,5 +1,7 @@
 const std = @import("std");
 const klient = @import("klient");
+const task15 = @import("../task15_diagnostics.zig");
+const read_transport = @import("ReadTransport.zig");
 
 pub const Generation = u64;
 
@@ -61,6 +63,12 @@ pub const SessionState = enum(u8) {
     teardown_ready,
 };
 
+pub const TransportMode = enum(u8) {
+    klient,
+    direct_curl,
+    proxy,
+};
+
 pub const LifecycleEvent = enum {
     proxy_kill,
     client_deinit,
@@ -109,14 +117,44 @@ pub const ReadinessProbe = struct {
     fn alwaysReadyFn(_: *anyopaque, _: *ActiveContextSession) anyerror!void {}
 
     fn clientVersionFn(_: *anyopaque, session: *ActiveContextSession) anyerror!void {
-        const body = try session.client.request(.GET, "/version", null);
+        const target = try task15.enforceRequest(.GET, "/version");
+        emitRequestAudit(session.spec.context_name, target, null, "start");
+        const body = session.client.request(.GET, "/version", null) catch |err| {
+            emitRequestAudit(session.spec.context_name, target, null, "terminal");
+            return err;
+        };
         session.allocator.free(body);
+        emitRequestAudit(session.spec.context_name, target, 200, "none");
     }
 
     fn verify(self: ReadinessProbe, session: *ActiveContextSession) !void {
         try self.verify_fn(self.context, session);
     }
 };
+
+fn emitRequestAudit(
+    context_name: []const u8,
+    target: task15.SanitizedRequest,
+    status: ?u16,
+    retry_class: []const u8,
+) void {
+    var writer = task15.Writer.initFromEnv();
+    writer.emit(.{
+        .event = .request_audit,
+        .context = context_name,
+        .scope = target.scope,
+        .family = task15.familyForResource(target.resource),
+        .method = .GET,
+        .api_group = target.api_group,
+        .resource = target.resource,
+        .subresource = target.subresource,
+        .endpoint_class = target.endpoint_class,
+        .status = status,
+        .retry_class = retry_class,
+        .identity_fingerprint = target.identity_fingerprint,
+        .query_fingerprint = target.query_fingerprint,
+    });
+}
 
 pub const CredentialProvider = struct {
     allocator: std.mem.Allocator,
@@ -260,26 +298,26 @@ pub const ProxyStarter = struct {
     }
 };
 
-pub const FallbackProbe = struct {
+pub const DirectCurlProbe = struct {
     context: *anyopaque,
     verify_fn: *const fn (*anyopaque, *ActiveContextSession) anyerror!void,
 
     pub fn init(
         context: anytype,
         verify_fn: *const fn (*anyopaque, *ActiveContextSession) anyerror!void,
-    ) FallbackProbe {
+    ) DirectCurlProbe {
         return .{ .context = @ptrCast(context), .verify_fn = verify_fn };
     }
 
-    pub fn production() FallbackProbe {
+    pub fn production() DirectCurlProbe {
         return init(&probe_sentinel, productionVerify);
     }
 
     fn productionVerify(_: *anyopaque, session: *ActiveContextSession) anyerror!void {
-        try session.verifyKubectlFallback();
+        try session.verifyDirectCurl();
     }
 
-    fn verify(self: FallbackProbe, session: *ActiveContextSession) !void {
+    fn verify(self: DirectCurlProbe, session: *ActiveContextSession) !void {
         try self.verify_fn(self.context, session);
     }
 };
@@ -358,7 +396,21 @@ pub const RequestLease = struct {
 
     pub fn client(self: *RequestLease) !*klient.K8sClient {
         if (self.released) return error.LeaseReleased;
-        return self.session.client;
+        return self.session.requestClient();
+    }
+
+    pub fn contextName(self: *RequestLease) ![]const u8 {
+        if (self.released) return error.LeaseReleased;
+        return self.session.spec.context_name;
+    }
+
+    pub fn readTransport(
+        self: *RequestLease,
+        io: std.Io,
+        cancel_requested: *const std.atomic.Value(bool),
+    ) !read_transport.TransportAdapter {
+        if (self.released) return error.LeaseReleased;
+        return self.session.requestTransportAdapter(io, cancel_requested);
     }
 
     pub fn release(self: *RequestLease) void {
@@ -379,6 +431,7 @@ pub const ActiveContextSession = struct {
     pub const RequestView = struct {
         use_kubectl: bool,
         proxy_port: ?u16,
+        transport_mode: TransportMode,
         context_name: []const u8,
         kubeconfig_path: ?[]const u8,
         credentials: *CredentialProvider,
@@ -390,13 +443,13 @@ pub const ActiveContextSession = struct {
         cluster_name: []const u8,
         user_name: []const u8,
         credential_provider: ?CredentialProvider = null,
-        proxy: ?ProxyOwner = null,
-        use_kubectl: bool = false,
+        direct_curl_allowed: bool = false,
+        defer_curl_readiness: bool = false,
+        direct_curl_probe: DirectCurlProbe = DirectCurlProbe.production(),
         readiness: ReadinessProbe = ReadinessProbe.clientVersion(),
         readiness_verified: bool = false,
         observer: ?LifecycleObserver = null,
         proxy_starter: ?ProxyStarter = null,
-        fallback_probe: FallbackProbe = FallbackProbe.production(),
     };
 
     allocator: std.mem.Allocator,
@@ -407,15 +460,18 @@ pub const ActiveContextSession = struct {
     cluster_name: []const u8,
     user_name: []const u8,
     client: *klient.K8sClient,
+    proxy_client: ?*klient.K8sClient,
     credential_provider: CredentialProvider,
     proxy: ?ProxyOwner,
     use_kubectl: bool,
+    transport_mode: TransportMode,
+    direct_curl_allowed: bool,
+    defer_curl_readiness: bool,
+    direct_curl_probe: DirectCurlProbe,
     readiness: ReadinessProbe,
     readiness_verified: bool,
-    fallback_attempted: bool = false,
     observer: ?LifecycleObserver,
     proxy_starter: ?ProxyStarter,
-    fallback_probe: FallbackProbe,
     lease_count: std.atomic.Value(usize) = .init(0),
     lease_epoch: std.atomic.Value(u64) = .init(0),
     state: std.atomic.Value(SessionState) = .init(.preparing),
@@ -446,15 +502,19 @@ pub const ActiveContextSession = struct {
             .cluster_name = cluster_name,
             .user_name = user_name,
             .client = options.client,
+            .proxy_client = null,
             .credential_provider = options.credential_provider orelse CredentialProvider.empty(allocator),
-            .proxy = options.proxy,
-            .use_kubectl = options.use_kubectl or options.proxy != null,
+            .proxy = null,
+            .use_kubectl = false,
+            .transport_mode = .klient,
+            .direct_curl_allowed = options.direct_curl_allowed,
+            .defer_curl_readiness = options.defer_curl_readiness,
+            .direct_curl_probe = options.direct_curl_probe,
             .readiness = options.readiness,
             .readiness_verified = options.readiness_verified,
             .observer = options.observer,
             .proxy_starter = options.proxy_starter,
-            .fallback_probe = options.fallback_probe,
-            .proxy_state = if (options.proxy != null) .ready else .stopped,
+            .proxy_state = .stopped,
         };
         return session;
     }
@@ -532,32 +592,35 @@ pub const ActiveContextSession = struct {
 
         var force_proxy = requested_spec.force_proxy or
             user.client_certificate_data != null or user.client_certificate != null;
+        const direct_curl_allowed = task15.isLiveMode();
         if (user.exec) |exec_config| {
             const command = exec_config.command orelse return error.ExecCommandMissing;
             const api_version = exec_config.api_version orelse
                 "client.authentication.k8s.io/v1beta1";
             try credentials.setExecConfig(command, exec_config.args, api_version);
-            const parsed_result = klient.exec_credential.executeCredentialPlugin(
-                allocator,
-                io,
-                .{
-                    .command = command,
-                    .args = exec_config.args,
-                    .apiVersion = api_version,
-                },
-            );
-            if (parsed_result) |parsed| {
-                defer parsed.deinit();
-                if (parsed.value.status) |status| {
-                    if (status.token) |value| {
-                        try credentials.replaceToken(value);
-                        token = credentials.auth_token;
-                        std.crypto.secureZero(u8, @constCast(value));
+            if (!force_proxy or direct_curl_allowed) {
+                const parsed_result = klient.exec_credential.executeCredentialPlugin(
+                    allocator,
+                    io,
+                    .{
+                        .command = command,
+                        .args = exec_config.args,
+                        .apiVersion = api_version,
+                    },
+                );
+                if (parsed_result) |parsed| {
+                    defer parsed.deinit();
+                    if (parsed.value.status) |status| {
+                        if (status.token) |value| {
+                            try credentials.replaceToken(value);
+                            token = credentials.auth_token;
+                            std.crypto.secureZero(u8, @constCast(value));
+                        }
                     }
+                } else |_| {
+                    force_proxy = true;
+                    token = null;
                 }
-            } else |_| {
-                force_proxy = true;
-                token = null;
             }
         }
 
@@ -593,7 +656,8 @@ pub const ActiveContextSession = struct {
             .cluster_name = cluster.name,
             .user_name = user.name,
             .credential_provider = credentials,
-            .use_kubectl = force_proxy,
+            .direct_curl_allowed = direct_curl_allowed,
+            .defer_curl_readiness = direct_curl_allowed,
         });
         client_transferred = true;
         credentials_owned = false;
@@ -620,14 +684,28 @@ pub const ActiveContextSession = struct {
 
         if (!force_proxy) {
             self.verifyReady() catch {
-                self.startProxy() catch return self.verifyFallbackOnce();
-                return self.markReady();
+                if (self.direct_curl_allowed) {
+                    if (!self.defer_curl_readiness) self.direct_curl_probe.verify(self) catch {
+                        self.startProxy() catch return error.ReadinessFailed;
+                        return self.markReady(.proxy);
+                    };
+                    return self.markReady(.direct_curl);
+                }
+                self.startProxy() catch return error.ReadinessFailed;
+                return self.markReady(.proxy);
             };
-            return self.markReady();
+            return self.markReady(.klient);
         }
 
-        self.startProxy() catch return self.verifyFallbackOnce();
-        return self.markReady();
+        if (self.direct_curl_allowed) {
+            if (!self.defer_curl_readiness) self.direct_curl_probe.verify(self) catch {
+                self.startProxy() catch return error.ReadinessFailed;
+                return self.markReady(.proxy);
+            };
+            return self.markReady(.direct_curl);
+        }
+        self.startProxy() catch return error.ReadinessFailed;
+        return self.markReady(.proxy);
     }
 
     pub fn isReady(self: *ActiveContextSession) bool {
@@ -666,29 +744,144 @@ pub const ActiveContextSession = struct {
             self.startProxyOwned()) catch |err| {
             self.mutex.lockUncancelable(self.io);
             self.proxy_state = .failed;
-            self.use_kubectl = true;
+            self.use_kubectl = false;
             self.proxy_condition.broadcast(self.io);
             self.mutex.unlock(self.io);
             return err;
         };
+        var proxy_owned = true;
+        errdefer if (proxy_owned) {
+            proxy.kill(self.io);
+            proxy.deinit(self.allocator);
+            self.markProxyFailed();
+        };
+
+        const proxy_server = try std.fmt.allocPrint(
+            self.allocator,
+            "http://127.0.0.1:{d}",
+            .{proxy.port},
+        );
+        defer self.allocator.free(proxy_server);
+        var proxy_client_value = try klient.K8sClient.init(self.allocator, self.io, .{
+            .server = proxy_server,
+            .namespace = self.client.namespace,
+            .max_response_size = self.client.max_response_size,
+        });
+        var proxy_client_owned = true;
+        errdefer if (proxy_client_owned) proxy_client_value.deinit();
+        const proxy_client = try self.allocator.create(klient.K8sClient);
+        proxy_client.* = proxy_client_value;
+        proxy_client_owned = false;
 
         self.mutex.lockUncancelable(self.io);
         if (self.state.load(.acquire) == .invalidated) {
             self.mutex.unlock(self.io);
-            proxy.kill(self.io);
-            proxy.deinit(self.allocator);
-            self.mutex.lockUncancelable(self.io);
-            self.proxy_state = .failed;
-            self.proxy_condition.broadcast(self.io);
-            self.mutex.unlock(self.io);
+            proxy_client.deinit();
+            self.allocator.destroy(proxy_client);
             return error.SessionInvalidated;
         }
         std.debug.assert(self.proxy == null);
+        std.debug.assert(self.proxy_client == null);
         self.proxy = proxy;
+        self.proxy_client = proxy_client;
+        proxy_owned = false;
         self.proxy_state = .ready;
         self.use_kubectl = true;
+        self.transport_mode = .proxy;
         self.proxy_condition.broadcast(self.io);
         self.mutex.unlock(self.io);
+    }
+
+    fn markProxyFailed(self: *ActiveContextSession) void {
+        self.mutex.lockUncancelable(self.io);
+        self.proxy_state = .failed;
+        self.use_kubectl = false;
+        self.proxy_condition.broadcast(self.io);
+        self.mutex.unlock(self.io);
+    }
+
+    fn requestClient(self: *ActiveContextSession) *klient.K8sClient {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        return self.proxy_client orelse self.client;
+    }
+
+    fn requestTransportAdapter(
+        self: *ActiveContextSession,
+        io: std.Io,
+        cancel_requested: *const std.atomic.Value(bool),
+    ) read_transport.TransportAdapter {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        return switch (self.transport_mode) {
+            .klient => .{ .klient = .{
+                .client = self.client,
+                .io = io,
+                .context_name = self.spec.context_name,
+                .cancel_requested = cancel_requested,
+            } },
+            .proxy => .{ .klient = .{
+                .client = self.proxy_client.?,
+                .io = io,
+                .context_name = self.spec.context_name,
+                .cancel_requested = cancel_requested,
+            } },
+            .direct_curl => .{ .fallback = .{
+                .context = self,
+                .io = io,
+                .cancel_requested = cancel_requested,
+                .get_fn = fallbackCurlGet,
+            } },
+        };
+    }
+
+    fn fallbackCurlGet(
+        raw: *anyopaque,
+        io: std.Io,
+        cancel_requested: *const std.atomic.Value(bool),
+        request: read_transport.ReadRequest,
+        callback_context: *anyopaque,
+        callback: read_transport.ReadCallback,
+    ) anyerror!void {
+        const self: *ActiveContextSession = @ptrCast(@alignCast(raw));
+        var final_curl_error: ?anyerror = null;
+        for (0..2) |attempt| {
+            var callback_error: ?anyerror = null;
+            var curl = read_transport.CurlTransport{
+                .allocator = self.allocator,
+                .io = io,
+                .config = .{
+                    .server = self.client.api_server,
+                    .token = self.credential_provider.auth_token,
+                    .ca_pem = self.credential_provider.tls_ca_data,
+                    .client_cert_pem = self.credential_provider.tls_cert_data,
+                    .client_key_pem = self.credential_provider.tls_key_data,
+                },
+                .context_name = self.spec.context_name,
+                .cancel_requested = cancel_requested,
+                .callback_error_out = &callback_error,
+                .recoverable_transport_errors = true,
+            };
+            curl.transport().get(request, callback_context, callback) catch |curl_error| {
+                if (callback_error) |err| return err;
+                if (curl_error == error.Canceled or cancel_requested.load(.acquire))
+                    return error.Canceled;
+                if (attempt == 0) continue;
+                final_curl_error = curl_error;
+                break;
+            };
+            return;
+        }
+
+        const curl_error = final_curl_error orelse return error.CurlFailed;
+        self.startProxy() catch return curl_error;
+        var proxy = read_transport.KlientTransport{
+            .client = self.requestClient(),
+            .io = io,
+            .context_name = self.spec.context_name,
+            .cancel_requested = cancel_requested,
+        };
+        return proxy.transport().get(request, callback_context, callback);
     }
 
     pub fn acquireLocked(
@@ -713,6 +906,7 @@ pub const ActiveContextSession = struct {
         return .{
             .use_kubectl = self.use_kubectl,
             .proxy_port = if (self.proxy) |proxy| proxy.port else null,
+            .transport_mode = self.transport_mode,
             .context_name = self.spec.context_name,
             .kubeconfig_path = self.spec.kubeconfig_path,
             .credentials = &self.credential_provider,
@@ -758,10 +952,16 @@ pub const ActiveContextSession = struct {
             self.proxy_condition.waitUncancelable(self.io, &self.mutex);
         }
         var proxy = self.proxy;
+        const proxy_client = self.proxy_client;
         self.proxy = null;
+        self.proxy_client = null;
         self.proxy_state = .stopped;
         self.mutex.unlock(self.io);
 
+        if (proxy_client) |owned_client| {
+            owned_client.deinit();
+            self.allocator.destroy(owned_client);
+        }
         if (proxy) |*owned_proxy| {
             self.emit(.proxy_kill);
             owned_proxy.kill(self.io);
@@ -784,32 +984,53 @@ pub const ActiveContextSession = struct {
         self.allocator.destroy(self);
     }
 
-    fn markReady(self: *ActiveContextSession) !void {
+    fn markReady(self: *ActiveContextSession, mode: TransportMode) !void {
         self.mutex.lockUncancelable(self.io);
         defer self.mutex.unlock(self.io);
         const current_state = self.state.load(.acquire);
         if (current_state == .invalidated or current_state == .teardown_ready) {
             return error.SessionInvalidated;
         }
+        if (mode == .proxy and
+            (self.proxy_state != .ready or self.proxy_client == null))
+        {
+            return error.ProxyNotReady;
+        }
+        self.transport_mode = mode;
         self.readiness_verified = true;
     }
 
-    fn verifyFallbackOnce(self: *ActiveContextSession) !void {
-        self.mutex.lockUncancelable(self.io);
-        if (self.readiness_verified) {
-            self.mutex.unlock(self.io);
-            return;
-        }
-        if (self.fallback_attempted) {
-            self.mutex.unlock(self.io);
-            return error.ReadinessFailed;
-        }
-        self.fallback_attempted = true;
-        self.use_kubectl = true;
-        self.mutex.unlock(self.io);
-
-        try self.fallback_probe.verify(self);
-        try self.markReady();
+    fn verifyDirectCurl(self: *ActiveContextSession) !void {
+        var canceled = std.atomic.Value(bool).init(false);
+        var adapter = read_transport.CurlTransport{
+            .allocator = self.allocator,
+            .io = self.io,
+            .config = .{
+                .server = self.client.api_server,
+                .token = self.credential_provider.auth_token,
+                .ca_pem = self.credential_provider.tls_ca_data,
+                .client_cert_pem = self.credential_provider.tls_cert_data,
+                .client_key_pem = self.credential_provider.tls_key_data,
+            },
+            .context_name = self.spec.context_name,
+            .cancel_requested = &canceled,
+        };
+        const Probe = struct {
+            fn receive(
+                _: *anyopaque,
+                meta: read_transport.ResponseMeta,
+                reader: *std.Io.Reader,
+            ) anyerror!void {
+                if (meta.status.class() != .success) return error.ReadinessFailed;
+                _ = try reader.discardRemaining();
+            }
+        };
+        var callback_context: u8 = 0;
+        try adapter.transport().get(
+            try read_transport.ReadRequest.init("/version"),
+            &callback_context,
+            Probe.receive,
+        );
     }
 
     fn releaseLease(
@@ -823,32 +1044,8 @@ pub const ActiveContextSession = struct {
         shared_event.set(self.io);
     }
 
-    fn verifyKubectlFallback(self: *ActiveContextSession) !void {
-        var argv: std.ArrayListUnmanaged([]const u8) = .empty;
-        defer argv.deinit(self.allocator);
-        try argv.append(self.allocator, "kubectl");
-        if (self.spec.kubeconfig_path) |path| {
-            try argv.append(self.allocator, "--kubeconfig");
-            try argv.append(self.allocator, path);
-        }
-        try argv.append(self.allocator, "--context");
-        try argv.append(self.allocator, self.spec.context_name);
-        try argv.append(self.allocator, "get");
-        try argv.append(self.allocator, "--raw");
-        try argv.append(self.allocator, "/version");
-        const result = try std.process.run(self.allocator, self.io, .{
-            .argv = argv.items,
-            .stdout_limit = .limited(1024 * 1024),
-            .stderr_limit = .limited(1024 * 1024),
-        });
-        defer self.allocator.free(result.stdout);
-        defer self.allocator.free(result.stderr);
-        if (result.term != .exited or result.term.exited != 0) {
-            return error.ReadinessFailed;
-        }
-    }
-
     fn startProxyOwned(self: *ActiveContextSession) !ProxyOwner {
+        const target = try task15.enforceRequest(.GET, "/version");
         var address: std.Io.net.IpAddress = .{ .ip4 = .loopback(0) };
         var reservation = try address.listen(self.io, .{});
         const port = reservation.socket.address.getPort();
@@ -884,26 +1081,33 @@ pub const ActiveContextSession = struct {
             .{port},
         );
         defer self.allocator.free(url);
-        const ready = try std.process.run(self.allocator, self.io, .{
-            .argv = &.{
-                "curl",
-                "-sf",
-                "--retry",
-                "10",
-                "--retry-connrefused",
-                "--retry-delay",
-                "0",
-                "--max-time",
-                "5",
-                url,
-            },
-            .stdout_limit = .limited(1024 * 1024),
-        });
-        defer self.allocator.free(ready.stdout);
-        defer self.allocator.free(ready.stderr);
-        if (ready.term != .exited or ready.term.exited != 0) {
+        emitRequestAudit(self.spec.context_name, target, null, "start");
+        var proxy_ready = false;
+        for (0..80) |_| {
+            const probe = std.process.run(self.allocator, self.io, .{
+                .argv = &.{ "curl", "-sf", "--max-time", "0.2", url },
+                .stdout_limit = .limited(1024 * 1024),
+            }) catch |err| {
+                emitRequestAudit(self.spec.context_name, target, null, "terminal");
+                return err;
+            };
+            const succeeded = probe.term == .exited and probe.term.exited == 0;
+            self.allocator.free(probe.stdout);
+            self.allocator.free(probe.stderr);
+            if (succeeded) {
+                proxy_ready = true;
+                break;
+            }
+            self.io.sleep(.{ .nanoseconds = 50 * std.time.ns_per_ms }, .awake) catch |err| {
+                emitRequestAudit(self.spec.context_name, target, null, "terminal");
+                return err;
+            };
+        }
+        if (!proxy_ready) {
+            emitRequestAudit(self.spec.context_name, target, null, "terminal");
             return error.ProxyNotReady;
         }
+        emitRequestAudit(self.spec.context_name, target, 200, "none");
 
         const proxy = try ProxyOwner.fromChild(self.allocator, child, port);
         child_owned = false;
@@ -914,3 +1118,137 @@ pub const ActiveContextSession = struct {
         if (self.observer) |observer| observer.emit(event);
     }
 };
+
+test "request leases route streaming clients through an owned proxy" {
+    const ProxyHarness = struct {
+        kills: usize = 0,
+        deinits: usize = 0,
+
+        fn start(context: *anyopaque, _: *ActiveContextSession) anyerror!ProxyOwner {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            return ProxyOwner.init(self, 43124, kill, deinit);
+        }
+
+        fn kill(context: *anyopaque, _: std.Io) void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.kills += 1;
+        }
+
+        fn deinit(context: *anyopaque, _: std.mem.Allocator) void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.deinits += 1;
+        }
+    };
+
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var shared_event: std.Io.Event = .unset;
+    var proxy_harness = ProxyHarness{};
+    const direct_client = try allocator.create(klient.K8sClient);
+    errdefer allocator.destroy(direct_client);
+    direct_client.* = try klient.K8sClient.init(allocator, io, .{
+        .server = "https://cluster.example.test",
+        .namespace = "default",
+    });
+    errdefer direct_client.deinit();
+
+    const session = try ActiveContextSession.adopt(
+        allocator,
+        io,
+        1,
+        .{
+            .context_name = "readonly",
+            .kubeconfig_path = null,
+            .default_namespace = "default",
+            .force_proxy = true,
+            .readonly = true,
+        },
+        .{
+            .shared_event = &shared_event,
+            .client = direct_client,
+            .cluster_name = "cluster",
+            .user_name = "user",
+            .readiness_verified = true,
+            .proxy_starter = ProxyStarter.init(&proxy_harness, ProxyHarness.start),
+        },
+    );
+
+    try session.startProxy();
+    try session.activateLocked();
+    var lease = try session.acquireLocked(.list_watch, &shared_event);
+    try std.testing.expectEqualStrings(
+        "http://127.0.0.1:43124",
+        (try lease.client()).api_server,
+    );
+    lease.release();
+    session.invalidate();
+    session.deinit();
+    try std.testing.expectEqual(@as(usize, 1), proxy_harness.kills);
+    try std.testing.expectEqual(@as(usize, 1), proxy_harness.deinits);
+}
+
+test "Task 15 readiness selects direct curl before proxy" {
+    const Harness = struct {
+        curl_calls: usize = 0,
+        proxy_calls: usize = 0,
+
+        fn curlReady(context: *anyopaque, _: *ActiveContextSession) anyerror!void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.curl_calls += 1;
+        }
+
+        fn startProxy(context: *anyopaque, _: *ActiveContextSession) anyerror!ProxyOwner {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.proxy_calls += 1;
+            return error.ProxyMustNotStart;
+        }
+    };
+
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var shared_event: std.Io.Event = .unset;
+    var harness = Harness{};
+    const client = try allocator.create(klient.K8sClient);
+    client.* = try klient.K8sClient.init(allocator, io, .{
+        .server = "https://cluster.example.test",
+        .token = "secret",
+        .namespace = "default",
+    });
+    const session = try ActiveContextSession.adopt(
+        allocator,
+        io,
+        7,
+        .{
+            .context_name = "dev4.as",
+            .kubeconfig_path = null,
+            .default_namespace = "default",
+            .force_proxy = true,
+            .readonly = true,
+        },
+        .{
+            .shared_event = &shared_event,
+            .client = client,
+            .cluster_name = "cluster",
+            .user_name = "user",
+            .direct_curl_allowed = true,
+            .direct_curl_probe = DirectCurlProbe.init(&harness, Harness.curlReady),
+            .proxy_starter = ProxyStarter.init(&harness, Harness.startProxy),
+        },
+    );
+    try session.ensureReady();
+    try std.testing.expectEqual(TransportMode.direct_curl, session.requestView().transport_mode);
+    try std.testing.expectEqual(@as(usize, 1), harness.curl_calls);
+    try std.testing.expectEqual(@as(usize, 0), harness.proxy_calls);
+
+    try session.activateLocked();
+    var lease = try session.acquireLocked(.list_watch, &shared_event);
+    var canceled = std.atomic.Value(bool).init(false);
+    const adapter = try lease.readTransport(io, &canceled);
+    try std.testing.expectEqual(
+        std.meta.Tag(read_transport.TransportAdapter).fallback,
+        std.meta.activeTag(adapter),
+    );
+    lease.release();
+    session.invalidate();
+    session.deinit();
+}

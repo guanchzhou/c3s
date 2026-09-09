@@ -7,6 +7,7 @@ const session_mod = @import("ActiveContextSession.zig");
 
 pub const Generation = keys.Generation;
 pub const SubscriptionId = keys.SubscriptionId;
+pub const RequestKey = keys.RequestKey;
 pub const ErrorDetail = keys.ErrorDetail;
 pub const Envelope = keys.Envelope;
 pub const OwnedContextSpec = session_mod.OwnedContextSpec;
@@ -15,7 +16,6 @@ pub const ActiveContextSession = session_mod.ActiveContextSession;
 pub const RequestLease = session_mod.RequestLease;
 
 pub const SwitchId = u64;
-pub const RequestId = u64;
 
 pub const ChildKey = struct {
     slot: u16,
@@ -62,7 +62,7 @@ pub const OwnedTaskSpec = struct {
     ptr: ?*anyopaque = null,
     alignment: std.mem.Alignment = .@"1",
     owned_bytes: usize = 0,
-    lease_purpose: session_mod.LeasePurpose = .list_watch,
+    lease_purpose: ?session_mod.LeasePurpose = null,
     bindFn: *const fn (?*anyopaque, Generation, SubscriptionId) void = noopSpecBind,
     runFn: *const fn (?*anyopaque, *ChildControl, std.Io) anyerror!void = noopRun,
     deinitFn: *const fn (?*anyopaque, std.mem.Alignment, std.mem.Allocator) void = noopSpecDeinit,
@@ -98,7 +98,7 @@ pub const LifecycleCommand = union(enum) {
     start_request: struct {
         child_key: ChildKey,
         expected_generation: Generation,
-        request_id: RequestId,
+        key: RequestKey,
         spec: OwnedTaskSpec,
     },
     retire: Generation,
@@ -138,9 +138,14 @@ pub const LifecycleCompletion = union(enum) {
     context_failed: struct { switch_id: SwitchId, detail: ErrorDetail },
     context_canceled: SwitchId,
     subscription_stopped: struct { key: SubscriptionKey, detail: ?ErrorDetail },
-    request_finished: struct { request_id: RequestId, ticket: OwnedPayloadTicket },
+    request_finished: struct {
+        key: RequestKey,
+        detail: ?ErrorDetail = null,
+        ticket: ?OwnedPayloadTicket = null,
+    },
     start_rejected: struct {
         child_key: ChildKey,
+        request_key: ?RequestKey = null,
         code: enum { stale_generation, capacity, shutting_down },
     },
     lifecycle_stalled: struct { generation: Generation, lease_count: usize },
@@ -149,7 +154,9 @@ pub const LifecycleCompletion = union(enum) {
 
     pub fn deinit(self: *LifecycleCompletion, allocator: std.mem.Allocator) void {
         switch (self.*) {
-            .request_finished => |*finished| finished.ticket.deinit(allocator),
+            .request_finished => |*finished| {
+                if (finished.ticket) |*ticket| ticket.deinit(allocator);
+            },
             else => {},
         }
         self.* = .shutdown_complete;
@@ -203,14 +210,31 @@ pub const ChildControl = struct {
     io: std.Io,
     shared_event: *std.Io.Event,
     allocator: std.mem.Allocator,
+    cancel_requested: std.atomic.Value(bool) = .init(false),
+    delivery_ready_count: ?*std.atomic.Value(usize) = null,
+
+    pub fn isCancelRequested(raw: *const anyopaque) bool {
+        const self: *const ChildControl = @ptrCast(@alignCast(raw));
+        return self.cancel_requested.load(.acquire);
+    }
 
     pub fn publishDelivery(self: *ChildControl, envelope: Envelope) std.Io.Cancelable!DeliveryOutcome {
         std.debug.assert(self.outcome == .none);
+        if (self.cancel_requested.load(.acquire)) {
+            var owned = envelope;
+            owned.deinit(self.allocator);
+            return .abandoned;
+        }
         self.delivery_outcome.store(.pending, .release);
         self.outcome = .{ .delivery = envelope };
+        if (self.delivery_ready_count) |count| _ = count.fetchAdd(1, .acq_rel);
         self.phase.store(.delivery_ready, .release);
         self.shared_event.set(self.io);
-        try self.delivery_ack.wait(self.io);
+        while (self.delivery_outcome.load(.acquire) == .pending) {
+            if (self.delivery_ack.isSet()) break;
+            try std.Io.checkCancel(self.io);
+            try self.io.sleep(.{ .nanoseconds = std.time.ns_per_ms }, .awake);
+        }
         self.delivery_ack.reset();
         return self.delivery_outcome.load(.acquire);
     }
@@ -346,6 +370,15 @@ pub const CancellationIntents = struct {
             }
             return true;
         }
+    }
+
+    pub fn requestedCount(self: *const CancellationIntents) usize {
+        var count: usize = 0;
+        for (&self.cells) |*cell| {
+            const word = unpack(cell.load(.monotonic));
+            if (word.cancel_requested or word.state == .canceling) count += 1;
+        }
+        return count;
     }
 
     fn transition(

@@ -1,8 +1,18 @@
 const std = @import("std");
 const lifecycle = @import("LifecycleInbox.zig");
 const keys = @import("ResourceKey.zig");
+const read_transport = @import("ReadTransport.zig");
 
 pub const Request = enum { none, start, restart };
+
+pub const Task14SpecExtras = struct {
+    transport: read_transport.ReadTransport,
+    hold_watch: bool = true,
+    deinit_counter: ?*std.atomic.Value(usize) = null,
+    convert_allocator: ?std.mem.Allocator = null,
+    emit_allocator: ?std.mem.Allocator = null,
+    retry_wait_entered: ?*std.atomic.Value(bool) = null,
+};
 
 pub const Entry = struct {
     name: []const u8,
@@ -10,10 +20,11 @@ pub const Entry = struct {
     view: *anyopaque,
     active: ?lifecycle.SubscriptionKey = null,
     restart_pending: bool = false,
-    enabledFn: *const fn () bool,
     takeRequestFn: *const fn (*anyopaque) Request,
     markStartedFn: *const fn (*anyopaque) void,
     markStoppedFn: *const fn (*anyopaque) void,
+    refreshFn: *const fn (*anyopaque) anyerror!void,
+    setErrorFn: *const fn (*anyopaque, []const u8) anyerror!void,
     allNamespacesFn: *const fn (*anyopaque) bool,
     syncFn: *const fn (*anyopaque) anyerror!void,
     taskSpecFn: *const fn (
@@ -21,6 +32,13 @@ pub const Entry = struct {
         []const u8,
         ?[]const u8,
         *anyopaque,
+    ) anyerror!lifecycle.OwnedTaskSpec,
+    task14InjectedSpecFn: *const fn (
+        std.mem.Allocator,
+        []const u8,
+        ?[]const u8,
+        *anyopaque,
+        Task14SpecExtras,
     ) anyerror!lifecycle.OwnedTaskSpec,
 
     pub fn init(
@@ -30,7 +48,6 @@ pub const Entry = struct {
         name: []const u8,
         projection: *@import("ResourceProjection.zig").ResourceProjection(Record),
         view: *ViewType,
-        comptime enabled_fn: fn () bool,
     ) Entry {
         const SubscriptionType = Subscription;
         const Adapter = struct {
@@ -52,6 +69,16 @@ pub const Entry = struct {
 
             fn markStopped(raw: *anyopaque) void {
                 typedView(raw).markSubscriptionStopped();
+            }
+
+            fn refresh(raw: *anyopaque) anyerror!void {
+                try typedView(raw).refresh();
+            }
+
+            fn setError(raw: *anyopaque, message: []const u8) anyerror!void {
+                const typed = typedView(raw);
+                typed.table.loading = false;
+                try typed.table.setError(message);
             }
 
             fn allNamespaces(raw: *anyopaque) bool {
@@ -77,32 +104,51 @@ pub const Entry = struct {
                     .projection = typed_projection,
                 });
             }
+
+            fn task14InjectedSpec(
+                allocator: std.mem.Allocator,
+                context_name: []const u8,
+                scope_namespace: ?[]const u8,
+                raw_projection: *anyopaque,
+                extras: Task14SpecExtras,
+            ) anyerror!lifecycle.OwnedTaskSpec {
+                const Projection = @import("ResourceProjection.zig").ResourceProjection(Record);
+                const typed_projection: *Projection = @ptrCast(@alignCast(raw_projection));
+                return SubscriptionType.ownedTaskSpec(allocator, .{
+                    .context_name = context_name,
+                    .namespace = scope_namespace,
+                    .projection = typed_projection,
+                    .transport_override = extras.transport,
+                    .hold_watch = extras.hold_watch,
+                    .deinit_counter = extras.deinit_counter,
+                    .retry_wait_entered = extras.retry_wait_entered,
+                    .convert_allocator = extras.convert_allocator,
+                    .emit_allocator = extras.emit_allocator,
+                });
+            }
         };
         return .{
             .name = name,
             .projection = @ptrCast(projection),
             .view = @ptrCast(view),
-            .enabledFn = enabled_fn,
             .takeRequestFn = Adapter.takeRequest,
             .markStartedFn = Adapter.markStarted,
             .markStoppedFn = Adapter.markStopped,
+            .refreshFn = Adapter.refresh,
+            .setErrorFn = Adapter.setError,
             .allNamespacesFn = Adapter.allNamespaces,
             .syncFn = Adapter.sync,
             .taskSpecFn = Adapter.taskSpec,
+            .task14InjectedSpecFn = Adapter.task14InjectedSpec,
         };
     }
 
     pub fn takeRequest(self: *Entry) Request {
-        if (!self.enabledFn()) return .none;
         return self.takeRequestFn(self.view);
     }
 
     pub fn namespace(self: *const Entry, current_namespace: []const u8) ?[]const u8 {
         return if (self.allNamespacesFn(self.view)) null else current_namespace;
-    }
-
-    pub fn enabled(self: *const Entry) bool {
-        return self.enabledFn();
     }
 
     pub fn markStarted(self: *Entry, active: lifecycle.SubscriptionKey) void {
@@ -113,6 +159,14 @@ pub const Entry = struct {
     pub fn markStopped(self: *Entry) void {
         self.active = null;
         self.markStoppedFn(self.view);
+    }
+
+    pub fn refresh(self: *Entry) !void {
+        try self.refreshFn(self.view);
+    }
+
+    pub fn setError(self: *Entry, message: []const u8) !void {
+        try self.setErrorFn(self.view, message);
     }
 };
 
@@ -181,6 +235,14 @@ pub const Registry = struct {
         return false;
     }
 
+    pub fn activeIdentityCount(self: *const Registry) usize {
+        var count: usize = 0;
+        for (self.itemsConst()) |entry| {
+            if (entry.active != null) count += 1;
+        }
+        return count;
+    }
+
     pub fn complete(
         self: *Registry,
         identity: ?keys.ResourceIdentity,
@@ -211,10 +273,6 @@ test "dynamic registry rebind survives entry buffer reallocation" {
     const Probe = struct {
         request: Request = .start,
 
-        fn enabled() bool {
-            return true;
-        }
-
         fn take(raw: *anyopaque) Request {
             const self: *@This() = @ptrCast(@alignCast(raw));
             return self.request;
@@ -227,13 +285,15 @@ test "dynamic registry rebind survives entry buffer reallocation" {
         .name = "entry",
         .projection = @ptrCast(&probe),
         .view = @ptrCast(&probe),
-        .enabledFn = Probe.enabled,
         .takeRequestFn = Probe.take,
         .markStartedFn = Probe.mark,
         .markStoppedFn = Probe.mark,
+        .refreshFn = undefined,
+        .setErrorFn = undefined,
         .allNamespacesFn = undefined,
         .syncFn = undefined,
         .taskSpecFn = undefined,
+        .task14InjectedSpecFn = undefined,
     };
     var storage: std.ArrayListUnmanaged(Entry) = .empty;
     defer storage.deinit(std.testing.allocator);
@@ -263,11 +323,6 @@ test "family registry matches and completes only exact identities" {
     const key = lifecycle.SubscriptionKey{ .generation = 7, .subscription_id = 9 };
     entries[0].active = key;
     entries[0].view = undefined;
-    entries[0].enabledFn = struct {
-        fn call() bool {
-            return true;
-        }
-    }.call;
     entries[0].markStoppedFn = struct {
         fn call(_: *anyopaque) void {}
     }.call;
@@ -301,9 +356,6 @@ fn exerciseEntryScope(
         fn sort(record: *const Record, _: u8) []const u8 {
             return record.key.name;
         }
-        fn enabled() bool {
-            return true;
-        }
         fn columns(
             _: *Projection,
             record: *const Record,
@@ -325,7 +377,6 @@ fn exerciseEntryScope(
     view.bindProjection(ViewType.ProjectionAdapter.init(
         Record,
         &projection,
-        Fns.enabled,
         Fns.columns,
     ));
     var entry = Entry.init(
@@ -335,7 +386,6 @@ fn exerciseEntryScope(
         ViewType.view_config.name,
         &projection,
         &view,
-        Fns.enabled,
     );
     try std.testing.expectEqual(
         ViewType.view_config.default_all_namespaces,
@@ -374,7 +424,7 @@ fn exerciseEntryScope(
     }
 }
 
-test "production family entries map all namespace scope to null task specs" {
+pub fn runTask14ProductionScopeGate() !void {
     const klient = @import("klient");
     const SubscriptionFactory = @import("ResourceSubscription.zig").ResourceSubscription;
     const configs = @import("../view/resource_configs.zig");
@@ -404,6 +454,38 @@ test "production family entries map all namespace scope to null task specs" {
     const StorageClassRecord = @import("StorageClassRecord.zig");
     const VolumeAttributesClassRecord = @import("VolumeAttributesClassRecord.zig");
     const CSIDriverRecord = @import("CSIDriverRecord.zig");
+    const GatewayClassRecord = @import("GatewayClassRecord.zig");
+    const GatewayRecord = @import("GatewayRecord.zig");
+    const HTTPRouteRecord = @import("HTTPRouteRecord.zig");
+    const GRPCRouteRecord = @import("GRPCRouteRecord.zig");
+    const ReferenceGrantRecord = @import("ReferenceGrantRecord.zig");
+    const TCPRouteRecord = @import("TCPRouteRecord.zig");
+    const TLSRouteRecord = @import("TLSRouteRecord.zig");
+    const UDPRouteRecord = @import("UDPRouteRecord.zig");
+    const BackendTLSPolicyRecord = @import("BackendTLSPolicyRecord.zig");
+    const ListenerSetRecord = @import("ListenerSetRecord.zig");
+    const role_record = @import("RoleRecord.zig");
+    const role_binding_record = @import("RoleBindingRecord.zig");
+    const cluster_role_record = @import("ClusterRoleRecord.zig");
+    const cluster_role_binding_record = @import("ClusterRoleBindingRecord.zig");
+    const RoleRecord = role_record.RoleRecord;
+    const RoleBindingRecord = role_binding_record.RoleBindingRecord;
+    const ClusterRoleRecord = cluster_role_record.ClusterRoleRecord;
+    const ClusterRoleBindingRecord = cluster_role_binding_record.ClusterRoleBindingRecord;
+    const validating_policy_record = @import("ValidatingAdmissionPolicyRecord.zig");
+    const validating_binding_record = @import("ValidatingAdmissionPolicyBindingRecord.zig");
+    const mutating_policy_record = @import("MutatingAdmissionPolicyRecord.zig");
+    const mutating_binding_record = @import("MutatingAdmissionPolicyBindingRecord.zig");
+    const validating_webhook_record = @import("ValidatingWebhookConfigurationRecord.zig");
+    const mutating_webhook_record = @import("MutatingWebhookConfigurationRecord.zig");
+    const ResourceClaimRecord = @import("ResourceClaimRecord.zig");
+    const DeviceClassRecord = @import("DeviceClassRecord.zig");
+    const PriorityClassRecord = @import("PriorityClassRecord.zig");
+    const RuntimeClassRecord = @import("RuntimeClassRecord.zig");
+    const LeaseRecord = @import("LeaseRecord.zig");
+    const CSRRecord = @import("CSRRecord.zig");
+    const StorageVersionMigrationRecord = @import("StorageVersionMigrationRecord.zig");
+    const EventRecord = @import("EventRecord.zig");
     try exerciseEntryScope(
         ServiceRecord,
         SubscriptionFactory(klient.Service, ServiceRecord, ServiceRecord.fromService),
@@ -560,4 +642,36 @@ test "production family entries map all namespace scope to null task specs" {
         configs.CSIDriversView,
         4,
     );
+    try exerciseEntryScope(GatewayClassRecord, SubscriptionFactory(klient.GatewayClass, GatewayClassRecord, GatewayClassRecord.fromGatewayClass), configs.GatewayClassesView, 3);
+    try exerciseEntryScope(GatewayRecord, SubscriptionFactory(klient.Gateway, GatewayRecord, GatewayRecord.fromGateway), configs.GatewaysView, 5);
+    try exerciseEntryScope(HTTPRouteRecord, SubscriptionFactory(klient.HTTPRoute, HTTPRouteRecord, HTTPRouteRecord.fromHTTPRoute), configs.HTTPRoutesView, 5);
+    try exerciseEntryScope(GRPCRouteRecord, SubscriptionFactory(klient.GRPCRoute, GRPCRouteRecord, GRPCRouteRecord.fromGRPCRoute), configs.GRPCRoutesView, 5);
+    try exerciseEntryScope(ReferenceGrantRecord, SubscriptionFactory(klient.ReferenceGrant, ReferenceGrantRecord, ReferenceGrantRecord.fromReferenceGrant), configs.ReferenceGrantsView, 5);
+    try exerciseEntryScope(TCPRouteRecord, SubscriptionFactory(klient.TCPRoute, TCPRouteRecord, TCPRouteRecord.fromTCPRoute), configs.TCPRoutesView, 4);
+    try exerciseEntryScope(TLSRouteRecord, SubscriptionFactory(klient.TLSRoute, TLSRouteRecord, TLSRouteRecord.fromTLSRoute), configs.TLSRoutesView, 5);
+    try exerciseEntryScope(UDPRouteRecord, SubscriptionFactory(klient.UDPRoute, UDPRouteRecord, UDPRouteRecord.fromUDPRoute), configs.UDPRoutesView, 4);
+    try exerciseEntryScope(BackendTLSPolicyRecord, SubscriptionFactory(klient.BackendTLSPolicy, BackendTLSPolicyRecord, BackendTLSPolicyRecord.fromBackendTLSPolicy), configs.BackendTLSPoliciesView, 4);
+    try exerciseEntryScope(ListenerSetRecord, SubscriptionFactory(klient.ListenerSet, ListenerSetRecord, ListenerSetRecord.fromListenerSet), configs.ListenerSetsView, 5);
+    try exerciseEntryScope(RoleRecord, SubscriptionFactory(klient.Role, RoleRecord, role_record.fromRole), configs.RolesView, 3);
+    try exerciseEntryScope(RoleBindingRecord, SubscriptionFactory(klient.RoleBinding, RoleBindingRecord, role_binding_record.fromRoleBinding), configs.RoleBindingsView, 4);
+    try exerciseEntryScope(ClusterRoleRecord, SubscriptionFactory(klient.ClusterRole, ClusterRoleRecord, cluster_role_record.fromClusterRole), configs.ClusterRolesView, 2);
+    try exerciseEntryScope(ClusterRoleBindingRecord, SubscriptionFactory(klient.ClusterRoleBinding, ClusterRoleBindingRecord, cluster_role_binding_record.fromClusterRoleBinding), configs.ClusterRoleBindingsView, 3);
+    try exerciseEntryScope(validating_policy_record.ValidatingAdmissionPolicyRecord, SubscriptionFactory(klient.ValidatingAdmissionPolicy, validating_policy_record.ValidatingAdmissionPolicyRecord, validating_policy_record.fromValidatingAdmissionPolicy), configs.ValidatingAdmissionPoliciesView, 4);
+    try exerciseEntryScope(validating_binding_record.ValidatingAdmissionPolicyBindingRecord, SubscriptionFactory(klient.ValidatingAdmissionPolicyBinding, validating_binding_record.ValidatingAdmissionPolicyBindingRecord, validating_binding_record.fromValidatingAdmissionPolicyBinding), configs.ValidatingAdmissionPolicyBindingsView, 3);
+    try exerciseEntryScope(mutating_policy_record.MutatingAdmissionPolicyRecord, SubscriptionFactory(klient.MutatingAdmissionPolicy, mutating_policy_record.MutatingAdmissionPolicyRecord, mutating_policy_record.fromMutatingAdmissionPolicy), configs.MutatingAdmissionPoliciesView, 4);
+    try exerciseEntryScope(mutating_binding_record.MutatingAdmissionPolicyBindingRecord, SubscriptionFactory(klient.MutatingAdmissionPolicyBinding, mutating_binding_record.MutatingAdmissionPolicyBindingRecord, mutating_binding_record.fromMutatingAdmissionPolicyBinding), configs.MutatingAdmissionPolicyBindingsView, 3);
+    try exerciseEntryScope(validating_webhook_record.ValidatingWebhookConfigurationRecord, SubscriptionFactory(klient.ValidatingWebhookConfiguration, validating_webhook_record.ValidatingWebhookConfigurationRecord, validating_webhook_record.fromValidatingWebhookConfiguration), configs.ValidatingWebhookConfigurationsView, 3);
+    try exerciseEntryScope(mutating_webhook_record.MutatingWebhookConfigurationRecord, SubscriptionFactory(klient.MutatingWebhookConfiguration, mutating_webhook_record.MutatingWebhookConfigurationRecord, mutating_webhook_record.fromMutatingWebhookConfiguration), configs.MutatingWebhookConfigurationsView, 3);
+    try exerciseEntryScope(ResourceClaimRecord, SubscriptionFactory(klient.ResourceClaim, ResourceClaimRecord, ResourceClaimRecord.fromResourceClaim), configs.ResourceClaimsView, 4);
+    try exerciseEntryScope(DeviceClassRecord, SubscriptionFactory(klient.DeviceClass, DeviceClassRecord, DeviceClassRecord.fromDeviceClass), configs.DeviceClassesView, 3);
+    try exerciseEntryScope(PriorityClassRecord, SubscriptionFactory(klient.PriorityClass, PriorityClassRecord, PriorityClassRecord.fromPriorityClass), configs.PriorityClassesView, 4);
+    try exerciseEntryScope(RuntimeClassRecord, SubscriptionFactory(klient.RuntimeClass, RuntimeClassRecord, RuntimeClassRecord.fromRuntimeClass), configs.RuntimeClassesView, 3);
+    try exerciseEntryScope(LeaseRecord, SubscriptionFactory(klient.Lease, LeaseRecord, LeaseRecord.fromLease), configs.LeasesView, 4);
+    try exerciseEntryScope(CSRRecord, SubscriptionFactory(klient.CertificateSigningRequest, CSRRecord, CSRRecord.fromCSR), configs.CertificateSigningRequestsView, 4);
+    try exerciseEntryScope(StorageVersionMigrationRecord, SubscriptionFactory(klient.StorageVersionMigration, StorageVersionMigrationRecord, StorageVersionMigrationRecord.fromStorageVersionMigration), configs.StorageVersionMigrationsView, 3);
+    try exerciseEntryScope(EventRecord, SubscriptionFactory(klient.Event, EventRecord, EventRecord.fromEvent), configs.EventsView, 7);
+}
+
+test "production family entries map all namespace scope to null task specs" {
+    try runTask14ProductionScopeGate();
 }

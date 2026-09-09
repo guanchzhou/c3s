@@ -11,12 +11,7 @@ issued: bool,
 creation_timestamp: ?[]u8 = null,
 
 pub fn fromCSR(allocator: std.mem.Allocator, item: klient.CertificateSigningRequest) !CSRRecord {
-    const uid = item.metadata.uid orelse return error.MissingUid;
-    var key = try (keys.ObjectKey{
-        .uid = uid,
-        .namespace = item.metadata.namespace orelse "",
-        .name = item.metadata.name,
-    }).clone(allocator);
+    var key = try keys.fromMetadata(allocator, item.metadata, "");
     errdefer key.deinit(allocator);
     const signer = try allocator.dupe(u8, if (item.spec) |spec| spec.signerName else "<none>");
     errdefer allocator.free(signer);

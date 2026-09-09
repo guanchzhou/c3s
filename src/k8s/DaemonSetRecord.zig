@@ -17,12 +17,7 @@ updated_sort_key: [20]u8 = [_]u8{'0'} ** 20,
 creation_timestamp: ?[]u8 = null,
 
 pub fn fromDaemonSet(allocator: std.mem.Allocator, value: klient.DaemonSet) !DaemonSetRecord {
-    const uid = value.metadata.uid orelse return error.MissingUid;
-    var key = try (keys.ObjectKey{
-        .uid = uid,
-        .namespace = value.metadata.namespace orelse "default",
-        .name = value.metadata.name,
-    }).clone(allocator);
+    var key = try keys.fromMetadata(allocator, value.metadata, "default");
     errdefer key.deinit(allocator);
     const creation_timestamp = if (value.metadata.creationTimestamp) |timestamp|
         try allocator.dupe(u8, timestamp)

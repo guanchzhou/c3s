@@ -10,8 +10,7 @@ parent: []u8,
 creation_timestamp: ?[]u8 = null,
 
 pub fn fromIPAddress(allocator: std.mem.Allocator, value: klient.IPAddress) !IPAddressRecord {
-    const uid = value.metadata.uid orelse return error.MissingUid;
-    var key = try (keys.ObjectKey{ .uid = uid, .namespace = "", .name = value.metadata.name }).clone(allocator);
+    var key = try keys.fromMetadata(allocator, value.metadata, "");
     errdefer key.deinit(allocator);
     const parent = try allocator.dupe(u8, parentName(value));
     errdefer allocator.free(parent);

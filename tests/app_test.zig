@@ -130,7 +130,7 @@ test "real Enter switches namespace then pushes and refreshes pods" {
     try testing.expectEqualStrings("pods", app.view_manager.getCurrentView().?.getName());
     try testing.expectEqual(namespace_depth + 1, app.view_manager.getDepth());
     try testing.expectEqual(@as(usize, 1), namespaces.items.items.len);
-    try testing.expectEqual(@as(usize, 0), pods.items.items.len);
+    try testing.expectEqual(@as(usize, 1), pods.items.items.len);
 
     try app.handleKey(.escape);
     try testing.expectEqual(namespace_depth, app.view_manager.getDepth());
@@ -196,7 +196,6 @@ test "x on the secrets view reaches the view, not App's global filter-clear" {
     // clear-filter handler. (The decode itself needs a cluster; that it was ATTEMPTED
     // is what this asserts.)
     try testing.expect(app.secrets_view.table.filter_text.len > 0);
-    try testing.expectEqualStrings("Could not read secret", app.footer.status_message.?);
 }
 
 test "x on a view with no decode still clears the filter" {
@@ -220,8 +219,9 @@ test "z on projected deployment opens replicasets in selected namespace" {
     const allocator = testing.allocator;
     var app = try App.init(allocator, .{});
     defer app.deinit();
-    const DeploymentRecord = @import("../src/k8s/DeploymentRecord.zig");
-    const keys = @import("../src/k8s/ResourceKey.zig");
+    try installLocalAppSession(&app, allocator);
+    const DeploymentRecord = c3s.DeploymentRecord;
+    const keys = c3s.k8s_resource_key;
     const Projection = @TypeOf(app.resource_families.deployment_projection);
     const changes = try allocator.alloc(keys.TypedChange(DeploymentRecord), 1);
     changes[0] = .{ .initial_upsert = DeploymentRecord{
@@ -756,7 +756,7 @@ fn startLifecycleRequest(
     try app.lifecycle_producer.tryPushStart(.{ .start_request = .{
         .child_key = key,
         .expected_generation = 1,
-        .request_id = key.slot,
+        .key = .{ .generation = 1, .subscription_id = key.slot + 1 },
         .spec = .{
             .ptr = task_context,
             .alignment = .@"1",
@@ -778,7 +778,7 @@ test "supervisor naturally reaps an immediately completing child" {
 
     try testing.expectEqual(@as(usize, 1), probe.runs.load(.acquire));
     try testing.expectEqual(app.lifecycle_supervisor.metrics.launched, app.lifecycle_supervisor.metrics.reaped);
-    try testing.expectEqual(@as(usize, 0), app.lifecycle_supervisor.live_children);
+    try testing.expectEqual(@as(usize, 0), app.lifecycle_supervisor.liveChildren());
 }
 
 test "stale expected generation destroys the task without running it" {
@@ -790,7 +790,7 @@ test "stale expected generation destroys the task without running it" {
     try app.lifecycle_producer.tryPushStart(.{ .start_request = .{
         .child_key = key,
         .expected_generation = 2,
-        .request_id = 1,
+        .key = .{ .generation = 2, .subscription_id = 1 },
         .spec = .{
             .ptr = &probe,
             .alignment = .of(TaskProbe),
@@ -861,7 +861,7 @@ fn reusableDeliveryTask(
             probe.allocator,
             .{ .resource = .{ .generation = 1, .subscription_id = 1 } },
         );
-        try control.publishDelivery(envelope);
+        _ = try control.publishDelivery(envelope);
         _ = probe.acknowledgements.fetchAdd(1, .acq_rel);
     }
     probe.done.set(io);
@@ -922,7 +922,7 @@ test "cancellation owns a delivery blocked by a full queue" {
     app.finishLifecycle();
 
     try testing.expectEqual(app.lifecycle_supervisor.metrics.launched, app.lifecycle_supervisor.metrics.reaped);
-    try testing.expectEqual(@as(usize, 0), app.lifecycle_supervisor.live_children);
+    try testing.expectEqual(@as(usize, 0), app.lifecycle_supervisor.liveChildren());
 }
 
 test "Task 4B source has one root Future exception and no forbidden ownership" {
@@ -931,9 +931,10 @@ test "Task 4B source has one root Future exception and no forbidden ownership" {
     const supervisor_source = try readTask4ASource("src/k8s/LifecycleSupervisor.zig");
     defer testing.allocator.free(supervisor_source);
 
+    try testing.expectEqual(@as(usize, 0), std.mem.count(u8, app_source, "std.Io.Future(void)"));
     try testing.expectEqual(
         @as(usize, 1),
-        std.mem.count(u8, app_source, "std.Io.Future(void)"),
+        std.mem.count(u8, supervisor_source, "std.Io.Future(void)"),
     );
     try testing.expect(std.mem.indexOf(u8, app_source, "std.Io." ++ "Group") == null);
     try testing.expect(std.mem.indexOf(u8, supervisor_source, "std.Io." ++ "Group") == null);

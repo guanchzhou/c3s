@@ -60,10 +60,6 @@ pub const View = struct {
         /// Used by the auto-refresh throttle to skip expensive all-namespace LISTs.
         showsAllNamespaces: *const fn (ptr: *anyopaque) bool = &noopShowsAllNamespaces,
 
-        /// Run work queued during handleKey (e.g. all-namespaces toggle) after the
-        /// loading frame has been painted. Returns true when refresh ran.
-        flushPendingRefresh: *const fn (ptr: *anyopaque) bool = &noopFlushPendingRefresh,
-
         /// Short footer hint while the view is busy (loading frame, etc.).
         getStatusHint: *const fn (ptr: *anyopaque) ?[]const u8 = &noopGetStatusHint,
     };
@@ -183,10 +179,6 @@ pub const View = struct {
         return self.vtable.showsAllNamespaces(self.ptr);
     }
 
-    pub fn flushPendingRefresh(self: View) bool {
-        return self.vtable.flushPendingRefresh(self.ptr);
-    }
-
     pub fn getStatusHint(self: View) ?[]const u8 {
         return self.vtable.getStatusHint(self.ptr);
     }
@@ -214,9 +206,6 @@ pub const View = struct {
     }
     fn noopSetShowAllNamespaces(_: *anyopaque, _: bool) void {}
     fn noopShowsAllNamespaces(_: *anyopaque) bool {
-        return false;
-    }
-    fn noopFlushPendingRefresh(_: *anyopaque) bool {
         return false;
     }
     fn noopGetStatusHint(_: *anyopaque) ?[]const u8 {

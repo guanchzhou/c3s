@@ -2,6 +2,7 @@ const std = @import("std");
 const xdg = @import("core/xdg.zig");
 const build = @import("c3s_build");
 const version = @import("model/version.zig");
+const task15 = @import("task15_diagnostics.zig");
 
 var version_storage: [128]u8 = undefined;
 var version_len: usize = 0;
@@ -33,6 +34,12 @@ pub const Config = struct {
     request_timeout: ?[]const u8 = null,
     screen_dump_dir: ?[]const u8 = null,
     write: bool = false,
+    diagnostic_control: ?task15.DiagnosticControl = null,
+    task15_preflight: bool = false,
+    task15_live: bool = false,
+    task15_manifest_path: ?[]const u8 = null,
+    task15_generate_manifest: bool = false,
+    unknown_argument_seen: bool = false,
 };
 
 pub fn parseArgs(args_src: std.process.Args, allocator: std.mem.Allocator) !Config {
@@ -54,6 +61,10 @@ pub fn parseArgs(args_src: std.process.Args, allocator: std.mem.Allocator) !Conf
         } else if (std.mem.eql(u8, arg, "info")) {
             printInfo();
             std.process.exit(0);
+        } else if (std.mem.eql(u8, arg, "task15-preflight")) {
+            config.task15_preflight = true;
+        } else if (std.mem.eql(u8, arg, "task15-manifest")) {
+            config.task15_generate_manifest = true;
         } else if (std.mem.eql(u8, arg, "--all-namespaces") or std.mem.eql(u8, arg, "-A")) {
             config.all_namespaces = true;
         } else if (std.mem.eql(u8, arg, "--context")) {
@@ -110,11 +121,62 @@ pub fn parseArgs(args_src: std.process.Args, allocator: std.mem.Allocator) !Conf
             config.log_file = args.next() orelse return error.MissingValue;
         } else if (std.mem.eql(u8, arg, "--write")) {
             config.write = true;
+        } else if (std.mem.eql(u8, arg, "--task15-live")) {
+            config.task15_live = true;
+        } else if (std.mem.eql(u8, arg, "--task15-manifest")) {
+            config.task15_manifest_path = args.next() orelse return error.MissingValue;
+        } else if (std.mem.eql(u8, arg, "--diagnostic-reconnect")) {
+            if (config.diagnostic_control != null) return error.DuplicateDiagnosticControl;
+            config.diagnostic_control = .{ .reconnect = try task15.parseFamily(
+                args.next() orelse return error.MissingValue,
+            ) };
+        } else if (std.mem.eql(u8, arg, "--diagnostic-stale-rv")) {
+            if (config.diagnostic_control != null) return error.DuplicateDiagnosticControl;
+            config.diagnostic_control = .{ .stale_rv = try task15.parseFamily(
+                args.next() orelse return error.MissingValue,
+            ) };
         } else {
             std.log.warn("Unknown argument: {s}", .{arg});
+            config.unknown_argument_seen = true;
         }
     }
 
+    if (config.diagnostic_control != null and !config.task15_live) {
+        return error.Task15ControlRequiresLiveMode;
+    }
+    if (config.task15_live) {
+        if (config.unknown_argument_seen) return error.UnknownDiagnosticArgument;
+        try task15.validateDiagnosticLaunch(.{
+            .readonly = config.readonly,
+            .context = config.context,
+            .manifest_path = config.task15_manifest_path,
+            .headless = config.headless,
+            .write = config.write,
+            .cluster = config.cluster,
+            .user = config.user,
+            .token = config.token,
+            .impersonate = config.as,
+            .impersonate_group = config.as_group,
+            .certificate_authority = config.certificate_authority,
+            .client_certificate = config.client_certificate,
+            .client_key = config.client_key,
+            .insecure_skip_tls_verify = config.insecure_skip_tls_verify,
+        });
+    }
+    if (config.task15_generate_manifest) {
+        if (config.unknown_argument_seen) return error.UnknownDiagnosticArgument;
+        const context = config.context orelse return error.DiagnosticRequiresExplicitContext;
+        if (!task15.contextAllowed(context)) return error.ContextNotAllowlisted;
+        if (config.task15_live or config.task15_manifest_path != null or
+            config.diagnostic_control != null or
+            config.write or config.cluster != null or config.user != null or
+            config.token != null or config.as != null or config.as_group != null or
+            config.certificate_authority != null or config.client_certificate != null or
+            config.client_key != null or config.insecure_skip_tls_verify)
+        {
+            return error.InvalidManifestGenerationArguments;
+        }
+    }
     return config;
 }
 
@@ -161,6 +223,10 @@ fn printHelp() void {
         \\      --user string                    The name of the kubeconfig user to use
         \\      --version                        Print version/build info
         \\      --write                          Sets write mode by overriding the readOnly configuration setting
+        \\      --task15-live                    Enable manifest-pinned Task 15 live diagnostics
+        \\      --task15-manifest string         Frozen local Task 15 run manifest
+        \\      --diagnostic-reconnect family    Restart one local read-only subscription family
+        \\      --diagnostic-stale-rv family     Exercise one local stale-RV relist path
         \\
         \\Use "c3s [command] --help" for more information about a command.
         \\
@@ -295,6 +361,7 @@ test "CLI Config default values" {
     try testing.expect(default_config.logoless == false);
     try testing.expect(default_config.splashless == false);
     try testing.expect(default_config.write == false);
+    try testing.expect(default_config.diagnostic_control == null);
 }
 
 test "CLI Config flag toggles" {

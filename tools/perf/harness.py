@@ -202,13 +202,24 @@ def summarize_telemetry(
     process_start_ns: int,
     t_screen_hint_s: float | None,
 ) -> dict[str, Any]:
+    valid_events = [event for event in events if _valid_telemetry_record(event)]
+    sync_starts = [event for event in valid_events if event.get("event") == "sync_start"]
+    target_sync = sync_starts[-1] if sync_starts else None
+
+    def matches_target(event: dict[str, Any]) -> bool:
+        if target_sync is None:
+            return True
+        return (
+            event.get("generation") == target_sync.get("generation")
+            and event.get("subscription_id") == target_sync.get("subscription_id")
+            and event.get("monotonic_ns", 0) >= target_sync.get("monotonic_ns", 0)
+        )
+
     def marker_time(event_name: str) -> float | None:
         if not _is_bounded_int(process_start_ns, U64_MAX):
             return None
-        for event in events:
-            if not _valid_telemetry_record(event):
-                continue
-            if event.get("event") != event_name:
+        for event in valid_events:
+            if event.get("event") != event_name or not matches_target(event):
                 continue
             timestamp = event.get("monotonic_ns")
             if not _is_bounded_int(timestamp, U64_MAX) or timestamp < process_start_ns:
@@ -218,6 +229,13 @@ def summarize_telemetry(
 
     first = marker_time("first_usable_paint")
     complete = marker_time("complete_sync_paint")
+    sync_start_ns = target_sync.get("monotonic_ns") if target_sync else None
+
+    def from_sync(value: float | None) -> float | None:
+        if value is None or not _is_bounded_int(sync_start_ns, U64_MAX):
+            return None
+        return round(value - (sync_start_ns - process_start_ns) / 1_000_000_000, 6)
+
     counters = None
     for event in reversed(events):
         if _valid_telemetry_record(event) and event.get("event") == "summary":
@@ -227,9 +245,18 @@ def summarize_telemetry(
         "t_screen_hint_s": t_screen_hint_s,
         "t_first_usable_paint_s": first,
         "t_complete_sync_paint_s": complete,
+        "t_list_to_first_usable_paint_s": from_sync(first),
+        "t_list_to_complete_sync_paint_s": from_sync(complete),
         "authoritative_markers_ok": first is not None and complete is not None,
         "telemetry_counters": counters,
     }
+
+
+def monotonic_ns() -> int:
+    """Use the same CLOCK_MONOTONIC domain emitted by c3s telemetry."""
+    if hasattr(time, "CLOCK_MONOTONIC"):
+        return time.clock_gettime_ns(time.CLOCK_MONOTONIC)
+    return time.monotonic_ns()
 
 
 @dataclass
@@ -372,7 +399,7 @@ def _fork_exec_pty(
             os.set_inheritable(read_fd, False)
             os.set_inheritable(write_fd, True)
 
-        process_start_ns = time.monotonic_ns()
+        process_start_ns = monotonic_ns()
         pid, master = pty.fork()
     except BaseException:
         _close_fd_quietly(read_fd)
@@ -803,7 +830,7 @@ def _pty_run_child(
     fcntl.fcntl(master, fcntl.F_SETFL, fl | os.O_NONBLOCK)
 
     def elapsed() -> float:
-        return (time.monotonic_ns() - child.process_start_ns) / 1_000_000_000
+        return (monotonic_ns() - child.process_start_ns) / 1_000_000_000
 
     n_bytes = 0
     buf = bytearray()
@@ -1053,6 +1080,8 @@ def median_pty(runs: list[dict[str, Any]]) -> dict[str, Any] | None:
         "t_screen_hint_s": median(grab("t_screen_hint_s")),
         "t_first_usable_paint_s": median(grab("t_first_usable_paint_s")),
         "t_complete_sync_paint_s": median(grab("t_complete_sync_paint_s")),
+        "t_list_to_first_usable_paint_s": median(grab("t_list_to_first_usable_paint_s")),
+        "t_list_to_complete_sync_paint_s": median(grab("t_list_to_complete_sync_paint_s")),
         "authoritative_markers_ok": all(run.get("authoritative_markers_ok") is True for run in runs),
         "telemetry_counters": aggregate_counters(),
         "parent_rss_mb_t8s": median(grab_sample("sample_8s", "parent_rss_mb")),

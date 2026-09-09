@@ -71,6 +71,14 @@ pub const DetailView = struct {
 
     /// Set content from raw JSON string, pretty-printed.
     pub fn setContentJson(self: *DetailView, json_str: []const u8, title: []const u8) !void {
+        var replacement = try DetailView.init(self.allocator, self.theme);
+        errdefer replacement.deinit();
+        try replacement.setContentJsonInPlace(json_str, title);
+        self.swapContent(&replacement);
+        replacement.deinit();
+    }
+
+    fn setContentJsonInPlace(self: *DetailView, json_str: []const u8, title: []const u8) !void {
         self.clearContent();
         self.title = try self.allocator.dupe(u8, title);
         self.selected_row = 0;
@@ -146,6 +154,14 @@ pub const DetailView = struct {
     /// Set plain-text content (one entry per newline), no JSON parsing — for
     /// simple list overlays like the aliases view.
     pub fn setContentText(self: *DetailView, text: []const u8, title: []const u8) !void {
+        var replacement = try DetailView.init(self.allocator, self.theme);
+        errdefer replacement.deinit();
+        try replacement.setContentTextInPlace(text, title);
+        self.swapContent(&replacement);
+        replacement.deinit();
+    }
+
+    fn setContentTextInPlace(self: *DetailView, text: []const u8, title: []const u8) !void {
         self.clearContent();
         self.title = try self.allocator.dupe(u8, title);
         self.selected_row = 0;
@@ -160,6 +176,14 @@ pub const DetailView = struct {
     }
 
     pub fn setContentDescribe(self: *DetailView, json_str: []const u8, title: []const u8) !void {
+        var replacement = try DetailView.init(self.allocator, self.theme);
+        errdefer replacement.deinit();
+        try replacement.setContentDescribeInPlace(json_str, title);
+        self.swapContent(&replacement);
+        replacement.deinit();
+    }
+
+    fn setContentDescribeInPlace(self: *DetailView, json_str: []const u8, title: []const u8) !void {
         self.clearContent();
         self.title = try self.allocator.dupe(u8, title);
         self.selected_row = 0;
@@ -185,6 +209,18 @@ pub const DetailView = struct {
         try self.formatDescribeValue(parsed.value, 0);
         try self.computeFolds();
         try self.rebuildVisible();
+    }
+
+    fn swapContent(self: *DetailView, other: *DetailView) void {
+        std.mem.swap(std.ArrayListUnmanaged([]const u8), &self.lines, &other.lines);
+        std.mem.swap(std.ArrayListUnmanaged(?u32), &self.fold_end, &other.fold_end);
+        std.mem.swap(std.ArrayListUnmanaged(bool), &self.folded, &other.folded);
+        std.mem.swap(std.ArrayListUnmanaged(u32), &self.visible, &other.visible);
+        std.mem.swap(std.ArrayListUnmanaged(u16), &self.col_stops, &other.col_stops);
+        std.mem.swap([]const u8, &self.title, &other.title);
+        self.selected_row = other.selected_row;
+        self.scroll_offset = other.scroll_offset;
+        self.horizontal_scroll = other.horizontal_scroll;
     }
 
     fn formatDescribeValue(self: *DetailView, value: std.json.Value, indent: usize) !void {

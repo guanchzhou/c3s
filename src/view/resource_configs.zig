@@ -779,8 +779,8 @@ pub const ClusterRoleBindingsView = ResourceView(klient.types.ClusterRoleBinding
 // === Events ===
 // ============================================================================
 fn transformEvent(ev: klient.types.Event, alloc: std.mem.Allocator) ![7][]const u8 {
-    // LAST-SEEN: age of lastTimestamp, falling back to eventTime, then creation.
-    const last_seen_ts = ev.lastTimestamp orelse ev.eventTime orelse ev.metadata.creationTimestamp;
+    // Prefer modern repeating-Event series data, retaining deprecated fallbacks.
+    const last_seen_ts = (if (ev.series) |series| series.lastObservedTime else null) orelse ev.lastTimestamp orelse ev.eventTime orelse ev.metadata.creationTimestamp;
 
     // OBJECT: "<kind>/<name>" from involvedObject (k9s).
     const object = blk: {
@@ -800,7 +800,7 @@ fn transformEvent(ev: klient.types.Event, alloc: std.mem.Allocator) ![7][]const 
         try alloc.dupe(u8, ev.type orelse "-"),
         try alloc.dupe(u8, ev.reason orelse "-"),
         object,
-        try std.fmt.allocPrint(alloc, "{d}", .{ev.count orelse 0}),
+        try std.fmt.allocPrint(alloc, "{d}", .{(if (ev.series) |series| series.count else null) orelse ev.count orelse 0}),
         try alloc.dupe(u8, ev.message orelse ""),
     };
 }
@@ -821,6 +821,26 @@ pub const EventsView = ResourceView(klient.types.Event, klient.resources.Events,
         .{ .name = "MESSAGE", .min_width = 16, .max_width = null, .priority = P.MEDIUM, .searchable = true },
     },
 }, transformEvent);
+
+test "Event retained transform matches series-aware compact projection" {
+    var parsed = try std.json.parseFromSlice(
+        klient.Event,
+        std.testing.allocator,
+        \\{"metadata":{"uid":"event-1","namespace":"team","name":"generated"},"involvedObject":{"kind":"Pod","name":"api-1"},"type":"Warning","reason":"BackOff","message":"restarting","eventTime":"2024-01-01T00:00:01Z","series":{"count":9,"lastObservedTime":"2024-01-01T00:05:00Z"}}
+    ,
+        .{ .ignore_unknown_fields = true },
+    );
+    defer parsed.deinit();
+    var record = try @import("../k8s/EventRecord.zig").fromEvent(std.testing.allocator, parsed.value);
+    defer record.deinit(std.testing.allocator);
+    const legacy = try transformEvent(parsed.value, std.testing.allocator);
+    const projected = try record.columns(std.testing.allocator);
+    defer for (legacy) |column| std.testing.allocator.free(column);
+    defer for (projected) |column| std.testing.allocator.free(column);
+    for (legacy, projected) |left, right| try std.testing.expectEqualStrings(left, right);
+    try std.testing.expectEqualStrings("2024-01-01T00:05:00Z", record.last_seen_timestamp.?);
+    try std.testing.expectEqual(@as(i32, 9), record.count);
+}
 
 // ============================================================================
 // === Nodes ===
@@ -1201,9 +1221,6 @@ pub const MutatingWebhookConfigurationsView = modern.MutatingWebhookConfiguratio
 test "pod data-plane onShow requests one subscription" {
     const K8sService = @import("../services/K8sService.zig").K8sService;
     const Theme = @import("../model/theme_loader.zig").ThemeColors;
-    const previous_source = resource_view.active_pod_source;
-    defer resource_view.active_pod_source = previous_source;
-    resource_view.active_pod_source = .data_plane;
 
     var service: K8sService = undefined;
     var theme: Theme = undefined;
@@ -1212,19 +1229,13 @@ test "pod data-plane onShow requests one subscription" {
     const view = pods.createView();
 
     view.onShow();
+    try std.testing.expect(pods.table.loading);
     try std.testing.expectEqual(.start, pods.takePodSubscriptionRequest());
     pods.markPodSubscriptionStarted();
     view.onShow();
     try std.testing.expectEqual(.none, pods.takePodSubscriptionRequest());
     try pods.refresh();
     try std.testing.expectEqual(.restart, pods.takePodSubscriptionRequest());
-}
-
-test "legacy pod rollback source remains selectable" {
-    const previous_source = resource_view.active_pod_source;
-    defer resource_view.active_pod_source = previous_source;
-    resource_view.active_pod_source = .legacy_list;
-    try std.testing.expectEqual(resource_view.PodSource.legacy_list, resource_view.active_pod_source);
 }
 
 test "nodes projection preserves scheduling actions and UID selection" {
@@ -1238,9 +1249,6 @@ test "nodes projection preserves scheduling actions and UID selection" {
         }
         fn sort(record: *const NodeRecord, column: u8) []const u8 {
             return if (column == 1) record.status else record.key.name;
-        }
-        fn enabled() bool {
-            return true;
         }
         fn columns(
             _: *NodeProjection,
@@ -1264,7 +1272,6 @@ test "nodes projection preserves scheduling actions and UID selection" {
     nodes.bindProjection(NodesView.ProjectionAdapter.init(
         NodeRecord,
         &projection,
-        ProjectionFns.enabled,
         ProjectionFns.columns,
     ));
 
@@ -1349,237 +1356,6 @@ test "nodes projection preserves scheduling actions and UID selection" {
     );
     _ = try NodesView.handleKey(&nodes, .{ .char = 'N' });
     try std.testing.expectEqual(@as(usize, 1), nodes.table.filtered_indices.items.len);
-}
-
-test "node rollback gate retains legacy refresh path" {
-    const previous = resource_view.active_node_source;
-    defer resource_view.active_node_source = previous;
-    const previous_hook = resource_view.legacy_loader_test_hook;
-    defer resource_view.legacy_loader_test_hook = previous_hook;
-    const Probe = struct {
-        var calls: usize = 0;
-        fn load(resource: []const u8) void {
-            if (std.mem.eql(u8, resource, "nodes")) calls += 1;
-        }
-    };
-    Probe.calls = 0;
-    resource_view.active_node_source = .legacy_list;
-    resource_view.legacy_loader_test_hook = Probe.load;
-    var service: @import("../services/K8sService.zig").K8sService = undefined;
-    var theme: @import("../model/theme_loader.zig").ThemeColors = undefined;
-    var nodes = try NodesView.init(std.testing.allocator, &theme, &service);
-    defer nodes.deinit();
-    try nodes.refresh();
-    try std.testing.expectEqual(@as(usize, 1), Probe.calls);
-    try std.testing.expectEqual(.none, nodes.takeSubscriptionRequest());
-}
-
-test "services family rollback gate executes retained legacy loader seam" {
-    const previous = resource_view.active_services_source;
-    defer resource_view.active_services_source = previous;
-    const previous_hook = resource_view.legacy_loader_test_hook;
-    defer resource_view.legacy_loader_test_hook = previous_hook;
-    const Probe = struct {
-        var calls: usize = 0;
-        fn load(resource: []const u8) void {
-            if (std.mem.eql(u8, resource, "services") or
-                std.mem.eql(u8, resource, "endpoints") or
-                std.mem.eql(u8, resource, "endpointslices"))
-                calls += 1;
-        }
-    };
-    Probe.calls = 0;
-    resource_view.active_services_source = .legacy_list;
-    resource_view.legacy_loader_test_hook = Probe.load;
-    var service: @import("../services/K8sService.zig").K8sService = undefined;
-    var theme: @import("../model/theme_loader.zig").ThemeColors = undefined;
-    var services = try ServicesView.init(std.testing.allocator, &theme, &service);
-    defer services.deinit();
-    var endpoints = try EndpointsView.init(std.testing.allocator, &theme, &service);
-    defer endpoints.deinit();
-    var endpoint_slices = try EndpointSlicesView.init(std.testing.allocator, &theme, &service);
-    defer endpoint_slices.deinit();
-    try services.refresh();
-    try endpoints.refresh();
-    try endpoint_slices.refresh();
-    try std.testing.expectEqual(@as(usize, 3), Probe.calls);
-    try std.testing.expectEqual(
-        resource_view.Source.legacy_list,
-        resource_view.familySourceRegistry().sourceFor(.services),
-    );
-}
-
-test "config family rollback gate executes retained legacy loader seam" {
-    const previous = resource_view.active_config_source;
-    defer resource_view.active_config_source = previous;
-    const previous_hook = resource_view.legacy_loader_test_hook;
-    defer resource_view.legacy_loader_test_hook = previous_hook;
-    const Probe = struct {
-        var calls: usize = 0;
-        fn load(resource: []const u8) void {
-            inline for (.{ "configmaps", "secrets", "serviceaccounts", "resourcequotas", "limitranges" }) |name| {
-                if (std.mem.eql(u8, resource, name)) calls += 1;
-            }
-        }
-    };
-    Probe.calls = 0;
-    resource_view.active_config_source = .legacy_list;
-    resource_view.legacy_loader_test_hook = Probe.load;
-    var service: @import("../services/K8sService.zig").K8sService = undefined;
-    var theme: @import("../model/theme_loader.zig").ThemeColors = undefined;
-    inline for (.{
-        ConfigMapsView,
-        SecretsView,
-        ServiceAccountsView,
-        ResourceQuotasView,
-        LimitRangesView,
-    }) |ViewType| {
-        var view = try ViewType.init(std.testing.allocator, &theme, &service);
-        defer view.deinit();
-        try view.refresh();
-        try std.testing.expectEqual(.none, view.takeSubscriptionRequest());
-    }
-    try std.testing.expectEqual(@as(usize, 5), Probe.calls);
-    try std.testing.expectEqual(
-        resource_view.Source.legacy_list,
-        resource_view.familySourceRegistry().sourceFor(.config),
-    );
-}
-
-test "workloads family rollback gate executes retained legacy loader seam" {
-    const previous = resource_view.active_workloads_source;
-    defer resource_view.active_workloads_source = previous;
-    const previous_hook = resource_view.legacy_loader_test_hook;
-    defer resource_view.legacy_loader_test_hook = previous_hook;
-    const Probe = struct {
-        var calls: usize = 0;
-        fn load(resource: []const u8) void {
-            inline for (.{ "deployments", "statefulsets", "daemonsets", "replicasets" }) |name| {
-                if (std.mem.eql(u8, resource, name)) calls += 1;
-            }
-        }
-    };
-    Probe.calls = 0;
-    resource_view.active_workloads_source = .legacy_list;
-    resource_view.legacy_loader_test_hook = Probe.load;
-    var service: @import("../services/K8sService.zig").K8sService = undefined;
-    var theme: @import("../model/theme_loader.zig").ThemeColors = undefined;
-    inline for (.{ DeploymentsView, StatefulSetsView, DaemonSetsView, ReplicaSetsView }) |ViewType| {
-        var view = try ViewType.init(std.testing.allocator, &theme, &service);
-        defer view.deinit();
-        try view.refresh();
-        try std.testing.expectEqual(.none, view.takeSubscriptionRequest());
-    }
-    try std.testing.expectEqual(@as(usize, 4), Probe.calls);
-    try std.testing.expectEqual(
-        resource_view.Source.legacy_list,
-        resource_view.familySourceRegistry().sourceFor(.workloads),
-    );
-}
-
-test "batch family rollback gate executes retained legacy loader seam" {
-    const previous = resource_view.active_batch_source;
-    defer resource_view.active_batch_source = previous;
-    const previous_hook = resource_view.legacy_loader_test_hook;
-    defer resource_view.legacy_loader_test_hook = previous_hook;
-    const Probe = struct {
-        var calls: usize = 0;
-        fn load(resource: []const u8) void {
-            inline for (.{ "jobs", "cronjobs", "hpa", "poddisruptionbudgets" }) |name| {
-                if (std.mem.eql(u8, resource, name)) calls += 1;
-            }
-        }
-    };
-    Probe.calls = 0;
-    resource_view.active_batch_source = .legacy_list;
-    resource_view.legacy_loader_test_hook = Probe.load;
-    var service: @import("../services/K8sService.zig").K8sService = undefined;
-    var theme: @import("../model/theme_loader.zig").ThemeColors = undefined;
-    inline for (.{ JobsView, CronJobsView, HPAView, PodDisruptionBudgetsView }) |ViewType| {
-        var view = try ViewType.init(std.testing.allocator, &theme, &service);
-        defer view.deinit();
-        try view.refresh();
-        try std.testing.expectEqual(.none, view.takeSubscriptionRequest());
-    }
-    try std.testing.expectEqual(@as(usize, 4), Probe.calls);
-    try std.testing.expectEqual(
-        resource_view.Source.legacy_list,
-        resource_view.familySourceRegistry().sourceFor(.batch),
-    );
-}
-
-test "networking family rollback gate executes retained legacy loader seam" {
-    const previous = resource_view.active_networking_source;
-    defer resource_view.active_networking_source = previous;
-    const previous_hook = resource_view.legacy_loader_test_hook;
-    defer resource_view.legacy_loader_test_hook = previous_hook;
-    const Probe = struct {
-        var calls: usize = 0;
-        fn load(resource: []const u8) void {
-            inline for (.{ "ingresses", "ingressclasses", "networkpolicies", "ipaddresses", "servicecidrs" }) |name| {
-                if (std.mem.eql(u8, resource, name)) calls += 1;
-            }
-        }
-    };
-    Probe.calls = 0;
-    resource_view.active_networking_source = .legacy_list;
-    resource_view.legacy_loader_test_hook = Probe.load;
-    var service: @import("../services/K8sService.zig").K8sService = undefined;
-    var theme: @import("../model/theme_loader.zig").ThemeColors = undefined;
-    inline for (.{
-        IngressesView,
-        IngressClassesView,
-        NetworkPoliciesView,
-        IPAddressesView,
-        ServiceCIDRsView,
-    }) |ViewType| {
-        var view = try ViewType.init(std.testing.allocator, &theme, &service);
-        defer view.deinit();
-        try view.refresh();
-        try std.testing.expectEqual(.none, view.takeSubscriptionRequest());
-    }
-    try std.testing.expectEqual(@as(usize, 5), Probe.calls);
-    try std.testing.expectEqual(
-        resource_view.Source.legacy_list,
-        resource_view.familySourceRegistry().sourceFor(.networking),
-    );
-}
-
-test "storage family rollback gate executes retained legacy loader seam" {
-    const previous = resource_view.active_storage_source;
-    defer resource_view.active_storage_source = previous;
-    const previous_hook = resource_view.legacy_loader_test_hook;
-    defer resource_view.legacy_loader_test_hook = previous_hook;
-    const Probe = struct {
-        var calls: usize = 0;
-        fn load(resource: []const u8) void {
-            inline for (.{ "persistentvolumes", "persistentvolumeclaims", "storageclasses", "volumeattributesclasses", "csidrivers" }) |name| {
-                if (std.mem.eql(u8, resource, name)) calls += 1;
-            }
-        }
-    };
-    Probe.calls = 0;
-    resource_view.active_storage_source = .legacy_list;
-    resource_view.legacy_loader_test_hook = Probe.load;
-    var service: @import("../services/K8sService.zig").K8sService = undefined;
-    var theme: @import("../model/theme_loader.zig").ThemeColors = undefined;
-    inline for (.{
-        PersistentVolumesView,
-        PersistentVolumeClaimsView,
-        StorageClassesView,
-        VolumeAttributesClassesView,
-        CSIDriversView,
-    }) |ViewType| {
-        var view = try ViewType.init(std.testing.allocator, &theme, &service);
-        defer view.deinit();
-        try view.refresh();
-        try std.testing.expectEqual(.none, view.takeSubscriptionRequest());
-    }
-    try std.testing.expectEqual(@as(usize, 5), Probe.calls);
-    try std.testing.expectEqual(
-        resource_view.Source.legacy_list,
-        resource_view.familySourceRegistry().sourceFor(.storage),
-    );
 }
 
 fn expectSameColumns(
@@ -1927,6 +1703,117 @@ test "storage real-shaped records preserve exact retained transform columns" {
     }
 }
 
+fn expectGatewayParity(
+    comptime T: type,
+    comptime Record: type,
+    comptime column_count: usize,
+    comptime transform: anytype,
+    comptime fromObject: anytype,
+    json: []const u8,
+) !void {
+    const allocator = std.testing.allocator;
+    var parsed = try std.json.parseFromSlice(T, allocator, json, .{ .ignore_unknown_fields = true });
+    defer parsed.deinit();
+    var record: Record = try fromObject(allocator, parsed.value);
+    defer record.deinit(allocator);
+    try expectSameColumns(
+        column_count,
+        allocator,
+        try transform(parsed.value, allocator),
+        try record.columns(allocator),
+    );
+}
+
+test "Gateway API real-shaped records preserve exact retained transform columns" {
+    const fixtures = @import("../k8s/gateway_records_test.zig");
+    try expectGatewayParity(klient.GatewayClass, @import("../k8s/GatewayClassRecord.zig"), 3, modern.transformGatewayClass, @import("../k8s/GatewayClassRecord.zig").fromGatewayClass, fixtures.gateway_class_object_json);
+    try expectGatewayParity(klient.Gateway, @import("../k8s/GatewayRecord.zig"), 5, modern.transformGateway, @import("../k8s/GatewayRecord.zig").fromGateway, fixtures.gateway_object_json);
+    try expectGatewayParity(klient.HTTPRoute, @import("../k8s/HTTPRouteRecord.zig"), 5, modern.transformHTTPRoute, @import("../k8s/HTTPRouteRecord.zig").fromHTTPRoute, fixtures.http_route_object_json);
+    try expectGatewayParity(klient.GRPCRoute, @import("../k8s/GRPCRouteRecord.zig"), 5, modern.transformGRPCRoute, @import("../k8s/GRPCRouteRecord.zig").fromGRPCRoute, fixtures.grpc_route_object_json);
+    try expectGatewayParity(klient.ReferenceGrant, @import("../k8s/ReferenceGrantRecord.zig"), 5, modern.transformReferenceGrant, @import("../k8s/ReferenceGrantRecord.zig").fromReferenceGrant, fixtures.reference_grant_object_json);
+    try expectGatewayParity(klient.TCPRoute, @import("../k8s/TCPRouteRecord.zig"), 4, modern.transformTCPRoute, @import("../k8s/TCPRouteRecord.zig").fromTCPRoute, fixtures.tcp_route_object_json);
+    try expectGatewayParity(klient.TLSRoute, @import("../k8s/TLSRouteRecord.zig"), 5, modern.transformTLSRoute, @import("../k8s/TLSRouteRecord.zig").fromTLSRoute, fixtures.tls_route_object_json);
+    try expectGatewayParity(klient.UDPRoute, @import("../k8s/UDPRouteRecord.zig"), 4, modern.transformUDPRoute, @import("../k8s/UDPRouteRecord.zig").fromUDPRoute, fixtures.udp_route_object_json);
+    try expectGatewayParity(klient.BackendTLSPolicy, @import("../k8s/BackendTLSPolicyRecord.zig"), 4, modern.transformBackendTLSPolicy, @import("../k8s/BackendTLSPolicyRecord.zig").fromBackendTLSPolicy, fixtures.backend_tls_policy_object_json);
+    try expectGatewayParity(klient.ListenerSet, @import("../k8s/ListenerSetRecord.zig"), 5, modern.transformListenerSet, @import("../k8s/ListenerSetRecord.zig").fromListenerSet, fixtures.listener_set_object_json);
+}
+
+test "RBAC real-shaped records preserve exact retained transform columns" {
+    const fixtures = @import("../k8s/rbac_records_test.zig");
+    try expectGatewayParity(klient.Role, @import("../k8s/RoleRecord.zig").RoleRecord, 3, transformRole, @import("../k8s/RoleRecord.zig").fromRole, fixtures.role_object_json);
+    try expectGatewayParity(klient.RoleBinding, @import("../k8s/RoleBindingRecord.zig").RoleBindingRecord, 4, transformRoleBinding, @import("../k8s/RoleBindingRecord.zig").fromRoleBinding, fixtures.role_binding_object_json);
+    try expectGatewayParity(klient.ClusterRole, @import("../k8s/ClusterRoleRecord.zig").ClusterRoleRecord, 2, transformClusterRole, @import("../k8s/ClusterRoleRecord.zig").fromClusterRole, fixtures.cluster_role_object_json);
+    try expectGatewayParity(klient.ClusterRoleBinding, @import("../k8s/ClusterRoleBindingRecord.zig").ClusterRoleBindingRecord, 3, transformClusterRoleBinding, @import("../k8s/ClusterRoleBindingRecord.zig").fromClusterRoleBinding, fixtures.cluster_role_binding_object_json);
+}
+
+test "admission real-shaped records preserve exact retained transform columns" {
+    const fixtures = @import("../k8s/rbac_admission_records_test.zig");
+    try expectGatewayParity(klient.ValidatingAdmissionPolicy, @import("../k8s/ValidatingAdmissionPolicyRecord.zig").ValidatingAdmissionPolicyRecord, 4, modern.transformVAP, @import("../k8s/ValidatingAdmissionPolicyRecord.zig").fromValidatingAdmissionPolicy, fixtures.validating_policy_object_json);
+    try expectGatewayParity(klient.ValidatingAdmissionPolicyBinding, @import("../k8s/ValidatingAdmissionPolicyBindingRecord.zig").ValidatingAdmissionPolicyBindingRecord, 3, modern.transformVAPB, @import("../k8s/ValidatingAdmissionPolicyBindingRecord.zig").fromValidatingAdmissionPolicyBinding, fixtures.validating_binding_object_json);
+    try expectGatewayParity(klient.MutatingAdmissionPolicy, @import("../k8s/MutatingAdmissionPolicyRecord.zig").MutatingAdmissionPolicyRecord, 4, modern.transformMAP, @import("../k8s/MutatingAdmissionPolicyRecord.zig").fromMutatingAdmissionPolicy, fixtures.mutating_policy_object_json);
+    try expectGatewayParity(klient.MutatingAdmissionPolicyBinding, @import("../k8s/MutatingAdmissionPolicyBindingRecord.zig").MutatingAdmissionPolicyBindingRecord, 3, modern.transformMAPB, @import("../k8s/MutatingAdmissionPolicyBindingRecord.zig").fromMutatingAdmissionPolicyBinding, fixtures.mutating_binding_object_json);
+    try expectGatewayParity(klient.ValidatingWebhookConfiguration, @import("../k8s/ValidatingWebhookConfigurationRecord.zig").ValidatingWebhookConfigurationRecord, 3, modern.transformVWC, @import("../k8s/ValidatingWebhookConfigurationRecord.zig").fromValidatingWebhookConfiguration, fixtures.validating_webhook_object_json);
+    try expectGatewayParity(klient.MutatingWebhookConfiguration, @import("../k8s/MutatingWebhookConfigurationRecord.zig").MutatingWebhookConfigurationRecord, 3, modern.transformMWC, @import("../k8s/MutatingWebhookConfigurationRecord.zig").fromMutatingWebhookConfiguration, fixtures.mutating_webhook_object_json);
+}
+
+test "RBAC view declarations preserve exact names columns scopes and defaults" {
+    const Cases = .{
+        .{ RolesView, "roles", true, &[_][]const u8{ "NAMESPACE", "NAME", "AGE" } },
+        .{ RoleBindingsView, "rolebindings", true, &[_][]const u8{ "NAMESPACE", "NAME", "ROLE", "AGE" } },
+        .{ ClusterRolesView, "clusterroles", false, &[_][]const u8{ "NAME", "AGE" } },
+        .{ ClusterRoleBindingsView, "clusterrolebindings", false, &[_][]const u8{ "NAME", "ROLE", "AGE" } },
+    };
+    inline for (Cases) |case| {
+        try std.testing.expectEqualStrings(case[1], case[0].view_config.name);
+        try std.testing.expectEqual(case[2], case[0].view_config.is_namespaced);
+        try std.testing.expect(!case[0].view_config.default_all_namespaces);
+        try std.testing.expectEqual(case[3].len, case[0].view_config.columns.len);
+        inline for (case[3], 0..) |name, index|
+            try std.testing.expectEqualStrings(name, case[0].view_config.columns[index].name);
+    }
+}
+
+test "admission view declarations preserve exact names columns scopes and defaults" {
+    const Cases = .{
+        .{ ValidatingAdmissionPoliciesView, "validatingadmissionpolicies", &[_][]const u8{ "NAME", "FAILUREPOLICY", "VALIDATIONS", "AGE" } },
+        .{ ValidatingAdmissionPolicyBindingsView, "validatingadmissionpolicybindings", &[_][]const u8{ "NAME", "POLICY", "AGE" } },
+        .{ MutatingAdmissionPoliciesView, "mutatingadmissionpolicies", &[_][]const u8{ "NAME", "FAILUREPOLICY", "MUTATIONS", "AGE" } },
+        .{ MutatingAdmissionPolicyBindingsView, "mutatingadmissionpolicybindings", &[_][]const u8{ "NAME", "POLICY", "AGE" } },
+        .{ ValidatingWebhookConfigurationsView, "validatingwebhookconfigurations", &[_][]const u8{ "NAME", "WEBHOOKS", "AGE" } },
+        .{ MutatingWebhookConfigurationsView, "mutatingwebhookconfigurations", &[_][]const u8{ "NAME", "WEBHOOKS", "AGE" } },
+    };
+    inline for (Cases) |case| {
+        try std.testing.expectEqualStrings(case[1], case[0].view_config.name);
+        try std.testing.expect(!case[0].view_config.is_namespaced);
+        try std.testing.expect(!case[0].view_config.default_all_namespaces);
+        try std.testing.expectEqual(case[2].len, case[0].view_config.columns.len);
+        inline for (case[2], 0..) |name, index|
+            try std.testing.expectEqualStrings(name, case[0].view_config.columns[index].name);
+    }
+}
+
+test "Gateway API view declarations preserve exact columns scopes and defaults" {
+    const Cases = .{
+        .{ GatewayClassesView, false, &[_][]const u8{ "NAME", "CONTROLLER", "AGE" } },
+        .{ GatewaysView, true, &[_][]const u8{ "NAMESPACE", "NAME", "CLASS", "ADDRESS", "AGE" } },
+        .{ HTTPRoutesView, true, &[_][]const u8{ "NAMESPACE", "NAME", "PARENT", "HOSTNAMES", "AGE" } },
+        .{ GRPCRoutesView, true, &[_][]const u8{ "NAMESPACE", "NAME", "PARENT", "HOSTNAMES", "AGE" } },
+        .{ ReferenceGrantsView, true, &[_][]const u8{ "NAMESPACE", "NAME", "FROM", "TO", "AGE" } },
+        .{ TCPRoutesView, true, &[_][]const u8{ "NAMESPACE", "NAME", "PARENT", "AGE" } },
+        .{ TLSRoutesView, true, &[_][]const u8{ "NAMESPACE", "NAME", "PARENT", "HOSTNAMES", "AGE" } },
+        .{ UDPRoutesView, true, &[_][]const u8{ "NAMESPACE", "NAME", "PARENT", "AGE" } },
+        .{ BackendTLSPoliciesView, true, &[_][]const u8{ "NAMESPACE", "NAME", "TARGET", "AGE" } },
+        .{ ListenerSetsView, true, &[_][]const u8{ "NAMESPACE", "NAME", "PARENT", "LISTENERS", "AGE" } },
+    };
+    inline for (Cases) |case| {
+        try std.testing.expectEqual(case[1], case[0].view_config.is_namespaced);
+        try std.testing.expect(!case[0].view_config.default_all_namespaces);
+        try std.testing.expectEqual(case[2].len, case[0].view_config.columns.len);
+        inline for (case[2], 0..) |name, index|
+            try std.testing.expectEqualStrings(name, case[0].view_config.columns[index].name);
+    }
+}
+
 test "real-shaped ingress class projected columns match retained transform" {
     const allocator = std.testing.allocator;
     var parsed = try std.json.parseFromSlice(
@@ -2169,9 +2056,6 @@ test "services scope toggle requests exact subscription restart" {
         fn sort(record: *const ServiceRecord, _: u8) []const u8 {
             return record.key.name;
         }
-        fn enabled() bool {
-            return true;
-        }
         fn columns(
             _: *Projection,
             record: *const ServiceRecord,
@@ -2192,7 +2076,6 @@ test "services scope toggle requests exact subscription restart" {
     services.bindProjection(ServicesView.ProjectionAdapter.init(
         ServiceRecord,
         &projection,
-        Fns.enabled,
         Fns.columns,
     ));
     services.markSubscriptionStarted();
@@ -2215,9 +2098,6 @@ fn exerciseFamilyAtomicSync(
         }
         fn sort(item: *const Record, _: u8) []const u8 {
             return item.key.name;
-        }
-        fn enabled() bool {
-            return true;
         }
         fn columns(
             _: *Projection,
@@ -2252,6 +2132,10 @@ fn exerciseFamilyAtomicSync(
             const StorageClassRecord = @import("../k8s/StorageClassRecord.zig");
             const VolumeAttributesClassRecord = @import("../k8s/VolumeAttributesClassRecord.zig");
             const CSIDriverRecord = @import("../k8s/CSIDriverRecord.zig");
+            const RoleRecord = @import("../k8s/RoleRecord.zig").RoleRecord;
+            const RoleBindingRecord = @import("../k8s/RoleBindingRecord.zig").RoleBindingRecord;
+            const ClusterRoleRecord = @import("../k8s/ClusterRoleRecord.zig").ClusterRoleRecord;
+            const ClusterRoleBindingRecord = @import("../k8s/ClusterRoleBindingRecord.zig").ClusterRoleBindingRecord;
             const key = try (keys.ObjectKey{
                 .uid = "resource-uid",
                 .namespace = if (ViewType.view_config.is_namespaced) "default" else "",
@@ -2396,6 +2280,17 @@ fn exerciseFamilyAtomicSync(
                 .attach_required = true,
                 .pod_info = false,
             };
+            if (comptime Record == RoleRecord or Record == ClusterRoleRecord) return .{
+                .key = key,
+                .extra = .{},
+            };
+            if (comptime Record == RoleBindingRecord or Record == ClusterRoleBindingRecord) return .{
+                .key = key,
+                .extra = .{
+                    .kind = try allocator.dupe(u8, if (Record == RoleBindingRecord) "Role" else "ClusterRole"),
+                    .name = try allocator.dupe(u8, "reader"),
+                },
+            };
             return .{
                 .key = key,
                 .address_type = try allocator.dupe(u8, "IPv4"),
@@ -2417,7 +2312,6 @@ fn exerciseFamilyAtomicSync(
     view.bindProjection(ViewType.ProjectionAdapter.init(
         Record,
         &projection,
-        Fns.enabled,
         Fns.columns,
     ));
     const changes = try backing.alloc(keys.TypedChange(Record), 1);
@@ -2539,6 +2433,13 @@ test "storage family projection table synchronization is allocation atomic" {
     try exerciseFamilyAtomicSync(@import("../k8s/StorageClassRecord.zig"), StorageClassesView, 6);
     try exerciseFamilyAtomicSync(@import("../k8s/VolumeAttributesClassRecord.zig"), VolumeAttributesClassesView, 3);
     try exerciseFamilyAtomicSync(@import("../k8s/CSIDriverRecord.zig"), CSIDriversView, 4);
+}
+
+test "RBAC family projection table synchronization is allocation atomic" {
+    try exerciseFamilyAtomicSync(@import("../k8s/RoleRecord.zig").RoleRecord, RolesView, 3);
+    try exerciseFamilyAtomicSync(@import("../k8s/RoleBindingRecord.zig").RoleBindingRecord, RoleBindingsView, 4);
+    try exerciseFamilyAtomicSync(@import("../k8s/ClusterRoleRecord.zig").ClusterRoleRecord, ClusterRolesView, 2);
+    try exerciseFamilyAtomicSync(@import("../k8s/ClusterRoleBindingRecord.zig").ClusterRoleBindingRecord, ClusterRoleBindingsView, 3);
 }
 
 pub const ResourceClaimsView = modern.ResourceClaimsView;

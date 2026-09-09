@@ -8,9 +8,9 @@ const std = @import("std");
 const Terminal = @import("../core/Terminal.zig").Terminal;
 const theme_loader = @import("../model/theme_loader.zig");
 const Theme = theme_loader;
-const Logger = @import("../core/logger.zig");
 const k8s_service_mod = @import("../services/K8sService.zig");
 const K8sService = k8s_service_mod.K8sService;
+const keys = @import("../k8s/ResourceKey.zig");
 const TableState = @import("../ui/TableState.zig").TableState;
 
 pub const ConditionRow = struct {
@@ -34,6 +34,10 @@ pub const ConditionInspectorTab = struct {
     k8s_service: *K8sService,
     table: TableState(ConditionRow),
     condition_resource: ?[]const u8 = null, // e.g. "pods/delete"
+    requested_resource: ?[]u8 = null,
+    requested_group: ?[]u8 = null,
+    active_key: ?keys.RequestKey = null,
+    active_serial: u64 = 0,
 
     pub fn init(allocator: std.mem.Allocator, k8s_service: *K8sService) ConditionInspectorTab {
         return ConditionInspectorTab{
@@ -46,58 +50,26 @@ pub const ConditionInspectorTab = struct {
     pub fn deinit(self: *ConditionInspectorTab) void {
         self.table.deinit();
         if (self.condition_resource) |r| self.allocator.free(r);
+        if (self.requested_resource) |r| self.allocator.free(r);
+        if (self.requested_group) |g| self.allocator.free(g);
     }
 
-    /// Refresh conditions for a specific resource
-    pub fn refresh(self: *ConditionInspectorTab, resource: []const u8, group: []const u8, conditional_auth_available: ?bool) !void {
-        self.table.loading = true;
-        defer self.table.loading = false;
+    pub fn requestRefresh(self: *ConditionInspectorTab, resource: []const u8, group: []const u8) !void {
+        const next_resource = try self.allocator.dupe(u8, resource);
+        errdefer self.allocator.free(next_resource);
+        const next_group = try self.allocator.dupe(u8, group);
+        if (self.requested_resource) |old| self.allocator.free(old);
+        if (self.requested_group) |old| self.allocator.free(old);
+        self.requested_resource = next_resource;
+        self.requested_group = next_group;
+    }
 
-        self.table.clearItems();
-
-        // Dupe before freeing: `resource` is sometimes self.condition_resource
-        // itself on a refresh, and a failed dupe would otherwise leave the field
-        // dangling for the next call to free again.
-        const new_resource = try self.allocator.dupe(u8, resource);
-        if (self.condition_resource) |r| self.allocator.free(r);
-        self.condition_resource = new_resource;
-
-        if (!self.k8s_service.isConnected()) {
-            try self.table.setError("Not connected to Kubernetes cluster");
-            return;
-        }
-
-        if (conditional_auth_available != null and !conditional_auth_available.?) {
-            try self.table.setError("Conditional Authorization (KEP 5681) not available on this cluster. Requires K8s v1.36+ with ConditionalAuthorization feature gate enabled.");
-            return;
-        }
-
-        const namespace = self.k8s_service.getCurrentNamespace();
-        const conditions = self.k8s_service.getAuthorizationConditions(resource, group, namespace) catch |err| {
-            try self.table.setConnectionError("conditions", err);
-            return;
-        };
-        defer {
-            for (conditions) |*c| {
-                var mc = c.*;
-                mc.deinit();
-            }
-            self.allocator.free(conditions);
-        }
-
-        for (conditions, 0..) |c, i| {
-            try self.table.appendItem(ConditionRow{
-                .index = @intCast(i + 1),
-                .effect = try self.allocator.dupe(u8, c.effect),
-                .authorizer = try self.allocator.dupe(u8, c.authorizer),
-                .expression = try self.allocator.dupe(u8, c.expression),
-                .description = try self.allocator.dupe(u8, c.description),
-                .allocator = self.allocator,
-            });
-        }
-
-        // Rebuild filtered indices to show all items (no filtering for conditions)
-        try self.table.applyFilter("", conditionMatchFn);
+    pub fn takeRefreshRequest(self: *ConditionInspectorTab) ?struct { resource: []u8, group: []u8 } {
+        const resource = self.requested_resource orelse return null;
+        const group = self.requested_group orelse return null;
+        self.requested_resource = null;
+        self.requested_group = null;
+        return .{ .resource = resource, .group = group };
     }
 
     pub fn render(self: *ConditionInspectorTab, term: *Terminal, x: u16, y: u16, _: u16, height: u16, theme: *const theme_loader.ThemeColors) !void {
@@ -198,7 +170,7 @@ pub const ConditionInspectorTab = struct {
     }
 
     /// Always match — condition inspector does not support filtering
-    fn conditionMatchFn(_: *const ConditionRow, _: []const u8) bool {
+    pub fn conditionMatchFn(_: *const ConditionRow, _: []const u8) bool {
         return true;
     }
 };

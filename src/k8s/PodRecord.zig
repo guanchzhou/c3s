@@ -32,6 +32,8 @@ container_names: [][]u8 = &.{},
 ready_count: u32 = 0,
 container_count: u32 = 0,
 restart_count: u64 = 0,
+cpu_request_milli: u64 = 0,
+mem_request_bytes: u64 = 0,
 
 const PodRecord = @This();
 
@@ -40,15 +42,8 @@ pub fn fromPod(
     pod: klient.Pod,
     source: SourceMetadata,
 ) (Error || std.mem.Allocator.Error)!PodRecord {
-    const uid = pod.metadata.uid orelse return error.MissingUid;
-    if (uid.len == 0) return error.MissingUid;
-
     var record: PodRecord = .{
-        .key = try (ObjectKey{
-            .uid = uid,
-            .namespace = pod.metadata.namespace orelse "default",
-            .name = pod.metadata.name,
-        }).clone(allocator),
+        .key = try resource_key.fromMetadata(allocator, pod.metadata, "default"),
     };
     errdefer record.deinit(allocator);
 
@@ -69,6 +64,22 @@ pub fn fromPod(
             for (containers) |container| {
                 record.container_names[initialized] = try allocator.dupe(u8, container.name orelse "");
                 initialized += 1;
+                const requests = (container.resources orelse continue).requests orelse continue;
+                if (requests != .object) continue;
+                if (requests.object.get("cpu")) |cpu| {
+                    if (cpu == .string) {
+                        if (klient.MetricsClient.parseCpuMillicores(cpu.string)) |value| {
+                            record.cpu_request_milli +|= value;
+                        }
+                    }
+                }
+                if (requests.object.get("memory")) |memory| {
+                    if (memory == .string) {
+                        if (klient.MetricsClient.parseMemoryBytes(memory.string)) |value| {
+                            record.mem_request_bytes +|= value;
+                        }
+                    }
+                }
             }
         }
     }
@@ -135,6 +146,8 @@ pub fn clone(self: PodRecord, allocator: std.mem.Allocator) std.mem.Allocator.Er
     result.ready_count = self.ready_count;
     result.container_count = self.container_count;
     result.restart_count = self.restart_count;
+    result.cpu_request_milli = self.cpu_request_milli;
+    result.mem_request_bytes = self.mem_request_bytes;
 
     if (self.container_names.len > 0) {
         result.container_names = try allocator.alloc([]u8, self.container_names.len);
@@ -157,6 +170,7 @@ pub fn ownedBytes(self: PodRecord) usize {
         self.key.uid.len +
         self.key.namespace.len +
         self.key.name.len +
+        self.key.labels.len +
         self.resource_version.len +
         self.creation_timestamp.len +
         self.phase.len +
@@ -245,6 +259,49 @@ test "record owns borrowed pod input and compact command metadata" {
     try std.testing.expectEqualStrings("app", record.container_names[0]);
     try std.testing.expectEqualStrings("ReplicaSet", record.owner_kind);
     try std.testing.expectEqual(@as(u64, 2), record.restart_count);
+}
+
+test "record retains bounded labels and summed resource requests" {
+    const allocator = std.testing.allocator;
+    const parsed = try std.json.parseFromSlice(
+        klient.Pod,
+        allocator,
+        \\{"metadata":{"uid":"uid","namespace":"ns","name":"pod","labels":{"app":"web","env":"prod"}},"spec":{"containers":[{"name":"app","resources":{"requests":{"cpu":"250m","memory":"32Mi"}}},{"name":"sidecar","resources":{"requests":{"cpu":"1","memory":"1Gi"}}}]}}
+    ,
+        .{ .ignore_unknown_fields = true },
+    );
+    defer parsed.deinit();
+    var record = try fromPod(allocator, parsed.value, .{});
+    defer record.deinit(allocator);
+    try std.testing.expectEqual(@as(u64, 1_250), record.cpu_request_milli);
+    try std.testing.expectEqual(@as(u64, 1_056 * 1024 * 1024), record.mem_request_bytes);
+    try std.testing.expect(std.mem.indexOf(u8, record.key.labels, "app=web") != null);
+    try std.testing.expect(std.mem.indexOf(u8, record.key.labels, "env=prod") != null);
+    try std.testing.expect(record.key.labels.len <= resource_key.max_projected_label_bytes);
+}
+
+fn labeledPodExercise(allocator: std.mem.Allocator, pod: klient.Pod) !void {
+    var record = try fromPod(allocator, pod, .{});
+    defer record.deinit(allocator);
+    var copy = try record.clone(allocator);
+    defer copy.deinit(allocator);
+    try std.testing.expectEqualStrings("app=web,env=prod", copy.key.labels);
+}
+
+test "labeled pod decode and clone survive allocation failure at every step" {
+    const parsed = try std.json.parseFromSlice(
+        klient.Pod,
+        std.testing.allocator,
+        \\{"metadata":{"uid":"uid","namespace":"ns","name":"pod","labels":{"app":"web","env":"prod"}},"spec":{"containers":[{"name":"app"}]},"status":{"phase":"Running"}}
+    ,
+        .{ .ignore_unknown_fields = true },
+    );
+    defer parsed.deinit();
+    try std.testing.checkAllAllocationFailures(
+        std.testing.allocator,
+        labeledPodExercise,
+        .{parsed.value},
+    );
 }
 
 test "waiting status takes precedence over phase" {

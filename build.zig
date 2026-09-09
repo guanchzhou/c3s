@@ -111,6 +111,23 @@ pub fn build(b: *std.Build) void {
         run_cmd.addArgs(args);
     }
 
+    const task15_preflight_cmd = b.addRunArtifact(exe);
+    task15_preflight_cmd.addArg("task15-preflight");
+    const task15_preflight_step = b.step(
+        "task15-preflight",
+        "Print the network-free Task 15 safety artifact",
+    );
+    task15_preflight_step.dependOn(&task15_preflight_cmd.step);
+
+    const task15_manifest_cmd = b.addRunArtifact(exe);
+    task15_manifest_cmd.addArg("task15-manifest");
+    if (b.args) |args| task15_manifest_cmd.addArgs(args);
+    const task15_manifest_step = b.step(
+        "task15-manifest",
+        "Print a network-free sanitized Task 15 kubeconfig manifest",
+    );
+    task15_manifest_step.dependOn(&task15_manifest_cmd.step);
+
     // Create unit tests. Root at index.zig (c3s_module), NOT main.zig: index.zig
     // pub-imports every source module, so Zig analyzes them all and discovers
     // every co-located `test{}` block. Rooting at main.zig would silently skip
@@ -148,6 +165,17 @@ pub fn build(b: *std.Build) void {
         .{ .step = "test-body-render", .path = "tests/view/body_render_test.zig" },
         .{ .step = "test-resource-view", .path = "tests/view/resource_view_test.zig" },
         .{ .step = "test-resource-views", .path = "tests/view/resource_views_test.zig" },
+        .{ .step = "test-data-plane-family-registry-gate", .path = "tests/integration/data_plane_family_registry_gate_test.zig" },
+        .{ .step = "test-data-plane-family-stack-gate", .path = "tests/integration/data_plane_family_stack_gate_test.zig" },
+        .{ .step = "test-data-plane-ordering-gate", .path = "tests/integration/data_plane_ordering_gate_test.zig" },
+        .{ .step = "test-data-plane-identity-gate", .path = "tests/integration/data_plane_identity_gate_test.zig" },
+        .{ .step = "test-data-plane-context-restart-gate", .path = "tests/integration/data_plane_context_restart_gate_test.zig" },
+        .{ .step = "test-data-plane-shutdown-gate", .path = "tests/integration/data_plane_shutdown_gate_test.zig" },
+        .{ .step = "test-data-plane-rollback-gate", .path = "tests/integration/data_plane_rollback_gate_test.zig" },
+        .{ .step = "test-data-plane-allocation-gate", .path = "tests/integration/data_plane_allocation_gate_test.zig" },
+        .{ .step = "test-resource-record-contract-gate", .path = "tests/integration/resource_record_contract_gate_test.zig" },
+        .{ .step = "test-data-plane-ancillary-gate", .path = "tests/integration/data_plane_ancillary_gate_test.zig" },
+        .{ .step = "test-task-15-dry-preflight", .path = "tests/integration/task_15_dry_preflight_test.zig" },
         // viewmodel tests are co-located in their src files (run via the `test`
         // unit-test step, which test-all depends on).
     };
@@ -165,6 +193,11 @@ pub fn build(b: *std.Build) void {
         const step = b.step(spec.step, b.fmt("Run {s}", .{spec.path}));
         step.dependOn(&run.step);
         all_tests_step.dependOn(&run.step);
+        if (std.mem.startsWith(u8, spec.step, "test-data-plane-") or
+            std.mem.eql(u8, spec.step, "test-resource-record-contract-gate"))
+        {
+            test_step.dependOn(&run.step);
+        }
     }
 
     // Clean step — removes .zig-cache to force fresh build

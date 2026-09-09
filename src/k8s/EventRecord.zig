@@ -14,14 +14,9 @@ count: i32,
 message: []u8,
 
 pub fn fromEvent(allocator: std.mem.Allocator, event: klient.Event) !EventRecord {
-    const uid = event.metadata.uid orelse return error.MissingUid;
-    var key = try (keys.ObjectKey{
-        .uid = uid,
-        .namespace = event.metadata.namespace orelse "default",
-        .name = event.metadata.name,
-    }).clone(allocator);
+    var key = try keys.fromMetadata(allocator, event.metadata, "default");
     errdefer key.deinit(allocator);
-    const last_seen_timestamp = if (event.lastTimestamp orelse event.eventTime orelse event.metadata.creationTimestamp) |timestamp|
+    const last_seen_timestamp = if ((if (event.series) |series| series.lastObservedTime else null) orelse event.lastTimestamp orelse event.eventTime orelse event.metadata.creationTimestamp) |timestamp|
         try allocator.dupe(u8, timestamp)
     else
         null;
@@ -39,7 +34,7 @@ pub fn fromEvent(allocator: std.mem.Allocator, event: klient.Event) !EventRecord
         .event_type = event_type,
         .reason = reason,
         .object = object,
-        .count = event.count orelse 0,
+        .count = (if (event.series) |series| series.count else null) orelse event.count orelse 0,
         .message = message,
     };
 }
@@ -128,6 +123,22 @@ test "event columns preserve OBJECT and current LAST-SEEN COUNT MESSAGE behavior
     defer for (actual) |column| std.testing.allocator.free(column);
     const expected = [_][]const u8{ "team", "n/a", "Warning", "BackOff", "Pod/api-1", "7", "restarting" };
     for (actual, expected) |column, want| try std.testing.expectEqualStrings(want, column);
+}
+
+test "event series overrides deprecated count and timestamps" {
+    var parsed = try std.json.parseFromSlice(
+        klient.Event,
+        std.testing.allocator,
+        \\{"metadata":{"uid":"event-series","namespace":"team","name":"generated","creationTimestamp":"2024-01-01T00:00:00Z"},"involvedObject":{"kind":"Pod","name":"api-1"},"count":2,"lastTimestamp":"2024-01-01T00:01:00Z","eventTime":"2024-01-01T00:00:01Z","series":{"count":9,"lastObservedTime":"2024-01-01T00:05:00Z"}}
+    ,
+        .{ .ignore_unknown_fields = true },
+    );
+    defer parsed.deinit();
+    var record = try fromEvent(std.testing.allocator, parsed.value);
+    defer record.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(i32, 9), record.count);
+    try std.testing.expectEqualStrings("2024-01-01T00:05:00Z", record.last_seen_timestamp.?);
+    try std.testing.expectEqualStrings("Pod/api-1", record.object);
 }
 
 test "event UID is required and object remains independent of identity" {

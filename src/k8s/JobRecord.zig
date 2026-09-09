@@ -15,12 +15,7 @@ completion_time: ?[]u8 = null,
 creation_timestamp: ?[]u8 = null,
 
 pub fn fromJob(allocator: std.mem.Allocator, job: klient.Job) !JobRecord {
-    const uid = job.metadata.uid orelse return error.MissingUid;
-    var key = try (keys.ObjectKey{
-        .uid = uid,
-        .namespace = job.metadata.namespace orelse "default",
-        .name = job.metadata.name,
-    }).clone(allocator);
+    var key = try keys.fromMetadata(allocator, job.metadata, "default");
     errdefer key.deinit(allocator);
     const start_time = try cloneOptional(allocator, statusStr(job.status, "startTime"));
     errdefer if (start_time) |value| allocator.free(value);

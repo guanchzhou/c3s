@@ -10,8 +10,7 @@ cidrs: []u8,
 creation_timestamp: ?[]u8 = null,
 
 pub fn fromServiceCIDR(allocator: std.mem.Allocator, value: klient.ServiceCIDR) !ServiceCIDRRecord {
-    const uid = value.metadata.uid orelse return error.MissingUid;
-    var key = try (keys.ObjectKey{ .uid = uid, .namespace = "", .name = value.metadata.name }).clone(allocator);
+    var key = try keys.fromMetadata(allocator, value.metadata, "");
     errdefer key.deinit(allocator);
     const cidrs = try formatCIDRs(allocator, value);
     errdefer allocator.free(cidrs);

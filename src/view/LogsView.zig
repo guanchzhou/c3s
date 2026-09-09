@@ -123,6 +123,19 @@ pub const LogsView = struct {
 
     /// Set log content from raw text
     pub fn setContent(self: *LogsView, log_text: []const u8, pod_name: []const u8) !void {
+        var replacement = try LogsView.init(self.allocator, self.theme);
+        errdefer replacement.deinit();
+        replacement.auto_scroll = self.auto_scroll;
+        replacement.show_timestamps = self.show_timestamps;
+        replacement.wrap = self.wrap;
+        replacement.visible_rows = self.visible_rows;
+        replacement.last_content_width = self.last_content_width;
+        try replacement.setContentInPlace(log_text, pod_name);
+        self.swapContent(&replacement);
+        replacement.deinit();
+    }
+
+    fn setContentInPlace(self: *LogsView, log_text: []const u8, pod_name: []const u8) !void {
         self.clearContent();
         self.title = try std.fmt.allocPrint(self.allocator, "Logs({s})", .{pod_name});
         self.selected_row = 0;
@@ -148,6 +161,19 @@ pub const LogsView = struct {
                 self.scroll_offset = self.selected_row - self.visible_rows + 1;
             }
         }
+    }
+
+    fn swapContent(self: *LogsView, other: *LogsView) void {
+        std.mem.swap(std.ArrayListUnmanaged([]const u8), &self.lines, &other.lines);
+        std.mem.swap(std.ArrayListUnmanaged(usize), &self.filtered_indices, &other.filtered_indices);
+        std.mem.swap(std.ArrayListUnmanaged(log_text_util.Segment), &self.wrap_segments, &other.wrap_segments);
+        std.mem.swap([]const u8, &self.title, &other.title);
+        std.mem.swap([]const u8, &self.filter_text, &other.filter_text);
+        self.selected_row = other.selected_row;
+        self.scroll_offset = other.scroll_offset;
+        self.content_generation = other.content_generation;
+        self.wrap_built_width = other.wrap_built_width;
+        self.wrap_built_generation = other.wrap_built_generation;
     }
 
     /// Apply a filter to log lines

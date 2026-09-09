@@ -627,7 +627,7 @@ test "hiddenMask hides the namespace column in single-namespace scope" {
     try testing.expect(!view.hiddenMask()[ns_col]);
 }
 
-test "0 toggling all-namespaces schedules deferred refresh with loading hint" {
+test "0 toggling all-namespaces schedules data-plane restart with loading hint" {
     const allocator = testing.allocator;
     var svc = try c3s.K8sService.init(allocator);
     defer svc.deinit();
@@ -637,19 +637,16 @@ test "0 toggling all-namespaces schedules deferred refresh with loading hint" {
     var view = try c3s.PodsView.init(allocator, &theme, &svc);
     defer view.deinit();
 
-    try testing.expect(!view.refresh_pending);
     try testing.expect(!view.table.show_all_namespaces);
 
     const result = try c3s.PodsView.handleKey(&view, .{ .char = '0' });
     try testing.expectEqual(c3s.View.KeyResult.handled, result);
-    try testing.expect(view.refresh_pending);
+    const request = view.takeSubscriptionRequest();
+    try testing.expectEqual(@as(@TypeOf(request), .start), request);
     try testing.expect(view.table.loading);
     try testing.expect(view.table.show_all_namespaces);
     try testing.expect(view.table.loading_detail.len > 0);
     try testing.expect(view.getStatusHint() != null);
-
-    _ = view.flushPendingRefresh();
-    try testing.expect(!view.refresh_pending);
 }
 
 test "hiddenMask hides every column views.yaml left out" {
@@ -781,4 +778,506 @@ test "r on deployments requests a restart; ctrl-r refreshes" {
         c3s.View.KeyResult.handled,
         try c3s.DeploymentsView.handleKey(&dp, .ctrl_r),
     );
+}
+
+const PodProjection = c3s.k8s_resource_projection.ResourceProjection(c3s.PodRecord);
+const pod_keys = c3s.k8s_resource_key;
+
+/// Mirror the production row filter: the same k9s grammar over the searchable
+/// pod columns plus the projected labels, so `-l` selectors reach the labels the
+/// record actually carries instead of being waved through by a stub.
+fn projectedPodMatch(record: *const c3s.PodRecord, filter: []const u8) bool {
+    return c3s.k9s_query.matchSearchable(
+        &.{ record.key.namespace, record.key.name, record.phase, record.status_reason },
+        record.key.labels,
+        filter,
+    );
+}
+
+fn projectedPodSort(record: *const c3s.PodRecord, _: u8) []const u8 {
+    return record.key.name;
+}
+
+fn applyPodBatch(projection: *PodProjection, batch: *pod_keys.TypedBatch(c3s.PodRecord)) !void {
+    var plan = try PodProjection.handler().preflight(@ptrCast(projection), batch, testing.allocator);
+    PodProjection.handler().commit(@ptrCast(projection), batch, &plan);
+    plan.deinit(testing.allocator);
+}
+
+fn makeProjectedPod(
+    uid: []const u8,
+    name: []const u8,
+    labels: []const u8,
+    ready: u32,
+    total: u32,
+    restarts: u64,
+    status: []const u8,
+    created: []const u8,
+    cpu_request: u64,
+    mem_request: u64,
+) !c3s.PodRecord {
+    const allocator = testing.allocator;
+    return .{
+        .key = try (pod_keys.ObjectKey{
+            .uid = uid,
+            .namespace = "default",
+            .name = name,
+            .labels = labels,
+        }).clone(allocator),
+        .creation_timestamp = try allocator.dupe(u8, created),
+        .phase = try allocator.dupe(u8, "Running"),
+        .status_reason = try allocator.dupe(u8, status),
+        .ready_count = ready,
+        .container_count = total,
+        .restart_count = restarts,
+        .cpu_request_milli = cpu_request,
+        .mem_request_bytes = mem_request,
+    };
+}
+
+fn podBatch(
+    revision: u64,
+    changes: []pod_keys.TypedChange(c3s.PodRecord),
+) pod_keys.TypedBatch(c3s.PodRecord) {
+    return .{
+        .generation = 1,
+        .subscription_id = 1,
+        .revision = revision,
+        .changes = changes,
+        .sync = null,
+        .owned_bytes = 1,
+    };
+}
+
+test "projection list boundaries keep truthful loading and safe relist rows" {
+    const allocator = testing.allocator;
+    var projection = PodProjection.init(allocator, .{
+        .matchFn = projectedPodMatch,
+        .sortKeyFn = projectedPodSort,
+    });
+    defer projection.deinit();
+    var svc = try c3s.K8sService.init(allocator);
+    defer svc.deinit();
+    var theme = try c3s.theme_loader.defaultTheme(allocator);
+    defer c3s.theme_loader.deinitTheme(&theme);
+    var view = try c3s.PodsView.init(allocator, &theme, &svc);
+    defer view.deinit();
+    view.bindPodProjection(&projection);
+
+    var started = podBatch(1, &.{});
+    started.sync = .list_started;
+    try applyPodBatch(&projection, &started);
+    try view.syncPodProjection();
+    try testing.expect(view.table.loading);
+    try testing.expect(view.getStatusHint() != null);
+    try testing.expectEqual(@as(usize, 0), view.table.items.items.len);
+
+    const initial = try allocator.alloc(pod_keys.TypedChange(c3s.PodRecord), 1);
+    initial[0] = .{ .initial_upsert = try makeProjectedPod(
+        "one",
+        "one",
+        "app=web",
+        1,
+        1,
+        0,
+        "Running",
+        "2026-01-01T00:00:00Z",
+        0,
+        0,
+    ) };
+    var first = podBatch(2, initial);
+    defer first.deinit(allocator);
+    try applyPodBatch(&projection, &first);
+    try view.syncPodProjection();
+    try testing.expect(!view.table.loading);
+    try testing.expectEqual(@as(usize, 1), view.table.items.items.len);
+
+    var relist = podBatch(3, &.{});
+    relist.sync = .list_started;
+    try applyPodBatch(&projection, &relist);
+    try view.syncPodProjection();
+    try testing.expect(view.table.loading);
+    try testing.expectEqual(@as(usize, 1), view.table.items.items.len);
+    try testing.expectEqualStrings("one", view.table.items.items[0].columns[1]);
+}
+
+test "projected rows use shared inverse label fuzzy and plain filters" {
+    const allocator = testing.allocator;
+    var projection = PodProjection.init(allocator, .{
+        .matchFn = projectedPodMatch,
+        .sortKeyFn = projectedPodSort,
+    });
+    defer projection.deinit();
+    var svc = try c3s.K8sService.init(allocator);
+    defer svc.deinit();
+    var theme = try c3s.theme_loader.defaultTheme(allocator);
+    defer c3s.theme_loader.deinitTheme(&theme);
+    var view = try c3s.PodsView.init(allocator, &theme, &svc);
+    defer view.deinit();
+    view.bindPodProjection(&projection);
+
+    const changes = try allocator.alloc(pod_keys.TypedChange(c3s.PodRecord), 2);
+    changes[0] = .{ .initial_upsert = try makeProjectedPod("api", "nginx-api", "app=web,env=prod", 1, 1, 0, "Running", "2026-01-01T00:00:00Z", 0, 0) };
+    changes[1] = .{ .initial_upsert = try makeProjectedPod("db", "postgres-db", "app=db,env=prod", 1, 1, 0, "Running", "2026-01-01T00:00:00Z", 0, 0) };
+    var batch = podBatch(1, changes);
+    defer batch.deinit(allocator);
+    try applyPodBatch(&projection, &batch);
+    try view.syncPodProjection();
+
+    for (view.table.filtered_indices.items, 0..) |item_index, visible_index| {
+        if (std.mem.eql(u8, view.table.items.items[item_index].uid, "db")) {
+            view.table.selected_row = @intCast(visible_index);
+            break;
+        }
+    }
+    try view.applyFilter("nginx");
+    try testing.expectEqual(@as(usize, 1), view.table.filtered_indices.items.len);
+    try testing.expectEqualStrings("nginx-api", view.getSelectedResourceInfo().?.name);
+    try view.applyFilter("!nginx");
+    try testing.expectEqualStrings("postgres-db", view.table.items.items[view.table.filtered_indices.items[0]].columns[1]);
+    try view.applyFilter("-l app=web,env=prod");
+    try testing.expectEqualStrings("nginx-api", view.table.items.items[view.table.filtered_indices.items[0]].columns[1]);
+    try view.applyFilter("-f ngx");
+    try testing.expectEqualStrings("nginx-api", view.table.items.items[view.table.filtered_indices.items[0]].columns[1]);
+}
+
+test "projection-level filters read the labels projected onto the record" {
+    // The view hands the projection an empty filter and filters the rows itself,
+    // so the projection's own matchFn is only reachable through setView. A stub
+    // that matched everything would let a record with no projected labels pass a
+    // `-l` selector, which is exactly the regression this guards.
+    const allocator = testing.allocator;
+    var projection = PodProjection.init(allocator, .{
+        .matchFn = projectedPodMatch,
+        .sortKeyFn = projectedPodSort,
+    });
+    defer projection.deinit();
+
+    const changes = try allocator.alloc(pod_keys.TypedChange(c3s.PodRecord), 2);
+    changes[0] = .{ .initial_upsert = try makeProjectedPod("api", "nginx-api", "app=web,env=prod", 1, 1, 0, "Running", "2026-01-01T00:00:00Z", 0, 0) };
+    changes[1] = .{ .initial_upsert = try makeProjectedPod("db", "postgres-db", "", 1, 1, 0, "Running", "2026-01-01T00:00:00Z", 0, 0) };
+    var batch = podBatch(1, changes);
+    defer batch.deinit(allocator);
+    try applyPodBatch(&projection, &batch);
+
+    try projection.setView("-l app=web", 0, true);
+    try testing.expectEqual(@as(usize, 1), projection.visibleCount());
+    try testing.expectEqualStrings("api", projection.visibleUid(0).?);
+
+    // A label-less record is excluded rather than waved through.
+    try projection.setView("-l app=db", 0, true);
+    try testing.expectEqual(@as(usize, 0), projection.visibleCount());
+
+    // The non-label branches of the shared grammar still see the columns.
+    try projection.setView("!nginx", 0, true);
+    try testing.expectEqual(@as(usize, 1), projection.visibleCount());
+    try testing.expectEqualStrings("db", projection.visibleUid(0).?);
+
+    try projection.setView("", 0, true);
+    try testing.expectEqual(@as(usize, 2), projection.visibleCount());
+}
+
+test "faults-only remains active after projected watch update" {
+    const allocator = testing.allocator;
+    var projection = PodProjection.init(allocator, .{
+        .matchFn = projectedPodMatch,
+        .sortKeyFn = projectedPodSort,
+    });
+    defer projection.deinit();
+    var svc = try c3s.K8sService.init(allocator);
+    defer svc.deinit();
+    var theme = try c3s.theme_loader.defaultTheme(allocator);
+    defer c3s.theme_loader.deinitTheme(&theme);
+    var view = try c3s.PodsView.init(allocator, &theme, &svc);
+    defer view.deinit();
+    view.bindPodProjection(&projection);
+
+    const initial = try allocator.alloc(pod_keys.TypedChange(c3s.PodRecord), 2);
+    initial[0] = .{ .initial_upsert = try makeProjectedPod("healthy", "healthy", "", 1, 1, 0, "Running", "2026-01-01T00:00:00Z", 0, 0) };
+    initial[1] = .{ .initial_upsert = try makeProjectedPod("fault", "fault", "", 0, 1, 0, "Pending", "2026-01-01T00:00:00Z", 0, 0) };
+    var batch = podBatch(1, initial);
+    defer batch.deinit(allocator);
+    try applyPodBatch(&projection, &batch);
+    try view.syncPodProjection();
+    _ = try c3s.PodsView.handleKey(&view, .ctrl_z);
+    try testing.expectEqual(@as(usize, 1), view.table.filtered_indices.items.len);
+
+    const update = try allocator.alloc(pod_keys.TypedChange(c3s.PodRecord), 1);
+    update[0] = .{ .watch_upsert = try makeProjectedPod("healthy", "healthy", "", 0, 1, 1, "CrashLoopBackOff", "2026-01-01T00:00:00Z", 0, 0) };
+    var watch = podBatch(2, update);
+    defer watch.deinit(allocator);
+    try applyPodBatch(&projection, &watch);
+    try view.syncPodProjection();
+    try testing.expect(view.faults_only);
+    try testing.expectEqual(@as(usize, 2), view.table.filtered_indices.items.len);
+}
+
+test "pod projection displays requests metrics and sorts numeric columns" {
+    const allocator = testing.allocator;
+    var projection = PodProjection.init(allocator, .{
+        .matchFn = projectedPodMatch,
+        .sortKeyFn = projectedPodSort,
+    });
+    defer projection.deinit();
+    var svc = try c3s.K8sService.init(allocator);
+    defer svc.deinit();
+    var theme = try c3s.theme_loader.defaultTheme(allocator);
+    defer c3s.theme_loader.deinitTheme(&theme);
+    var view = try c3s.PodsView.init(allocator, &theme, &svc);
+    defer view.deinit();
+    view.bindPodProjection(&projection);
+
+    const objects = try allocator.alloc(pod_keys.TypedChange(c3s.PodRecord), 2);
+    objects[0] = .{ .initial_upsert = try makeProjectedPod("low", "low", "", 1, 2, 2, "Running", "2026-08-01T00:00:00Z", 250, 512 * 1024 * 1024) };
+    objects[1] = .{ .initial_upsert = try makeProjectedPod("high", "high", "", 2, 2, 10, "Running", "2025-01-01T00:00:00Z", 500, 1024 * 1024 * 1024) };
+    var object_batch = podBatch(1, objects);
+    defer object_batch.deinit(allocator);
+    try applyPodBatch(&projection, &object_batch);
+
+    const metrics = try allocator.alloc(pod_keys.TypedChange(c3s.PodRecord), 2);
+    metrics[0] = .{ .metrics = .{ .namespace = try allocator.dupe(u8, "default"), .name = try allocator.dupe(u8, "low"), .cpu_milli = 125, .mem_bytes = 256 * 1024 * 1024, .revision = 1 } };
+    metrics[1] = .{ .metrics = .{ .namespace = try allocator.dupe(u8, "default"), .name = try allocator.dupe(u8, "high"), .cpu_milli = 1_000, .mem_bytes = 2 * 1024 * 1024 * 1024, .revision = 1 } };
+    var metrics_batch = podBatch(2, metrics);
+    defer metrics_batch.deinit(allocator);
+    var metrics_plan = try PodProjection.metricsHandler().preflight(@ptrCast(&projection), &metrics_batch, allocator);
+    PodProjection.metricsHandler().commit(@ptrCast(&projection), &metrics_batch, &metrics_plan);
+    metrics_plan.deinit(allocator);
+    try view.syncPodProjection();
+
+    var low_index: ?usize = null;
+    for (view.table.items.items, 0..) |row, index| {
+        if (std.mem.eql(u8, row.columns[1], "low")) low_index = index;
+    }
+    const low = &view.table.items.items[low_index orelse return error.LowPodMissing];
+    try testing.expectEqualStrings("1/2", low.columns[2]);
+    try testing.expectEqualStrings("2", low.columns[4]);
+    try testing.expectEqualStrings("125m", low.columns[5]);
+    try testing.expectEqualStrings("256Mi", low.columns[6]);
+    try testing.expectEqualStrings("50", low.columns[7]);
+    try testing.expectEqualStrings("50", low.columns[8]);
+    try testing.expect(!std.mem.eql(u8, low.columns[11], "n/a"));
+
+    inline for (.{ 'R', 'T', 'C', 'M', 'A' }) |key| {
+        _ = try c3s.PodsView.handleKey(&view, .{ .char = key });
+        const first_name = view.table.items.items[view.table.filtered_indices.items[0]].columns[1];
+        try testing.expectEqualStrings("low", first_name);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Projected selection: filtering must leave a usable cursor
+// ---------------------------------------------------------------------------
+
+/// Seed `count` pods named "pod-00".."pod-NN" plus a "pod-zzz-keeper" that sorts last,
+/// so a cursor on it sits well below the top of a short viewport.
+fn seedScrolledPods(
+    projection: *PodProjection,
+    view: *c3s.PodsView,
+    count: usize,
+) !void {
+    const allocator = testing.allocator;
+    const changes = try allocator.alloc(pod_keys.TypedChange(c3s.PodRecord), count + 1);
+    for (0..count) |i| {
+        var name_buf: [16]u8 = undefined;
+        const name = try std.fmt.bufPrint(&name_buf, "pod-{d:0>2}", .{i});
+        changes[i] = .{ .initial_upsert = try makeProjectedPod(
+            name,
+            name,
+            "",
+            1,
+            1,
+            0,
+            "Running",
+            "2026-01-01T00:00:00Z",
+            0,
+            0,
+        ) };
+    }
+    changes[count] = .{ .initial_upsert = try makeProjectedPod(
+        "keeper",
+        "pod-zzz-keeper",
+        "",
+        1,
+        1,
+        0,
+        "Running",
+        "2026-01-01T00:00:00Z",
+        0,
+        0,
+    ) };
+
+    var batch = podBatch(1, changes);
+    defer batch.deinit(allocator);
+    try applyPodBatch(projection, &batch);
+    try view.syncPodProjection();
+}
+
+/// Park the cursor on the seeded "keeper" row and give the view a 5-row viewport
+/// scrolled so that row is on screen. Returns the cursor's row index.
+fn parkCursorOnKeeper(view: *c3s.PodsView) u32 {
+    view.table.visible_rows = 5;
+    for (view.table.filtered_indices.items, 0..) |item_index, visible_index| {
+        if (std.mem.eql(u8, view.table.items.items[item_index].uid, "keeper")) {
+            view.table.selected_row = @intCast(visible_index);
+            break;
+        }
+    }
+    view.table.scroll_offset = view.table.selected_row + 1 - view.table.visible_rows;
+    return view.table.selected_row;
+}
+
+test "a filter the selection survives keeps the cursor on screen" {
+    // Rebuilding the rows goes through clearItems, which zeroes scroll_offset. The
+    // branch that maps the surviving UID back to its row then restored selected_row
+    // and nothing else, so a cursor on row 30 was left with the viewport pinned to
+    // row 0: the selected row rendered nowhere and the highlight vanished.
+    const allocator = testing.allocator;
+    var projection = PodProjection.init(allocator, .{
+        .matchFn = projectedPodMatch,
+        .sortKeyFn = projectedPodSort,
+    });
+    defer projection.deinit();
+    var svc = try c3s.K8sService.init(allocator);
+    defer svc.deinit();
+    var theme = try c3s.theme_loader.defaultTheme(allocator);
+    defer c3s.theme_loader.deinitTheme(&theme);
+    var view = try c3s.PodsView.init(allocator, &theme, &svc);
+    defer view.deinit();
+    view.bindPodProjection(&projection);
+
+    try seedScrolledPods(&projection, &view, 30);
+    const parked = parkCursorOnKeeper(&view);
+    try testing.expectEqual(@as(u32, 30), parked);
+
+    // Every seeded pod matches, so the selection maps rather than falling back.
+    try view.applyFilter("pod-");
+
+    try testing.expectEqual(@as(usize, 31), view.table.filtered_indices.items.len);
+    try testing.expectEqual(parked, view.table.selected_row);
+    try testing.expect(view.table.scroll_offset <= view.table.selected_row);
+    try testing.expect(view.table.selected_row < view.table.scroll_offset + view.table.visible_rows);
+    try testing.expectEqualStrings("pod-zzz-keeper", view.getSelectedResourceInfo().?.name);
+
+    // The cursor is inside the painted window, so the highlight has somewhere to go.
+    const range = view.table.getVisibleRange();
+    try testing.expect(range.start <= range.end);
+    var on_screen = false;
+    for (0..range.end - range.start) |offset| {
+        if (view.table.isSelected(offset)) on_screen = true;
+    }
+    try testing.expect(on_screen);
+
+    var terminal = try c3s.Terminal.init(allocator);
+    defer terminal.deinit();
+    try view.createView().render(&terminal, 0, 0, 80, 6);
+}
+
+test "a filtered-out selection still yields an action target" {
+    // Actions read getSelectedResourceInfo. Dropping the cursor because the filter
+    // removed the row it sat on would make describe/delete/logs silently no-op on a
+    // view that is plainly showing rows.
+    const allocator = testing.allocator;
+    var projection = PodProjection.init(allocator, .{
+        .matchFn = projectedPodMatch,
+        .sortKeyFn = projectedPodSort,
+    });
+    defer projection.deinit();
+    var svc = try c3s.K8sService.init(allocator);
+    defer svc.deinit();
+    var theme = try c3s.theme_loader.defaultTheme(allocator);
+    defer c3s.theme_loader.deinitTheme(&theme);
+    var view = try c3s.PodsView.init(allocator, &theme, &svc);
+    defer view.deinit();
+    view.bindPodProjection(&projection);
+
+    try seedScrolledPods(&projection, &view, 30);
+    _ = parkCursorOnKeeper(&view);
+
+    // "keeper" is exactly what this filter excludes.
+    try view.applyFilter("!keeper");
+
+    try testing.expectEqual(@as(usize, 30), view.table.filtered_indices.items.len);
+    const selected = view.getSelectedResourceInfo() orelse return error.SelectionLostToFilter;
+    try testing.expect(!std.mem.eql(u8, selected.name, "pod-zzz-keeper"));
+    try testing.expect(view.table.selected_row < view.table.filtered_indices.items.len);
+    try testing.expect(view.table.scroll_offset <= view.table.selected_row);
+    try testing.expect(view.table.selected_row < view.table.scroll_offset + view.table.visible_rows);
+    // The projection is told about the fallback, so the next watch batch agrees.
+    try testing.expectEqualStrings(
+        view.table.items.items[view.table.filtered_indices.items[view.table.selected_row]].uid,
+        projection.selectedUid().?,
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Relist loading: overlay replaces content only when there is nothing to paint
+// ---------------------------------------------------------------------------
+
+fn renderedText(view: *c3s.PodsView, terminal: *c3s.Terminal) ![]const u8 {
+    terminal.write_buffer.clearRetainingCapacity();
+    try view.createView().render(terminal, 0, 0, 80, 6);
+    return terminal.write_buffer.items;
+}
+
+test "loading overlay hides content only while there are no rows to paint" {
+    const allocator = testing.allocator;
+    var projection = PodProjection.init(allocator, .{
+        .matchFn = projectedPodMatch,
+        .sortKeyFn = projectedPodSort,
+    });
+    defer projection.deinit();
+    var svc = try c3s.K8sService.init(allocator);
+    defer svc.deinit();
+    var theme = try c3s.theme_loader.defaultTheme(allocator);
+    defer c3s.theme_loader.deinitTheme(&theme);
+    var view = try c3s.PodsView.init(allocator, &theme, &svc);
+    defer view.deinit();
+    view.bindPodProjection(&projection);
+    var terminal = try c3s.Terminal.init(allocator);
+    defer terminal.deinit();
+
+    // A brand-new identity has nothing to show, so "Loading" is the truthful frame --
+    // not "No pods found", which would claim the cluster is empty.
+    var started = podBatch(1, &.{});
+    started.sync = .list_started;
+    try applyPodBatch(&projection, &started);
+    try view.syncPodProjection();
+    {
+        const painted = try renderedText(&view, &terminal);
+        try testing.expect(std.mem.indexOf(u8, painted, "Loading") != null);
+        try testing.expect(std.mem.indexOf(u8, painted, "No pods found") == null);
+    }
+
+    const initial = try allocator.alloc(pod_keys.TypedChange(c3s.PodRecord), 1);
+    initial[0] = .{ .initial_upsert = try makeProjectedPod(
+        "one",
+        "one",
+        "",
+        1,
+        1,
+        0,
+        "Running",
+        "2026-01-01T00:00:00Z",
+        0,
+        0,
+    ) };
+    var first = podBatch(2, initial);
+    defer first.deinit(allocator);
+    try applyPodBatch(&projection, &first);
+    try view.syncPodProjection();
+    try testing.expect(view.getStatusHint() == null);
+
+    // Same-generation relist: the rows are still valid, so they keep painting and the
+    // loading signal moves to the footer hint instead of blanking the table.
+    var relist = podBatch(3, &.{});
+    relist.sync = .list_started;
+    try applyPodBatch(&projection, &relist);
+    try view.syncPodProjection();
+    try testing.expect(view.table.loading);
+    try testing.expect(view.getStatusHint() != null);
+    {
+        const painted = try renderedText(&view, &terminal);
+        try testing.expect(std.mem.indexOf(u8, painted, "one") != null);
+        try testing.expect(std.mem.indexOf(u8, painted, "Loading") == null);
+    }
 }

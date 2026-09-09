@@ -10,14 +10,20 @@ const read_transport = @import("ReadTransport.zig");
 const keys = @import("ResourceKey.zig");
 const PodRecord = @import("PodRecord.zig");
 const PodProjection = @import("ResourceProjection.zig").ResourceProjection(PodRecord);
+const task15 = @import("../task15_diagnostics.zig");
 
 pub const Options = struct {
     namespace: ?[]const u8,
-    context_name: []const u8,
+    context_name: []const u8 = "",
     projection: *PodProjection,
     telemetry: *PerfTelemetry,
     deinit_counter: ?*std.atomic.Value(usize) = null,
     source_override: ?list_watch.Source(PodRecord) = null,
+    transport_override: ?read_transport.ReadTransport = null,
+    watch_override: ?list_watch.Source(PodRecord) = null,
+    hold_watch: bool = false,
+    convert_allocator: ?std.mem.Allocator = null,
+    emit_allocator: ?std.mem.Allocator = null,
 };
 
 const Spec = struct {
@@ -29,6 +35,11 @@ const Spec = struct {
     subscription_id: keys.SubscriptionId = 0,
     deinit_counter: ?*std.atomic.Value(usize),
     source_override: ?list_watch.Source(PodRecord),
+    transport_override: ?read_transport.ReadTransport,
+    watch_override: ?list_watch.Source(PodRecord),
+    hold_watch: bool,
+    convert_allocator: ?std.mem.Allocator,
+    emit_allocator: ?std.mem.Allocator,
 
     fn bind(raw: ?*anyopaque, generation: keys.Generation, subscription_id: keys.SubscriptionId) void {
         const self: *Spec = @ptrCast(@alignCast(raw.?));
@@ -42,6 +53,7 @@ const Spec = struct {
         const client = try lease.client();
         var sink_state = SinkState{
             .allocator = control.allocator,
+            .emit_allocator = self.emit_allocator,
             .control = control,
             .projection = self.projection,
             .telemetry = self.telemetry,
@@ -65,6 +77,7 @@ const Spec = struct {
                 source,
                 &sink_state,
                 .{ .context = self, .wait_fn = noRetryWait },
+                null,
             );
             return;
         }
@@ -72,20 +85,27 @@ const Spec = struct {
         const descriptor = read_transport.ResourceDescriptor.forType(klient.Pod);
         const list_path = try descriptor.listPath(control.allocator, self.namespace);
         defer control.allocator.free(list_path);
-        var transport_adapter = read_transport.KlientTransport{ .client = client, .io = io };
+        var transport_adapter = try lease.readTransport(io, &control.cancel_requested);
         var source_state = SourceState{
             .allocator = control.allocator,
             .io = io,
             .client = client,
-            .transport = transport_adapter.transport(),
+            .transport = self.transport_override orelse transport_adapter.transport(),
             .list_path = list_path,
+            .context_name = self.context_name,
             .namespace = self.namespace,
+            .watch_override = self.watch_override,
+            .hold_watch = self.hold_watch,
+            .convert_allocator = self.convert_allocator,
+            .cancel_requested = &control.cancel_requested,
+            .diagnostic_writer = task15.Writer.initFromEnv(),
         };
         try self.runDriver(
             control,
             source_state.source(),
             &sink_state,
             .{ .context = &source_state, .wait_fn = SourceState.wait },
+            source_state.observer(),
         );
     }
 
@@ -95,6 +115,7 @@ const Spec = struct {
         source: list_watch.Source(PodRecord),
         sink_state: *SinkState,
         retry_hooks: list_watch.RetryHooks,
+        observer: ?list_watch.DiagnosticObserver,
     ) !void {
         var driver = list_watch.Driver(PodRecord){
             .allocator = control.allocator,
@@ -105,12 +126,23 @@ const Spec = struct {
             // Watcher.streamGet and retry sleeps use this same Io instance, so
             // Future cancellation interrupts the outstanding operation and
             // unwinds the task; the token remains for Driver's between-call API.
-            .cancel = list_watch.CancelToken.never(),
+            .cancel = .{
+                .context = control,
+                .is_canceled_fn = lifecycle.ChildControl.isCancelRequested,
+            },
             .generation = self.generation,
             .subscription_id = self.subscription_id,
+            .observer = observer,
         };
         defer driver.deinit();
-        _ = try driver.run();
+        const outcome = try driver.run();
+        control.finish(.{ .subscription_stopped = .{
+            .key = .{
+                .generation = self.generation,
+                .subscription_id = self.subscription_id,
+            },
+            .detail = list_watch.detailForRunOutcome(outcome),
+        } });
     }
 
     fn noRetryWait(_: *anyopaque, _: u64, _: list_watch.CancelToken) anyerror!bool {
@@ -139,6 +171,11 @@ pub fn ownedTaskSpec(allocator: std.mem.Allocator, options: Options) !lifecycle.
         .telemetry = options.telemetry,
         .deinit_counter = options.deinit_counter,
         .source_override = options.source_override,
+        .transport_override = options.transport_override,
+        .watch_override = options.watch_override,
+        .hold_watch = options.hold_watch,
+        .convert_allocator = options.convert_allocator,
+        .emit_allocator = options.emit_allocator,
     };
     return .{
         .ptr = spec,
@@ -156,10 +193,57 @@ const SourceState = struct {
     client: *klient.K8sClient,
     transport: read_transport.ReadTransport,
     list_path: []const u8,
+    context_name: []const u8,
     namespace: ?[]const u8,
+    watch_override: ?list_watch.Source(PodRecord),
+    hold_watch: bool = false,
+    convert_allocator: ?std.mem.Allocator = null,
+    cancel_requested: ?*std.atomic.Value(bool) = null,
+    diagnostic_writer: task15.Writer = .{},
 
     fn source(self: *SourceState) list_watch.Source(PodRecord) {
         return .{ .context = self, .list_fn = list, .watch_fn = watch };
+    }
+
+    fn observer(self: *SourceState) list_watch.DiagnosticObserver {
+        return .{ .context = self, .notify_fn = observe };
+    }
+
+    fn observe(raw: *anyopaque, kind: list_watch.DiagnosticKind, count: usize, value: []const u8) void {
+        const self: *SourceState = @ptrCast(@alignCast(raw));
+        self.diagnostic_writer.emit(.{
+            .event = switch (kind) {
+                .list_start => .list_start,
+                .list_page => .list_page,
+                .list_complete => .list_complete,
+                .watch_http_established => .watch_http_established,
+                .watch_event => .watch_event,
+                .watch_bookmark => .watch_bookmark,
+                .watch_disconnect => .watch_disconnect,
+                .reconnect_attempt => .reconnect_attempt,
+                .reconnect_success => .reconnect_success,
+                .gone_410 => .gone_410,
+                .relist => .relist,
+                .terminal_forbidden => .terminal_forbidden,
+                .terminal_unauthorized => .terminal_unauthorized,
+                .terminal_absent => .terminal_absent,
+                .terminal_malformed => .terminal_malformed,
+                .retries_exhausted => .retries_exhausted,
+                .transport_retry => .transport_retry,
+            },
+            .context = self.context_name,
+            .scope = if (self.namespace == null) "all-namespaces" else "namespaced",
+            .family = .pod,
+            .api_group = "core",
+            .resource = "pods",
+            .page = if (kind == .list_page) count else 0,
+            .object_count = if (kind == .list_complete) count else 0,
+            .rv_fingerprint = if (value.len == 0) 0 else task15.fingerprint(value),
+        });
+    }
+
+    fn convert(self: *SourceState, pod: klient.Pod) !PodRecord {
+        return PodRecord.fromPod(self.convert_allocator orelse self.allocator, pod, .{});
     }
 
     fn list(
@@ -178,7 +262,7 @@ const SourceState = struct {
 
             fn receive(ctx: *@This(), pods: []const klient.Pod) anyerror!void {
                 for (pods) |pod| {
-                    const record = try PodRecord.fromPod(ctx.source.allocator, pod, .{});
+                    const record = try ctx.source.convert(pod);
                     try ctx.receiver(ctx.receiver_context, record);
                 }
                 try ctx.chunk_end(ctx.receiver_context);
@@ -190,33 +274,92 @@ const SourceState = struct {
             .receiver = receiver,
             .chunk_end = chunk_end,
         };
-        var result = stream_list.stream(
-            klient.Pod,
+        var continue_token = try self.allocator.dupe(u8, "");
+        defer self.allocator.free(continue_token);
+        var final_rv: ?[]u8 = null;
+        defer if (final_rv) |rv| self.allocator.free(rv);
+        var pagination = read_transport.PaginationGuard.init(
             self.allocator,
-            self.transport,
-            try read_transport.ReadRequest.init(self.list_path),
-            .{ .clock = .{ .ptr = self, .now_ns_fn = nowNs } },
-            &batch,
-            Batch.receive,
-        ) catch |err| return .{ .failure = classifyListError(err) };
-        defer result.deinit();
-        return .{ .complete = try keys.OwnedBytes.clone(self.allocator, result.resource_version) };
+            read_transport.default_max_list_pages,
+        );
+        defer pagination.deinit();
+        var page: usize = 0;
+        while (true) {
+            const page_path = try read_transport.paginatedListPath(
+                self.allocator,
+                self.list_path,
+                continue_token,
+            );
+            defer self.allocator.free(page_path);
+            var result = stream_list.stream(
+                klient.Pod,
+                self.allocator,
+                self.transport,
+                try read_transport.ReadRequest.init(page_path),
+                .{ .clock = .{ .ptr = self, .now_ns_fn = nowNs } },
+                &batch,
+                Batch.receive,
+            ) catch |err| return .{ .failure = classifyListError(err) };
+            defer result.deinit();
+            page += 1;
+            const has_next = pagination.advance(result.continue_token) catch |err|
+                return .{ .failure = classifyListError(err) };
+            if (final_rv) |rv| self.allocator.free(rv);
+            final_rv = try self.allocator.dupe(u8, result.resource_version);
+            self.allocator.free(continue_token);
+            continue_token = try self.allocator.dupe(u8, result.continue_token);
+            self.diagnostic_writer.emit(.{
+                .event = if (continue_token.len == 0) .list_page else .list_continue,
+                .context = self.context_name,
+                .scope = if (self.namespace == null) "all-namespaces" else "namespaced",
+                .family = .pod,
+                .api_group = "core",
+                .resource = "pods",
+                .page = page,
+                .token_fingerprint = if (continue_token.len == 0) 0 else task15.fingerprint(continue_token),
+            });
+            if (!has_next) break;
+        }
+        return .{ .complete = try keys.OwnedBytes.clone(
+            self.allocator,
+            final_rv orelse return .{ .failure = .transport },
+        ) };
     }
 
     fn watch(
         raw: *anyopaque,
         resource_version: []const u8,
-        _: list_watch.CancelToken,
+        cancel: list_watch.CancelToken,
         receiver_context: *anyopaque,
         receiver: *const fn (*anyopaque, *list_watch.WatchEvent(PodRecord)) anyerror!void,
     ) anyerror!list_watch.Failure {
         const self: *SourceState = @ptrCast(@alignCast(raw));
+        if (self.hold_watch) {
+            while (true) {
+                if (self.cancel_requested) |flag| {
+                    if (flag.load(.acquire)) return .canceled;
+                }
+                if (cancel.isCanceled()) return .canceled;
+                self.io.sleep(.{ .nanoseconds = std.time.ns_per_ms }, .awake) catch return .canceled;
+            }
+        }
+        if (self.watch_override) |watch_source| {
+            var established_event: list_watch.WatchEvent(PodRecord) = .established;
+            try receiver(receiver_context, &established_event);
+            return watch_source.watch(
+                resource_version,
+                cancel,
+                receiver_context,
+                receiver,
+            );
+        }
+        const effective_rv = if (task15.consumeStaleRv(.pod)) "1" else resource_version;
         var watcher = klient.Watcher(klient.Pod).init(
             self.client,
             "/api/v1",
             "pods",
             self.namespace,
-            .{ .resource_version = resource_version, .allow_watch_bookmarks = true },
+            .{ .resource_version = effective_rv, .allow_watch_bookmarks = true },
         );
         defer watcher.deinit();
         const Callback = struct {
@@ -227,10 +370,10 @@ const SourceState = struct {
             fn receive(ctx: *@This(), event_value: *klient.watch.WatchEvent(klient.Pod)) anyerror!void {
                 defer event_value.deinit();
                 var watch_event: list_watch.WatchEvent(PodRecord) = switch (event_value.type_) {
-                    .ADDED => .{ .added = try PodRecord.fromPod(ctx.source.allocator, event_value.object, .{}) },
-                    .MODIFIED => .{ .modified = try PodRecord.fromPod(ctx.source.allocator, event_value.object, .{}) },
+                    .ADDED => .{ .added = try ctx.source.convert(event_value.object) },
+                    .MODIFIED => .{ .modified = try ctx.source.convert(event_value.object) },
                     .DELETED => blk: {
-                        var record = try PodRecord.fromPod(ctx.source.allocator, event_value.object, .{});
+                        var record = try ctx.source.convert(event_value.object);
                         defer record.deinit(ctx.source.allocator);
                         break :blk .{ .deleted = try record.key.clone(ctx.source.allocator) };
                     },
@@ -239,31 +382,64 @@ const SourceState = struct {
                 defer watch_event.deinit(ctx.source.allocator);
                 try ctx.receiver(ctx.receiver_context, &watch_event);
             }
+
+            fn established(ctx: *@This(), meta: klient.StreamResponseMeta) anyerror!void {
+                const target = try task15.enforceRequest(.WATCH, ctx.source.list_path);
+                ctx.source.diagnostic_writer.emit(.{
+                    .event = .request_audit,
+                    .context = ctx.source.context_name,
+                    .scope = target.scope,
+                    .family = .pod,
+                    .method = .WATCH,
+                    .api_group = target.api_group,
+                    .resource = target.resource,
+                    .endpoint_class = target.endpoint_class,
+                    .status = @intFromEnum(meta.status),
+                    .retry_class = "none",
+                    .identity_fingerprint = target.identity_fingerprint,
+                });
+                var established_event: list_watch.WatchEvent(PodRecord) = .established;
+                try ctx.receiver(ctx.receiver_context, &established_event);
+            }
+
+            fn bookmark(ctx: *@This(), rv: []const u8) anyerror!void {
+                var bookmark_event: list_watch.WatchEvent(PodRecord) = .{
+                    .bookmark = try keys.OwnedBytes.clone(ctx.source.allocator, rv),
+                };
+                defer bookmark_event.deinit(ctx.source.allocator);
+                try ctx.receiver(ctx.receiver_context, &bookmark_event);
+            }
         };
         var callback = Callback{
             .source = self,
             .receiver_context = receiver_context,
             .receiver = receiver,
         };
-        const outcome = watcher.watchWithContextOutcome(*Callback, &callback, Callback.receive) catch |err| {
+        const outcome = watcher.watchWithContextOutcomeObservedUsing(
+            *Callback,
+            &callback,
+            Callback.receive,
+            Callback.established,
+            Callback.bookmark,
+            read_transport.WatchStream{ .transport = self.transport },
+        ) catch |err| {
             if (classifyWatchObjectError(err)) |failure| return failure;
             return err;
         };
-        if (watcher.resource_version) |version| {
-            if (!std.mem.eql(u8, version, resource_version)) {
-                var bookmark: list_watch.WatchEvent(PodRecord) = .{
-                    .bookmark = try keys.OwnedBytes.clone(self.allocator, version),
-                };
-                defer bookmark.deinit(self.allocator);
-                try receiver(receiver_context, &bookmark);
-            }
-        }
         return list_watch.failureFromKlient(outcome) orelse .transport;
     }
 
     fn wait(raw: *anyopaque, delay_ns: u64, _: list_watch.CancelToken) anyerror!bool {
         const self: *SourceState = @ptrCast(@alignCast(raw));
-        try self.io.sleep(.{ .nanoseconds = delay_ns }, .awake);
+        var remaining: i96 = @intCast(delay_ns);
+        while (remaining > 0) {
+            if (self.cancel_requested) |flag| {
+                if (flag.load(.acquire)) return false;
+            }
+            const slice = @min(remaining, std.time.ns_per_ms);
+            self.io.sleep(.{ .nanoseconds = slice }, .awake) catch return false;
+            remaining -= slice;
+        }
         return true;
     }
 
@@ -274,6 +450,7 @@ const SourceState = struct {
 
 const SinkState = struct {
     allocator: std.mem.Allocator,
+    emit_allocator: ?std.mem.Allocator = null,
     control: *lifecycle.ChildControl,
     projection: *PodProjection,
     telemetry: *PerfTelemetry,
@@ -287,12 +464,15 @@ const SinkState = struct {
 
     fn emit(raw: *anyopaque, batch: *keys.TypedBatch(PodRecord)) anyerror!void {
         const self: *SinkState = @ptrCast(@alignCast(raw));
-        const heap_batch = try self.allocator.create(keys.TypedBatch(PodRecord));
+        const heap_batch = self.allocator.create(keys.TypedBatch(PodRecord)) catch |err| {
+            batch.deinit(self.allocator);
+            return err;
+        };
         heap_batch.* = batch.*;
         batch.* = undefined;
         const envelope = keys.eraseBatch(
             PodRecord,
-            self.allocator,
+            self.emit_allocator orelse self.allocator,
             heap_batch,
             PodProjection.handler(),
             @ptrCast(self.projection),
@@ -303,6 +483,7 @@ const SinkState = struct {
         };
         const is_first_real = !self.first_batch_queued and envelope.change_count > 0;
         const delivery = try self.control.publishDelivery(envelope);
+        if (delivery == .abandoned) return error.Canceled;
         if (is_first_real and delivery == .accepted) {
             self.first_batch_queued = true;
             self.telemetry.emit(event(
@@ -319,10 +500,87 @@ const SinkState = struct {
     }
 };
 
+pub fn runTask14PodEmitAllocationOrdinalsGate() !void {
+    const Exercise = struct {
+        fn run(allocator: std.mem.Allocator) !void {
+            const List = struct { items: []klient.Pod };
+            var parsed = try std.json.parseFromSlice(
+                List,
+                allocator,
+                @import("ResourceSubscription.zig").task14TypeShapedListBody(PodRecord),
+                .{ .ignore_unknown_fields = true },
+            );
+            defer parsed.deinit();
+            var record = try PodRecord.fromPod(allocator, parsed.value.items[0], .{});
+            var record_owned = true;
+            errdefer if (record_owned) record.deinit(allocator);
+            const changes = try allocator.alloc(keys.TypedChange(PodRecord), 1);
+            changes[0] = .{ .initial_upsert = record };
+            record_owned = false;
+            var batch = keys.TypedBatch(PodRecord){
+                .generation = 1,
+                .subscription_id = 1,
+                .revision = 1,
+                .changes = changes,
+                .sync = null,
+                .owned_bytes = 1,
+            };
+            const Match = struct {
+                fn call(_: *const PodRecord, _: []const u8) bool {
+                    return true;
+                }
+            };
+            const Sort = struct {
+                fn call(value: *const PodRecord, _: u8) []const u8 {
+                    return value.key.uid;
+                }
+            };
+            var projection = PodProjection.init(allocator, .{
+                .matchFn = Match.call,
+                .sortKeyFn = Sort.call,
+            });
+            defer projection.deinit();
+            var event_value: std.Io.Event = .unset;
+            var control = lifecycle.ChildControl{
+                .key = .{ .slot = 0, .generation = 1 },
+                .kind = .resource_subscription,
+                .io = @import("../core/runtime.zig").io(),
+                .shared_event = &event_value,
+                .allocator = allocator,
+            };
+            control.cancel_requested.store(true, .release);
+            var sink_state = SinkState{
+                .allocator = allocator,
+                .emit_allocator = allocator,
+                .control = &control,
+                .projection = &projection,
+                .telemetry = undefined,
+                .context_name = "allocation",
+                .scope = "default",
+            };
+            sink_state.sink().emit(&batch) catch |err| {
+                if (err == error.Canceled) return;
+                return err;
+            };
+            return error.ExpectedCanceledDelivery;
+        }
+    };
+    try std.testing.checkAllAllocationFailures(
+        std.testing.allocator,
+        Exercise.run,
+        .{},
+    );
+}
+
 fn classifyListError(err: anyerror) list_watch.Failure {
     return switch (err) {
         error.Canceled => .canceled,
         error.OutOfMemory => .transport,
+        error.HttpUnauthorized => .unauthorized,
+        error.HttpForbidden => .forbidden,
+        error.HttpNotFound => .absent,
+        error.HttpGone => .gone,
+        error.HttpThrottled => .{ .throttled = null },
         error.HttpStatus => .server,
         error.MalformedOuterJson,
         error.ItemsNotArray,
@@ -332,6 +590,8 @@ fn classifyListError(err: anyerror) list_watch.Failure {
         error.ObjectTooLarge,
         error.ResponseTooLarge,
         error.MissingUid,
+        error.RepeatedContinueToken,
+        error.ListPageLimitExceeded,
         => .{ .malformed = detail(err) },
         else => .transport,
     };
@@ -364,7 +624,7 @@ fn event(
 ) perf.Event {
     return .{
         .kind = kind,
-        .monotonic_ns = @intCast(@max(clock.nanoTimestamp(), 0)),
+        .monotonic_ns = @intCast(@max(clock.monotonicNanoTimestamp(), 0)),
         .context = context_name,
         .resource = "pods",
         .scope = scope,
@@ -420,6 +680,11 @@ test "UID-less LIST and WATCH objects share malformed failure policy" {
         list_failure.malformed.code,
         watch_failure.malformed.code,
     );
+}
+
+test "pod LIST rejects repeated tokens and page-cap exhaustion" {
+    try std.testing.expect(classifyListError(error.RepeatedContinueToken) == .malformed);
+    try std.testing.expect(classifyListError(error.ListPageLimitExceeded) == .malformed);
 }
 
 test "DataPlane failure destroys a real pod task exactly once" {

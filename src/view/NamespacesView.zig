@@ -15,16 +15,13 @@ const klient = @import("klient");
 const hints_model = @import("../model/hints.zig");
 const sort_util = @import("../viewmodel/sort.zig");
 const filter_util = @import("../viewmodel/filter.zig");
-const age_util = @import("../viewmodel/age.zig");
+const k9s_query = @import("../viewmodel/k9s_query.zig");
 const TableState = @import("../ui/TableState.zig").TableState;
 const runtime = @import("../core/runtime.zig");
 const ActiveContextSession = @import("../k8s/ActiveContextSession.zig").ActiveContextSession;
 const ActiveSessionSlot = @import("../k8s/ActiveSessionSlot.zig").ActiveSessionSlot;
 const NamespaceRecord = @import("../k8s/NamespaceRecord.zig");
 const NamespaceProjection = @import("../k8s/ResourceProjection.zig").ResourceProjection(NamespaceRecord);
-
-pub var active_namespace_source: @import("resource_view.zig").Source = .data_plane;
-pub var legacy_loader_test_hook: ?*const fn () void = null;
 
 pub const NamespacesView = struct {
     pub const SubscriptionRequest = enum { none, start, restart };
@@ -47,6 +44,7 @@ pub const NamespacesView = struct {
         status: []const u8,
         age: []const u8,
         uid: []const u8 = &.{},
+        labels: []const u8 = &.{},
         allocator: std.mem.Allocator,
 
         pub fn deinit(self: *NamespaceInfo) void {
@@ -54,6 +52,7 @@ pub const NamespacesView = struct {
             self.allocator.free(self.status);
             self.allocator.free(self.age);
             if (self.uid.len > 0) self.allocator.free(self.uid);
+            if (self.labels.len > 0) self.allocator.free(self.labels);
         }
 
         fn getName(self: *const NamespaceInfo) []const u8 {
@@ -106,85 +105,27 @@ pub const NamespacesView = struct {
         return request;
     }
 
-    /// Refresh namespaces list from K8s API
+    /// Request a data-plane subscription start or restart for namespaces.
     pub fn refresh(self: *NamespacesView) !void {
-        if (active_namespace_source == .data_plane and self.projection != null) {
-            self.table.loading = self.table.items.items.len == 0;
-            self.subscription_request = if (self.subscription_started) .restart else .start;
-            return;
-        }
-        if (legacy_loader_test_hook) |hook| {
-            hook();
-            return;
-        }
-        // Remember the selected namespace name before clearItems frees the rows.
-        const preserve_name_owned: ?[]const u8 = if (self.table.getSelectedItem()) |item|
-            try self.table.allocator.dupe(u8, item.name)
-        else
-            null;
-        defer if (preserve_name_owned) |name| self.table.allocator.free(name);
-        const preserve_scroll = self.table.scroll_offset;
+        self.table.loading = true;
+        self.table.loading_detail = "Loading namespaces...";
+        self.subscription_request = if (self.subscription_started) .restart else .start;
+    }
 
-        const had_items = self.table.items.items.len > 0;
-        if (!had_items) self.table.loading = true;
-        defer if (!had_items) {
-            self.table.loading = false;
-        };
-        self.table.clearItems();
-
-        // SAFETY: Check if connected to k8s before making requests
-        if (!self.k8s_service.isConnected()) {
-            try self.table.setError("Not connected to Kubernetes cluster");
-            Logger.warn("NamespacesView: Cannot refresh - not connected to k8s", .{});
-            return;
-        }
-
-        // Fetch namespaces. Keep the parsed list alive for the whole loop: the
-        // items' status (json.Value) references its arena, so deinit must wait
-        // until after we've copied out the fields we need.
-        var ns_list = self.k8s_service.listNamespaces() catch |err| {
-            try self.table.setConnectionError("namespaces", err);
-            return;
-        };
-        defer ns_list.deinit();
-
-        // Convert to NamespaceInfo
-        for (ns_list.items()) |ns| {
-            // Extract status from JSON value
-            const status = if (ns.status) |status_json| blk: {
-                if (status_json == .object) {
-                    if (status_json.object.get("phase")) |phase| {
-                        if (phase == .string) {
-                            break :blk try self.table.allocator.dupe(u8, phase.string);
-                        }
-                    }
-                }
-                break :blk try self.table.allocator.dupe(u8, "Active");
-            } else try self.table.allocator.dupe(u8, "Unknown");
-
-            const info = NamespaceInfo{
-                .name = try self.table.allocator.dupe(u8, ns.metadata.name),
-                .status = status,
-                .age = try age_util.calculateAge(self.table.allocator, ns.metadata.creationTimestamp),
-                .uid = if (ns.metadata.uid) |uid|
-                    try self.table.allocator.dupe(u8, uid)
-                else
-                    &.{},
-                .allocator = self.table.allocator,
-            };
-
-            try self.table.appendItem(info);
-        }
-
-        Logger.info("Loaded {} namespaces", .{self.table.items.items.len});
-
-        // Rebuild filtered indices
-        try self.applyFilter(self.table.filter_text);
-        self.restoreSelectionAfterRefresh(preserve_name_owned, preserve_scroll);
+    pub fn getStatusHint(self: *const NamespacesView) ?[]const u8 {
+        if (!self.table.loading) return null;
+        if (self.table.loading_detail.len > 0) return self.table.loading_detail;
+        return "Loading...";
     }
 
     pub fn syncProjection(self: *NamespacesView) !void {
+        try self.syncProjectionFiltered(self.table.filter_text);
+    }
+
+    fn syncProjectionFiltered(self: *NamespacesView, filter: []const u8) !void {
         const projection = self.projection orelse return;
+        const previous_selected_row = self.table.selected_row;
+        const previous_scroll_offset = self.table.scroll_offset;
         if (self.table.getSelectedItem()) |selected| {
             if (selected.uid.len > 0) _ = projection.selectUid(selected.uid);
         }
@@ -213,17 +154,28 @@ pub const NamespacesView = struct {
             var age_owned = true;
             errdefer if (age_owned) self.table.allocator.free(age);
             const owned_uid = try self.table.allocator.dupe(u8, uid);
+            var uid_owned = true;
+            errdefer if (uid_owned) self.table.allocator.free(owned_uid);
+            const owned_labels: []const u8 = if (record.key.labels.len > 0)
+                try self.table.allocator.dupe(u8, record.key.labels)
+            else
+                &.{};
+            errdefer if (uid_owned and owned_labels.len > 0) self.table.allocator.free(owned_labels);
             next_items.appendAssumeCapacity(.{
                 .name = name,
                 .status = status,
                 .age = age,
                 .uid = owned_uid,
+                .labels = owned_labels,
                 .allocator = self.table.allocator,
             });
             name_owned = false;
             status_owned = false;
             age_owned = false;
-            next_indices.appendAssumeCapacity(next_items.items.len - 1);
+            uid_owned = false;
+            if (filter.len == 0 or namespaceMatchFn(&next_items.items[next_items.items.len - 1], filter)) {
+                next_indices.appendAssumeCapacity(next_items.items.len - 1);
+            }
         }
 
         self.table.clearItems();
@@ -233,14 +185,38 @@ pub const NamespacesView = struct {
         self.table.filtered_indices = next_indices;
         next_items = .empty;
         next_indices = .empty;
-        self.table.loading = false;
+        self.table.loading = projection.isLoading();
+        if (!self.table.loading) self.table.loading_detail = "";
 
+        var selection_mapped = false;
         if (projection.selectedUid()) |selected_uid| {
             for (self.table.filtered_indices.items, 0..) |item_index, visible_index| {
                 if (std.mem.eql(u8, self.table.items.items[item_index].uid, selected_uid)) {
                     self.table.selected_row = @intCast(visible_index);
+                    selection_mapped = true;
                     break;
                 }
+            }
+        }
+        if (!selection_mapped) {
+            // A selection the filter removed must not disable every action: keep the
+            // cursor where it was, clamped into the surviving rows.
+            self.table.selected_row = @intCast(@min(
+                previous_selected_row,
+                @as(u32, @intCast(self.table.filtered_indices.items.len -| 1)),
+            ));
+            self.table.scroll_offset = @min(
+                previous_scroll_offset,
+                self.table.selected_row,
+            );
+        }
+        // Needed on the mapped path too: the row rebuild ran through clearItems, which
+        // zeroes scroll_offset, so a surviving UID far down the list would otherwise be
+        // selected outside the painted window.
+        self.table.clampSelectionIntoView();
+        if (!selection_mapped) {
+            if (self.table.getSelectedItem()) |selected| {
+                if (selected.uid.len > 0) _ = projection.selectUid(selected.uid);
             }
         }
     }
@@ -278,37 +254,33 @@ pub const NamespacesView = struct {
     }
 
     pub fn applyFilter(self: *NamespacesView, filter: []const u8) !void {
-        if (active_namespace_source == .data_plane) {
-            if (self.projection != null) {
-                const owned_filter: []const u8 = if (filter.len > 0)
-                    try self.table.allocator.dupe(u8, filter)
-                else
-                    "";
-                errdefer if (owned_filter.len > 0) self.table.allocator.free(owned_filter);
-                try self.setProjectionViewAndSync(
-                    filter,
-                    self.table.sort_column orelse COL_NAME,
-                    self.table.sort_ascending,
-                );
-                if (self.table.filter_text.len > 0) self.table.allocator.free(self.table.filter_text);
-                self.table.filter_text = owned_filter;
-                return;
-            }
+        if (self.projection != null) {
+            const owned_filter: []const u8 = if (filter.len > 0)
+                try self.table.allocator.dupe(u8, filter)
+            else
+                "";
+            errdefer if (owned_filter.len > 0) self.table.allocator.free(owned_filter);
+            try self.setProjectionViewAndSync(
+                filter,
+                self.table.sort_column orelse COL_NAME,
+                self.table.sort_ascending,
+            );
+            if (self.table.filter_text.len > 0) self.table.allocator.free(self.table.filter_text);
+            self.table.filter_text = owned_filter;
+            return;
         }
         try self.table.applyFilter(filter, namespaceMatchFn);
         self.applySorting();
     }
 
     fn applySorting(self: *NamespacesView) void {
-        if (active_namespace_source == .data_plane) {
-            if (self.projection != null) {
-                self.setProjectionViewAndSync(
-                    self.table.filter_text,
-                    self.table.sort_column orelse COL_NAME,
-                    self.table.sort_ascending,
-                ) catch return;
-                return;
-            }
+        if (self.projection != null) {
+            self.setProjectionViewAndSync(
+                self.table.filter_text,
+                self.table.sort_column orelse COL_NAME,
+                self.table.sort_ascending,
+            ) catch return;
+            return;
         }
         if (self.table.sort_column) |col| {
             switch (col) {
@@ -328,11 +300,11 @@ pub const NamespacesView = struct {
     ) !void {
         const projection = self.projection orelse return;
         var rollback = try projection.captureView();
-        projection.setView(filter, column, ascending) catch |err| {
+        projection.setView("", column, ascending) catch |err| {
             rollback.deinit(projection.allocator);
             return err;
         };
-        self.syncProjection() catch |err| {
+        self.syncProjectionFiltered(filter) catch |err| {
             projection.restoreView(&rollback);
             return err;
         };
@@ -340,7 +312,7 @@ pub const NamespacesView = struct {
     }
 
     fn namespaceMatchFn(item: *const NamespaceInfo, filter: []const u8) bool {
-        return std.mem.indexOf(u8, item.name, filter) != null;
+        return k9s_query.matchSearchable(&.{item.name}, item.labels, filter);
     }
 
     /// Switch to the selected namespace
@@ -383,6 +355,7 @@ pub const NamespacesView = struct {
         .clearFilter = vtableClearFilter,
         .refresh = vtableRefresh,
         .getSelectedResource = vtableGetSelectedResource,
+        .getStatusHint = vtableGetStatusHint,
     };
 
     fn vtableApplyFilter(ptr: *anyopaque, filter: []const u8) anyerror!void {
@@ -407,6 +380,11 @@ pub const NamespacesView = struct {
     fn vtableGetSelectedResource(ptr: *anyopaque) ?ResourceInfo {
         const self: *NamespacesView = @ptrCast(@alignCast(ptr));
         return self.getSelectedResourceInfo();
+    }
+
+    fn vtableGetStatusHint(ptr: *anyopaque) ?[]const u8 {
+        const self: *const NamespacesView = @ptrCast(@alignCast(ptr));
+        return self.getStatusHint();
     }
 
     fn render(ptr: *anyopaque, terminal: *Terminal, x: u16, y: u16, width: u16, height: u16) !void {
@@ -822,13 +800,33 @@ test "namespace projection preserves current namespace and UID selection across 
     defer view.deinit();
     view.bindProjection(&projection);
 
+    var started = keys.TypedBatch(NamespaceRecord){
+        .generation = 1,
+        .subscription_id = 2,
+        .revision = 0,
+        .changes = &.{},
+        .sync = .list_started,
+        .owned_bytes = 0,
+    };
+    var started_plan = try NamespaceProjection.handler().preflight(
+        @ptrCast(&projection),
+        &started,
+        allocator,
+    );
+    NamespaceProjection.handler().commit(@ptrCast(&projection), &started, &started_plan);
+    started_plan.deinit(allocator);
+    try view.syncProjection();
+    try std.testing.expect(view.table.loading);
+    try std.testing.expect(view.getStatusHint() != null);
+    try std.testing.expectEqual(@as(usize, 0), view.table.items.items.len);
+
     const initial = try allocator.alloc(keys.TypedChange(NamespaceRecord), 2);
     initial[0] = .{ .initial_upsert = .{
-        .key = try (keys.ObjectKey{ .uid = "uid-a", .namespace = "", .name = "team-a" }).clone(allocator),
+        .key = try (keys.ObjectKey{ .uid = "uid-a", .namespace = "", .name = "team-a", .labels = "team=a" }).clone(allocator),
         .status = try allocator.dupe(u8, "Active"),
     } };
     initial[1] = .{ .initial_upsert = .{
-        .key = try (keys.ObjectKey{ .uid = "uid-b", .namespace = "", .name = "team-b" }).clone(allocator),
+        .key = try (keys.ObjectKey{ .uid = "uid-b", .namespace = "", .name = "team-b", .labels = "team=b" }).clone(allocator),
         .status = try allocator.dupe(u8, "Active"),
     } };
     var batch = keys.TypedBatch(NamespaceRecord){
@@ -836,7 +834,7 @@ test "namespace projection preserves current namespace and UID selection across 
         .subscription_id = 2,
         .revision = 1,
         .changes = initial,
-        .sync = .list_started,
+        .sync = null,
         .owned_bytes = 1,
     };
     defer batch.deinit(allocator);
@@ -844,13 +842,14 @@ test "namespace projection preserves current namespace and UID selection across 
     NamespaceProjection.handler().commit(@ptrCast(&projection), &batch, &plan);
     plan.deinit(allocator);
     try view.syncProjection();
+    try std.testing.expect(!view.table.loading);
     try std.testing.expectEqualStrings("team-a", view.current_namespace);
     view.table.selected_row = 1;
     try view.syncProjection();
 
     const update = try allocator.alloc(keys.TypedChange(NamespaceRecord), 1);
     update[0] = .{ .watch_upsert = .{
-        .key = try (keys.ObjectKey{ .uid = "uid-b", .namespace = "", .name = "team-b" }).clone(allocator),
+        .key = try (keys.ObjectKey{ .uid = "uid-b", .namespace = "", .name = "team-b", .labels = "team=b" }).clone(allocator),
         .status = try allocator.dupe(u8, "Terminating"),
     } };
     var update_batch = keys.TypedBatch(NamespaceRecord){
@@ -874,6 +873,265 @@ test "namespace projection preserves current namespace and UID selection across 
     try std.testing.expectEqualStrings("uid-b", projection.selectedUid().?);
     try std.testing.expectEqualStrings("team-b", view.table.getSelectedItem().?.name);
     try std.testing.expectEqualStrings("Terminating", view.table.getSelectedItem().?.status);
+    try view.applyFilter("-l team=b");
+    try std.testing.expectEqual(@as(usize, 1), view.table.filtered_indices.items.len);
+    try std.testing.expectEqualStrings("team-b", view.getSelectedResourceInfo().?.name);
+
+    var relist = keys.TypedBatch(NamespaceRecord){
+        .generation = 1,
+        .subscription_id = 2,
+        .revision = 3,
+        .changes = &.{},
+        .sync = .list_started,
+        .owned_bytes = 0,
+    };
+    var relist_plan = try NamespaceProjection.handler().preflight(
+        @ptrCast(&projection),
+        &relist,
+        allocator,
+    );
+    NamespaceProjection.handler().commit(@ptrCast(&projection), &relist, &relist_plan);
+    relist_plan.deinit(allocator);
+    try view.syncProjection();
+    try std.testing.expect(view.table.loading);
+    try std.testing.expect(view.getStatusHint() != null);
+    try std.testing.expectEqual(@as(usize, 2), view.table.items.items.len);
+    try std.testing.expectEqualStrings("team-b", view.getSelectedResourceInfo().?.name);
+}
+
+/// Feed `projection` a fresh initial list of `count` namespaces named "ns-00".. plus
+/// a "ns-zzz-keeper" that sorts last, so a cursor on it sits below a short viewport.
+fn seedScrolledNamespaces(
+    allocator: std.mem.Allocator,
+    projection: *NamespaceProjection,
+    count: usize,
+) !void {
+    const test_keys = @import("../k8s/ResourceKey.zig");
+    const changes = try allocator.alloc(test_keys.TypedChange(NamespaceRecord), count + 1);
+    for (0..count) |i| {
+        var name_buf: [16]u8 = undefined;
+        const name = try std.fmt.bufPrint(&name_buf, "ns-{d:0>2}", .{i});
+        changes[i] = .{ .initial_upsert = .{
+            .key = try (test_keys.ObjectKey{
+                .uid = name,
+                .namespace = "",
+                .name = name,
+            }).clone(allocator),
+            .status = try allocator.dupe(u8, "Active"),
+        } };
+    }
+    changes[count] = .{ .initial_upsert = .{
+        .key = try (test_keys.ObjectKey{
+            .uid = "keeper",
+            .namespace = "",
+            .name = "ns-zzz-keeper",
+        }).clone(allocator),
+        .status = try allocator.dupe(u8, "Active"),
+    } };
+
+    var batch = test_keys.TypedBatch(NamespaceRecord){
+        .generation = 1,
+        .subscription_id = 1,
+        .revision = 1,
+        .changes = changes,
+        .sync = null,
+        .owned_bytes = 1,
+    };
+    defer batch.deinit(allocator);
+    var plan = try NamespaceProjection.handler().preflight(@ptrCast(projection), &batch, allocator);
+    NamespaceProjection.handler().commit(@ptrCast(projection), &batch, &plan);
+    plan.deinit(allocator);
+}
+
+test "namespace filter that the selection survives keeps the cursor on screen" {
+    // Mirror of the generic view's guard. The row rebuild runs through clearItems,
+    // which zeroes scroll_offset; restoring only selected_row left a cursor on row 30
+    // with the viewport pinned to row 0, so nothing on screen was highlighted.
+    const allocator = std.testing.allocator;
+    const ProjectionFns = struct {
+        fn match(_: *const NamespaceRecord, _: []const u8) bool {
+            return true;
+        }
+        fn sort(record: *const NamespaceRecord, _: u8) []const u8 {
+            return record.key.name;
+        }
+    };
+    var projection = NamespaceProjection.init(allocator, .{
+        .matchFn = ProjectionFns.match,
+        .sortKeyFn = ProjectionFns.sort,
+    });
+    defer projection.deinit();
+    var service = try K8sService.init(allocator);
+    defer service.deinit();
+    var theme: theme_loader.ThemeColors = undefined;
+    var view = try NamespacesView.init(allocator, &theme, &service);
+    defer view.deinit();
+    view.bindProjection(&projection);
+
+    try seedScrolledNamespaces(allocator, &projection, 30);
+    try view.syncProjection();
+    try std.testing.expectEqual(@as(usize, 31), view.table.filtered_indices.items.len);
+
+    view.table.visible_rows = 5;
+    view.table.selected_row = 30;
+    view.table.scroll_offset = 26;
+    try std.testing.expectEqualStrings(
+        "keeper",
+        view.table.items.items[view.table.filtered_indices.items[30]].uid,
+    );
+
+    // Every seeded namespace matches, so the selection maps rather than falling back.
+    try view.applyFilter("ns-");
+
+    try std.testing.expectEqual(@as(usize, 31), view.table.filtered_indices.items.len);
+    try std.testing.expectEqual(@as(u32, 30), view.table.selected_row);
+    try std.testing.expect(view.table.scroll_offset <= view.table.selected_row);
+    try std.testing.expect(
+        view.table.selected_row < view.table.scroll_offset + view.table.visible_rows,
+    );
+    try std.testing.expectEqualStrings("ns-zzz-keeper", view.getSelectedResourceInfo().?.name);
+}
+
+test "a namespace filtered out of view still leaves an action target" {
+    const allocator = std.testing.allocator;
+    const ProjectionFns = struct {
+        fn match(_: *const NamespaceRecord, _: []const u8) bool {
+            return true;
+        }
+        fn sort(record: *const NamespaceRecord, _: u8) []const u8 {
+            return record.key.name;
+        }
+    };
+    var projection = NamespaceProjection.init(allocator, .{
+        .matchFn = ProjectionFns.match,
+        .sortKeyFn = ProjectionFns.sort,
+    });
+    defer projection.deinit();
+    var service = try K8sService.init(allocator);
+    defer service.deinit();
+    var theme: theme_loader.ThemeColors = undefined;
+    var view = try NamespacesView.init(allocator, &theme, &service);
+    defer view.deinit();
+    view.bindProjection(&projection);
+
+    try seedScrolledNamespaces(allocator, &projection, 30);
+    try view.syncProjection();
+    view.table.visible_rows = 5;
+    view.table.selected_row = 30;
+    view.table.scroll_offset = 26;
+
+    try view.applyFilter("!keeper");
+
+    try std.testing.expectEqual(@as(usize, 30), view.table.filtered_indices.items.len);
+    const selected = view.getSelectedResourceInfo() orelse
+        return error.NamespaceSelectionLostToFilter;
+    try std.testing.expect(!std.mem.eql(u8, selected.name, "ns-zzz-keeper"));
+    try std.testing.expect(view.table.selected_row < view.table.filtered_indices.items.len);
+    try std.testing.expect(
+        view.table.selected_row < view.table.scroll_offset + view.table.visible_rows,
+    );
+    try std.testing.expectEqualStrings(
+        view.table.items.items[view.table.filtered_indices.items[view.table.selected_row]].uid,
+        projection.selectedUid().?,
+    );
+}
+
+test "namespace loading overlay hides content only while there are no rows" {
+    const test_keys = @import("../k8s/ResourceKey.zig");
+    const allocator = std.testing.allocator;
+    const ProjectionFns = struct {
+        fn match(_: *const NamespaceRecord, _: []const u8) bool {
+            return true;
+        }
+        fn sort(record: *const NamespaceRecord, _: u8) []const u8 {
+            return record.key.name;
+        }
+    };
+    var projection = NamespaceProjection.init(allocator, .{
+        .matchFn = ProjectionFns.match,
+        .sortKeyFn = ProjectionFns.sort,
+    });
+    defer projection.deinit();
+    var service = try K8sService.init(allocator);
+    defer service.deinit();
+    var theme = try theme_loader.defaultTheme(allocator);
+    defer theme_loader.deinitTheme(&theme);
+    var view = try NamespacesView.init(allocator, &theme, &service);
+    defer view.deinit();
+    view.bindProjection(&projection);
+    var terminal = try Terminal.init(allocator);
+    defer terminal.deinit();
+
+    // Nothing has arrived yet, so "Loading" is the truthful frame -- an empty table
+    // would claim the cluster has no namespaces.
+    var started = test_keys.TypedBatch(NamespaceRecord){
+        .generation = 1,
+        .subscription_id = 1,
+        .revision = 1,
+        .changes = &.{},
+        .sync = .list_started,
+        .owned_bytes = 0,
+    };
+    var started_plan = try NamespaceProjection.handler().preflight(
+        @ptrCast(&projection),
+        &started,
+        allocator,
+    );
+    NamespaceProjection.handler().commit(@ptrCast(&projection), &started, &started_plan);
+    started_plan.deinit(allocator);
+    try view.syncProjection();
+    try view.createView().render(&terminal, 0, 0, 80, 6);
+    try std.testing.expect(std.mem.indexOf(u8, terminal.write_buffer.items, "Loading") != null);
+
+    const initial = try allocator.alloc(test_keys.TypedChange(NamespaceRecord), 1);
+    initial[0] = .{ .initial_upsert = .{
+        .key = try (test_keys.ObjectKey{
+            .uid = "uid-a",
+            .namespace = "",
+            .name = "team-a",
+        }).clone(allocator),
+        .status = try allocator.dupe(u8, "Active"),
+    } };
+    var batch = test_keys.TypedBatch(NamespaceRecord){
+        .generation = 1,
+        .subscription_id = 1,
+        .revision = 2,
+        .changes = initial,
+        .sync = null,
+        .owned_bytes = 1,
+    };
+    defer batch.deinit(allocator);
+    var plan = try NamespaceProjection.handler().preflight(@ptrCast(&projection), &batch, allocator);
+    NamespaceProjection.handler().commit(@ptrCast(&projection), &batch, &plan);
+    plan.deinit(allocator);
+    try view.syncProjection();
+    try std.testing.expect(view.getStatusHint() == null);
+
+    // Same-generation relist: the rows are still valid, so they keep painting and the
+    // loading signal lives in the footer hint instead of blanking the table.
+    var relist = test_keys.TypedBatch(NamespaceRecord){
+        .generation = 1,
+        .subscription_id = 1,
+        .revision = 3,
+        .changes = &.{},
+        .sync = .list_started,
+        .owned_bytes = 0,
+    };
+    var relist_plan = try NamespaceProjection.handler().preflight(
+        @ptrCast(&projection),
+        &relist,
+        allocator,
+    );
+    NamespaceProjection.handler().commit(@ptrCast(&projection), &relist, &relist_plan);
+    relist_plan.deinit(allocator);
+    try view.syncProjection();
+    try std.testing.expect(view.table.loading);
+    try std.testing.expect(view.getStatusHint() != null);
+
+    terminal.write_buffer.clearRetainingCapacity();
+    try view.createView().render(&terminal, 0, 0, 80, 6);
+    try std.testing.expect(std.mem.indexOf(u8, terminal.write_buffer.items, "team-a") != null);
+    try std.testing.expect(std.mem.indexOf(u8, terminal.write_buffer.items, "Loading") == null);
 }
 
 test "namespace projection sync OOM preserves table selection and current namespace" {
@@ -927,28 +1185,4 @@ test "namespace projection sync OOM preserves table selection and current namesp
     try std.testing.expectEqualStrings(visible_before, projection.visibleUid(0).?);
     try std.testing.expectEqual(@as(usize, 1), projection.visibleCount());
     try std.testing.expectEqualStrings("", view.table.filter_text);
-}
-
-test "namespace rollback gate retains legacy list path" {
-    const previous = active_namespace_source;
-    defer active_namespace_source = previous;
-    const previous_hook = legacy_loader_test_hook;
-    defer legacy_loader_test_hook = previous_hook;
-    const Probe = struct {
-        var calls: usize = 0;
-        fn load() void {
-            calls += 1;
-        }
-    };
-    Probe.calls = 0;
-    active_namespace_source = .legacy_list;
-    legacy_loader_test_hook = Probe.load;
-    var service = try K8sService.init(std.testing.allocator);
-    defer service.deinit();
-    var theme: theme_loader.ThemeColors = undefined;
-    var view = try NamespacesView.init(std.testing.allocator, &theme, &service);
-    defer view.deinit();
-    try view.refresh();
-    try std.testing.expectEqual(@as(usize, 1), Probe.calls);
-    try std.testing.expectEqual(NamespacesView.SubscriptionRequest.none, view.takeSubscriptionRequest());
 }

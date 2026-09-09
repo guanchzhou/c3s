@@ -14,12 +14,7 @@ last_schedule_time: ?[]u8 = null,
 creation_timestamp: ?[]u8 = null,
 
 pub fn fromCronJob(allocator: std.mem.Allocator, cron_job: klient.CronJob) !CronJobRecord {
-    const uid = cron_job.metadata.uid orelse return error.MissingUid;
-    var key = try (keys.ObjectKey{
-        .uid = uid,
-        .namespace = cron_job.metadata.namespace orelse "default",
-        .name = cron_job.metadata.name,
-    }).clone(allocator);
+    var key = try keys.fromMetadata(allocator, cron_job.metadata, "default");
     errdefer key.deinit(allocator);
     const schedule = try allocator.dupe(
         u8,

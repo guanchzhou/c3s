@@ -18,12 +18,7 @@ pub fn fromHorizontalPodAutoscaler(
     allocator: std.mem.Allocator,
     hpa: klient.HorizontalPodAutoscaler,
 ) !HPARecord {
-    const uid = hpa.metadata.uid orelse return error.MissingUid;
-    var key = try (keys.ObjectKey{
-        .uid = uid,
-        .namespace = hpa.metadata.namespace orelse "default",
-        .name = hpa.metadata.name,
-    }).clone(allocator);
+    var key = try keys.fromMetadata(allocator, hpa.metadata, "default");
     errdefer key.deinit(allocator);
     const creation_timestamp = try cloneOptional(allocator, hpa.metadata.creationTimestamp);
     errdefer if (creation_timestamp) |value| allocator.free(value);

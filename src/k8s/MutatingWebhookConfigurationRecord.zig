@@ -10,10 +10,7 @@ pub fn fromMutatingWebhookConfiguration(
 ) !MutatingWebhookConfigurationRecord {
     return MutatingWebhookConfigurationRecord.init(
         allocator,
-        value.metadata.uid,
-        null,
-        value.metadata.name,
+        value.metadata,
         .{ .count = if (value.webhooks) |webhooks| webhooks.len else 0 },
-        value.metadata.creationTimestamp,
     );
 }

@@ -10,12 +10,7 @@ holder: []u8,
 creation_timestamp: ?[]u8 = null,
 
 pub fn fromLease(allocator: std.mem.Allocator, item: klient.Lease) !LeaseRecord {
-    const uid = item.metadata.uid orelse return error.MissingUid;
-    var key = try (keys.ObjectKey{
-        .uid = uid,
-        .namespace = item.metadata.namespace orelse "default",
-        .name = item.metadata.name,
-    }).clone(allocator);
+    var key = try keys.fromMetadata(allocator, item.metadata, "default");
     errdefer key.deinit(allocator);
     const holder = try allocator.dupe(u8, if (item.spec) |spec| spec.holderIdentity orelse "<none>" else "<none>");
     errdefer allocator.free(holder);

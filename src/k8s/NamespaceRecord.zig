@@ -10,12 +10,7 @@ status: []u8,
 creation_timestamp: ?[]u8 = null,
 
 pub fn fromNamespace(allocator: std.mem.Allocator, namespace: klient.Namespace) !NamespaceRecord {
-    const uid = namespace.metadata.uid orelse return error.MissingUid;
-    var key = try (keys.ObjectKey{
-        .uid = uid,
-        .namespace = "",
-        .name = namespace.metadata.name,
-    }).clone(allocator);
+    var key = try keys.fromMetadata(allocator, namespace.metadata, "");
     errdefer key.deinit(allocator);
     const status = try allocator.dupe(u8, namespaceStatus(namespace));
     errdefer allocator.free(status);
@@ -69,7 +64,7 @@ test "namespace record owns compact display state" {
     var parsed = try std.json.parseFromSlice(
         klient.Namespace,
         allocator,
-        \\{"metadata":{"uid":"namespace-uid","name":"team-a","creationTimestamp":"2024-01-01T00:00:00Z"},"status":{"phase":"Terminating"}}
+        \\{"metadata":{"uid":"namespace-uid","name":"team-a","labels":{"environment":"production"},"creationTimestamp":"2024-01-01T00:00:00Z"},"status":{"phase":"Terminating"}}
     ,
         .{ .ignore_unknown_fields = true },
     );
@@ -77,6 +72,7 @@ test "namespace record owns compact display state" {
     var record = try fromNamespace(allocator, parsed.value);
     defer record.deinit(allocator);
     try std.testing.expectEqualStrings("namespace-uid", record.key.uid);
+    try std.testing.expectEqualStrings("environment=production", record.key.labels);
     try std.testing.expectEqualStrings("Terminating", record.status);
 }
 

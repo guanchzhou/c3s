@@ -40,6 +40,12 @@ pub const ActiveSessionSlot = struct {
         };
     }
 
+    pub fn leaseCount(self: *ActiveSessionSlot) usize {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        return if (self.session) |session| session.leaseCount() else 0;
+    }
+
     pub fn reserveGeneration(self: *ActiveSessionSlot) !Generation {
         self.mutex.lockUncancelable(self.io);
         defer self.mutex.unlock(self.io);

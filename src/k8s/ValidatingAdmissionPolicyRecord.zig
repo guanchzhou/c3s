@@ -15,10 +15,7 @@ pub fn fromValidatingAdmissionPolicy(
         0;
     return ValidatingAdmissionPolicyRecord.init(
         allocator,
-        value.metadata.uid,
-        null,
-        value.metadata.name,
+        value.metadata,
         .{ .failure_policy = failure_policy, .count = validation_count },
-        value.metadata.creationTimestamp,
     );
 }

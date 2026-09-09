@@ -12,6 +12,8 @@ const xdg = @import("../core/xdg.zig");
 const clock = @import("../core/clock.zig");
 const active_context = @import("../k8s/ActiveContextSession.zig");
 const active_slot = @import("../k8s/ActiveSessionSlot.zig");
+const read_transport = @import("../k8s/ReadTransport.zig");
+const task15 = @import("../task15_diagnostics.zig");
 const ActiveContextSession = active_context.ActiveContextSession;
 const ActiveSessionSlot = active_slot.ActiveSessionSlot;
 
@@ -64,6 +66,7 @@ pub const K8sService = struct {
         client: ?*klient.K8sClient,
         use_kubectl: bool,
         proxy_port: ?u16,
+        transport_mode: active_context.TransportMode,
         context_name: []const u8,
         kubeconfig_path: ?[]const u8,
         credentials: ?*active_context.CredentialProvider,
@@ -100,9 +103,6 @@ pub const K8sService = struct {
     /// `c3s --readonly` permitted deletion. Guarding at the service boundary means
     /// a new caller cannot forget it, and Phase 4's mutations inherit it for free.
     readonly: bool = false,
-
-    /// Wrapper around parsed pod lists so callers can keep JSON alive while consuming
-    const PodList = std.json.Parsed(klient.types.List(klient.types.Pod));
 
     /// Initialize the K8s service
     pub fn init(allocator: std.mem.Allocator) !K8sService {
@@ -172,6 +172,7 @@ pub const K8sService = struct {
                     .client = client,
                     .use_kubectl = view.use_kubectl,
                     .proxy_port = view.proxy_port,
+                    .transport_mode = view.transport_mode,
                     .context_name = view.context_name,
                     .kubeconfig_path = view.kubeconfig_path,
                     .credentials = view.credentials,
@@ -251,11 +252,12 @@ pub const K8sService = struct {
     pub fn connect(self: *K8sService, context_override: ?[]const u8) !void {
         self.connect_attempted = true;
         const slot = self.session_slot orelse return error.SessionSlotUnbound;
-        const force_proxy = if (env.getOwned(self.allocator, "C3S_FORCE_PROXY")) |value| blk: {
+        const environment_forces_proxy = if (env.getOwned(self.allocator, "C3S_FORCE_PROXY")) |value| blk: {
             defer self.allocator.free(value);
             break :blk std.ascii.eqlIgnoreCase(value, "1") or
                 std.ascii.eqlIgnoreCase(value, "true");
         } else |_| false;
+        const force_proxy = task15.isLiveMode() or environment_forces_proxy;
         const generation = try slot.reserveGeneration();
         const session = try self.session_factory.prepare(
             self.allocator,
@@ -384,29 +386,57 @@ pub const K8sService = struct {
         request: *ResolvedRequest,
         path: []const u8,
     ) ![]u8 {
+        const audit_target = try enforceTask15(.GET, path);
+        self.auditTask15Request(.GET, audit_target, null, "start");
         // Fast path: proxy (curl subprocess) with caller's allocator for the result.
         if (request.proxy_port) |port| {
-            if (self.proxyRequestAlloc(a, port, path)) |body| {
+            var status: u16 = 0;
+            if (self.proxyRequestAlloc(a, port, path, &status)) |body| {
+                self.auditTask15Request(
+                    .GET,
+                    audit_target,
+                    status,
+                    if (status >= 200 and status < 300) "none" else "terminal",
+                );
+                if (status < 200 or status >= 300) {
+                    a.free(body);
+                    return error.KubectlFailed;
+                }
                 return body;
             } else |_| {
                 // Proxy died — fall through.
             }
         }
-        return self.kubectlRequestOnceAlloc(a, request, path) catch |err| {
+        const body = self.kubectlRequestOnceAlloc(a, request, path) catch |err| retry: {
             if (request.credentials) |provider| {
-                if (provider.exec_command == null) return err;
+                if (provider.exec_command == null) {
+                    self.auditTask15Request(.GET, audit_target, null, "terminal");
+                    return err;
+                }
                 self.refreshCredentialProvider(provider);
-                return self.kubectlRequestOnceAlloc(a, request, path);
+                break :retry self.kubectlRequestOnceAlloc(a, request, path) catch |retry_err| {
+                    self.auditTask15Request(.GET, audit_target, null, "terminal");
+                    return retry_err;
+                };
             }
+            self.auditTask15Request(.GET, audit_target, null, "terminal");
             return err;
         };
+        self.auditTask15Request(.GET, audit_target, 200, "none");
+        return body;
     }
 
-    fn proxyRequestAlloc(self: *K8sService, a: std.mem.Allocator, port: u16, path: []const u8) ![]u8 {
+    fn proxyRequestAlloc(
+        self: *K8sService,
+        a: std.mem.Allocator,
+        port: u16,
+        path: []const u8,
+        status_out: *u16,
+    ) ![]u8 {
         const url = try std.fmt.allocPrint(self.allocator, "http://127.0.0.1:{d}{s}", .{ port, path });
         defer self.allocator.free(url);
         const result = std.process.run(a, runtime.io(), .{
-            .argv = &.{ "curl", "-sf", "--max-time", "8", url },
+            .argv = &.{ "curl", "-sS", "--max-time", "8", "--write-out", "\n%{http_code}", url },
             .stdout_limit = .limited(128 * 1024 * 1024),
         }) catch return error.KubectlFailed;
         defer a.free(result.stderr);
@@ -414,7 +444,17 @@ pub const K8sService = struct {
             a.free(result.stdout);
             return error.KubectlFailed;
         }
-        return result.stdout;
+        const separator = std.mem.lastIndexOfScalar(u8, result.stdout, '\n') orelse {
+            a.free(result.stdout);
+            return error.InvalidHttpStatus;
+        };
+        status_out.* = std.fmt.parseInt(u16, result.stdout[separator + 1 ..], 10) catch {
+            a.free(result.stdout);
+            return error.InvalidHttpStatus;
+        };
+        const response = try a.dupe(u8, result.stdout[0..separator]);
+        a.free(result.stdout);
+        return response;
     }
 
     /// POST a JSON body through the local `kubectl proxy` via curl.
@@ -430,6 +470,7 @@ pub const K8sService = struct {
         request: *const ResolvedRequest,
         path: []const u8,
         body: []const u8,
+        status_out: *std.http.Status,
     ) ![]u8 {
         const port = request.proxy_port orelse return error.ProxyUnavailable;
         const url = try std.fmt.allocPrint(self.allocator, "http://127.0.0.1:{d}{s}", .{ port, path });
@@ -437,11 +478,12 @@ pub const K8sService = struct {
 
         const result = std.process.run(self.allocator, runtime.io(), .{
             .argv = &.{
-                "curl",          "-sf",
+                "curl",          "-sS",
                 "--max-time",    "8",
                 "-X",            "POST",
                 "-H",            "Content-Type: application/json",
                 "--data-binary", body,
+                "--write-out",   "\n%{http_code}",
                 url,
             },
             .stdout_limit = .limited(1024 * 1024),
@@ -452,7 +494,18 @@ pub const K8sService = struct {
             self.allocator.free(result.stdout);
             return error.KubectlFailed;
         }
-        return result.stdout;
+        const separator = std.mem.lastIndexOfScalar(u8, result.stdout, '\n') orelse {
+            self.allocator.free(result.stdout);
+            return error.InvalidHttpStatus;
+        };
+        const code = std.fmt.parseInt(u16, result.stdout[separator + 1 ..], 10) catch {
+            self.allocator.free(result.stdout);
+            return error.InvalidHttpStatus;
+        };
+        status_out.* = @enumFromInt(code);
+        const response = try self.allocator.dupe(u8, result.stdout[0..separator]);
+        self.allocator.free(result.stdout);
+        return response;
     }
 
     fn kubectlRequestOnceAlloc(
@@ -498,24 +551,67 @@ pub const K8sService = struct {
         request: *ResolvedRequest,
         path: []const u8,
     ) ![]u8 {
+        const audit_target = try enforceTask15(.GET, path);
+        self.auditTask15Request(.GET, audit_target, null, "start");
         // Fast path: the persistent kubectl proxy over localhost.
         if (request.proxy_port) |port| {
-            if (self.proxyRequest(port, path)) |body| {
+            var status: u16 = 0;
+            if (self.proxyRequest(port, path, &status)) |body| {
+                self.auditTask15Request(
+                    .GET,
+                    audit_target,
+                    status,
+                    if (status >= 200 and status < 300) "none" else "terminal",
+                );
+                if (status < 200 or status >= 300) {
+                    self.allocator.free(body);
+                    return error.KubectlFailed;
+                }
                 return body;
             } else |_| {
                 // Proxy died/unreachable — fall through to per-call kubectl.
             }
         }
-        return self.kubectlRequestOnce(request, path) catch |err| {
+        const body = self.kubectlRequestOnce(request, path) catch |err| retry: {
             // A failure may be an expired token. If we have an exec plugin,
-            // refresh once and retry — transparently handles token expiry.
+            // refresh once and retry.
             if (request.credentials) |provider| {
-                if (provider.exec_command == null) return err;
+                if (provider.exec_command == null) {
+                    self.auditTask15Request(.GET, audit_target, null, "terminal");
+                    return err;
+                }
                 self.refreshCredentialProvider(provider);
-                return self.kubectlRequestOnce(request, path);
+                break :retry self.kubectlRequestOnce(request, path) catch |retry_err| {
+                    self.auditTask15Request(.GET, audit_target, null, "terminal");
+                    return retry_err;
+                };
             }
+            self.auditTask15Request(.GET, audit_target, null, "terminal");
             return err;
         };
+        self.auditTask15Request(.GET, audit_target, 200, "none");
+        return body;
+    }
+
+    fn directGet(
+        self: *K8sService,
+        client: *klient.K8sClient,
+        path: []const u8,
+    ) ![]u8 {
+        const audit_target = try enforceTask15(.GET, path);
+        self.auditTask15Request(.GET, audit_target, null, "start");
+        var api_error: ?klient.K8sClient.ApiError = null;
+        defer if (api_error) |*detail| detail.deinit(self.allocator);
+        const body = client.requestCapturing(.GET, path, null, &api_error) catch |err| {
+            const status = if (api_error) |detail|
+                if (detail.code) |code| std.math.cast(u16, code) else null
+            else
+                null;
+            self.auditTask15Request(.GET, audit_target, status, "terminal");
+            return err;
+        };
+        self.auditTask15Request(.GET, audit_target, 200, "none");
+        return body;
     }
 
     fn kubectlRequestOnce(
@@ -555,6 +651,7 @@ pub const K8sService = struct {
     /// Run `kubectl api-resources` and return its raw, column-aligned output
     /// (NAME / SHORTNAMES / APIVERSION / NAMESPACED / KIND). Caller frees.
     pub fn listApiResources(self: *K8sService) ![]u8 {
+        if (task15.isLiveMode()) return error.Task15RequestRejected;
         var request = try self.resolveRequest(.detail);
         defer request.deinit();
         const argv = try self.buildKubectlArgvResolved(&request, &.{"api-resources"});
@@ -581,11 +678,13 @@ pub const K8sService = struct {
     /// Credentials are intentionally not placed in argv. Kubectl resolves the
     /// selected context's credential provider itself.
     fn buildKubectlArgv(self: *K8sService, args: []const []const u8) ![]const []const u8 {
+        const proxy_port = self.proxyPort();
         const request = ResolvedRequest{
             .lease = null,
             .client = null,
             .use_kubectl = self.use_kubectl,
-            .proxy_port = self.proxyPort(),
+            .proxy_port = proxy_port,
+            .transport_mode = if (proxy_port != null) .proxy else .klient,
             .context_name = self.context_name,
             .kubeconfig_path = self.kubeconfig_path,
             .credentials = null,
@@ -613,24 +712,44 @@ pub const K8sService = struct {
         return argv.toOwnedSlice(self.allocator);
     }
 
+    /// Build argv for an interactive kubectl process against the active session.
+    ///
+    /// This is the shared boundary for edit, exec, attach, drain, and future
+    /// interactive callers. It enforces readonly before terminal state changes and
+    /// pins both kubeconfig and context without copying credentials into argv.
+    pub fn buildInteractiveKubectlArgv(
+        self: *K8sService,
+        args: []const []const u8,
+    ) ![]const []const u8 {
+        try self.assertMutable();
+        var request = try self.resolveRequest(.command);
+        defer request.deinit();
+        return self.buildKubectlArgvResolved(&request, args);
+    }
+
     /// Start the active session's OS-port-selected proxy. The facade never owns it.
     pub fn startProxy(self: *K8sService) void {
         var lease = (self.acquireRequest(.command) catch return) orelse return;
         defer lease.release();
         const session = lease.session;
         session.startProxy() catch |err| {
-            Logger.warn("kubectl proxy startup failed: {any}; using per-call kubectl", .{err});
+            Logger.warn("kubectl proxy startup failed: {any}; active transport unchanged", .{err});
             return;
         };
         self.use_kubectl = session.requestView().use_kubectl;
     }
 
     /// GET a raw API path through the local kubectl proxy (no per-call TLS/auth).
-    fn proxyRequest(self: *K8sService, port: u16, path: []const u8) ![]u8 {
+    fn proxyRequest(
+        self: *K8sService,
+        port: u16,
+        path: []const u8,
+        status_out: *u16,
+    ) ![]u8 {
         const url = try std.fmt.allocPrint(self.allocator, "http://127.0.0.1:{d}{s}", .{ port, path });
         defer self.allocator.free(url);
         const result = std.process.run(self.allocator, runtime.io(), .{
-            .argv = &.{ "curl", "-sf", "--max-time", "8", url },
+            .argv = &.{ "curl", "-sS", "--max-time", "8", "--write-out", "\n%{http_code}", url },
             .stdout_limit = .limited(128 * 1024 * 1024),
         }) catch return error.KubectlFailed;
         defer self.allocator.free(result.stderr);
@@ -638,7 +757,17 @@ pub const K8sService = struct {
             self.allocator.free(result.stdout);
             return error.KubectlFailed;
         }
-        return result.stdout;
+        const separator = std.mem.lastIndexOfScalar(u8, result.stdout, '\n') orelse {
+            self.allocator.free(result.stdout);
+            return error.InvalidHttpStatus;
+        };
+        status_out.* = std.fmt.parseInt(u16, result.stdout[separator + 1 ..], 10) catch {
+            self.allocator.free(result.stdout);
+            return error.InvalidHttpStatus;
+        };
+        const response = try self.allocator.dupe(u8, result.stdout[0..separator]);
+        self.allocator.free(result.stdout);
+        return response;
     }
 
     /// Run a one-shot kubectl command (e.g. `set image`, `cp`, `delete`).
@@ -720,6 +849,14 @@ pub const K8sService = struct {
         return self.current_namespace;
     }
 
+    /// Set launch scope before a session exists. The selected namespace is copied
+    /// into ContextSpec when the session is prepared.
+    pub fn setConfiguredNamespace(self: *K8sService, namespace: []const u8) !void {
+        const replacement = try self.allocator.dupe(u8, namespace);
+        self.allocator.free(self.current_namespace);
+        self.current_namespace = replacement;
+    }
+
     /// Set the current namespace
     pub fn setCurrentNamespace(self: *K8sService, namespace: []const u8) !void {
         var lease = (try self.acquireRequest(.command)) orelse
@@ -762,6 +899,9 @@ pub const K8sService = struct {
 
         // A cached value belongs to the currently published active session only.
         if (self.cached_k8s_version) |v| return v;
+        // Direct-curl readiness has already verified /version. Avoid a second
+        // synchronous kubectl process on the first data-plane paint.
+        if (request.transport_mode == .direct_curl) return "connected";
 
         // Don't retry after failure — repeated attempts can trigger std lib panics
         if (self.version_fetch_failed) return "unknown";
@@ -773,7 +913,7 @@ pub const K8sService = struct {
                 return "unknown";
             }
         else
-            (request.client orelse return "n/a").request(.GET, "/version", null) catch |err| {
+            self.directGet(request.client orelse return "n/a", "/version") catch |err| {
                 Logger.warn("Failed to fetch /version: {}", .{err});
                 self.version_fetch_failed = true;
                 return "unknown";
@@ -801,151 +941,42 @@ pub const K8sService = struct {
         return self.cached_k8s_version.?;
     }
 
-    // ===== Generic Resource Helpers =====
-
-    /// Parse a kubectl JSON response into a typed list and return copied items.
-    /// Wrapper that owns parsed K8s list data. Items are valid until deinit().
-    pub fn ParsedList(comptime T: type) type {
-        return struct {
-            _parsed: std.json.Parsed(klient.types.List(T)),
-
-            pub fn items(self: @This()) []T {
-                return self._parsed.value.items;
-            }
-
-            pub fn deinit(self: *@This()) void {
-                self._parsed.deinit();
-            }
-        };
-    }
-
-    /// List all instances of a resource across all namespaces.
-    /// Caller must call .deinit() on the result when done with .items().
-    pub fn listAllGenericPub(self: *K8sService, comptime T: type, comptime ClientType: type) !ParsedList(T) {
-        if (!self.isConnected()) return error.NotConnected;
-        var request = try self.resolveRequest(.list_watch);
-        defer request.deinit();
-        const active_client = request.client orelse return error.NotConnected;
-
-        if (request.use_kubectl) {
-            const dummy = ClientType.init(active_client);
-            const path = try std.fmt.allocPrint(self.allocator, "{s}/{s}", .{ dummy.client.api_path, dummy.client.resource });
-            defer self.allocator.free(path);
-
-            const body = try self.kubectlRequestResolved(&request, path);
-            defer self.allocator.free(body);
-            return .{ ._parsed = try std.json.parseFromSlice(
-                klient.types.List(T),
-                self.allocator,
-                body,
-                .{ .ignore_unknown_fields = true, .allocate = .alloc_always },
-            ) };
-        }
-
-        const client = ClientType.init(active_client);
-        return .{ ._parsed = try client.client.listAll() };
-    }
-
-    /// List instances of a resource in a specific namespace.
-    /// Caller must call .deinit() on the result when done with .items().
-    pub fn listInNsGenericPub(self: *K8sService, comptime T: type, comptime ClientType: type, namespace: ?[]const u8) !ParsedList(T) {
-        if (!self.isConnected()) return error.NotConnected;
-        const ns = namespace orelse self.current_namespace;
-        var request = try self.resolveRequest(.list_watch);
-        defer request.deinit();
-        const active_client = request.client orelse return error.NotConnected;
-
-        if (request.use_kubectl) {
-            const dummy = ClientType.init(active_client);
-            const path = try std.fmt.allocPrint(self.allocator, "{s}/namespaces/{s}/{s}", .{ dummy.client.api_path, ns, dummy.client.resource });
-            defer self.allocator.free(path);
-
-            const body = try self.kubectlRequestResolved(&request, path);
-            defer self.allocator.free(body);
-            return .{ ._parsed = try std.json.parseFromSlice(
-                klient.types.List(T),
-                self.allocator,
-                body,
-                .{ .ignore_unknown_fields = true, .allocate = .alloc_always },
-            ) };
-        }
-
-        const client = ClientType.init(active_client);
-        return .{ ._parsed = try client.client.list(ns) };
-    }
-
-    /// Legacy list methods for backward compatibility (shallow copy, OK for simple types)
-    fn listAllGeneric(self: *K8sService, comptime T: type, comptime ClientType: type) ![]T {
-        var parsed = try self.listAllGenericPub(T, ClientType);
-        defer parsed.deinit();
-        const items = try self.allocator.alloc(T, parsed.items().len);
-        @memcpy(items, parsed.items());
-        return items;
-    }
-
-    fn listInNsGeneric(self: *K8sService, comptime T: type, comptime ClientType: type, namespace: ?[]const u8) ![]T {
-        var parsed = try self.listInNsGenericPub(T, ClientType, namespace);
-        defer parsed.deinit();
-        const items = try self.allocator.alloc(T, parsed.items().len);
-        @memcpy(items, parsed.items());
-        return items;
-    }
-
-    // ===== Pod Operations =====
-
-    /// List all pods across all namespaces
-    pub fn listAllPods(self: *K8sService) !PodList {
-        if (!self.isConnected()) return error.NotConnected;
-        var request = try self.resolveRequest(.list_watch);
-        defer request.deinit();
-        const active_client = request.client orelse return error.NotConnected;
-
-        if (request.use_kubectl) {
-            const body = try self.kubectlRequestResolved(&request, "/api/v1/pods");
-            defer self.allocator.free(body);
-            return std.json.parseFromSlice(
-                klient.types.List(klient.types.Pod),
-                self.allocator,
-                body,
-                .{ .ignore_unknown_fields = true, .allocate = .alloc_always },
-            );
-        }
-
-        const pods_client = klient.resources.Pods.init(active_client);
-        return try pods_client.client.listAll();
-    }
-
-    /// List pods in a specific namespace
-    pub fn listPods(self: *K8sService, namespace: ?[]const u8) !PodList {
-        if (!self.isConnected()) return error.NotConnected;
-        const ns = namespace orelse self.current_namespace;
-        var request = try self.resolveRequest(.list_watch);
-        defer request.deinit();
-        const active_client = request.client orelse return error.NotConnected;
-
-        if (request.use_kubectl) {
-            const path = try std.fmt.allocPrint(self.allocator, "/api/v1/namespaces/{s}/pods", .{ns});
-            defer self.allocator.free(path);
-            const body = try self.kubectlRequestResolved(&request, path);
-            defer self.allocator.free(body);
-            return std.json.parseFromSlice(
-                klient.types.List(klient.types.Pod),
-                self.allocator,
-                body,
-                .{ .ignore_unknown_fields = true, .allocate = .alloc_always },
-            );
-        }
-
-        const pods_client = klient.resources.Pods.init(active_client);
-        return try pods_client.client.list(ns);
-    }
-
     /// Delete a pod
     /// Reject a cluster mutation when running with --readonly.
     ///
     /// Called by every mutating method. Read paths deliberately do not call this.
     fn assertMutable(self: *K8sService) !void {
+        if (task15.isLiveMode()) return error.Task15RequestRejected;
         if (self.readonly) return error.ReadOnlyMode;
+    }
+
+    fn enforceTask15(method: task15.Method, path: []const u8) !task15.SanitizedRequest {
+        return task15.enforceRequest(method, path);
+    }
+
+    fn auditTask15Request(
+        self: *const K8sService,
+        method: task15.Method,
+        target: task15.SanitizedRequest,
+        status: ?u16,
+        retry_class: []const u8,
+    ) void {
+        var writer = task15.Writer.initFromEnv();
+        writer.emit(.{
+            .event = .request_audit,
+            .context = self.context_name,
+            .scope = target.scope,
+            .family = task15.familyForResource(target.resource),
+            .method = method,
+            .api_group = target.api_group,
+            .resource = target.resource,
+            .subresource = target.subresource,
+            .endpoint_class = target.endpoint_class,
+            .status = status,
+            .retry_class = retry_class,
+            .identity_fingerprint = target.identity_fingerprint,
+            .query_fingerprint = target.query_fingerprint,
+        });
     }
 
     pub fn deletePod(self: *K8sService, name: []const u8, namespace: ?[]const u8) !void {
@@ -961,18 +992,6 @@ pub const K8sService = struct {
         // This body never compiled -- Zig analyses a function only when it is
         // referenced, and nothing referenced it, so the arity error stayed hidden.
         try pods_client.client.delete(name, ns);
-    }
-
-    // ===== Deployment Operations =====
-
-    /// List all deployments
-    pub fn listAllDeployments(self: *K8sService) ![]klient.types.Deployment {
-        return self.listAllGeneric(klient.types.Deployment, klient.resources.Deployments);
-    }
-
-    /// List deployments in a namespace
-    pub fn listDeployments(self: *K8sService, namespace: ?[]const u8) ![]klient.types.Deployment {
-        return self.listInNsGeneric(klient.types.Deployment, klient.resources.Deployments, namespace);
     }
 
     /// Cordon or uncordon a node (mark it unschedulable, or undo that).
@@ -1011,336 +1030,9 @@ pub const K8sService = struct {
         }
     }
 
-    // ===== Service Operations =====
-
-    /// List all services
-    pub fn listAllServices(self: *K8sService) ![]klient.types.Service {
-        return self.listAllGeneric(klient.types.Service, klient.resources.Services);
-    }
-
-    /// List services in a namespace
-    pub fn listServices(self: *K8sService, namespace: ?[]const u8) ![]klient.types.Service {
-        return self.listInNsGeneric(klient.types.Service, klient.resources.Services, namespace);
-    }
-
-    // ===== Namespace Operations =====
-
-    /// List all namespaces
-    /// Caller owns the result and MUST call `.deinit()` when done — the items'
-    /// `status` (json.Value) and string fields reference the parsed arena. (The
-    /// legacy shallow-copy `listAllGeneric` freed that arena and returned
-    /// dangling json.Value fields → use-after-free in `.object.get`.)
-    pub fn listNamespaces(self: *K8sService) !ParsedList(klient.types.Namespace) {
-        return self.listAllGenericPub(klient.types.Namespace, klient.resources.Namespaces);
-    }
-
-    // ===== Node Operations =====
-
-    /// List all nodes
-    pub fn listNodes(self: *K8sService) ![]klient.types.Node {
-        return self.listAllGeneric(klient.types.Node, klient.resources.Nodes);
-    }
-
-    // ===== ConfigMap Operations =====
-
-    /// List all configmaps across all namespaces
-    pub fn listAllConfigMaps(self: *K8sService) ![]klient.types.ConfigMap {
-        return self.listAllGeneric(klient.types.ConfigMap, klient.resources.ConfigMaps);
-    }
-
-    /// List configmaps in a namespace
-    pub fn listConfigMaps(self: *K8sService, namespace: ?[]const u8) ![]klient.types.ConfigMap {
-        return self.listInNsGeneric(klient.types.ConfigMap, klient.resources.ConfigMaps, namespace);
-    }
-
-    // ===== Secret Operations =====
-
-    /// List all secrets across all namespaces
-    pub fn listAllSecrets(self: *K8sService) ![]klient.types.Secret {
-        return self.listAllGeneric(klient.types.Secret, klient.resources.Secrets);
-    }
-
-    /// List secrets in a namespace
-    pub fn listSecrets(self: *K8sService, namespace: ?[]const u8) ![]klient.types.Secret {
-        return self.listInNsGeneric(klient.types.Secret, klient.resources.Secrets, namespace);
-    }
-
-    // ===== StatefulSet Operations =====
-
-    /// List all statefulsets
-    pub fn listAllStatefulSets(self: *K8sService) ![]klient.types.StatefulSet {
-        return self.listAllGeneric(klient.types.StatefulSet, klient.resources.StatefulSets);
-    }
-
-    // ===== DaemonSet Operations =====
-
-    /// List all daemonsets
-    pub fn listAllDaemonSets(self: *K8sService) ![]klient.types.DaemonSet {
-        return self.listAllGeneric(klient.types.DaemonSet, klient.resources.DaemonSets);
-    }
-
-    // ===== ReplicaSet Operations =====
-
-    /// List all replicasets
-    pub fn listAllReplicaSets(self: *K8sService) ![]klient.types.ReplicaSet {
-        return self.listAllGeneric(klient.types.ReplicaSet, klient.resources.ReplicaSets);
-    }
-
-    // ===== Job Operations =====
-
-    /// List all jobs
-    pub fn listAllJobs(self: *K8sService) ![]klient.types.Job {
-        return self.listAllGeneric(klient.types.Job, klient.resources.Jobs);
-    }
-
-    // ===== CronJob Operations =====
-
-    /// List all cronjobs
-    pub fn listAllCronJobs(self: *K8sService) ![]klient.types.CronJob {
-        return self.listAllGeneric(klient.types.CronJob, klient.resources.CronJobs);
-    }
-
-    // ===== PersistentVolume Operations =====
-
-    /// List all persistent volumes (cluster-scoped)
-    pub fn listAllPersistentVolumes(self: *K8sService) ![]klient.types.PersistentVolume {
-        return self.listAllGeneric(klient.types.PersistentVolume, klient.resources.PersistentVolumes);
-    }
-
-    // ===== PersistentVolumeClaim Operations =====
-
-    /// List all persistent volume claims
-    pub fn listAllPersistentVolumeClaims(self: *K8sService) ![]klient.types.PersistentVolumeClaim {
-        return self.listAllGeneric(klient.types.PersistentVolumeClaim, klient.resources.PersistentVolumeClaims);
-    }
-
-    // ===== Ingress Operations =====
-
-    /// List all ingresses across all namespaces
-    pub fn listAllIngresses(self: *K8sService) ![]klient.types.Ingress {
-        return self.listAllGeneric(klient.types.Ingress, klient.resources.Ingresses);
-    }
-
-    // ===== NetworkPolicy Operations =====
-
-    /// List all network policies across all namespaces
-    pub fn listAllNetworkPolicies(self: *K8sService) ![]klient.types.NetworkPolicy {
-        return self.listAllGeneric(klient.types.NetworkPolicy, klient.resources.NetworkPolicies);
-    }
-
-    // ===== ServiceAccount Operations =====
-
-    /// List all service accounts across all namespaces
-    pub fn listAllServiceAccounts(self: *K8sService) ![]klient.types.ServiceAccount {
-        return self.listAllGeneric(klient.types.ServiceAccount, klient.resources.ServiceAccounts);
-    }
-
-    // ===== Role Operations =====
-
-    /// List all roles across all namespaces
-    pub fn listAllRoles(self: *K8sService) ![]klient.types.Role {
-        return self.listAllGeneric(klient.types.Role, klient.resources.Roles);
-    }
-
-    // ===== RoleBinding Operations =====
-
-    /// List all role bindings across all namespaces
-    pub fn listAllRoleBindings(self: *K8sService) ![]klient.types.RoleBinding {
-        return self.listAllGeneric(klient.types.RoleBinding, klient.resources.RoleBindings);
-    }
-
-    // ===== ClusterRole Operations =====
-
-    /// List all cluster roles (cluster-scoped)
-    pub fn listAllClusterRoles(self: *K8sService) ![]klient.types.ClusterRole {
-        return self.listAllGeneric(klient.types.ClusterRole, klient.resources.ClusterRoles);
-    }
-
-    // ===== ClusterRoleBinding Operations =====
-
-    /// List all cluster role bindings (cluster-scoped)
-    pub fn listAllClusterRoleBindings(self: *K8sService) ![]klient.types.ClusterRoleBinding {
-        return self.listAllGeneric(klient.types.ClusterRoleBinding, klient.resources.ClusterRoleBindings);
-    }
-
-    // ===== Event Operations =====
-
-    /// List all events across all namespaces
-    pub fn listAllEvents(self: *K8sService) ![]klient.types.Event {
-        return self.listAllGeneric(klient.types.Event, klient.resources.Events);
-    }
-
-    // ===== ResourceQuota Operations =====
-
-    /// List all resource quotas across all namespaces
-    pub fn listAllResourceQuotas(self: *K8sService) ![]klient.types.ResourceQuota {
-        return self.listAllGeneric(klient.types.ResourceQuota, klient.resources.ResourceQuotas);
-    }
-
-    // ===== LimitRange Operations =====
-
-    /// List all limit ranges across all namespaces
-    pub fn listAllLimitRanges(self: *K8sService) ![]klient.types.LimitRange {
-        return self.listAllGeneric(klient.types.LimitRange, klient.resources.LimitRanges);
-    }
-
-    // ===== PodDisruptionBudget Operations =====
-
-    /// List all pod disruption budgets across all namespaces
-    pub fn listAllPodDisruptionBudgets(self: *K8sService) ![]klient.types.PodDisruptionBudget {
-        return self.listAllGeneric(klient.types.PodDisruptionBudget, klient.resources.PodDisruptionBudgets);
-    }
-
-    // ===== HorizontalPodAutoscaler Operations =====
-
-    /// List all horizontal pod autoscalers across all namespaces
-    pub fn listAllHPAs(self: *K8sService) ![]klient.types.HorizontalPodAutoscaler {
-        return self.listAllGeneric(klient.types.HorizontalPodAutoscaler, klient.resources.HorizontalPodAutoscalers);
-    }
-
-    // ===== Endpoints Operations =====
-
-    /// List all endpoints across all namespaces
-    pub fn listAllEndpoints(self: *K8sService) ![]klient.types.Endpoints {
-        return self.listAllGeneric(klient.types.Endpoints, klient.resources.EndpointsClient);
-    }
-
-    // ===== StorageClass Operations =====
-
-    /// List all storage classes (cluster-scoped)
-    pub fn listAllStorageClasses(self: *K8sService) ![]klient.types.StorageClass {
-        return self.listAllGeneric(klient.types.StorageClass, klient.resources.StorageClasses);
-    }
-
     // ===== Pod Metrics Operations =====
 
     pub const PodMetric = k8s_types.PodMetric;
-
-    /// Fetch pod metrics from the Kubernetes Metrics Server.
-    /// Returns a map of "namespace/name" -> PodMetric.
-    /// If the metrics server is not available, returns null (graceful degradation).
-    pub fn getPodMetrics(self: *K8sService, all_namespaces: bool) !?std.StringHashMap(PodMetric) {
-        if (!self.isConnected()) return null;
-        var request = try self.resolveRequest(.metrics);
-        defer request.deinit();
-        const active_client = request.client orelse return null;
-
-        if (request.use_kubectl) {
-            // Use kubectl to fetch metrics API
-            const path = if (all_namespaces)
-                "/apis/metrics.k8s.io/v1beta1/pods"
-            else
-                try std.fmt.allocPrint(self.allocator, "/apis/metrics.k8s.io/v1beta1/namespaces/{s}/pods", .{self.current_namespace});
-            defer if (!all_namespaces) self.allocator.free(path);
-
-            const body = self.kubectlRequestResolved(&request, path) catch |err| {
-                Logger.warn("Metrics server unavailable via kubectl: {any}", .{err});
-                return null;
-            };
-            defer self.allocator.free(body);
-
-            const KubectlMetricsList = struct { items: []klient.PodMetrics };
-            var parsed = std.json.parseFromSlice(KubectlMetricsList, self.allocator, body, .{
-                .ignore_unknown_fields = true,
-                .allocate = .alloc_always,
-            }) catch |err| {
-                Logger.warn("Failed to parse metrics response: {any}", .{err});
-                return null;
-            };
-            defer parsed.deinit();
-            return try self.buildMetricsMap(parsed.value.items);
-        }
-
-        const metrics_client = klient.MetricsClient.init(active_client);
-        var parsed = if (all_namespaces)
-            metrics_client.getAllPodMetrics() catch |err| {
-                Logger.warn("Metrics server unavailable (all namespaces): {any}", .{err});
-                return null;
-            }
-        else blk: {
-            break :blk metrics_client.getPodMetrics(self.current_namespace) catch |err| {
-                Logger.warn("Metrics server unavailable (namespace {s}): {any}", .{ self.current_namespace, err });
-                return null;
-            };
-        };
-        defer parsed.deinit();
-        return try self.buildMetricsMap(parsed.value.items);
-    }
-
-    /// Build a metrics map from a slice of PodMetrics items.
-    fn buildMetricsMap(self: *K8sService, items: []klient.PodMetrics) !std.StringHashMap(PodMetric) {
-        var result = std.StringHashMap(PodMetric).init(self.allocator);
-        errdefer {
-            var it = result.iterator();
-            while (it.next()) |entry| {
-                self.allocator.free(entry.key_ptr.*);
-                self.allocator.free(entry.value_ptr.cpu);
-                self.allocator.free(entry.value_ptr.mem);
-            }
-            result.deinit();
-        }
-
-        for (items) |pod_metric| {
-            var total_cpu_millicores: u64 = 0;
-            var total_mem_bytes: u64 = 0;
-
-            if (pod_metric.containers) |containers| {
-                for (containers) |container| {
-                    if (container.usage.cpu) |cpu_str| {
-                        if (klient.MetricsClient.parseCpuMillicores(cpu_str)) |mc| {
-                            total_cpu_millicores += mc;
-                        }
-                    }
-                    if (container.usage.memory) |mem_str| {
-                        if (klient.MetricsClient.parseMemoryBytes(mem_str)) |bytes| {
-                            total_mem_bytes += bytes;
-                        }
-                    }
-                }
-            }
-
-            const cpu_display = if (total_cpu_millicores >= 1000 and total_cpu_millicores % 1000 == 0)
-                try std.fmt.allocPrint(self.allocator, "{d}", .{total_cpu_millicores / 1000})
-            else
-                try std.fmt.allocPrint(self.allocator, "{d}m", .{total_cpu_millicores});
-            errdefer self.allocator.free(cpu_display);
-
-            const mem_display = if (total_mem_bytes >= 1024 * 1024 * 1024 and total_mem_bytes % (1024 * 1024 * 1024) == 0)
-                try std.fmt.allocPrint(self.allocator, "{d}Gi", .{total_mem_bytes / (1024 * 1024 * 1024)})
-            else if (total_mem_bytes >= 1024 * 1024)
-                try std.fmt.allocPrint(self.allocator, "{d}Mi", .{total_mem_bytes / (1024 * 1024)})
-            else if (total_mem_bytes >= 1024)
-                try std.fmt.allocPrint(self.allocator, "{d}Ki", .{total_mem_bytes / 1024})
-            else
-                try std.fmt.allocPrint(self.allocator, "{d}", .{total_mem_bytes});
-            errdefer self.allocator.free(mem_display);
-
-            const ns = pod_metric.metadata.namespace orelse "default";
-            const key = try std.fmt.allocPrint(self.allocator, "{s}/{s}", .{ ns, pod_metric.metadata.name });
-            errdefer self.allocator.free(key);
-
-            try result.put(key, PodMetric{
-                .cpu = cpu_display,
-                .mem = mem_display,
-                .cpu_milli = total_cpu_millicores,
-                .mem_bytes = total_mem_bytes,
-            });
-        }
-
-        Logger.info("Fetched metrics for {d} pods", .{result.count()});
-        return result;
-    }
-
-    /// Free a PodMetric map returned by getPodMetrics
-    pub fn freePodMetrics(self: *K8sService, metrics_map: *std.StringHashMap(PodMetric)) void {
-        var it = metrics_map.iterator();
-        while (it.next()) |entry| {
-            self.allocator.free(entry.key_ptr.*);
-            self.allocator.free(entry.value_ptr.cpu);
-            self.allocator.free(entry.value_ptr.mem);
-        }
-        metrics_map.deinit();
-    }
 
     // ===== Context Operations =====
 
@@ -1405,7 +1097,7 @@ pub const K8sService = struct {
         defer self.allocator.free(path);
 
         if (request.use_kubectl) return try self.kubectlRequestResolved(&request, path);
-        return try active_client.request(.GET, path, null);
+        return try self.directGet(active_client, path);
     }
 
     /// Delete any resource by type, name, namespace
@@ -1496,6 +1188,9 @@ pub const K8sService = struct {
     /// turns the `t` toggle in LogsView into a no-op -- there would be no timestamps
     /// to reveal, and nothing anywhere would fail.
     pub fn logQuery(allocator: std.mem.Allocator, previous: bool, container: ?[]const u8) ![]u8 {
+        if (container) |value| {
+            if (!read_transport.validQueryValue(value)) return error.InvalidReadPath;
+        }
         var query: std.ArrayListUnmanaged(u8) = .empty;
         errdefer query.deinit(allocator);
         try query.appendSlice(allocator, "tailLines=1000");
@@ -1516,6 +1211,9 @@ pub const K8sService = struct {
     }
 
     fn logRequest(self: *K8sService, name: []const u8, ns: []const u8, previous: bool, container: ?[]const u8) ![]u8 {
+        if (!read_transport.validPathSegment(name) or
+            !read_transport.validPathSegment(ns))
+            return error.InvalidReadPath;
         var request = try self.resolveRequest(.logs);
         defer request.deinit();
         const query = try logQuery(self.allocator, previous, container);
@@ -1529,7 +1227,7 @@ pub const K8sService = struct {
         defer self.allocator.free(path);
 
         if (request.use_kubectl) return try self.kubectlRequestResolved(&request, path);
-        if (request.client) |client| return try client.request(.GET, path, null);
+        if (request.client) |client| return try self.directGet(client, path);
         return error.NotConnected;
     }
 
@@ -1562,39 +1260,73 @@ pub const K8sService = struct {
     pub const AccessCheckResult = k8s_types.AccessCheckResult;
     pub const PolicyInfo = k8s_types.PolicyInfo;
     pub const ConditionInfo = k8s_types.ConditionInfo;
+    pub const self_subject_access_review_path = "/apis/authorization.k8s.io/v1/selfsubjectaccessreviews";
+    pub const authorization_conditions_review_path = "/apis/authorization.k8s.io/v1alpha1/subjectaccessreviews";
 
     /// Check access for a specific verb on a resource (SelfSubjectAccessReview)
     pub fn checkAccess(self: *K8sService, verb: []const u8, group: []const u8, resource: []const u8, namespace: []const u8) !AccessCheckResult {
         if (!self.isConnected()) return error.NotConnected;
+        const audit_target = try enforceTask15(.POST, self_subject_access_review_path);
+        self.auditTask15Request(.POST, audit_target, null, "start");
         var request = try self.resolveRequest(.authorization);
         defer request.deinit();
 
-        // Build SelfSubjectAccessReview JSON body
-        var body_buf: [512]u8 = undefined;
-        const body = try std.fmt.bufPrint(&body_buf,
-            \\{{"apiVersion":"authorization.k8s.io/v1","kind":"SelfSubjectAccessReview","spec":{{"resourceAttributes":{{"namespace":"{s}","verb":"{s}","group":"{s}","resource":"{s}"}}}}}}
-        , .{ namespace, verb, group, resource });
+        const body = try std.json.Stringify.valueAlloc(self.allocator, .{
+            .apiVersion = "authorization.k8s.io/v1",
+            .kind = "SelfSubjectAccessReview",
+            .spec = .{ .resourceAttributes = .{
+                .namespace = namespace,
+                .verb = verb,
+                .group = group,
+                .resource = resource,
+            } },
+        }, .{});
+        defer self.allocator.free(body);
 
-        const ssar_path = "/apis/authorization.k8s.io/v1/selfsubjectaccessreviews";
+        const ssar_path = self_subject_access_review_path;
 
         // The kubectl transport is the standard path on clusters where direct TLS
         // failed (EKS, TLS interception). Without this branch every check errored,
         // and because the caller swallowed the error the grid rendered as
         // "denied everywhere" -- an answer the app had not earned.
         // The HTTP path is used only while the resolved request lease is live.
+        var response_status: std.http.Status = .ok;
+        var api_error: ?klient.K8sClient.ApiError = null;
+        defer if (api_error) |*detail| detail.deinit(self.allocator);
         const response = if (request.use_kubectl)
-            self.proxyPostResolved(&request, ssar_path, body) catch |err| {
+            self.proxyPostResolved(&request, ssar_path, body, &response_status) catch |err| {
+                self.auditTask15Request(.POST, audit_target, null, "terminal");
                 Logger.warn("checkAccess via proxy failed for {s}/{s}: {t}", .{ resource, verb, err });
                 return error.RequestFailed;
             }
         else if (request.client) |client|
-            client.requestWithContentType(.POST, ssar_path, body, "application/json") catch |err| {
+            client.requestWithContentTypeStatus(
+                .POST,
+                ssar_path,
+                body,
+                "application/json",
+                &response_status,
+                &api_error,
+            ) catch |err| {
+                const status = if (api_error) |detail|
+                    if (detail.code) |code| std.math.cast(u16, code) else null
+                else
+                    null;
+                self.auditTask15Request(.POST, audit_target, status, "terminal");
                 Logger.warn("checkAccess failed for {s}/{s}: {}", .{ resource, verb, err });
                 return error.RequestFailed;
             }
         else
             return error.NotConnected;
         defer self.allocator.free(response);
+        const response_status_code: u16 = @intFromEnum(response_status);
+        self.auditTask15Request(
+            .POST,
+            audit_target,
+            response_status_code,
+            if (response_status.class() == .success) "none" else "terminal",
+        );
+        if (response_status.class() != .success) return error.RequestFailed;
 
         // Parse response
         var parsed = std.json.parseFromSlice(std.json.Value, self.allocator, response, .{}) catch |err| {
@@ -1603,11 +1335,9 @@ pub const K8sService = struct {
         };
         defer parsed.deinit();
 
-        const denied = AccessCheckResult{ .allowed = false, .conditional = false, .condition_count = 0 };
-
         const root = parsed.value;
         if (root != .object) return error.UnexpectedResponse;
-        const status = root.object.get("status") orelse return denied;
+        const status = root.object.get("status") orelse return error.UnexpectedResponse;
 
         // On an error the API server answers with a metav1.Status, whose own `status`
         // field is the STRING "Failure" -- so `status.object` panicked on exactly the
@@ -1615,7 +1345,9 @@ pub const K8sService = struct {
         // reporting "denied", which is the distinction Phase 0 established.
         if (status != .object) return error.UnexpectedResponse;
 
-        const allowed = if (status.object.get("allowed")) |v| v == .bool and v.bool else false;
+        const allowed_value = status.object.get("allowed") orelse return error.UnexpectedResponse;
+        if (allowed_value != .bool) return error.UnexpectedResponse;
+        const allowed = allowed_value.bool;
 
         // Check for conditionSetChain (KEP 5681)
         var conditional = false;
@@ -1636,6 +1368,7 @@ pub const K8sService = struct {
 
     /// Detect if ConditionalAuthorization (KEP 5681) is available
     pub fn detectConditionalAuth(self: *K8sService) !bool {
+        if (task15.isLiveMode()) return false;
         if (!self.isConnected()) return false;
 
         // Issue a probe SAR and check if conditionSetChain field exists
@@ -1648,7 +1381,7 @@ pub const K8sService = struct {
         defer request.deinit();
         const active_client = request.client orelse return false;
         // Try a direct API discovery for the alpha feature
-        const response = active_client.request(.GET, "/apis/authorization.k8s.io/v1alpha1", null) catch {
+        const response = self.directGet(active_client, "/apis/authorization.k8s.io/v1alpha1") catch {
             return false;
         };
         defer self.allocator.free(response);
@@ -1660,18 +1393,25 @@ pub const K8sService = struct {
 
     /// Get authorization conditions for a resource (v1alpha1 API)
     pub fn getAuthorizationConditions(self: *K8sService, resource: []const u8, group: []const u8, namespace: []const u8) ![]ConditionInfo {
+        if (task15.isLiveMode()) return error.Task15RequestRejected;
         if (!self.isConnected()) return error.NotConnected;
         var request = try self.resolveRequest(.authorization);
         defer request.deinit();
         const active_client = request.client orelse return error.NotConnected;
 
-        // Build AuthorizationConditionsReview body
-        var body_buf: [512]u8 = undefined;
-        const body = try std.fmt.bufPrint(&body_buf,
-            \\{{"apiVersion":"authorization.k8s.io/v1alpha1","kind":"SubjectAccessReview","spec":{{"resourceAttributes":{{"namespace":"{s}","verb":"*","group":"{s}","resource":"{s}"}}}}}}
-        , .{ namespace, group, resource });
+        const body = try std.json.Stringify.valueAlloc(self.allocator, .{
+            .apiVersion = "authorization.k8s.io/v1alpha1",
+            .kind = "SubjectAccessReview",
+            .spec = .{ .resourceAttributes = .{
+                .namespace = namespace,
+                .verb = "*",
+                .group = group,
+                .resource = resource,
+            } },
+        }, .{});
+        defer self.allocator.free(body);
 
-        const response = active_client.requestWithContentType(.POST, "/apis/authorization.k8s.io/v1alpha1/subjectaccessreviews", body, "application/json") catch |err| {
+        const response = active_client.requestWithContentType(.POST, authorization_conditions_review_path, body, "application/json") catch |err| {
             Logger.warn("getAuthorizationConditions failed: {}", .{err});
             return error.RequestFailed;
         };
@@ -1757,6 +1497,7 @@ pub const K8sService = struct {
     /// Discovery-driven: present in the cluster means supported, absent means there is
     /// nothing to show. No version or plural is compiled in.
     pub fn detectCedarAuth(self: *K8sService) !bool {
+        if (task15.isLiveMode()) return false;
         if (!self.isConnected()) return false;
         var request = try self.resolveRequest(.authorization);
         defer request.deinit();
@@ -1766,6 +1507,7 @@ pub const K8sService = struct {
 
     /// List Cedar policies from CRDs
     pub fn listCedarPolicies(self: *K8sService) ![]PolicyInfo {
+        if (task15.isLiveMode()) return error.Task15RequestRejected;
         if (!self.isConnected()) return error.NotConnected;
         var request = try self.resolveRequest(.authorization);
         defer request.deinit();
@@ -1783,7 +1525,7 @@ pub const K8sService = struct {
         const path = try info.resourcePath(self.allocator, null, null);
         defer self.allocator.free(path);
 
-        const response = active_client.request(.GET, path, null) catch |err| {
+        const response = self.directGet(active_client, path) catch |err| {
             Logger.warn("listCedarPolicies failed for {s}: {}", .{ path, err });
             return error.RequestFailed;
         };
@@ -1878,7 +1620,7 @@ pub const K8sService = struct {
         }
 
         // Fetch ClusterRoles
-        const cr_response = active_client.request(.GET, "/apis/rbac.authorization.k8s.io/v1/clusterroles", null) catch |err| {
+        const cr_response = self.directGet(active_client, "/apis/rbac.authorization.k8s.io/v1/clusterroles") catch |err| {
             Logger.warn("listRBACPolicies: failed to list clusterroles: {}", .{err});
             return results.toOwnedSlice(self.allocator);
         };
@@ -1890,7 +1632,7 @@ pub const K8sService = struct {
         defer cr_parsed.deinit();
 
         // Fetch ClusterRoleBindings for subject lookup
-        const crb_response = active_client.request(.GET, "/apis/rbac.authorization.k8s.io/v1/clusterrolebindings", null) catch {
+        const crb_response = self.directGet(active_client, "/apis/rbac.authorization.k8s.io/v1/clusterrolebindings") catch {
             return results.toOwnedSlice(self.allocator);
         };
         defer self.allocator.free(crb_response);
@@ -2141,4 +1883,22 @@ test "readonly is a promise about the cluster, not about which API verbs we call
     // ...while reads are not, so the flag cannot be satisfied by simply failing.
     svc.connected = false;
     try std.testing.expectError(error.NotConnected, svc.getPodLogs("p", "default", false));
+}
+
+test "authorization POST paths are fixed and read data plane remains GET only" {
+    const data_plane = @import("../k8s/DataPlane.zig");
+    const fields = @typeInfo(read_transport.ReadTransport.VTable).@"struct".fields;
+    try std.testing.expectEqual(@as(usize, 1), fields.len);
+    try std.testing.expectEqualStrings("get", fields[0].name);
+    try std.testing.expect(!@hasDecl(read_transport.ReadTransport, "post"));
+    try std.testing.expect(!@hasDecl(read_transport.KlientTransport, "post"));
+    try std.testing.expect(!@hasDecl(data_plane.DataPlane, "post"));
+    try std.testing.expectEqualStrings(
+        "/apis/authorization.k8s.io/v1/selfsubjectaccessreviews",
+        K8sService.self_subject_access_review_path,
+    );
+    try std.testing.expectEqualStrings(
+        "/apis/authorization.k8s.io/v1alpha1/subjectaccessreviews",
+        K8sService.authorization_conditions_review_path,
+    );
 }

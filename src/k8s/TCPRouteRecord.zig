@@ -11,12 +11,7 @@ parent: []u8,
 creation_timestamp: ?[]u8 = null,
 
 pub fn fromTCPRoute(allocator: std.mem.Allocator, value: klient.TCPRoute) !TCPRouteRecord {
-    const uid = value.metadata.uid orelse return error.MissingUid;
-    var key = try (keys.ObjectKey{
-        .uid = uid,
-        .namespace = value.metadata.namespace orelse "default",
-        .name = value.metadata.name,
-    }).clone(allocator);
+    var key = try keys.fromMetadata(allocator, value.metadata, "default");
     errdefer key.deinit(allocator);
     const parent = try support.firstObjectString(
         allocator,

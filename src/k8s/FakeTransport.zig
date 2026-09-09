@@ -44,6 +44,8 @@ pub const FakeTransport = struct {
     next_script: usize = 0,
     requests: std.ArrayList(RecordedRequest) = .empty,
     last_read_failure: ReadFailure = .none,
+    block_until_cancel: bool = false,
+    cancel_flag: ?*std.atomic.Value(bool) = null,
 
     pub fn init(allocator: std.mem.Allocator, scripts: []const ResponseScript) FakeTransport {
         return .{ .allocator = allocator, .scripts = scripts };
@@ -70,6 +72,17 @@ pub const FakeTransport = struct {
         const self: *FakeTransport = @ptrCast(@alignCast(erased));
 
         try self.record(request);
+
+        if (self.block_until_cancel) {
+            const runtime = @import("../core/runtime.zig");
+            while (true) {
+                if (self.cancel_flag) |flag| {
+                    if (flag.load(.acquire)) return error.Canceled;
+                }
+                runtime.io().sleep(.{ .nanoseconds = std.time.ns_per_ms }, .awake) catch
+                    return error.Canceled;
+            }
+        }
 
         try transport_mod.validateReadPath(request.path);
         if (self.next_script >= self.scripts.len) return error.NoScriptedResponse;
@@ -196,6 +209,68 @@ test "fake records every request and only ever serves the GET vtable entry" {
         fake.requests.items[1].path,
     );
 }
+
+pub const PathListTransport = struct {
+    allocator: std.mem.Allocator,
+    body_fn: *const fn ([]const u8) []const u8,
+    status: std.http.Status = .ok,
+    requests: std.ArrayList(RecordedRequest) = .empty,
+    last_read_failure: ReadFailure = .none,
+    requests_mutex: std.Io.Mutex = .init,
+
+    pub fn init(
+        allocator: std.mem.Allocator,
+        body_fn: *const fn ([]const u8) []const u8,
+    ) PathListTransport {
+        return .{ .allocator = allocator, .body_fn = body_fn };
+    }
+
+    pub fn deinit(self: *PathListTransport) void {
+        for (self.requests.items) |request| request.deinit(self.allocator);
+        self.requests.deinit(self.allocator);
+        self.* = undefined;
+    }
+
+    pub fn transport(self: *PathListTransport) ReadTransport {
+        return .{ .ptr = self, .vtable = &path_vtable };
+    }
+
+    const path_vtable: ReadTransport.VTable = .{ .get = pathGet };
+
+    fn pathGet(
+        erased: *anyopaque,
+        request: ReadRequest,
+        context: *anyopaque,
+        callback: ReadCallback,
+    ) anyerror!void {
+        const self: *PathListTransport = @ptrCast(@alignCast(erased));
+        try transport_mod.validateReadPath(request.path);
+        const path_copy = try self.allocator.dupe(u8, request.path);
+        var recorded = false;
+        errdefer if (!recorded) self.allocator.free(path_copy);
+        const io = @import("../core/runtime.zig").io();
+        self.requests_mutex.lockUncancelable(io);
+        const append_err = self.requests.append(self.allocator, .{
+            .path = path_copy,
+            .pagination_fallback = request.pagination_fallback,
+        });
+        self.requests_mutex.unlock(io);
+        try append_err;
+        recorded = true;
+        const script = ResponseScript{
+            .status = self.status,
+            .body = self.body_fn(request.path),
+        };
+        self.last_read_failure = .none;
+        var reader = ScriptReader.init(script, &self.last_read_failure);
+        reader.bindBuffer();
+        return callback(context, .{
+            .status = script.status,
+            .retry_after_seconds = script.retry_after_seconds,
+            .content_type = script.content_type,
+        }, &reader.interface);
+    }
+};
 
 test "fake records and rejects paths that are not origin-relative reads" {
     var fake = FakeTransport.init(std.testing.allocator, &.{.{}});

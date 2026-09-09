@@ -9,12 +9,7 @@ key: keys.ObjectKey,
 creation_timestamp: ?[]u8 = null,
 
 pub fn fromLimitRange(allocator: std.mem.Allocator, value: klient.LimitRange) !LimitRangeRecord {
-    const uid = value.metadata.uid orelse return error.MissingUid;
-    var key = try (keys.ObjectKey{
-        .uid = uid,
-        .namespace = value.metadata.namespace orelse "default",
-        .name = value.metadata.name,
-    }).clone(allocator);
+    var key = try keys.fromMetadata(allocator, value.metadata, "default");
     errdefer key.deinit(allocator);
     const creation_timestamp = if (value.metadata.creationTimestamp) |timestamp|
         try allocator.dupe(u8, timestamp)

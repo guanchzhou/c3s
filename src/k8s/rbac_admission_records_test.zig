@@ -12,6 +12,25 @@ const mutating_binding = @import("MutatingAdmissionPolicyBindingRecord.zig");
 const validating_webhook = @import("ValidatingWebhookConfigurationRecord.zig");
 const mutating_webhook = @import("MutatingWebhookConfigurationRecord.zig");
 
+pub const validating_policy_object_json =
+    \\{"apiVersion":"admissionregistration.k8s.io/v1","kind":"ValidatingAdmissionPolicy","metadata":{"uid":"vap-1","name":"validate-images"},"spec":{"failurePolicy":"Ignore","validations":[{"expression":"object.spec.image != ''"},{"expression":"object.metadata.name != ''"}]}}
+;
+pub const validating_binding_object_json =
+    \\{"apiVersion":"admissionregistration.k8s.io/v1","kind":"ValidatingAdmissionPolicyBinding","metadata":{"uid":"vapb-1","name":"validate-images-binding"},"spec":{"policyName":"validate-images","validationActions":["Deny"]}}
+;
+pub const mutating_policy_object_json =
+    \\{"apiVersion":"admissionregistration.k8s.io/v1","kind":"MutatingAdmissionPolicy","metadata":{"uid":"map-1","name":"default-labels"},"spec":{"failurePolicy":"Ignore","mutations":[{"patchType":"ApplyConfiguration"},{"patchType":"JSONPatch"}]}}
+;
+pub const mutating_binding_object_json =
+    \\{"apiVersion":"admissionregistration.k8s.io/v1","kind":"MutatingAdmissionPolicyBinding","metadata":{"uid":"mapb-1","name":"default-labels-binding"},"spec":{"policyName":"default-labels"}}
+;
+pub const validating_webhook_object_json =
+    \\{"apiVersion":"admissionregistration.k8s.io/v1","kind":"ValidatingWebhookConfiguration","metadata":{"uid":"vwc-1","name":"validators"},"webhooks":[{"name":"one.example.com"},{"name":"two.example.com"}]}
+;
+pub const mutating_webhook_object_json =
+    \\{"apiVersion":"admissionregistration.k8s.io/v1","kind":"MutatingWebhookConfiguration","metadata":{"uid":"mwc-1","name":"mutators"},"webhooks":[{"name":"one.example.com"},{"name":"two.example.com"}]}
+;
+
 fn verifyFixture(
     comptime T: type,
     comptime constructor: anytype,
@@ -50,6 +69,169 @@ fn verifyMissingUid(comptime T: type, comptime constructor: anytype, json: []con
     var parsed = try std.json.parseFromSlice(T, std.testing.allocator, json, .{ .ignore_unknown_fields = true });
     defer parsed.deinit();
     try std.testing.expectError(error.MissingUid, constructor(std.testing.allocator, parsed.value));
+}
+
+fn freeColumns(columns: anytype) void {
+    for (columns) |column| std.testing.allocator.free(column);
+}
+
+fn exerciseRealShapedAdmissionDecode(
+    comptime T: type,
+    comptime constructor: anytype,
+    comptime object_json: []const u8,
+    comptime path: []const u8,
+    comptime expected: []const []const u8,
+    comptime verify: fn (*const T) anyerror!void,
+) !void {
+    const stream_list = @import("StreamList.zig");
+    const FakeTransport = @import("FakeTransport.zig").FakeTransport;
+    const ResponseScript = @import("FakeTransport.zig").ResponseScript;
+    const read_transport = @import("ReadTransport.zig");
+    const Capture = struct {
+        expected: []const []const u8,
+
+        fn receive(self: *@This(), items: []const T) !void {
+            try std.testing.expectEqual(@as(usize, 1), items.len);
+            try verify(&items[0]);
+            var record = try constructor(std.testing.allocator, items[0]);
+            defer record.deinit(std.testing.allocator);
+            const columns = try record.columns(std.testing.allocator);
+            defer freeColumns(columns);
+            for (columns, self.expected) |actual, wanted|
+                try std.testing.expectEqualStrings(wanted, actual);
+        }
+    };
+    const Clock = struct {
+        fn now(_: *anyopaque) u64 {
+            return 0;
+        }
+    };
+    const list_json = "{\"metadata\":{\"resourceVersion\":\"17\"},\"items\":[" ++ object_json ++ "]}";
+    const scripts = [_]ResponseScript{.{ .body = list_json }};
+    var fake = FakeTransport.init(std.testing.allocator, &scripts);
+    defer fake.deinit();
+    var capture = Capture{ .expected = expected };
+    var clock_context: u8 = 0;
+    var result = try stream_list.stream(
+        T,
+        std.testing.allocator,
+        fake.transport(),
+        try read_transport.ReadRequest.init(path),
+        .{ .clock = .{ .ptr = &clock_context, .now_ns_fn = Clock.now } },
+        &capture,
+        Capture.receive,
+    );
+    defer result.deinit();
+    try std.testing.expectEqualStrings("17", result.resource_version);
+
+    const watch_json = "{\"type\":\"MODIFIED\",\"object\":" ++ object_json ++ "}";
+    var parsed_watch = try std.json.parseFromSlice(
+        klient.Watcher(T).WatchEnvelope,
+        std.testing.allocator,
+        watch_json,
+        .{ .ignore_unknown_fields = true },
+    );
+    defer parsed_watch.deinit();
+    const object = &parsed_watch.value.object.?;
+    try verify(object);
+    var record = try constructor(std.testing.allocator, object.*);
+    defer record.deinit(std.testing.allocator);
+    const columns = try record.columns(std.testing.allocator);
+    defer freeColumns(columns);
+    for (columns, expected) |actual, wanted|
+        try std.testing.expectEqualStrings(wanted, actual);
+}
+
+fn expectValidatingPolicy(object: *const klient.ValidatingAdmissionPolicy) !void {
+    const spec = object.spec orelse return error.MissingSpec;
+    try std.testing.expectEqualStrings("Ignore", spec.failurePolicy orelse return error.MissingFailurePolicy);
+    try std.testing.expectEqual(@as(usize, 2), (spec.validations orelse return error.MissingValidations).len);
+}
+
+fn expectValidatingBinding(object: *const klient.ValidatingAdmissionPolicyBinding) !void {
+    const spec = object.spec orelse return error.MissingSpec;
+    try std.testing.expectEqualStrings("validate-images", spec.policyName);
+}
+
+fn expectMutatingPolicy(object: *const klient.MutatingAdmissionPolicy) !void {
+    const spec = object.spec orelse return error.MissingSpec;
+    try std.testing.expectEqualStrings("Ignore", spec.failurePolicy orelse return error.MissingFailurePolicy);
+    try std.testing.expectEqual(@as(usize, 2), (spec.mutations orelse return error.MissingMutations).len);
+}
+
+fn expectMutatingBinding(object: *const klient.MutatingAdmissionPolicyBinding) !void {
+    const spec = object.spec orelse return error.MissingSpec;
+    try std.testing.expectEqualStrings("default-labels", spec.policyName);
+}
+
+fn expectValidatingWebhooks(object: *const klient.ValidatingWebhookConfiguration) !void {
+    try std.testing.expectEqual(@as(usize, 2), (object.webhooks orelse return error.MissingTopLevelWebhooks).len);
+}
+
+fn expectMutatingWebhooks(object: *const klient.MutatingWebhookConfiguration) !void {
+    try std.testing.expectEqual(@as(usize, 2), (object.webhooks orelse return error.MissingTopLevelWebhooks).len);
+}
+
+test "real-shaped ValidatingAdmissionPolicy LIST and WATCH decode spec fields" {
+    try exerciseRealShapedAdmissionDecode(klient.ValidatingAdmissionPolicy, validating_policy.fromValidatingAdmissionPolicy, validating_policy_object_json, "/apis/admissionregistration.k8s.io/v1/validatingadmissionpolicies", &.{ "validate-images", "Ignore", "2", "n/a" }, expectValidatingPolicy);
+}
+
+test "real-shaped ValidatingAdmissionPolicyBinding LIST and WATCH decode spec policyName" {
+    try exerciseRealShapedAdmissionDecode(klient.ValidatingAdmissionPolicyBinding, validating_binding.fromValidatingAdmissionPolicyBinding, validating_binding_object_json, "/apis/admissionregistration.k8s.io/v1/validatingadmissionpolicybindings", &.{ "validate-images-binding", "validate-images", "n/a" }, expectValidatingBinding);
+}
+
+test "real-shaped MutatingAdmissionPolicy LIST and WATCH decode spec mutations" {
+    try exerciseRealShapedAdmissionDecode(klient.MutatingAdmissionPolicy, mutating_policy.fromMutatingAdmissionPolicy, mutating_policy_object_json, "/apis/admissionregistration.k8s.io/v1/mutatingadmissionpolicies", &.{ "default-labels", "Ignore", "2", "n/a" }, expectMutatingPolicy);
+}
+
+test "real-shaped MutatingAdmissionPolicyBinding LIST and WATCH decode spec policyName" {
+    try exerciseRealShapedAdmissionDecode(klient.MutatingAdmissionPolicyBinding, mutating_binding.fromMutatingAdmissionPolicyBinding, mutating_binding_object_json, "/apis/admissionregistration.k8s.io/v1/mutatingadmissionpolicybindings", &.{ "default-labels-binding", "default-labels", "n/a" }, expectMutatingBinding);
+}
+
+test "real-shaped ValidatingWebhookConfiguration LIST and WATCH decode flat webhooks" {
+    try exerciseRealShapedAdmissionDecode(klient.ValidatingWebhookConfiguration, validating_webhook.fromValidatingWebhookConfiguration, validating_webhook_object_json, "/apis/admissionregistration.k8s.io/v1/validatingwebhookconfigurations", &.{ "validators", "2", "n/a" }, expectValidatingWebhooks);
+}
+
+test "real-shaped MutatingWebhookConfiguration LIST and WATCH decode flat webhooks" {
+    try exerciseRealShapedAdmissionDecode(klient.MutatingWebhookConfiguration, mutating_webhook.fromMutatingWebhookConfiguration, mutating_webhook_object_json, "/apis/admissionregistration.k8s.io/v1/mutatingwebhookconfigurations", &.{ "mutators", "2", "n/a" }, expectMutatingWebhooks);
+}
+
+test "admission decoding preserves missing optional defaults" {
+    var policy = try std.json.parseFromSlice(
+        klient.ValidatingAdmissionPolicy,
+        std.testing.allocator,
+        \\{"metadata":{"uid":"vap-default","name":"default-failure"},"spec":{"validations":[]}}
+    ,
+        .{ .ignore_unknown_fields = true },
+    );
+    defer policy.deinit();
+    var policy_record = try validating_policy.fromValidatingAdmissionPolicy(std.testing.allocator, policy.value);
+    defer policy_record.deinit(std.testing.allocator);
+    try std.testing.expectEqualStrings("Fail", policy_record.extra.failure_policy);
+
+    var binding = try std.json.parseFromSlice(
+        klient.MutatingAdmissionPolicyBinding,
+        std.testing.allocator,
+        \\{"metadata":{"uid":"mapb-default","name":"missing-spec"}}
+    ,
+        .{ .ignore_unknown_fields = true },
+    );
+    defer binding.deinit();
+    var binding_record = try mutating_binding.fromMutatingAdmissionPolicyBinding(std.testing.allocator, binding.value);
+    defer binding_record.deinit(std.testing.allocator);
+    try std.testing.expectEqualStrings("<none>", binding_record.extra.value);
+
+    var webhook = try std.json.parseFromSlice(
+        klient.ValidatingWebhookConfiguration,
+        std.testing.allocator,
+        \\{"metadata":{"uid":"vwc-empty","name":"empty"}}
+    ,
+        .{ .ignore_unknown_fields = true },
+    );
+    defer webhook.deinit();
+    var webhook_record = try validating_webhook.fromValidatingWebhookConfiguration(std.testing.allocator, webhook.value);
+    defer webhook_record.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 0), webhook_record.extra.count);
 }
 
 test "12J RBAC records preserve exact legacy columns" {

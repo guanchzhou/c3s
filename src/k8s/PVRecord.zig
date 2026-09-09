@@ -16,12 +16,7 @@ storage_class: []u8,
 creation_timestamp: ?[]u8 = null,
 
 pub fn fromPersistentVolume(allocator: std.mem.Allocator, value: klient.PersistentVolume) !PVRecord {
-    const uid = value.metadata.uid orelse return error.MissingUid;
-    var key = try (keys.ObjectKey{
-        .uid = uid,
-        .namespace = "",
-        .name = value.metadata.name,
-    }).clone(allocator);
+    var key = try keys.fromMetadata(allocator, value.metadata, "");
     errdefer key.deinit(allocator);
     const capacity = try allocator.dupe(u8, capacityValue(value));
     errdefer allocator.free(capacity);

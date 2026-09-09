@@ -11,12 +11,7 @@ global_default: bool,
 creation_timestamp: ?[]u8 = null,
 
 pub fn fromPriorityClass(allocator: std.mem.Allocator, item: klient.PriorityClass) !PriorityClassRecord {
-    const uid = item.metadata.uid orelse return error.MissingUid;
-    var key = try (keys.ObjectKey{
-        .uid = uid,
-        .namespace = item.metadata.namespace orelse "",
-        .name = item.metadata.name,
-    }).clone(allocator);
+    var key = try keys.fromMetadata(allocator, item.metadata, "");
     errdefer key.deinit(allocator);
     const creation_timestamp = if (item.metadata.creationTimestamp) |timestamp|
         try allocator.dupe(u8, timestamp)

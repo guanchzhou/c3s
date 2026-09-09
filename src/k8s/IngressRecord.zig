@@ -14,12 +14,7 @@ ports: []u8,
 creation_timestamp: ?[]u8 = null,
 
 pub fn fromIngress(allocator: std.mem.Allocator, value: klient.types.Ingress) !IngressRecord {
-    const uid = value.metadata.uid orelse return error.MissingUid;
-    var key = try (keys.ObjectKey{
-        .uid = uid,
-        .namespace = value.metadata.namespace orelse "default",
-        .name = value.metadata.name,
-    }).clone(allocator);
+    var key = try keys.fromMetadata(allocator, value.metadata, "default");
     errdefer key.deinit(allocator);
     const class = try allocator.dupe(
         u8,

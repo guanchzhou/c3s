@@ -359,6 +359,34 @@ pub fn TableState(comptime ItemType: type) type {
             return &self.items.items[idx];
         }
 
+        /// Clamp the cursor into the current filtered range and scroll it back into
+        /// the viewport.
+        ///
+        /// Rebuilding `filtered_indices` can leave `selected_row` and `scroll_offset`
+        /// describing different lists -- a cursor on row 30 with the viewport pinned to
+        /// row 0 renders no highlight at all, because getVisibleRange only ever paints
+        /// `scroll_offset ..`. It also refuses to leave `scroll_offset` past the end,
+        /// which getVisibleRange does not clamp (it bounds only `end`).
+        pub fn clampSelectionIntoView(self: *Self) void {
+            const len: u32 = @intCast(self.filtered_indices.items.len);
+            if (len == 0) {
+                self.selected_row = 0;
+                self.scroll_offset = 0;
+                return;
+            }
+            if (self.selected_row >= len) self.selected_row = len - 1;
+            if (self.visible_rows == 0) {
+                self.scroll_offset = @min(self.scroll_offset, self.selected_row);
+                return;
+            }
+            if (self.selected_row < self.scroll_offset) {
+                self.scroll_offset = self.selected_row;
+            } else if (self.selected_row >= self.scroll_offset + self.visible_rows) {
+                self.scroll_offset = self.selected_row - self.visible_rows + 1;
+            }
+            self.scroll_offset = @min(self.scroll_offset, len -| self.visible_rows);
+        }
+
         pub fn getVisibleRange(self: *const Self) struct { start: u32, end: u32 } {
             const end = @min(
                 self.scroll_offset + self.visible_rows,
@@ -377,7 +405,7 @@ pub fn TableState(comptime ItemType: type) type {
 
         /// Render loading/error states. Returns true if a state was rendered (caller should return).
         pub fn renderStatus(self: *const Self, terminal_inst: *Terminal, x: u16, y: u16, colors: *const theme_loader.ThemeColors) !bool {
-            if (self.loading) {
+            if (self.loading and self.items.items.len == 0) {
                 const msg = if (self.loading_detail.len > 0) self.loading_detail else "Loading...";
                 try Theme.writeStringWithTheme(terminal_inst, x, y, msg, colors.main_fg, colors.main_bg);
                 return true;
@@ -973,6 +1001,64 @@ test "getSelectedItem returns null when selected_row out of range" {
     try testing.expect(selected == null);
 }
 
+test "clampSelectionIntoView scrolls the cursor back into the painted window" {
+    const allocator = testing.allocator;
+
+    var ts = TableState(TestItem).init(allocator);
+    defer ts.deinit();
+    ts.visible_rows = 5;
+
+    try populateTable(&ts, allocator, 20);
+
+    // Cursor below the window: scroll down just far enough to show it.
+    ts.selected_row = 12;
+    ts.scroll_offset = 0;
+    ts.clampSelectionIntoView();
+    try testing.expectEqual(@as(u32, 12), ts.selected_row);
+    try testing.expectEqual(@as(u32, 8), ts.scroll_offset);
+
+    // Cursor above the window: scroll up to it.
+    ts.scroll_offset = 15;
+    ts.selected_row = 3;
+    ts.clampSelectionIntoView();
+    try testing.expectEqual(@as(u32, 3), ts.scroll_offset);
+
+    // Both past the end of a shrunken list.
+    ts.selected_row = 19;
+    ts.scroll_offset = 15;
+    ts.filtered_indices.shrinkRetainingCapacity(6);
+    ts.clampSelectionIntoView();
+    try testing.expectEqual(@as(u32, 5), ts.selected_row);
+    try testing.expectEqual(@as(u32, 1), ts.scroll_offset);
+    const range = ts.getVisibleRange();
+    try testing.expect(range.start <= range.end);
+
+    // Empty list: no cursor, no offset.
+    ts.filtered_indices.shrinkRetainingCapacity(0);
+    ts.clampSelectionIntoView();
+    try testing.expectEqual(@as(u32, 0), ts.selected_row);
+    try testing.expectEqual(@as(u32, 0), ts.scroll_offset);
+}
+
+test "clampSelectionIntoView keeps the offset addressable before the first render" {
+    // visible_rows is 0 until a view has rendered once, and getVisibleRange does not
+    // clamp `start` -- so an offset past the end would slice backwards.
+    const allocator = testing.allocator;
+
+    var ts = TableState(TestItem).init(allocator);
+    defer ts.deinit();
+
+    try populateTable(&ts, allocator, 4);
+    ts.selected_row = 3;
+    ts.scroll_offset = 30;
+    ts.clampSelectionIntoView();
+
+    try testing.expectEqual(@as(u32, 3), ts.selected_row);
+    try testing.expectEqual(@as(u32, 3), ts.scroll_offset);
+    const range = ts.getVisibleRange();
+    try testing.expect(range.start <= range.end);
+}
+
 test "getVisibleRange returns correct start and end" {
     const allocator = testing.allocator;
 
@@ -1363,6 +1449,22 @@ test "loading can be set" {
     try testing.expect(ts.loading);
     ts.loading = false;
     try testing.expect(!ts.loading);
+}
+
+test "loading overlays only empty tables so relist rows stay paintable" {
+    const allocator = testing.allocator;
+    var ts = TableState(TestItem).init(allocator);
+    defer ts.deinit();
+    var terminal = try Terminal.init(allocator);
+    defer terminal.deinit();
+    var colors = try theme_loader.defaultTheme(allocator);
+    defer theme_loader.deinitTheme(&colors);
+
+    ts.loading = true;
+    try testing.expect(try ts.renderStatus(&terminal, 0, 0, &colors));
+    try ts.appendItem(try createTestItem(allocator, "retained", 1));
+    try ts.applyFilter("", testMatchFn);
+    try testing.expect(!try ts.renderStatus(&terminal, 0, 0, &colors));
 }
 
 test "clearItems resets the derived view state, so a parked cursor cannot read OOB" {

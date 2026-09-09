@@ -41,6 +41,8 @@ pub const Options = struct {
     projection: *PodProjection,
     poll_interval_ns: u64 = default_poll_interval_ns,
     source_override: ?Source = null,
+    transport_override: ?read_transport.ReadTransport = null,
+    poll_gate: ?*std.atomic.Value(bool) = null,
     deinit_counter: ?*std.atomic.Value(usize) = null,
 };
 
@@ -49,6 +51,8 @@ const Spec = struct {
     projection: *PodProjection,
     poll_interval_ns: u64,
     source_override: ?Source,
+    transport_override: ?read_transport.ReadTransport,
+    poll_gate: ?*std.atomic.Value(bool),
     deinit_counter: ?*std.atomic.Value(usize),
     generation: keys.Generation = 0,
     subscription_id: keys.SubscriptionId = 0,
@@ -66,14 +70,24 @@ const Spec = struct {
             override
         else blk: {
             var lease = &(control.lease orelse return error.MissingLease);
-            const client = try lease.client();
-            production = try ProductionSource.init(control.allocator, client, io, self.namespace);
+            production = try ProductionSource.init(
+                control.allocator,
+                self.namespace,
+                self.transport_override,
+                try lease.readTransport(io, &control.cancel_requested),
+            );
             break :blk production.source();
         };
         defer if (self.source_override == null) production.deinit();
 
         var revision: keys.Revision = 0;
         while (true) {
+            if (self.poll_gate) |gate| {
+                while (!gate.load(.acquire)) {
+                    if (control.cancel_requested.load(.acquire)) return;
+                    std.atomic.spinLoopHint();
+                }
+            }
             var result = source.poll(control.allocator) catch |err| switch (err) {
                 error.Canceled => return error.Canceled,
                 error.OutOfMemory => return error.OutOfMemory,
@@ -90,7 +104,17 @@ const Spec = struct {
             );
             const delivery = try control.publishDelivery(envelope);
             if (delivery != .accepted) return;
-            if (!try source.wait(io, self.poll_interval_ns)) return;
+            if (control.cancel_requested.load(.acquire)) return;
+            if (self.source_override != null) {
+                if (!try source.wait(io, 0)) return;
+            }
+            var remaining: u64 = self.poll_interval_ns;
+            while (remaining > 0) {
+                if (control.cancel_requested.load(.acquire)) return;
+                const slice = @min(remaining, std.time.ns_per_ms);
+                io.sleep(.{ .nanoseconds = slice }, .awake) catch return;
+                remaining -= slice;
+            }
         }
     }
 
@@ -115,6 +139,8 @@ pub fn ownedTaskSpec(allocator: std.mem.Allocator, options: Options) !lifecycle.
             max_poll_interval_ns,
         ),
         .source_override = options.source_override,
+        .transport_override = options.transport_override,
+        .poll_gate = options.poll_gate,
         .deinit_counter = options.deinit_counter,
     };
     return .{
@@ -139,11 +165,13 @@ fn makeEnvelope(
     const changes = try allocator.alloc(keys.TypedChange(PodRecord), result.records.len);
     errdefer allocator.free(changes);
     var owned_bytes = @sizeOf(@TypeOf(batch.*)) + changes.len * @sizeOf(keys.TypedChange(PodRecord));
-    for (result.records, 0..) |record, index| {
+    const records = result.records;
+    for (records, 0..) |record, index| {
         changes[index] = .{ .metrics = record };
         owned_bytes +|= record.namespace.len + record.name.len;
     }
     result.records = &.{};
+    if (records.len > 0) allocator.free(records);
     batch.* = .{
         .generation = spec.generation,
         .subscription_id = spec.subscription_id,
@@ -167,14 +195,15 @@ fn makeEnvelope(
 
 const ProductionSource = struct {
     allocator: std.mem.Allocator,
-    transport_adapter: read_transport.KlientTransport,
+    transport_adapter: read_transport.TransportAdapter,
+    transport_override: ?read_transport.ReadTransport,
     path: []u8,
 
     fn init(
         allocator: std.mem.Allocator,
-        client: *klient.K8sClient,
-        io: std.Io,
         namespace: ?[]const u8,
+        transport_override: ?read_transport.ReadTransport,
+        transport_adapter: read_transport.TransportAdapter,
     ) !ProductionSource {
         const path = if (namespace) |ns|
             try std.fmt.allocPrint(
@@ -188,7 +217,8 @@ const ProductionSource = struct {
         _ = try read_transport.ReadRequest.init(path);
         return .{
             .allocator = allocator,
-            .transport_adapter = .{ .client = client, .io = io },
+            .transport_adapter = transport_adapter,
+            .transport_override = transport_override,
             .path = path,
         };
     }
@@ -205,13 +235,13 @@ const ProductionSource = struct {
         const self: *ProductionSource = @ptrCast(@alignCast(raw));
         return pollReadTransport(
             allocator,
-            self.transport_adapter.transport(),
+            self.transport_override orelse self.transport_adapter.transport(),
             self.path,
         );
     }
 
     fn wait(_: *anyopaque, io: std.Io, delay_ns: u64) anyerror!bool {
-        try io.sleep(.{ .nanoseconds = delay_ns }, .awake);
+        @import("../core/runtime.zig").sleepCancelable(io, @intCast(delay_ns)) catch return false;
         return true;
     }
 };
@@ -398,8 +428,10 @@ test "transient metrics retry is cancelable and leaves pod subscription active" 
         }
     };
     const Hold = struct {
-        fn run(_: ?*anyopaque, _: *lifecycle.ChildControl, task_io: std.Io) anyerror!void {
-            try task_io.sleep(.{ .nanoseconds = std.time.ns_per_hour }, .awake);
+        fn run(_: ?*anyopaque, control: *lifecycle.ChildControl, task_io: std.Io) anyerror!void {
+            while (!control.cancel_requested.load(.acquire)) {
+                task_io.sleep(.{ .nanoseconds = std.time.ns_per_ms }, .awake) catch return;
+            }
         }
     };
     const Script = struct {
@@ -538,6 +570,10 @@ test "transient metrics retry is cancelable and leaves pod subscription active" 
         if (!applied_boundary) try io.sleep(.{ .nanoseconds = std.time.ns_per_ms }, .awake);
     }
     try std.testing.expect(applied_boundary);
+    var wait_attempts: usize = 0;
+    while (script.waits == 0 and wait_attempts < 100) : (wait_attempts += 1) {
+        try io.sleep(.{ .nanoseconds = std.time.ns_per_ms }, .awake);
+    }
     try std.testing.expectEqual(@as(usize, 1), script.polls);
     try std.testing.expectEqual(@as(usize, 1), script.waits);
     try std.testing.expectEqual(@as(usize, 2), plane.activeCount());

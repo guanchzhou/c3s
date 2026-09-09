@@ -10,12 +10,7 @@ pod_selector: []u8,
 creation_timestamp: ?[]u8 = null,
 
 pub fn fromNetworkPolicy(allocator: std.mem.Allocator, value: klient.NetworkPolicy) !NetworkPolicyRecord {
-    const uid = value.metadata.uid orelse return error.MissingUid;
-    var key = try (keys.ObjectKey{
-        .uid = uid,
-        .namespace = value.metadata.namespace orelse "default",
-        .name = value.metadata.name,
-    }).clone(allocator);
+    var key = try keys.fromMetadata(allocator, value.metadata, "default");
     errdefer key.deinit(allocator);
     const selector = try formatMatchLabels(
         allocator,

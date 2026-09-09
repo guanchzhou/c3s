@@ -193,6 +193,8 @@ pub fn ResourceProjection(comptime Record: type) type {
             generation: keys.Generation = 0,
             subscription_id: keys.SubscriptionId = 0,
             revision: keys.Revision = 0,
+            list_loading: bool = false,
+            list_pending_replace: bool = false,
 
             fn deinit(self: *State) void {
                 for (self.entries.items) |entry| {
@@ -293,6 +295,10 @@ pub fn ResourceProjection(comptime Record: type) type {
 
         pub fn appliedRevision(self: *const Self) keys.Revision {
             return self.state.revision;
+        }
+
+        pub fn isLoading(self: *const Self) bool {
+            return self.state.list_loading;
         }
 
         pub fn visibleUid(self: *const Self, row: usize) ?[]const u8 {
@@ -466,15 +472,25 @@ pub fn ResourceProjection(comptime Record: type) type {
             }
 
             try plan.state.entries.ensureTotalCapacity(allocator, self.state.entries.items.len + batch.changes.len);
-            const replaces_list = if (batch.sync) |sync| switch (sync) {
-                .list_started => true,
+            const starts_list = if (batch.sync) |sync| sync == .list_started else false;
+            const completes_list = if (batch.sync) |sync| switch (sync) {
+                .list_complete => true,
                 else => false,
             } else false;
+            var has_initial_changes = false;
+            for (batch.changes) |change| {
+                if (change == .initial_upsert) {
+                    has_initial_changes = true;
+                    break;
+                }
+            }
+            const replaces_entries = new_identity or
+                (self.state.list_pending_replace and (has_initial_changes or completes_list));
             const selection_hint = self.state.selected_uid orelse self.state.selection_hint;
             if (selection_hint) |uid| {
                 plan.state.selection_hint = try allocator.dupe(u8, uid);
             }
-            if (!replaces_list) {
+            if (!replaces_entries) {
                 for (self.state.entries.items) |entry| {
                     const uid = try allocator.dupe(u8, entry.uid);
                     plan.state.entries.appendAssumeCapacity(.{
@@ -518,6 +534,16 @@ pub fn ResourceProjection(comptime Record: type) type {
             plan.state.generation = batch.generation;
             plan.state.subscription_id = batch.subscription_id;
             plan.state.revision = batch.revision;
+            if (starts_list) {
+                plan.state.list_loading = true;
+                plan.state.list_pending_replace = true;
+            } else if (self.state.list_pending_replace and (has_initial_changes or completes_list)) {
+                plan.state.list_loading = false;
+                plan.state.list_pending_replace = false;
+            } else if (!new_identity) {
+                plan.state.list_loading = self.state.list_loading;
+                plan.state.list_pending_replace = self.state.list_pending_replace;
+            }
             return .{
                 .scratch = plan,
                 .scratch_alignment = .of(Plan),
@@ -588,6 +614,8 @@ pub fn ResourceProjection(comptime Record: type) type {
             plan.state.generation = self.state.generation;
             plan.state.subscription_id = self.state.subscription_id;
             plan.state.revision = self.state.revision;
+            plan.state.list_loading = self.state.list_loading;
+            plan.state.list_pending_replace = self.state.list_pending_replace;
             return .{
                 .scratch = plan,
                 .scratch_alignment = .of(Plan),
@@ -916,7 +944,7 @@ test "upsert delete sorted filtered membership and UID selection stability" {
     try std.testing.expectEqualStrings("c", projection.visibleUid(0).?);
 }
 
-test "same namespace name with new UID does not inherit selection and fallback is deterministic" {
+pub fn runTask14UidReplacementGate() !void {
     const allocator = std.testing.allocator;
     var projection = Projection.init(allocator, .{ .matchFn = testMatch, .sortKeyFn = testSort });
     defer projection.deinit();
@@ -939,7 +967,11 @@ test "same namespace name with new UID does not inherit selection and fallback i
     try std.testing.expectEqualStrings("new", projection.selectedUid().?);
 }
 
-test "list_started atomically clears old list and initial chunks repopulate" {
+test "same namespace name with new UID does not inherit selection and fallback is deterministic" {
+    try runTask14UidReplacementGate();
+}
+
+test "same-context relist keeps old rows until first batch replaces them" {
     const allocator = std.testing.allocator;
     var projection = Projection.init(allocator, .{ .matchFn = testMatch, .sortKeyFn = testSort });
     defer projection.deinit();
@@ -955,9 +987,10 @@ test "list_started atomically clears old list and initial chunks repopulate" {
     var boundary = makeBatch(2, &.{});
     boundary.sync = .list_started;
     try applyBatch(&projection, &boundary, allocator);
-    try std.testing.expectEqual(@as(usize, 0), projection.count());
-    try std.testing.expectEqual(@as(usize, 0), projection.visibleCount());
-    try std.testing.expect(projection.selectedUid() == null);
+    try std.testing.expectEqual(@as(usize, 2), projection.count());
+    try std.testing.expectEqual(@as(usize, 2), projection.visibleCount());
+    try std.testing.expectEqualStrings("ghost", projection.selectedUid().?);
+    try std.testing.expect(projection.isLoading());
 
     const initial = try allocator.alloc(keys.TypedChange(TestRecord), 1);
     initial[0] = .{ .initial_upsert = try TestRecord.make(allocator, "keep", "ns", "keep", "updated") };
@@ -968,6 +1001,39 @@ test "list_started atomically clears old list and initial chunks repopulate" {
     try std.testing.expect(projection.record("ghost") == null);
     try std.testing.expectEqualStrings("keep", projection.selectedUid().?);
     try std.testing.expectEqualStrings("updated", projection.record("keep").?.value);
+    try std.testing.expect(!projection.isLoading());
+}
+
+test "initial list boundary isolates context and loads until empty completion" {
+    const allocator = std.testing.allocator;
+    var projection = Projection.init(allocator, .{ .matchFn = testMatch, .sortKeyFn = testSort });
+    defer projection.deinit();
+
+    const old_changes = try allocator.alloc(keys.TypedChange(TestRecord), 1);
+    old_changes[0] = .{ .watch_upsert = try TestRecord.make(allocator, "old", "ns", "old", "old") };
+    var old_batch = makeBatch(1, old_changes);
+    defer old_batch.deinit(allocator);
+    try applyBatch(&projection, &old_batch, allocator);
+
+    var boundary = makeBatch(2, &.{});
+    boundary.generation = 2;
+    boundary.subscription_id = 3;
+    boundary.sync = .list_started;
+    try applyBatch(&projection, &boundary, allocator);
+    try std.testing.expectEqual(@as(usize, 0), projection.count());
+    try std.testing.expect(projection.isLoading());
+
+    var complete = makeBatch(3, &.{});
+    complete.generation = 2;
+    complete.subscription_id = 3;
+    complete.sync = .{ .list_complete = .{
+        .resource_version = try keys.OwnedBytes.clone(allocator, "10"),
+        .object_count = 0,
+    } };
+    defer complete.deinit(allocator);
+    try applyBatch(&projection, &complete, allocator);
+    try std.testing.expectEqual(@as(usize, 0), projection.count());
+    try std.testing.expect(!projection.isLoading());
 }
 
 test "preflight failure preserves projection and retryable payload while commit allocates nothing" {
@@ -992,6 +1058,43 @@ test "preflight failure preserves projection and retryable payload while commit 
     plan.deinit(backing);
     try std.testing.expectEqual(@as(usize, 1), projection.count());
     try std.testing.expect(batch.changes[0].watch_upsert != null);
+}
+
+pub fn runTask14ProjectionAllocationOrdinalsGate() !void {
+    const Exercise = struct {
+        fn run(allocator: std.mem.Allocator, backing: std.mem.Allocator) !void {
+            var projection = Projection.init(backing, .{
+                .matchFn = testMatch,
+                .sortKeyFn = testSort,
+            });
+            defer projection.deinit();
+            const changes = try backing.alloc(keys.TypedChange(TestRecord), 1);
+            changes[0] = .{
+                .watch_upsert = try TestRecord.make(
+                    backing,
+                    "ordinal-uid",
+                    "default",
+                    "ordinal",
+                    "value",
+                ),
+            };
+            var batch = makeBatch(1, changes);
+            defer batch.deinit(backing);
+            var plan = try Projection.handler().preflight(
+                @ptrCast(&projection),
+                &batch,
+                allocator,
+            );
+            defer plan.deinit(allocator);
+            Projection.handler().commit(@ptrCast(&projection), &batch, &plan);
+            try std.testing.expectEqual(@as(usize, 1), projection.count());
+        }
+    };
+    try std.testing.checkAllAllocationFailures(
+        std.testing.allocator,
+        Exercise.run,
+        .{std.testing.allocator},
+    );
 }
 
 test "metrics values update repeatedly survive object upsert and unwind allocation failure" {

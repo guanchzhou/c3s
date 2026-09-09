@@ -103,22 +103,18 @@ pub fn Record(comptime Extra: type, comptime is_namespaced: bool, comptime extra
 
         pub fn init(
             allocator: std.mem.Allocator,
-            uid: ?[]const u8,
-            namespace: ?[]const u8,
-            name: []const u8,
+            metadata: anytype,
             extra: Extra,
-            creation_timestamp: ?[]const u8,
         ) !Self {
-            const actual_uid = uid orelse return error.MissingUid;
-            var key = try (keys.ObjectKey{
-                .uid = actual_uid,
-                .namespace = if (is_namespaced) namespace orelse "default" else "",
-                .name = name,
-            }).clone(allocator);
+            var key = try keys.fromMetadata(
+                allocator,
+                metadata,
+                if (is_namespaced) "default" else "",
+            );
             errdefer key.deinit(allocator);
             var owned_extra = try extra.clone(allocator);
             errdefer owned_extra.deinit(allocator);
-            const timestamp = if (creation_timestamp) |value|
+            const timestamp = if (metadata.creationTimestamp) |value|
                 try allocator.dupe(u8, value)
             else
                 null;
@@ -126,14 +122,15 @@ pub fn Record(comptime Extra: type, comptime is_namespaced: bool, comptime extra
         }
 
         pub fn clone(self: Self, allocator: std.mem.Allocator) !Self {
-            return init(
-                allocator,
-                self.key.uid,
-                if (is_namespaced) self.key.namespace else null,
-                self.key.name,
-                self.extra,
-                self.creation_timestamp,
-            );
+            var key = try self.key.clone(allocator);
+            errdefer key.deinit(allocator);
+            var extra = try self.extra.clone(allocator);
+            errdefer extra.deinit(allocator);
+            const timestamp = if (self.creation_timestamp) |value|
+                try allocator.dupe(u8, value)
+            else
+                null;
+            return .{ .key = key, .extra = extra, .creation_timestamp = timestamp };
         }
 
         pub fn deinit(self: *Self, allocator: std.mem.Allocator) void {

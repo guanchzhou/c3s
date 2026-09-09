@@ -10,8 +10,7 @@ driver: []u8,
 creation_timestamp: ?[]u8 = null,
 
 pub fn fromVolumeAttributesClass(allocator: std.mem.Allocator, value: klient.VolumeAttributesClass) !VolumeAttributesClassRecord {
-    const uid = value.metadata.uid orelse return error.MissingUid;
-    var key = try (keys.ObjectKey{ .uid = uid, .namespace = "", .name = value.metadata.name }).clone(allocator);
+    var key = try keys.fromMetadata(allocator, value.metadata, "");
     errdefer key.deinit(allocator);
     const driver = try allocator.dupe(u8, value.driverName);
     errdefer allocator.free(driver);

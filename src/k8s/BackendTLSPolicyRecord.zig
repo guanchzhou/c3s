@@ -14,12 +14,7 @@ pub fn fromBackendTLSPolicy(
     allocator: std.mem.Allocator,
     value: klient.BackendTLSPolicy,
 ) !BackendTLSPolicyRecord {
-    const uid = value.metadata.uid orelse return error.MissingUid;
-    var key = try (keys.ObjectKey{
-        .uid = uid,
-        .namespace = value.metadata.namespace orelse "default",
-        .name = value.metadata.name,
-    }).clone(allocator);
+    var key = try keys.fromMetadata(allocator, value.metadata, "default");
     errdefer key.deinit(allocator);
     const target = try support.firstObjectString(
         allocator,

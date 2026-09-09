@@ -10,11 +10,10 @@ controller: []u8,
 creation_timestamp: ?[]u8 = null,
 
 pub fn fromIngressClass(allocator: std.mem.Allocator, value: klient.IngressClass) !IngressClassRecord {
-    const uid = value.metadata.uid orelse return error.MissingUid;
     // IngressClassSpec.controller is required by the Kubernetes API. A missing
     // spec is malformed rather than an empty controller displayed as valid data.
     const spec = value.spec orelse return error.MissingController;
-    var key = try (keys.ObjectKey{ .uid = uid, .namespace = "", .name = value.metadata.name }).clone(allocator);
+    var key = try keys.fromMetadata(allocator, value.metadata, "");
     errdefer key.deinit(allocator);
     const controller = try allocator.dupe(u8, spec.controller);
     errdefer allocator.free(controller);

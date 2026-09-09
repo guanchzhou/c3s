@@ -24,9 +24,11 @@ pub const Options = struct {
 pub const Result = struct {
     allocator: std.mem.Allocator,
     resource_version: []u8,
+    continue_token: []u8,
 
     pub fn deinit(self: *Result) void {
         self.allocator.free(self.resource_version);
+        self.allocator.free(self.continue_token);
         self.* = undefined;
     }
 };
@@ -56,7 +58,14 @@ pub fn stream(
         ) anyerror!void {
             const self: *@This() = @ptrCast(@alignCast(erased));
             if (meta.status == .payload_too_large) return error.ResponseTooLarge;
-            if (meta.status.class() != .success) return error.HttpStatus;
+            if (meta.status.class() != .success) return switch (meta.status) {
+                .unauthorized => error.HttpUnauthorized,
+                .forbidden => error.HttpForbidden,
+                .not_found => error.HttpNotFound,
+                .gone => error.HttpGone,
+                .too_many_requests => error.HttpThrottled,
+                else => error.HttpStatus,
+            };
             self.result = try self.parse(body_reader);
         }
 
@@ -75,6 +84,8 @@ pub fn stream(
 
             var resource_version: ?[]u8 = null;
             errdefer if (resource_version) |rv| self.allocator.free(rv);
+            var continue_token: ?[]u8 = null;
+            errdefer if (continue_token) |token| self.allocator.free(token);
             var saw_items = false;
             var batch_started = self.options.clock.nowNs();
 
@@ -138,6 +149,7 @@ pub fn stream(
                     if (resource_version != null) return error.MalformedOuterJson;
                     const Metadata = struct {
                         resourceVersion: ?[]const u8 = null,
+                        @"continue": ?[]const u8 = null,
                     };
                     const metadata = std.json.innerParse(
                         Metadata,
@@ -155,6 +167,9 @@ pub fn stream(
                         if (rv.len == 0) return error.MissingResourceVersion;
                         resource_version = try self.allocator.dupe(u8, rv);
                     }
+                    if (metadata.@"continue") |token| {
+                        continue_token = try self.allocator.dupe(u8, token);
+                    }
                 } else {
                     json_reader.skipValue() catch |err| return mapOuterError(err);
                 }
@@ -168,6 +183,7 @@ pub fn stream(
             return .{
                 .allocator = self.allocator,
                 .resource_version = resource_version orelse return error.MissingResourceVersion,
+                .continue_token = continue_token orelse try self.allocator.dupe(u8, ""),
             };
         }
     };
@@ -302,6 +318,23 @@ test "empty list and metadata before or after items return owned resourceVersion
     );
     defer second.deinit();
     try std.testing.expectEqualStrings("11", second.resource_version);
+}
+
+test "LIST metadata returns an owned opaque continue token" {
+    const allocator = std.testing.allocator;
+    var clock = ManualClock{};
+    var capture = BatchCapture{ .allocator = allocator };
+    defer capture.deinit();
+    var result = try runBody(
+        allocator,
+        "{\"metadata\":{\"resourceVersion\":\"42\",\"continue\":\"a/b+c=\"},\"items\":[]}",
+        &.{},
+        &clock,
+        &capture,
+    );
+    defer result.deinit();
+    try std.testing.expectEqualStrings("42", result.resource_version);
+    try std.testing.expectEqualStrings("a/b+c=", result.continue_token);
 }
 
 test "batching emits at 128 objects and timer boundary" {

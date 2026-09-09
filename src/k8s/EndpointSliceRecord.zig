@@ -11,12 +11,7 @@ endpoints: []u8,
 creation_timestamp: ?[]u8 = null,
 
 pub fn fromEndpointSlice(allocator: std.mem.Allocator, value: klient.EndpointSlice) !EndpointSliceRecord {
-    const uid = value.metadata.uid orelse return error.MissingUid;
-    var key = try (keys.ObjectKey{
-        .uid = uid,
-        .namespace = value.metadata.namespace orelse "default",
-        .name = value.metadata.name,
-    }).clone(allocator);
+    var key = try keys.fromMetadata(allocator, value.metadata, "default");
     errdefer key.deinit(allocator);
     const address_type = try allocator.dupe(u8, value.addressType);
     errdefer allocator.free(address_type);

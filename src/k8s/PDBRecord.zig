@@ -18,12 +18,7 @@ pub fn fromPodDisruptionBudget(
     allocator: std.mem.Allocator,
     pdb: klient.PodDisruptionBudget,
 ) !PDBRecord {
-    const uid = pdb.metadata.uid orelse return error.MissingUid;
-    var key = try (keys.ObjectKey{
-        .uid = uid,
-        .namespace = pdb.metadata.namespace orelse "default",
-        .name = pdb.metadata.name,
-    }).clone(allocator);
+    var key = try keys.fromMetadata(allocator, pdb.metadata, "default");
     errdefer key.deinit(allocator);
     const min_available = try intOrString(
         allocator,

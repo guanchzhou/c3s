@@ -239,53 +239,6 @@ test "k8s_service: getClusterInfo returns correct info" {
 // Resource operations require connection
 // =========================================================================
 
-test "k8s_service: resource operations return NotConnected" {
-    const allocator = testing.allocator;
-
-    var service = try K8sService.init(allocator);
-    defer service.deinit();
-
-    try testing.expectError(error.NotConnected, service.listAllHPAs());
-    try testing.expectError(error.NotConnected, service.listAllEvents());
-    try testing.expectError(error.NotConnected, service.listAllResourceQuotas());
-    try testing.expectError(error.NotConnected, service.listAllLimitRanges());
-    try testing.expectError(error.NotConnected, service.listAllPodDisruptionBudgets());
-    try testing.expectError(error.NotConnected, service.listAllDeployments());
-    try testing.expectError(error.NotConnected, service.listAllServices());
-    try testing.expectError(error.NotConnected, service.listNodes());
-    try testing.expectError(error.NotConnected, service.listAllConfigMaps());
-    try testing.expectError(error.NotConnected, service.listAllSecrets());
-    try testing.expectError(error.NotConnected, service.listAllStatefulSets());
-    try testing.expectError(error.NotConnected, service.listAllDaemonSets());
-    try testing.expectError(error.NotConnected, service.listAllReplicaSets());
-    try testing.expectError(error.NotConnected, service.listAllJobs());
-    try testing.expectError(error.NotConnected, service.listAllCronJobs());
-    try testing.expectError(error.NotConnected, service.listAllRoles());
-    try testing.expectError(error.NotConnected, service.listAllRoleBindings());
-    try testing.expectError(error.NotConnected, service.listAllClusterRoles());
-    try testing.expectError(error.NotConnected, service.listAllClusterRoleBindings());
-    try testing.expectError(error.NotConnected, service.listAllPersistentVolumes());
-    try testing.expectError(error.NotConnected, service.listAllPersistentVolumeClaims());
-    try testing.expectError(error.NotConnected, service.listAllIngresses());
-    try testing.expectError(error.NotConnected, service.listAllNetworkPolicies());
-    try testing.expectError(error.NotConnected, service.listAllServiceAccounts());
-    try testing.expectError(error.NotConnected, service.listAllEndpoints());
-    try testing.expectError(error.NotConnected, service.listAllStorageClasses());
-}
-
-test "k8s_service: namespaced list operations return NotConnected" {
-    const allocator = testing.allocator;
-
-    var service = try K8sService.init(allocator);
-    defer service.deinit();
-
-    try testing.expectError(error.NotConnected, service.listDeployments(null));
-    try testing.expectError(error.NotConnected, service.listServices(null));
-    try testing.expectError(error.NotConnected, service.listConfigMaps(null));
-    try testing.expectError(error.NotConnected, service.listSecrets(null));
-    try testing.expectError(error.NotConnected, service.listPods(null));
-}
-
 // =========================================================================
 // Authorization tests
 // =========================================================================
@@ -320,20 +273,6 @@ test "k8s_service: detectCedarAuth returns false when not connected" {
 
     const result = try service.detectCedarAuth();
     try testing.expectEqual(false, result);
-}
-
-// =========================================================================
-// Pod metrics (disconnected)
-// =========================================================================
-
-test "k8s_service: getPodMetrics returns null when not connected" {
-    const allocator = testing.allocator;
-
-    var service = try K8sService.init(allocator);
-    defer service.deinit();
-
-    const metrics = try service.getPodMetrics(true);
-    try testing.expect(metrics == null);
 }
 
 // =========================================================================
@@ -581,17 +520,6 @@ test "k8s_service: ConditionInfo structure and memory" {
 
         cond.deinit();
     }
-}
-
-// =========================================================================
-// ParsedList type verification
-// =========================================================================
-
-test "k8s_service: ParsedList type can be referenced" {
-    // Verify the type exists and its methods are accessible at comptime
-    const PL = K8sService.ParsedList(c3s.k8s_types.Pod);
-    _ = PL;
-    // If this compiles, the type is valid
 }
 
 // =========================================================================
@@ -861,13 +789,11 @@ const LifecycleEvent4A = c3s.k8s_active_context.LifecycleEvent;
 const LifecycleObserver4A = c3s.k8s_active_context.LifecycleObserver;
 const ProxyOwner4A = c3s.k8s_active_context.ProxyOwner;
 const ProxyStarter4A = c3s.k8s_active_context.ProxyStarter;
-const FallbackProbe4A = c3s.k8s_active_context.FallbackProbe;
 const ReadinessProbe4A = c3s.k8s_active_context.ReadinessProbe;
 
 const SessionHarness4A = struct {
     session_deinits: usize = 0,
     client_deinits: usize = 0,
-    fallback_calls: usize = 0,
     proxy_start_calls: usize = 0,
 
     fn observe(context: *anyopaque, event: LifecycleEvent4A) void {
@@ -897,14 +823,6 @@ const SessionHarness4A = struct {
         return error.ProxyStartFailed;
     }
 
-    fn fallback(context: *anyopaque, session: *ActiveContextSession4A) anyerror!void {
-        const self: *SessionHarness4A = @ptrCast(@alignCast(context));
-        self.fallback_calls += 1;
-        if (!std.mem.eql(u8, session.spec.context_name, "fallback")) {
-            return error.ReadinessFailed;
-        }
-    }
-
     fn prepare(
         context: *anyopaque,
         allocator: std.mem.Allocator,
@@ -929,7 +847,6 @@ const SessionHarness4A = struct {
             .user_name = "user",
             .readiness = ReadinessProbe4A.init(self, readiness),
             .proxy_starter = ProxyStarter4A.init(self, startProxy),
-            .fallback_probe = FallbackProbe4A.init(self, fallback),
             .observer = LifecycleObserver4A.init(self, observe),
         });
     }
@@ -1087,6 +1004,53 @@ test "K8sService installs once and all facade leases resolve one client generati
     try testing.expect(service.sessionSlot() == &slot);
 }
 
+test "interactive kubectl argv pins active kubeconfig and context exactly" {
+    var shared_event: std.Io.Event = .unset;
+    var slot = ActiveSessionSlot4A.init(c3s.runtime.io(), &shared_event);
+    var harness = SessionHarness4A{};
+    var service = try K8sService.init(testing.allocator);
+    defer service.deinit();
+    service.bindSessionSlot(&slot);
+    service.session_factory = harness.factory();
+    service.setKubeconfigPath("/tmp/active-kubeconfig");
+
+    try service.connect("active-context");
+    defer releaseInstalledSession4A(&service, &slot);
+
+    const argv = try service.buildInteractiveKubectlArgv(
+        &.{ "exec", "-it", "pod-a", "-n", "namespace-a", "--", "sh" },
+    );
+    defer testing.allocator.free(argv);
+
+    const expected = [_][]const u8{
+        "kubectl",
+        "--kubeconfig",
+        "/tmp/active-kubeconfig",
+        "--context",
+        "active-context",
+        "exec",
+        "-it",
+        "pod-a",
+        "-n",
+        "namespace-a",
+        "--",
+        "sh",
+    };
+    try testing.expectEqual(expected.len, argv.len);
+    for (expected, argv) |want, got| try testing.expectEqualStrings(want, got);
+}
+
+test "interactive kubectl argv refuses readonly before resolving a session" {
+    var service = try K8sService.init(testing.allocator);
+    defer service.deinit();
+    service.readonly = true;
+
+    try testing.expectError(
+        error.ReadOnlyMode,
+        service.buildInteractiveKubectlArgv(&.{ "edit", "deployment/web" }),
+    );
+}
+
 test "readiness failure preserves the old slot facade and cache" {
     var shared_event: std.Io.Event = .unset;
     var slot = ActiveSessionSlot4A.init(c3s.runtime.io(), &shared_event);
@@ -1169,7 +1133,6 @@ test "slot invalidation blocks facade access before old session teardown" {
         service.setCurrentNamespace("must-not-stick"),
     );
     try testing.expectEqualStrings(namespace_before, service.getCurrentNamespace());
-    try testing.expect((try service.getPodMetrics(true)) == null);
     try testing.expectError(
         error.NotConnected,
         service.getRawJson(.pods, "pod-a", "default"),
@@ -1219,7 +1182,7 @@ test "synchronous switch refuses to strand an old lease" {
     try testing.expect(slot.view().generation > generation_a);
 }
 
-test "direct and proxy failure uses one verified fallback" {
+test "direct and proxy failure cannot claim proxy readiness" {
     var shared_event: std.Io.Event = .unset;
     var harness = SessionHarness4A{};
     const session = try harness.factory().prepare(
@@ -1237,12 +1200,14 @@ test "direct and proxy failure uses one verified fallback" {
     );
     defer session.deinit();
 
-    try session.ensureReady();
-    try session.ensureReady();
-    try testing.expect(session.isReady());
-    try testing.expect(session.use_kubectl);
+    try testing.expectError(error.ReadinessFailed, session.ensureReady());
+    try testing.expectError(error.ReadinessFailed, session.ensureReady());
+    try testing.expect(!session.isReady());
+    const view = session.requestView();
+    try testing.expectEqual(c3s.k8s_active_context.TransportMode.klient, view.transport_mode);
+    try testing.expect(!view.use_kubectl);
+    try testing.expect(view.proxy_port == null);
     try testing.expectEqual(@as(usize, 1), harness.proxy_start_calls);
-    try testing.expectEqual(@as(usize, 1), harness.fallback_calls);
 }
 
 const ProxyHarness4A = struct {
@@ -1261,6 +1226,14 @@ const ProxyHarness4A = struct {
 
     fn owner(self: *ProxyHarness4A, port: u16) ProxyOwner4A {
         return ProxyOwner4A.init(self, port, kill, deinit);
+    }
+
+    fn start(
+        context: *anyopaque,
+        _: *ActiveContextSession4A,
+    ) anyerror!ProxyOwner4A {
+        const self: *ProxyHarness4A = @ptrCast(@alignCast(context));
+        return self.owner(43123);
     }
 };
 
@@ -1356,10 +1329,11 @@ test "session teardown kills its only proxy child exactly once" {
             .client = client,
             .cluster_name = "cluster",
             .user_name = "user",
-            .proxy = proxy.owner(43123),
+            .proxy_starter = ProxyStarter4A.init(&proxy, ProxyHarness4A.start),
             .readiness_verified = true,
         },
     );
+    try session.startProxy();
 
     var slot = ActiveSessionSlot4A.init(c3s.runtime.io(), &shared_event);
     _ = try slot.commit(session);
