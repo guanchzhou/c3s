@@ -5944,7 +5944,9 @@ fn task14ComposedRecord(
 fn Task14ComposedWatch(comptime Record: type) type {
     return struct {
         allocator: std.mem.Allocator,
+        io: std.Io,
         entered: *std.atomic.Value(usize),
+        expected_entries: usize,
         observed_rv: *std.atomic.Value(bool),
 
         fn source(self: *@This()) list_watch.Source(Record) {
@@ -5964,13 +5966,17 @@ fn Task14ComposedWatch(comptime Record: type) type {
         fn watch(
             raw: *anyopaque,
             resource_version: []const u8,
-            _: list_watch.CancelToken,
+            cancel: list_watch.CancelToken,
             receiver_context: *anyopaque,
             receiver: *const fn (*anyopaque, *list_watch.WatchEvent(Record)) anyerror!void,
         ) anyerror!list_watch.Failure {
             const self: *@This() = @ptrCast(@alignCast(raw));
             self.observed_rv.store(std.mem.eql(u8, resource_version, "10"), .release);
             _ = self.entered.fetchAdd(1, .acq_rel);
+            while (self.entered.load(.acquire) < self.expected_entries) {
+                if (cancel.isCanceled()) return .canceled;
+                self.io.sleep(.{ .nanoseconds = std.time.ns_per_ms }, .awake) catch return .canceled;
+            }
             var event: list_watch.WatchEvent(Record) = .{
                 .added = try task14ComposedRecord(
                     Record,
@@ -6114,10 +6120,34 @@ pub fn runTask14ComposedOrderingGate() !void {
 
     var entered: std.atomic.Value(usize) = .init(0);
     var rv_seen = [_]std.atomic.Value(bool){ .init(false), .init(false), .init(false), .init(false) };
-    var pod_watch = Task14ComposedWatch(PodRecord){ .allocator = allocator, .entered = &entered, .observed_rv = &rv_seen[0] };
-    var service_watch = Task14ComposedWatch(ServiceRecord){ .allocator = allocator, .entered = &entered, .observed_rv = &rv_seen[1] };
-    var node_watch = Task14ComposedWatch(NodeRecord){ .allocator = allocator, .entered = &entered, .observed_rv = &rv_seen[2] };
-    var gateway_watch = Task14ComposedWatch(GatewayRecord){ .allocator = allocator, .entered = &entered, .observed_rv = &rv_seen[3] };
+    var pod_watch = Task14ComposedWatch(PodRecord){
+        .allocator = allocator,
+        .io = io,
+        .entered = &entered,
+        .expected_entries = rv_seen.len,
+        .observed_rv = &rv_seen[0],
+    };
+    var service_watch = Task14ComposedWatch(ServiceRecord){
+        .allocator = allocator,
+        .io = io,
+        .entered = &entered,
+        .expected_entries = rv_seen.len,
+        .observed_rv = &rv_seen[1],
+    };
+    var node_watch = Task14ComposedWatch(NodeRecord){
+        .allocator = allocator,
+        .io = io,
+        .entered = &entered,
+        .expected_entries = rv_seen.len,
+        .observed_rv = &rv_seen[2],
+    };
+    var gateway_watch = Task14ComposedWatch(GatewayRecord){
+        .allocator = allocator,
+        .io = io,
+        .entered = &entered,
+        .expected_entries = rv_seen.len,
+        .observed_rv = &rv_seen[3],
+    };
 
     var pod_spec = try PodFamily.ownedTaskSpec(allocator, .{
         .context_name = "task-14",
