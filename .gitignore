@@ -43,3 +43,10 @@ test_*
 # Temporary files
 *.tmp
 *.temp
+
+# Local assistant instructions (kept out of the repo)
+CLAUDE.md
+AGENTS.md
+.cursorrules
+.cursor/
+.superpowers/
