@@ -19,7 +19,7 @@ Every resource view — pods, deployments, services, daemonsets, PDBs, and the r
 - ✅ **UTF-8-safe truncation:** long values are clipped on glyph boundaries — no broken multi-byte characters.
 - ✅ **Per-column sorting:** `Shift-<letter>` toggles the sort key with a ▲/▼ indicator (e.g. pods: `Shift-N` name, `Shift-R` ready, `Shift-S` status, `Shift-C` cpu, `Shift-M` mem, `Shift-I` ip, `Shift-A` age).
 - ✅ **Row marking:** `Space` toggles a k9s-style mark on the current row; marks persist by row identity across cursor moves and refreshes.
-- ✅ **Live filtering:** `/` filters the table; the title shows a `</term>` indicator. Clear with `x` or `Esc`.
+- ✅ **Live filtering:** `/` filters the table; the title shows a `</term>` indicator. Clear with `x` or `Esc`. Prefixes: `!term` inverse, `-f term` fuzzy, `-l k=v` label selector. `Ctrl-Z` toggles faults-only.
 - ✅ **Namespace scoping:** `0` toggles all-namespaces. The box title reflects scope and count k9s-style — `pods(default)[8]` or `pods(all)[104]` — and the redundant NAMESPACE column is hidden when scoped to a single namespace.
 
 ### **Fuzzy Command Palette**
@@ -54,10 +54,13 @@ Describe (`d`), YAML (`y`), logs (`l`), edit (`e` — any resource), shell (`s`)
 - Context management: list kubeconfig contexts, interactive switching, multi-cluster support.
 - 35+ built-in themes plus k9s-compatible custom skins.
 
+### **Supervised data plane**
+Resource views subscribe to a shared LIST + WATCH plane instead of polling. Incremental projections keep rows and selection during relists; pod CPU/MEM come from projected metrics. Direct HTTPS is used for readonly reads, with a bounded proxy fallback.
+
 ### **Performance**
 - ⚡ **Fast:** native Zig, no runtime/GC.
 - 🪶 **Lightweight:** low memory footprint.
-- 🎯 **Non-blocking:** network work (traffic metrics, refreshes) runs off the UI thread.
+- 🎯 **Non-blocking:** LIST/WATCH, metrics, and traffic fetch run off the UI thread.
 
 ---
 
@@ -69,7 +72,7 @@ Describe (`d`), YAML (`y`), logs (`l`), edit (`e` — any resource), shell (`s`)
 brew install guanchzhou/tap/c3s
 ```
 
-The tap is updated by the tag-triggered release workflow.
+Installs the current GitHub Release binary (linux/macOS, amd64/arm64).
 
 ### **Prerequisites**
 - Zig 0.16.0
@@ -113,7 +116,8 @@ zig build
 | `g` / `Shift-G` | Top / bottom |
 | `Space` | Mark / unmark current row |
 | `Shift-<letter>` | Sort by that column (▲/▼) |
-| `/` | Filter |
+| `/` | Filter (`!` inverse, `-f` fuzzy, `-l` labels) |
+| `Ctrl-Z` | Toggle faults-only |
 | `x` | Clear filter |
 | `0` | Toggle all namespaces |
 | `r` | Refresh |
@@ -180,7 +184,7 @@ coredns-6d4b75cb-12345     1/1    Running  5m    22Mi   10.0.0.3     30d
 
 ## 🏗️ **Architecture**
 
-c3s follows **MVVM (Model-View-ViewModel)**:
+c3s follows **MVVM (Model-View-ViewModel)**. Resource tables subscribe to a supervised data plane; the UI thread alone mutates table and selection state.
 
 ```
 ┌─────────────────────────────────────────────────┐
@@ -196,7 +200,13 @@ c3s follows **MVVM (Model-View-ViewModel)**:
                  │
 ┌────────────────▼────────────────────────────────┐
 │                Service Layer                     │
-│  K8sService — abstraction over the K8s client    │
+│  K8sService — kubectl mutations, readonly fence  │
+└────────────────┬────────────────────────────────┘
+                 │
+┌────────────────▼────────────────────────────────┐
+│                Data plane                        │
+│  LIST + WATCH subscriptions, ChangeQueue,        │
+│  lifecycle supervisor, direct HTTPS / proxy      │
 └────────────────┬────────────────────────────────┘
                  │
 ┌────────────────▼────────────────────────────────┐
@@ -209,7 +219,8 @@ c3s follows **MVVM (Model-View-ViewModel)**:
 - **ResourceView:** one comptime engine drives every resource table (config in `resource_configs.zig`).
 - **ViewManager:** stack-based view navigation.
 - **CommandRegistry:** k9s-compatible commands, surfaced through the fuzzy palette.
-- **K8sService:** clean abstraction over zig-klient.
+- **Data plane:** per-context LIST then WATCH; bounded change batches delivered to the UI thread.
+- **K8sService:** kubectl mutations pinned to kubeconfig/context and fenced by `--readonly`.
 - **TrafficView:** background-threaded Istio metrics topology.
 - **Theme System:** k9s-compatible theming (35+ themes).
 
@@ -228,8 +239,8 @@ zig build test-all
 zig build test-k9s-parity
 ```
 
-Unit tests cover the table engine, resource views, service layer, and memory-leak
-detection. `zig build test-all` is what CI runs.
+Unit tests cover the table engine, resource views, data plane, service layer, and
+memory-leak detection. Linux CI runs `zig build test-all`; macOS CI runs on `main` only.
 
 ---
 
@@ -249,12 +260,13 @@ Contributions welcome:
 ## 🗺️ **Roadmap**
 
 ### ✅ **Completed**
-- [x] 25+ Kubernetes resource views
+- [x] 50+ Kubernetes resource views
 - [x] Unified generic table engine (pods migrated off its bespoke renderer)
+- [x] Supervised LIST + WATCH data plane for resource views
 - [x] Full-width layout, glyph-safe UTF-8 truncation, full-width selection bar
 - [x] Per-column sorting (`Shift-<letter>` with ▲/▼)
 - [x] Row marking (`Space`)
-- [x] Live filtering (`/`, clear with `x`)
+- [x] Live filtering (`/`, inverse / fuzzy / labels, `Ctrl-Z` faults-only)
 - [x] Namespace scoping (`0`) with k9s-style scoped titles
 - [x] Fuzzy command palette (`:` / `Ctrl-P`)
 - [x] Aliases / API-resources view (`Ctrl-A`)
@@ -262,11 +274,7 @@ Contributions welcome:
 - [x] Pod actions: describe / YAML / logs / edit / shell / attach / port-forward / delete
 - [x] Context management
 - [x] Theme system (35+)
-- [x] GitHub Actions CI (build + unit tests on Linux & macOS)
-
-### 🚧 **In Progress**
-- [ ] Watch mode (real-time streaming updates)
-- [ ] Integration-test suite refresh (re-enable `test-all` in CI)
+- [x] GitHub Actions CI (`zig build test-all` on Linux; macOS on `main`)
 
 ### 📅 **Planned**
 - [ ] Custom resource (CRD) support
