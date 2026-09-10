@@ -358,6 +358,7 @@ Apache License 2.0 — see [LICENSE](LICENSE).
 
 - **[k9s](https://k9scli.io/)** — inspiration for UX and commands
 - **[btop](https://github.com/aristocratos/btop)** — UI design inspiration
+- **[sofka](https://sofka.rs/)** — inspiration for typed filters and read-only guardrails
 - **[zig-klient](https://github.com/guanchzhou/zig-klient)** — Kubernetes client library
 - **Zig Community** — amazing language and ecosystem
 
