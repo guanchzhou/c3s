@@ -64,6 +64,54 @@ Resource views subscribe to a shared LIST + WATCH plane instead of polling. Incr
 
 ---
 
+## 📊 **Measured against k9s**
+
+Medians over five fresh processes each, read-only, all namespaces, on a cluster
+of 277 nodes, 124 namespaces, 4,792 pods and 1,078 deployments where
+`kubectl get pods -A` takes 5.7 s. Measured 2026-09-10 on an Apple M5
+(10 cores, 32 GB, macOS 27) in a 120×40 PTY, c3s built ReleaseFast at
+`v0.2.0+2` against Homebrew k9s 0.51.0.
+
+| | c3s | k9s |
+|---|---|---|
+| Pod rows visible in the terminal | 2.38 s | 41.5 s |
+| RSS 2 s after first rows | 33.9 MB *(83.7 MB with helpers)* | 1,167 MB |
+| RSS at 25 s | 85.9 MB *(135.3 MB with helpers)* | 620 MB |
+| Threads at 25 s | 7 | 22 |
+| Binary on disk | 8.4 MB | 142.8 MB |
+| `--version` | 2.5 ms | 32.6 ms |
+
+The first row uses the same instrument for both programs: the terminal is read
+until pod rows appear. c3s also emits its own timing markers, which put the
+LIST-to-first-rows cost at 0.38 s and process-start-to-first-rows at 2.77 s.
+
+c3s shells out to `kubectl` and to a credential helper, so the parenthesised
+figure — the whole process tree — is the one to compare against k9s, which runs
+as a single process. RSS is `ps` RSS in KB / 1000.
+
+Reproduce with:
+
+```bash
+zig build -Doptimize=ReleaseFast
+python3 tools/perf/compare.py --context <ctx> --all-namespaces --runs 5 --sample-s 25
+```
+
+### What this does not show
+
+- **Startup is not symmetric.** k9s is launched with `-A -c po` and opens on
+  all namespaces. c3s starts in the default namespace and is switched with `0`,
+  so its terminal-observed figure includes that switch.
+- **"All rows loaded" is unmeasured.** k9s exposes no such signal, and on a
+  cluster this size the c3s all-namespaces pod subscription does not currently
+  emit its completion marker. Neither number is reported, and the table above
+  says nothing about when a full sync finishes.
+- **One machine, one cluster, read-only.** k9s timing includes its Homebrew
+  launcher. The two programs render different columns and refresh on different
+  schedules. Bytes written to the terminal are recorded by the harness but are
+  not a c3s win.
+
+---
+
 ## 📦 **Installation**
 
 ### **Homebrew**
@@ -336,8 +384,8 @@ kubectl config get-contexts
 - ✅ **Intuitive:** see all resources at once
 
 ### vs k9s
-- ✅ **Performance:** native Zig, no GC
-- ✅ **Memory:** lower footprint
+- ✅ **Performance:** native Zig, no GC — see [Measured against k9s](#-measured-against-k9s)
+- ✅ **Memory:** 84 MB of process tree against 1,174 MB on a 4,792-pod cluster
 - ✅ **Compatible:** familiar commands and themes
 - ✅ **Traffic:** built-in Istio topology view
 
