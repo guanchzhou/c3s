@@ -127,8 +127,11 @@ pub fn detailHints() HintConfig {
         Hint.highlighted("g", "", " top", 4),
         Hint.highlighted("G", "shift-", " bottom", 5),
         Hint.highlighted("Spc", "", " fold", 6),
-        Hint.highlighted("c", "", " fold all", 7),
+        Hint.highlighted("f", "", " fold all", 7),
         Hint.highlighted("o", "", " unfold all", 8),
+        Hint.highlighted("c", "", " copy value", 9),
+        Hint.highlighted("C", "shift-", " copy line", 10),
+        Hint.highlighted("f", "ctrl-", " fullscreen", 11),
     };
 
     return .{

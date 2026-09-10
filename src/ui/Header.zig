@@ -9,6 +9,25 @@ const fixtures = @import("../fixtures/index.zig");
 const Logger = @import("../core/logger.zig");
 const hints_mod = @import("../model/hints.zig");
 
+/// Stat labels down the left of the expanded header, in render order.
+pub const stat_labels = [_][]const u8{
+    "Context:",
+    "Namespace:",
+    "User:",
+    "K8s Rev:",
+    "CPU:",
+    "MEM:",
+};
+
+/// Column the stat values start in, relative to the header's inner left edge:
+/// the widest label plus one separating space. Derived rather than hardcoded so
+/// a longer label cannot silently push its own value out of the shared column.
+pub const stat_value_offset: u16 = blk: {
+    var widest: usize = 0;
+    for (stat_labels) |label| widest = @max(widest, label.len);
+    break :blk @intCast(widest + 1);
+};
+
 pub const Header = struct {
     allocator: std.mem.Allocator,
     theme: *const theme_loader.ThemeColors,
@@ -434,8 +453,13 @@ pub const Header = struct {
         self.compact = compact;
     }
 
+    /// Rows the expanded header needs: top border, the READONLY/READWRITE line,
+    /// one row per stat, bottom border. Derived from the stat list so adding a
+    /// stat cannot push the last one onto the bottom border.
+    pub const expanded_height: u16 = @intCast(stat_labels.len + 3);
+
     pub fn height(self: *const Header) u16 {
-        return if (self.compact) 1 else 8;
+        return if (self.compact) 1 else expanded_height;
     }
 
     fn initVersion(allocator: std.mem.Allocator) ![]const u8 {
@@ -593,34 +617,25 @@ pub const Header = struct {
         try Theme.writeStringWithTheme(terminal, title_end_x, title_y, BoxDrawing.Symbols.title_right, self.theme.proc_box, self.theme.main_bg);
 
         // System information (left side) - offset by 1 for border, properly aligned
-        const label_width = 9; // Fixed width for all labels for alignment
         var line: u16 = y + 1;
 
         try Theme.writeStringWithTheme(terminal, x + 1, line, if (self.readonly) "READONLY" else "READWRITE", self.theme.status_failed, self.theme.main_bg);
         line += 1;
 
-        try Theme.writeStringWithTheme(terminal, x + 1, line, "Context:", self.theme.main_fg, self.theme.main_bg);
-        try Theme.writeStringWithTheme(terminal, x + 1 + label_width, line, self.context, self.theme.hi_fg, self.theme.main_bg);
-        line += 1;
-
-        try Theme.writeStringWithTheme(terminal, x + 1, line, "Namespace:", self.theme.main_fg, self.theme.main_bg);
-        try Theme.writeStringWithTheme(terminal, x + 1 + label_width + 1, line, self.namespace_scope, self.theme.hi_fg, self.theme.main_bg);
-        line += 1;
-
-        try Theme.writeStringWithTheme(terminal, x + 1, line, "User:", self.theme.main_fg, self.theme.main_bg);
-        try Theme.writeStringWithTheme(terminal, x + 1 + label_width, line, self.user, self.theme.hi_fg, self.theme.main_bg);
-        line += 1;
-
-        try Theme.writeStringWithTheme(terminal, x + 1, line, "K8s Rev:", self.theme.main_fg, self.theme.main_bg);
-        try Theme.writeStringWithTheme(terminal, x + 1 + label_width, line, self.k8s_version, self.theme.hi_fg, self.theme.main_bg);
-        line += 1;
-
-        try Theme.writeStringWithTheme(terminal, x + 1, line, "CPU:", self.theme.main_fg, self.theme.main_bg);
-        try Theme.writeStringWithTheme(terminal, x + 1 + label_width, line, self.cpu_str, self.theme.hi_fg, self.theme.main_bg);
-        line += 1;
-
-        try Theme.writeStringWithTheme(terminal, x + 1, line, "MEM:", self.theme.main_fg, self.theme.main_bg);
-        try Theme.writeStringWithTheme(terminal, x + 1 + label_width, line, self.mem_str, self.theme.hi_fg, self.theme.main_bg);
+        const labels = stat_labels;
+        const values = [labels.len][]const u8{
+            self.context,
+            self.namespace_scope,
+            self.user,
+            self.k8s_version,
+            self.cpu_str,
+            self.mem_str,
+        };
+        for (labels, values) |label, value| {
+            try Theme.writeStringWithTheme(terminal, x + 1, line, label, self.theme.main_fg, self.theme.main_bg);
+            try Theme.writeStringWithTheme(terminal, x + 1 + stat_value_offset, line, value, self.theme.hi_fg, self.theme.main_bg);
+            line += 1;
+        }
 
         // Keyboard shortcuts section (right side of header) with progressive hiding
         const shortcuts_start_x = @as(u16, @intCast(width / 3)) + 1;
@@ -1405,4 +1420,29 @@ test "Header compact minimum width" {
         const level = header.calculateCompactLevel(width);
         try testing.expectEqual(@as(u8, 11), level);
     }
+}
+
+test "expanded header stat values share one column with a separating space" {
+    // Every label must fit before the value column and leave at least one blank
+    // cell, so no value is flush against its label or offset from the others.
+    for (stat_labels) |label| {
+        try testing.expect(label.len < stat_value_offset);
+    }
+
+    var widest: usize = 0;
+    for (stat_labels) |label| widest = @max(widest, label.len);
+    // Exactly one space of padding after the widest label: no wasted column.
+    try testing.expectEqual(widest + 1, @as(usize, stat_value_offset));
+}
+
+test "expanded header is tall enough that the last stat clears the bottom border" {
+    // Rows consumed: top border, the READONLY/READWRITE line, every stat row,
+    // bottom border. Too short and the last stat is drawn over the border.
+    const needed = 1 + 1 + stat_labels.len + 1;
+    try testing.expectEqual(needed, @as(usize, Header.expanded_height));
+
+    // The last stat occupies the row directly above the bottom border.
+    const last_stat_row = 1 + stat_labels.len;
+    const bottom_border_row = Header.expanded_height - 1;
+    try testing.expect(last_stat_row < bottom_border_row);
 }
