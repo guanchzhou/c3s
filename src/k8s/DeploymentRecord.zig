@@ -10,9 +10,9 @@ ready_replicas: i32,
 desired_replicas: i32,
 updated_replicas: i32,
 available_replicas: i32,
-ready_sort_key: [41]u8 = [_]u8{'0'} ** 41,
-updated_sort_key: [20]u8 = [_]u8{'0'} ** 20,
-available_sort_key: [20]u8 = [_]u8{'0'} ** 20,
+ready_sort_key: [41]u8 = @splat('0'),
+updated_sort_key: [20]u8 = @splat('0'),
+available_sort_key: [20]u8 = @splat('0'),
 creation_timestamp: ?[]u8 = null,
 
 pub fn fromDeployment(allocator: std.mem.Allocator, value: klient.Deployment) !DeploymentRecord {

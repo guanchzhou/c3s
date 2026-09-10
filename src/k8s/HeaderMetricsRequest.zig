@@ -332,7 +332,12 @@ test "fake transport scripts exact GET-only header paths" {
     try std.testing.expectEqual(@as(u64, 4000), capacity.cpu_millicores);
     try std.testing.expectEqualStrings(metrics_path, fake.requests.items[0].path);
     try std.testing.expectEqualStrings(nodes_path, fake.requests.items[1].path);
-    try std.testing.expectEqual(@as(usize, 1), @typeInfo(read_transport.ReadTransport.VTable).@"struct".fields.len);
+    const vtable_info = @typeInfo(read_transport.ReadTransport.VTable).@"struct";
+    const field_count = if (comptime @hasField(@TypeOf(vtable_info), "fields"))
+        vtable_info.fields.len
+    else
+        vtable_info.field_names.len;
+    try std.testing.expectEqual(@as(usize, 1), field_count);
 }
 
 pub fn runTask14HeaderIdentityGate() !void {

@@ -43,7 +43,7 @@ pub const DataPlane = struct {
     allocator: std.mem.Allocator,
     producer: LifecycleProducer,
     change_queue: *queue_mod.ChangeQueue,
-    subscriptions: [capacity]?Subscription = [_]?Subscription{null} ** capacity,
+    subscriptions: [capacity]?Subscription = @splat(null),
     next_subscription_id: SubscriptionId = 1,
     count: usize = 0,
 

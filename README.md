@@ -123,7 +123,7 @@ brew install guanchzhou/tap/c3s
 Installs the current GitHub Release binary (linux/macOS, amd64/arm64).
 
 ### **Prerequisites**
-- Zig 0.16.0
+- Zig 0.16.0 (release baseline) or current Zig 0.17-dev
 - kubectl configured with a valid kubeconfig
 - Kubernetes cluster access (optional: use `--debug` for demo data)
 

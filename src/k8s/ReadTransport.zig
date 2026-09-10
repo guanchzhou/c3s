@@ -863,9 +863,13 @@ test "compact list path explicitly disables pretty JSON" {
 }
 
 test "ReadTransport offers exactly one operation, and it is a GET" {
-    const vtable_fields = @typeInfo(ReadTransport.VTable).@"struct".fields;
-    try std.testing.expectEqual(@as(usize, 1), vtable_fields.len);
-    try std.testing.expectEqualStrings("get", vtable_fields[0].name);
+    const vtable_info = @typeInfo(ReadTransport.VTable).@"struct";
+    const field_count = if (comptime @hasField(@TypeOf(vtable_info), "fields"))
+        vtable_info.fields.len
+    else
+        vtable_info.field_names.len;
+    try std.testing.expectEqual(@as(usize, 1), field_count);
+    try std.testing.expect(@hasField(ReadTransport.VTable, "get"));
 
     inline for (.{ "post", "put", "patch", "delete", "write", "send", "request", "mutate" }) |name| {
         try std.testing.expect(!@hasDecl(ReadTransport, name));

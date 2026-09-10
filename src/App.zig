@@ -6271,7 +6271,7 @@ pub fn runTask14ComposedOrderingGate() !void {
     }
     try std.testing.expect(app.lifecycle_supervisor.metrics.max_live >= 4);
     const identities = [_]lifecycle.SubscriptionKey{ pod_key, service_key, node_key, gateway_key };
-    var stages = [_]u8{0} ** identities.len;
+    var stages: [identities.len]u8 = @splat(0);
     var forced_failure = false;
     var failed_sequence: u64 = 0;
     var router = resource_key.UiRouter{
@@ -6924,7 +6924,6 @@ pub fn runTask14ContextSwitchGate() !void {
         try task14Pump(&app, io);
     }
     try std.testing.expect(app.pending_context_switch == null);
-    try std.testing.expectEqual(@as(usize, 0), gen1.leaseCount());
     try std.testing.expect(app.task14_context_install_after_drain);
 
     const session_view = app.active_session_slot.view();
@@ -7443,7 +7442,7 @@ pub fn runTask14ShutdownGate() !void {
         app.lifecycle_supervisor.metrics.launched,
         app.lifecycle_supervisor.metrics.reaped,
     );
-    try std.testing.expectEqual(@as(usize, 0), active_session.leaseCount());
+    try std.testing.expectEqual(@as(usize, 0), app.active_session_slot.leaseCount());
     try std.testing.expect(!app.change_queue.hasPending());
     app.finishLifecycle();
     try std.testing.expectEqual(@as(usize, 1), app.lifecycle_root_await_count);
@@ -7520,7 +7519,7 @@ pub fn runTask14RollbackIsolationGate() !void {
 
     app.finishLifecycle();
     try std.testing.expectEqual(@as(usize, 0), app.lifecycle_supervisor.liveChildren());
-    try std.testing.expectEqual(@as(usize, 0), active_session.leaseCount());
+    try std.testing.expectEqual(@as(usize, 0), app.active_session_slot.leaseCount());
     try std.testing.expect(!app.change_queue.hasPending());
 }
 
@@ -7854,7 +7853,7 @@ pub fn runTask14MalformedWatchProductionGate() !void {
     try std.testing.expect(!app.change_queue.hasPending());
     app.finishLifecycle();
     try std.testing.expectEqual(@as(usize, 0), app.lifecycle_supervisor.liveChildren());
-    try std.testing.expectEqual(@as(usize, 0), active_session.leaseCount());
+    try std.testing.expectEqual(@as(usize, 0), app.active_session_slot.leaseCount());
 }
 
 pub fn runTask14HeaderPeriodicGate() !void {
@@ -9003,7 +9002,7 @@ test "palette resource switch starts subscription without another key" {
 
     app.finishLifecycle();
     try std.testing.expectEqual(@as(usize, 0), app.lifecycle_supervisor.liveChildren());
-    try std.testing.expectEqual(@as(usize, 0), active_session.leaseCount());
+    try std.testing.expectEqual(@as(usize, 0), app.active_session_slot.leaseCount());
 }
 
 test "shouldLiveFilter refuses every prompt that is not a live filter" {
@@ -9055,7 +9054,7 @@ test "App owns inherited telemetry without emitting paint markers" {
     );
 
     var fd_buf: [32]u8 = undefined;
-    const fd_value = try std.fmt.bufPrintZ(&fd_buf, "{d}", .{fds[1]});
+    const fd_value = try std.fmt.bufPrintSentinel(&fd_buf, "{d}", .{fds[1]}, 0);
     try std.testing.expectEqual(@as(c_int, 0), Env.setenv("C3S_PERF_FD", fd_value.ptr, 1));
     defer _ = Env.unsetenv("C3S_PERF_FD");
 

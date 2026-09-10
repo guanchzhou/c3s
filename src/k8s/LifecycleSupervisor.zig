@@ -88,10 +88,10 @@ pub const LifecycleSupervisor = struct {
     change_queue: *ChangeQueue,
     session_factory: SessionFactory,
     active_session: ?*ActiveContextSession,
-    children: [CancellationIntents.capacity]?*ChildNode = [_]?*ChildNode{null} ** CancellationIntents.capacity,
-    retiring: [max_retiring_sessions]?RetiringSession = [_]?RetiringSession{null} ** max_retiring_sessions,
+    children: [CancellationIntents.capacity]?*ChildNode = @splat(null),
+    retiring: [max_retiring_sessions]?RetiringSession = @splat(null),
     detached_completions: [detached_completion_capacity]?DetachedCompletion =
-        [_]?DetachedCompletion{null} ** detached_completion_capacity,
+        @splat(null),
     detached_completion_count: usize = 0,
     latest_switch_id: SwitchId = 0,
     shutting_down: bool = false,

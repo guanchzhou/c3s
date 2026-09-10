@@ -431,7 +431,7 @@ test "records fit one bounded write and oversize records are dropped before IO" 
     try testing.expectEqual(@as(usize, 1), RecordingWriter.calls);
     try testing.expect(RecordingWriter.attempted_bytes <= max_record_bytes);
 
-    const oversized_context = [_]u8{'x'} ** max_record_bytes;
+    const oversized_context: [max_record_bytes]u8 = @splat('x');
     telemetry.emit(testEvent(&oversized_context));
     try testing.expectEqual(@as(usize, 1), RecordingWriter.calls);
     try testing.expectEqual(@as(u64, 1), telemetry.getCounters().dropped_oversize);
@@ -505,7 +505,7 @@ test "summary includes accumulated counters in one complete NDJSON record" {
     var telemetry = PerfTelemetry.initFromFd(fds[1]);
     defer telemetry.deinit();
 
-    const oversized_context = [_]u8{'x'} ** max_record_bytes;
+    const oversized_context: [max_record_bytes]u8 = @splat('x');
     telemetry.emit(testEvent(&oversized_context));
     telemetry.emitSummary(testEvent(""));
 

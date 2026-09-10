@@ -120,9 +120,18 @@ pub const PortForwardsView = struct {
     }
 
     fn matchFn(row: *const Row, filter: []const u8) bool {
-        return std.ascii.indexOfIgnoreCase(row.target, filter) != null or
-            std.ascii.indexOfIgnoreCase(row.ports, filter) != null or
-            std.ascii.indexOfIgnoreCase(row.namespace, filter) != null;
+        return containsIgnoreCase(row.target, filter) or
+            containsIgnoreCase(row.ports, filter) or
+            containsIgnoreCase(row.namespace, filter);
+    }
+
+    fn containsIgnoreCase(haystack: []const u8, needle: []const u8) bool {
+        if (needle.len == 0) return true;
+        if (needle.len > haystack.len) return false;
+        for (0..haystack.len - needle.len + 1) |index| {
+            if (std.ascii.eqlIgnoreCase(haystack[index .. index + needle.len], needle)) return true;
+        }
+        return false;
     }
 
     pub fn applyFilter(self: *PortForwardsView, filter: []const u8) !void {

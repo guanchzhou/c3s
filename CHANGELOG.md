@@ -10,6 +10,13 @@ The release workflow extracts the section matching the git tag (`vX.Y.Z` →
 
 ## [Unreleased]
 
+### Changed
+
+- Current Zig 0.17 development builds are supported alongside the Zig 0.16.0
+  release baseline, with a non-blocking Zig master CI canary.
+- Removed the obsolete root `plan.txt`; maintained design and roadmap documents
+  live under `docs/design/`.
+
 ## [0.2.0] - 2026-09-09
 
 ### Added

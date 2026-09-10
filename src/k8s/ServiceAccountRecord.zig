@@ -7,7 +7,7 @@ pub const ServiceAccountRecord = @This();
 
 key: keys.ObjectKey,
 secret_count: usize,
-secret_sort_key: [20]u8 = [_]u8{'0'} ** 20,
+secret_sort_key: [20]u8 = @splat('0'),
 creation_timestamp: ?[]u8 = null,
 
 pub fn fromServiceAccount(allocator: std.mem.Allocator, value: klient.ServiceAccount) !ServiceAccountRecord {

@@ -4,12 +4,22 @@ const Logger = @import("logger.zig");
 const runtime = @import("runtime.zig");
 const env = @import("env.zig");
 const sys = @import("sys.zig");
-const c = @cImport({
-    @cInclude("termios.h");
-    @cInclude("sys/ioctl.h"); // TIOCGWINSZ + struct winsize for terminal size
-    @cInclude("fcntl.h"); // open + O_RDONLY for /dev/tty size probe
-    @cInclude("unistd.h"); // close
-});
+const c = struct {
+    const termios = std.c.termios;
+    const winsize = std.c.winsize;
+    const VMIN = @intFromEnum(std.c.V.MIN);
+    const VTIME = @intFromEnum(std.c.V.TIME);
+    const TCSANOW = std.c.TCSA.NOW;
+    const TIOCGWINSZ = std.posix.T.IOCGWINSZ;
+    const O_RDONLY: std.c.O = .{ .ACCMODE = .RDONLY };
+    const tcgetattr = std.c.tcgetattr;
+    const tcsetattr = std.c.tcsetattr;
+    const ioctl = std.c.ioctl;
+    const open = std.c.open;
+    const close = std.c.close;
+
+    extern "c" fn cfmakeraw(termios_p: *termios) void;
+};
 
 pub const Terminal = struct {
     allocator: std.mem.Allocator,
@@ -93,8 +103,8 @@ pub const Terminal = struct {
 
         // Configure raw mode
         c.cfmakeraw(&termios);
-        termios.c_cc[c.VMIN] = 0; // Return immediately even if no data
-        termios.c_cc[c.VTIME] = 0; // No timeout
+        termios.cc[c.VMIN] = 0; // Return immediately even if no data
+        termios.cc[c.VTIME] = 0; // No timeout
 
         if (c.tcsetattr(self.stdin.handle, c.TCSANOW, &termios) != 0) {
             return error.TermiosSetFailed;
@@ -123,16 +133,16 @@ pub const Terminal = struct {
         // Try whichever of stdout/stdin/stderr is a real terminal. Under a
         // debugger (lldb) or when stdout is piped, fd 1 isn't a tty.
         for ([_]c_int{ self.stdout.handle, self.stdin.handle, self.stderr.handle }) |fd| {
-            if (c.ioctl(fd, c.TIOCGWINSZ, &ws) == 0 and ws.ws_col > 0 and ws.ws_row > 0) {
-                return .{ .width = @intCast(ws.ws_col), .height = @intCast(ws.ws_row) };
+            if (c.ioctl(fd, c.TIOCGWINSZ, &ws) == 0 and ws.col > 0 and ws.row > 0) {
+                return .{ .width = @intCast(ws.col), .height = @intCast(ws.row) };
             }
         }
         // Last resort: the controlling terminal, which survives stdio redirection.
         const tty_fd = c.open("/dev/tty", c.O_RDONLY);
         if (tty_fd >= 0) {
             defer _ = c.close(tty_fd);
-            if (c.ioctl(tty_fd, c.TIOCGWINSZ, &ws) == 0 and ws.ws_col > 0 and ws.ws_row > 0) {
-                return .{ .width = @intCast(ws.ws_col), .height = @intCast(ws.ws_row) };
+            if (c.ioctl(tty_fd, c.TIOCGWINSZ, &ws) == 0 and ws.col > 0 and ws.row > 0) {
+                return .{ .width = @intCast(ws.col), .height = @intCast(ws.row) };
             }
         }
 
