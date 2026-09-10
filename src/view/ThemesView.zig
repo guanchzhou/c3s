@@ -13,7 +13,6 @@ pub const ThemesView = struct {
     theme: *const theme_loader.ThemeColors,
     table: TableState(ThemeInfo),
     current_theme_name: []u8,
-    preview_theme: ?*theme_loader.ThemeColors = null,
     allocated_title: ?[]u8 = null,
 
     const ThemeInfo = struct {
@@ -58,11 +57,6 @@ pub const ThemesView = struct {
 
         if (self.allocated_title) |allocated| {
             self.table.allocator.free(allocated);
-        }
-
-        if (self.preview_theme) |preview| {
-            theme_loader.deinitTheme(preview);
-            self.table.allocator.destroy(preview);
         }
     }
 
@@ -134,23 +128,6 @@ pub const ThemesView = struct {
         Logger.debug("ThemesView: scanDirectory '{s}' found {d} themes", .{ dir_path, count });
     }
 
-    fn updatePreview(self: *ThemesView) !void {
-        // Free previous preview if exists
-        if (self.preview_theme) |preview| {
-            theme_loader.deinitTheme(preview);
-            self.table.allocator.destroy(preview);
-            self.preview_theme = null;
-        }
-
-        // Load new preview theme (if we have a valid selection)
-        const selected = self.table.getSelectedItem() orelse return;
-        Logger.debug("ThemesView: Loading preview for '{s}' from '{s}'", .{ selected.name, selected.path });
-        const preview = try self.table.allocator.create(theme_loader.ThemeColors);
-        preview.* = try theme_loader.loadThemeFromDir(self.table.allocator, selected.name, selected.path);
-        self.preview_theme = preview;
-        Logger.debug("ThemesView: Preview loaded, main_bg='{s}'", .{preview.main_bg});
-    }
-
     pub fn getSelectedThemeName(self: *const ThemesView) []const u8 {
         const selected = self.table.getSelectedItem() orelse return "tokyo-night";
         return selected.name;
@@ -164,9 +141,6 @@ pub const ThemesView = struct {
         }
 
         try self.table.applyFilter(filter, themeMatchFn);
-
-        // Update preview after filtering
-        try self.updatePreview();
     }
 
     fn themeMatchFn(theme_info: *const ThemeInfo, filter: []const u8) bool {
@@ -178,16 +152,6 @@ pub const ThemesView = struct {
         self.table.allocator.free(self.current_theme_name);
         // Allocate new one
         self.current_theme_name = try self.table.allocator.dupe(u8, theme_name);
-    }
-
-    /// Returns true if the key is a navigation key that may change selection
-    fn isNavigationKey(key: Key) bool {
-        return switch (key) {
-            .char => |c| c == 'j' or c == 'k' or c == 'g',
-            .up, .down, .page_up, .page_down, .home, .end => true,
-            .shift_g => true,
-            else => false,
-        };
     }
 
     // View trait implementation
@@ -224,13 +188,9 @@ pub const ThemesView = struct {
     fn render(ptr: *anyopaque, terminal: *Terminal, x: u16, y: u16, width: u16, height: u16) !void {
         const self: *ThemesView = @ptrCast(@alignCast(ptr));
 
-        // Use preview theme if available, otherwise use base theme
-        const active_theme = if (self.preview_theme) |preview| preview else self.theme;
-        if (self.preview_theme != null) {
-            Logger.debug("ThemesView: Rendering with PREVIEW theme", .{});
-        } else {
-            Logger.debug("ThemesView: Rendering with BASE theme", .{});
-        }
+        // App previews the selected row by loading it into the shared theme, so
+        // rendering with self.theme already reflects the preview.
+        const active_theme = self.theme;
 
         // Fill entire view area with theme background
         for (0..height) |row| {
@@ -279,15 +239,9 @@ pub const ThemesView = struct {
     fn handleKey(ptr: *anyopaque, key: Key) !View.KeyResult {
         const self: *ThemesView = @ptrCast(@alignCast(ptr));
 
-        const is_nav = isNavigationKey(key);
-
-        // Common navigation keys handled by TableState
+        // Moving the selection is all this view needs to do; App notices the new
+        // selection on the next frame and loads it as the live preview.
         if (self.table.handleNavigationKey(key)) |result| {
-            if (is_nav) {
-                self.updatePreview() catch |err| {
-                    Logger.err("ThemesView: Failed to update preview after nav: {}", .{err});
-                };
-            }
             return result;
         }
 
@@ -295,9 +249,6 @@ pub const ThemesView = struct {
         switch (key) {
             .shift_g => {
                 self.table.gotoBottom();
-                self.updatePreview() catch |err| {
-                    Logger.err("ThemesView: Failed to update preview after gotoBottom: {}", .{err});
-                };
                 return .handled;
             },
             .enter => {
@@ -313,10 +264,6 @@ pub const ThemesView = struct {
     fn onShow(ptr: *anyopaque) void {
         const self: *ThemesView = @ptrCast(@alignCast(ptr));
         Logger.info("ThemesView: View activated, current theme: {s}, total skins: {d}", .{ self.current_theme_name, self.table.items.items.len });
-        // Load preview for initially selected theme
-        self.updatePreview() catch |err| {
-            Logger.err("ThemesView: Failed to load initial preview: {}", .{err});
-        };
     }
 
     fn onHide(ptr: *anyopaque) void {

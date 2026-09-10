@@ -855,7 +855,11 @@ pub const App = struct {
     /// resize-poll timeout.
     pending_frame_ms: ?i32 = null,
     min_frame_time_ns: i128 = 16_666_667, // ~60 FPS (16.67ms)
+    /// Theme recorded in the config file: what we return to when a preview ends.
     current_theme_name: []const u8,
+    /// Theme whose colors are currently loaded into `theme`. Differs from
+    /// `current_theme_name` only while previewing a selection in the themes view.
+    applied_theme_name: []const u8,
 
     // MVVM components
     view_manager: ViewManager,
@@ -1263,6 +1267,7 @@ pub const App = struct {
             .config = config,
             .footer_visible = ui_config.ui.footer,
             .current_theme_name = try allocator.dupe(u8, ui_config.ui.theme),
+            .applied_theme_name = try allocator.dupe(u8, ui_config.ui.theme),
             .view_manager = view_manager,
             .command_registry = command_registry,
             .theme = theme,
@@ -1513,6 +1518,7 @@ pub const App = struct {
         self.footer.deinit();
         self.command_input.deinit();
         self.allocator.free(self.current_theme_name);
+        self.allocator.free(self.applied_theme_name);
         self.terminal.deinit();
         self.perf_telemetry.deinit();
         self.allocator.destroy(self.shared_event);
@@ -2599,10 +2605,12 @@ pub const App = struct {
             try self.terminal.clear();
         }
 
-        // Update header and footer themes if we're previewing a theme
-        const effective_theme = if (self.themes_view.preview_theme) |preview| preview else self.theme;
-        self.header.setTheme(effective_theme);
-        self.footer.setTheme(effective_theme);
+        // Selecting a row in the themes view previews it across the whole UI, so
+        // the shared theme object tracks the selection while that view is on top
+        // and returns to the configured theme once it is gone.
+        try self.syncAppliedTheme();
+        self.header.setTheme(self.theme);
+        self.footer.setTheme(self.theme);
 
         // Update header with current cluster info and server version
         // Only update header with cluster info after connection has been attempted
@@ -2658,7 +2666,7 @@ pub const App = struct {
                     view_name
                 else
                     dyn_title;
-                try BoxDrawing.Box.createBox(&self.terminal, 0, body_start, size.width, body_height, effective_theme.proc_box, effective_theme.main_bg, box_title, .rounded, effective_theme.main_fg, effective_theme.title_highlight);
+                try BoxDrawing.Box.createBox(&self.terminal, 0, body_start, size.width, body_height, self.theme.proc_box, self.theme.main_bg, box_title, .rounded, self.theme.main_fg, self.theme.title_highlight);
                 // Render view inside the box (inner coordinates)
                 if (body_height > 2 and size.width > 2) {
                     const inner_x: u16 = 1;
@@ -2701,11 +2709,10 @@ pub const App = struct {
                 0;
             if (footer_y < size.height) {
                 // Update footer status before rendering
-                if (self.themes_view.preview_theme != null) {
-                    self.footer.setPreviewStatus(self.themes_view.getSelectedThemeName());
-                } else {
-                    self.footer.setPreviewStatus(null);
-                }
+                // Derived from the live view stack rather than stored, so the
+                // hint cannot outlive the themes view that produced it.
+                const previewing = self.themesPreviewName();
+                self.footer.setPreviewStatus(previewing);
                 const view_hint = if (self.view_manager.getCurrentView()) |v| v.getStatusHint() else null;
                 if (view_hint) |hint| {
                     self.footer.setStatus(hint);
@@ -4400,6 +4407,59 @@ pub const App = struct {
         self.allocator.free(self.current_theme_name);
         self.current_theme_name = try self.allocator.dupe(u8, theme_name);
         Logger.info("Theme saved: {s}", .{theme_name});
+    }
+
+    /// Load `theme_name` into the shared theme object every view, the header and
+    /// the footer already point at, so a change is visible on the next frame
+    /// without re-plumbing a theme through the view vtable.
+    ///
+    /// The new theme is loaded before the old one is freed: if loading fails the
+    /// UI keeps rendering with the theme it already had.
+    fn applyThemeByName(self: *App, theme_name: []const u8) !void {
+        const name_copy = try self.allocator.dupe(u8, theme_name);
+        errdefer self.allocator.free(name_copy);
+
+        const loaded = try theme_loader.loadTheme(self.allocator, theme_name);
+
+        theme_loader.deinitTheme(self.theme);
+        self.theme.* = loaded;
+
+        self.allocator.free(self.applied_theme_name);
+        self.applied_theme_name = name_copy;
+        Logger.debug("Theme applied: {s}", .{theme_name});
+    }
+
+    /// Name to show as "previewing <name>" in the footer: only while the themes
+    /// view is on top and its selection differs from the configured theme.
+    fn themesPreviewName(self: *App) ?[]const u8 {
+        const desired = self.desiredThemeName();
+        if (std.mem.eql(u8, desired, self.current_theme_name)) return null;
+        return desired;
+    }
+
+    /// The theme that should be on screen right now: the row selected in the
+    /// themes view while it is on top, otherwise the configured theme.
+    fn desiredThemeName(self: *App) []const u8 {
+        if (self.view_manager.getCurrentView()) |current| {
+            if (std.mem.eql(u8, current.getName(), "themes")) {
+                return self.themes_view.getSelectedThemeName();
+            }
+        }
+        return self.current_theme_name;
+    }
+
+    /// Reload the shared theme only when the desired theme changed, so this is
+    /// cheap to call every frame despite reading the theme file.
+    fn syncAppliedTheme(self: *App) !void {
+        const desired = self.desiredThemeName();
+        if (std.mem.eql(u8, desired, self.applied_theme_name)) return;
+        self.applyThemeByName(desired) catch |err| {
+            // A broken or missing skin must not take the UI down; keep the
+            // current colors and stop retrying it every frame.
+            Logger.err("Failed to apply theme '{s}': {}", .{ desired, err });
+            self.allocator.free(self.applied_theme_name);
+            self.applied_theme_name = try self.allocator.dupe(u8, desired);
+        };
     }
 };
 
