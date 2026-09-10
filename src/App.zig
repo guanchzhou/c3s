@@ -6745,15 +6745,62 @@ pub fn runTask14ContextSwitchGate() !void {
     const old_node = app.active_node_subscription orelse return error.MissingNodeKey;
     const old_namespace = app.active_namespace_subscription orelse return error.MissingNamespaceKey;
 
+    const QueuedPayload = struct {
+        marker: u8 = 1,
+
+        fn preflight(
+            _: *@This(),
+            _: *resource_key.UiRouter,
+            _: std.mem.Allocator,
+        ) !resource_key.ApplyPlan {
+            return .{};
+        }
+
+        fn commit(_: *@This(), _: *resource_key.UiRouter, _: *resource_key.ApplyPlan) void {}
+        fn deinit(_: *@This(), _: std.mem.Allocator) void {}
+    };
+    const queued_handler = resource_key.PayloadHandler(QueuedPayload){
+        .preflight = QueuedPayload.preflight,
+        .commit = QueuedPayload.commit,
+        .deinit = QueuedPayload.deinit,
+    };
     var queued_payload_destroyed: std.atomic.Value(usize) = .init(0);
-    var queued_gen1 = app.change_queue.popForRetry() orelse return error.MissingQueuedGen1Envelope;
-    errdefer if (queued_gen1.active) queued_gen1.destroy(allocator);
-    const queued_identity = queued_gen1.envelope.target.resource;
-    try std.testing.expect(queued_gen1.envelope.payload != null);
-    try std.testing.expect(app.data_plane.acceptsEnvelope(queued_gen1.envelope));
-    try std.testing.expect(app.acceptsActiveEnvelope(queued_gen1.envelope));
-    queued_gen1.envelope.destroy_counter = &queued_payload_destroyed;
-    try app.change_queue.retryPopped(&queued_gen1);
+    const queued_identity = resource_key.ResourceIdentity{
+        .generation = old_pod.generation,
+        .subscription_id = old_pod.subscription_id,
+    };
+    const queued_payload = try allocator.create(QueuedPayload);
+    queued_payload.* = .{};
+    var queued_gen1 = try resource_key.erasePayload(
+        QueuedPayload,
+        allocator,
+        .{ .resource = queued_identity },
+        queued_payload,
+        &queued_handler,
+        queued_identity.generation,
+        queued_identity.subscription_id,
+        1,
+        @sizeOf(QueuedPayload),
+        null,
+    );
+    var queued_gen1_owned = true;
+    errdefer if (queued_gen1_owned) queued_gen1.deinit(allocator);
+    try std.testing.expect(queued_gen1.payload != null);
+    try std.testing.expect(app.data_plane.acceptsEnvelope(queued_gen1));
+    try std.testing.expect(app.acceptsActiveEnvelope(queued_gen1));
+    queued_gen1.destroy_counter = &queued_payload_destroyed;
+    while (true) {
+        app.change_queue.tryPush(queued_gen1) catch |err| switch (err) {
+            error.Full => {
+                app.drainChangeQueue();
+                try io.sleep(.{ .nanoseconds = std.time.ns_per_ms }, .awake);
+                continue;
+            },
+            error.Closed => return err,
+        };
+        queued_gen1_owned = false;
+        break;
+    }
 
     const injected_failure_index: usize = 17;
     app.task14.fail_family_index = injected_failure_index;
