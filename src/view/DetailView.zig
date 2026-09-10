@@ -1,6 +1,6 @@
 /// DetailView - Scrollable text view for describe/JSON display.
 /// Supports IDE-style folding of JSON objects/arrays: fold/unfold the block at
-/// the cursor (Enter/Space), or fold/unfold everything (c / o).
+/// the cursor (Enter/Space), or fold/unfold everything (f / o).
 const std = @import("std");
 const View = @import("../viewmodel/view.zig").View;
 const Terminal = @import("../core/Terminal.zig").Terminal;
@@ -633,6 +633,57 @@ pub const DetailView = struct {
         }
     }
 
+    pub fn selectedLine(self: *const DetailView) ?[]const u8 {
+        if (self.selected_row >= self.visible.items.len) return null;
+        return self.lines.items[self.visible.items[self.selected_row]];
+    }
+
+    /// Return the value portion of the selected JSON/YAML/describe line.
+    /// JSON string quotes and a trailing comma are omitted. Lines without a
+    /// key/value separator are returned whole (apart from surrounding space).
+    pub fn selectedValue(self: *const DetailView) ?[]const u8 {
+        const raw = self.selectedLine() orelse return null;
+        const line = std.mem.trim(u8, raw, " \t\r\n");
+        if (line.len == 0) return line;
+
+        var value = line;
+        if (line[0] == '"') {
+            var escaped = false;
+            var i: usize = 1;
+            while (i < line.len) : (i += 1) {
+                if (escaped) {
+                    escaped = false;
+                    continue;
+                }
+                if (line[i] == '\\') {
+                    escaped = true;
+                    continue;
+                }
+                if (line[i] != '"') continue;
+
+                var separator = i + 1;
+                while (separator < line.len and
+                    (line[separator] == ' ' or line[separator] == '\t')) : (separator += 1)
+                {}
+                if (separator < line.len and line[separator] == ':') {
+                    value = line[separator + 1 ..];
+                }
+                break;
+            }
+        } else if (std.mem.indexOfScalar(u8, line, ':')) |separator| {
+            value = line[separator + 1 ..];
+        }
+
+        value = std.mem.trim(u8, value, " \t\r\n");
+        if (std.mem.endsWith(u8, value, ",")) {
+            value = std.mem.trimEnd(u8, value[0 .. value.len - 1], " \t");
+        }
+        if (value.len >= 2 and value[0] == '"' and value[value.len - 1] == '"') {
+            value = value[1 .. value.len - 1];
+        }
+        return value;
+    }
+
     fn handleKey(ptr: *anyopaque, key: Key) !View.KeyResult {
         const self: *DetailView = @ptrCast(@alignCast(ptr));
         const count: u32 = @intCast(self.visible.items.len);
@@ -660,12 +711,14 @@ pub const DetailView = struct {
                     self.horizontal_scroll = self.nextColStop();
                     return .handled;
                 },
-                // Folding: Space toggles the block at the cursor; c folds all, o unfolds all.
+                // Space toggles the current block; f/o fold/unfold everything.
                 ' ' => {
                     try self.toggleFoldAtCursor();
                     return .handled;
                 },
-                'c' => {
+                'c' => return .request_copy_detail_value,
+                'C' => return .request_copy_detail_line,
+                'f' => {
                     try self.setAllFolds(true);
                     return .handled;
                 },
@@ -673,9 +726,9 @@ pub const DetailView = struct {
                     try self.setAllFolds(false);
                     return .handled;
                 },
-                'f' => return .request_fullscreen,
                 else => return .not_handled,
             },
+            .ctrl_f => return .request_fullscreen,
             .enter => {
                 try self.toggleFoldAtCursor();
                 return .handled;
@@ -851,6 +904,63 @@ test "DetailView fold: managedFields/f: noise is collapsed by default" {
     }
     try testing.expect(any_default_fold);
     try testing.expect(dv.visible.items.len < dv.lines.items.len);
+}
+
+test "DetailView selected value omits key, JSON quotes, and trailing comma" {
+    const testing = std.testing;
+    var theme = try theme_loader.defaultTheme(testing.allocator);
+    defer theme_loader.deinitTheme(&theme);
+
+    var dv = try DetailView.init(testing.allocator, &theme);
+    defer dv.deinit();
+
+    try dv.setContentText(
+        \\  "name": "sandbox-router",
+        \\  image: registry:5000/router
+        \\  scalar-only
+    , "pod");
+
+    try testing.expectEqualStrings("sandbox-router", dv.selectedValue().?);
+    try testing.expectEqualStrings("  \"name\": \"sandbox-router\",", dv.selectedLine().?);
+
+    dv.selected_row = 1;
+    try testing.expectEqualStrings("registry:5000/router", dv.selectedValue().?);
+
+    dv.selected_row = 2;
+    try testing.expectEqualStrings("scalar-only", dv.selectedValue().?);
+}
+
+test "DetailView copy and fold key assignments are consistent" {
+    const testing = std.testing;
+    var theme = try theme_loader.defaultTheme(testing.allocator);
+    defer theme_loader.deinitTheme(&theme);
+
+    var dv = try DetailView.init(testing.allocator, &theme);
+    defer dv.deinit();
+    try dv.setContentJson(
+        \\{"metadata":{"name":"sandbox-router"}}
+    , "pod");
+
+    try testing.expectEqual(
+        View.KeyResult.request_copy_detail_value,
+        try DetailView.handleKey(&dv, .{ .char = 'c' }),
+    );
+    try testing.expectEqual(
+        View.KeyResult.request_copy_detail_line,
+        try DetailView.handleKey(&dv, .{ .char = 'C' }),
+    );
+    try testing.expectEqual(
+        View.KeyResult.handled,
+        try DetailView.handleKey(&dv, .{ .char = 'f' }),
+    );
+    try testing.expectEqual(
+        View.KeyResult.handled,
+        try DetailView.handleKey(&dv, .{ .char = 'o' }),
+    );
+    try testing.expectEqual(
+        View.KeyResult.request_fullscreen,
+        try DetailView.handleKey(&dv, .ctrl_f),
+    );
 }
 
 test "DetailView fold: describe (indent-based, no braces) is foldable" {

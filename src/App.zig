@@ -3454,6 +3454,8 @@ pub const App = struct {
             .request_traffic => self.showTrafficView() catch |e| Logger.err("traffic view failed: {any}", .{e}),
             .request_copy => self.copySelectedField(.name),
             .request_copy_namespace => self.copySelectedField(.namespace),
+            .request_copy_detail_value => self.copySelectedDetail(.value),
+            .request_copy_detail_line => self.copySelectedDetail(.line),
             .request_warp => self.warpToSelectedNamespace() catch |e| Logger.err("warp failed: {any}", .{e}),
             .request_jump_owner => self.jumpToOwner() catch |e| Logger.err("jump-owner failed: {any}", .{e}),
             .request_used_by => self.showUsedBy() catch |e| Logger.err("used-by failed: {any}", .{e}),
@@ -4174,6 +4176,20 @@ pub const App = struct {
             return;
         };
         self.footer.setStatus("copied");
+        self.dirty = true;
+    }
+
+    fn copySelectedDetail(self: *App, field: enum { value, line }) void {
+        const text = switch (field) {
+            .value => self.detail_view.selectedValue(),
+            .line => self.detail_view.selectedLine(),
+        } orelse return;
+        self.terminal.copyToClipboard(text) catch {
+            self.footer.setStatus("copy failed");
+            self.dirty = true;
+            return;
+        };
+        self.footer.setStatus(if (field == .value) "value copied" else "line copied");
         self.dirty = true;
     }
 
@@ -8786,6 +8802,8 @@ test "readonly dispatch classification exhaustively gates mutations and permits 
         .request_show_port_forwards,
         .request_copy,
         .request_copy_namespace,
+        .request_copy_detail_value,
+        .request_copy_detail_line,
         .request_warp,
         .request_jump_owner,
         .request_used_by,

@@ -109,6 +109,8 @@ pub const View = struct {
         request_traffic,
         request_copy,
         request_copy_namespace,
+        request_copy_detail_value,
+        request_copy_detail_line,
         request_warp,
         request_jump_owner,
         request_used_by,
