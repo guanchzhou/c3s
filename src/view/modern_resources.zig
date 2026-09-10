@@ -88,7 +88,7 @@ fn joinObjField(alloc: std.mem.Allocator, status: ?std.json.Value, array_key: []
 // Gateway API
 // ============================================================================
 
-fn transformGatewayClass(item: klient.types.GatewayClass, alloc: std.mem.Allocator) ![3][]const u8 {
+pub fn transformGatewayClass(item: klient.types.GatewayClass, alloc: std.mem.Allocator) ![3][]const u8 {
     const controller: []const u8 = if (item.spec) |spec| spec.controllerName else "<none>";
     return .{
         try dupe(alloc, item.metadata.name),
@@ -108,7 +108,7 @@ pub const GatewayClassesView = ResourceView(klient.types.GatewayClass, klient.re
     },
 }, transformGatewayClass);
 
-fn transformGateway(item: klient.types.Gateway, alloc: std.mem.Allocator) ![5][]const u8 {
+pub fn transformGateway(item: klient.types.Gateway, alloc: std.mem.Allocator) ![5][]const u8 {
     const class: []const u8 = if (item.spec) |spec| spec.gatewayClassName else "<none>";
     return .{
         try nsOf(alloc, item.metadata.namespace),
@@ -133,7 +133,7 @@ pub const GatewaysView = ResourceView(klient.types.Gateway, klient.resources.Gat
     },
 }, transformGateway);
 
-fn transformHTTPRoute(item: klient.types.HTTPRoute, alloc: std.mem.Allocator) ![5][]const u8 {
+pub fn transformHTTPRoute(item: klient.types.HTTPRoute, alloc: std.mem.Allocator) ![5][]const u8 {
     const parent = if (item.spec) |spec| spec.parentRefs else null;
     const hosts = if (item.spec) |spec| spec.hostnames else null;
     return .{
@@ -159,7 +159,7 @@ pub const HTTPRoutesView = ResourceView(klient.types.HTTPRoute, klient.resources
     },
 }, transformHTTPRoute);
 
-fn transformGRPCRoute(item: klient.types.GRPCRoute, alloc: std.mem.Allocator) ![5][]const u8 {
+pub fn transformGRPCRoute(item: klient.types.GRPCRoute, alloc: std.mem.Allocator) ![5][]const u8 {
     const parent = if (item.spec) |spec| spec.parentRefs else null;
     const hosts = if (item.spec) |spec| spec.hostnames else null;
     return .{
@@ -185,7 +185,7 @@ pub const GRPCRoutesView = ResourceView(klient.types.GRPCRoute, klient.resources
     },
 }, transformGRPCRoute);
 
-fn transformReferenceGrant(item: klient.types.ReferenceGrant, alloc: std.mem.Allocator) ![5][]const u8 {
+pub fn transformReferenceGrant(item: klient.types.ReferenceGrant, alloc: std.mem.Allocator) ![5][]const u8 {
     const from: ?[]const std.json.Value = if (item.spec) |spec| spec.from else null;
     const to: ?[]const std.json.Value = if (item.spec) |spec| spec.to else null;
     return .{
@@ -211,7 +211,7 @@ pub const ReferenceGrantsView = ResourceView(klient.types.ReferenceGrant, klient
     },
 }, transformReferenceGrant);
 
-fn transformTCPRoute(item: klient.types.TCPRoute, alloc: std.mem.Allocator) ![4][]const u8 {
+pub fn transformTCPRoute(item: klient.types.TCPRoute, alloc: std.mem.Allocator) ![4][]const u8 {
     const parent = if (item.spec) |spec| spec.parentRefs else null;
     return .{
         try nsOf(alloc, item.metadata.namespace),
@@ -234,7 +234,7 @@ pub const TCPRoutesView = ResourceView(klient.types.TCPRoute, klient.resources.T
     },
 }, transformTCPRoute);
 
-fn transformTLSRoute(item: klient.types.TLSRoute, alloc: std.mem.Allocator) ![5][]const u8 {
+pub fn transformTLSRoute(item: klient.types.TLSRoute, alloc: std.mem.Allocator) ![5][]const u8 {
     const parent = if (item.spec) |spec| spec.parentRefs else null;
     const hosts = if (item.spec) |spec| spec.hostnames else null;
     return .{
@@ -260,7 +260,7 @@ pub const TLSRoutesView = ResourceView(klient.types.TLSRoute, klient.resources.T
     },
 }, transformTLSRoute);
 
-fn transformUDPRoute(item: klient.types.UDPRoute, alloc: std.mem.Allocator) ![4][]const u8 {
+pub fn transformUDPRoute(item: klient.types.UDPRoute, alloc: std.mem.Allocator) ![4][]const u8 {
     const parent = if (item.spec) |spec| spec.parentRefs else null;
     return .{
         try nsOf(alloc, item.metadata.namespace),
@@ -283,7 +283,7 @@ pub const UDPRoutesView = ResourceView(klient.types.UDPRoute, klient.resources.U
     },
 }, transformUDPRoute);
 
-fn transformBackendTLSPolicy(item: klient.types.BackendTLSPolicy, alloc: std.mem.Allocator) ![4][]const u8 {
+pub fn transformBackendTLSPolicy(item: klient.types.BackendTLSPolicy, alloc: std.mem.Allocator) ![4][]const u8 {
     const targets = if (item.spec) |spec| spec.targetRefs else null;
     return .{
         try nsOf(alloc, item.metadata.namespace),
@@ -306,7 +306,7 @@ pub const BackendTLSPoliciesView = ResourceView(klient.types.BackendTLSPolicy, k
     },
 }, transformBackendTLSPolicy);
 
-fn transformListenerSet(item: klient.types.ListenerSet, alloc: std.mem.Allocator) ![5][]const u8 {
+pub fn transformListenerSet(item: klient.types.ListenerSet, alloc: std.mem.Allocator) ![5][]const u8 {
     const parent_name = blk: {
         const spec = item.spec orelse break :blk "<none>";
         const ref = spec.parentRef orelse break :blk "<none>";
@@ -368,12 +368,14 @@ pub const EndpointSlicesView = ResourceView(klient.types.EndpointSlice, klient.r
     },
 }, transformEndpointSlice);
 
-fn transformIngressClass(item: klient.types.IngressClass, alloc: std.mem.Allocator) ![3][]const u8 {
-    return .{
-        try dupe(alloc, item.metadata.name),
-        try dupe(alloc, item.controller),
-        try ageOf(alloc, item.metadata.creationTimestamp),
-    };
+pub fn transformIngressClass(item: klient.types.IngressClass, alloc: std.mem.Allocator) ![3][]const u8 {
+    const spec = item.spec orelse return error.MissingController;
+    const name = try dupe(alloc, item.metadata.name);
+    errdefer alloc.free(name);
+    const controller = try dupe(alloc, spec.controller);
+    errdefer alloc.free(controller);
+    const age = try ageOf(alloc, item.metadata.creationTimestamp);
+    return .{ name, controller, age };
 }
 
 pub const IngressClassesView = ResourceView(klient.types.IngressClass, klient.resources.IngressClasses, .{
@@ -387,7 +389,7 @@ pub const IngressClassesView = ResourceView(klient.types.IngressClass, klient.re
     },
 }, transformIngressClass);
 
-fn transformIPAddress(item: klient.types.IPAddress, alloc: std.mem.Allocator) ![3][]const u8 {
+pub fn transformIPAddress(item: klient.types.IPAddress, alloc: std.mem.Allocator) ![3][]const u8 {
     const parent = blk: {
         const spec = item.spec orelse break :blk "<none>";
         if (spec.parentRef != .object) break :blk "<none>";
@@ -414,7 +416,7 @@ pub const IPAddressesView = ResourceView(klient.types.IPAddress, klient.resource
     },
 }, transformIPAddress);
 
-fn transformServiceCIDR(item: klient.types.ServiceCIDR, alloc: std.mem.Allocator) ![3][]const u8 {
+pub fn transformServiceCIDR(item: klient.types.ServiceCIDR, alloc: std.mem.Allocator) ![3][]const u8 {
     const cidrs = if (item.spec) |spec| spec.cidrs else null;
     return .{
         try dupe(alloc, item.metadata.name),
@@ -438,7 +440,7 @@ pub const ServiceCIDRsView = ResourceView(klient.types.ServiceCIDR, klient.resou
 // Storage / CSI
 // ============================================================================
 
-fn transformVolumeAttributesClass(item: klient.types.VolumeAttributesClass, alloc: std.mem.Allocator) ![3][]const u8 {
+pub fn transformVolumeAttributesClass(item: klient.types.VolumeAttributesClass, alloc: std.mem.Allocator) ![3][]const u8 {
     return .{
         try dupe(alloc, item.metadata.name),
         try dupe(alloc, item.driverName),
@@ -457,7 +459,7 @@ pub const VolumeAttributesClassesView = ResourceView(klient.types.VolumeAttribut
     },
 }, transformVolumeAttributesClass);
 
-fn transformCSIDriver(item: klient.types.CSIDriver, alloc: std.mem.Allocator) ![4][]const u8 {
+pub fn transformCSIDriver(item: klient.types.CSIDriver, alloc: std.mem.Allocator) ![4][]const u8 {
     const attach = if (item.spec.attachRequired orelse true) "true" else "false";
     const pod_info = if (item.spec.podInfoOnMount orelse false) "true" else "false";
     return .{
@@ -484,7 +486,7 @@ pub const CSIDriversView = ResourceView(klient.types.CSIDriver, klient.resources
 // Admission
 // ============================================================================
 
-fn transformVAP(item: klient.types.ValidatingAdmissionPolicy, alloc: std.mem.Allocator) ![4][]const u8 {
+pub fn transformVAP(item: klient.types.ValidatingAdmissionPolicy, alloc: std.mem.Allocator) ![4][]const u8 {
     const fail: []const u8 = if (item.spec) |spec| (spec.failurePolicy orelse "Fail") else "Fail";
     const n_val: usize = if (item.spec) |spec| (if (spec.validations) |v| v.len else 0) else 0;
     return .{
@@ -507,7 +509,7 @@ pub const ValidatingAdmissionPoliciesView = ResourceView(klient.types.Validating
     },
 }, transformVAP);
 
-fn transformVAPB(item: klient.types.ValidatingAdmissionPolicyBinding, alloc: std.mem.Allocator) ![3][]const u8 {
+pub fn transformVAPB(item: klient.types.ValidatingAdmissionPolicyBinding, alloc: std.mem.Allocator) ![3][]const u8 {
     const policy: []const u8 = if (item.spec) |spec| spec.policyName else "<none>";
     return .{
         try dupe(alloc, item.metadata.name),
@@ -527,7 +529,7 @@ pub const ValidatingAdmissionPolicyBindingsView = ResourceView(klient.types.Vali
     },
 }, transformVAPB);
 
-fn transformMAP(item: klient.types.MutatingAdmissionPolicy, alloc: std.mem.Allocator) ![4][]const u8 {
+pub fn transformMAP(item: klient.types.MutatingAdmissionPolicy, alloc: std.mem.Allocator) ![4][]const u8 {
     const fail: []const u8 = if (item.spec) |spec| (spec.failurePolicy orelse "Fail") else "Fail";
     const n_mut: usize = if (item.spec) |spec| (if (spec.mutations) |m| m.len else 0) else 0;
     return .{
@@ -550,7 +552,7 @@ pub const MutatingAdmissionPoliciesView = ResourceView(klient.types.MutatingAdmi
     },
 }, transformMAP);
 
-fn transformMAPB(item: klient.types.MutatingAdmissionPolicyBinding, alloc: std.mem.Allocator) ![3][]const u8 {
+pub fn transformMAPB(item: klient.types.MutatingAdmissionPolicyBinding, alloc: std.mem.Allocator) ![3][]const u8 {
     const policy: []const u8 = if (item.spec) |spec| spec.policyName else "<none>";
     return .{
         try dupe(alloc, item.metadata.name),
@@ -570,7 +572,7 @@ pub const MutatingAdmissionPolicyBindingsView = ResourceView(klient.types.Mutati
     },
 }, transformMAPB);
 
-fn transformVWC(item: klient.types.ValidatingWebhookConfiguration, alloc: std.mem.Allocator) ![3][]const u8 {
+pub fn transformVWC(item: klient.types.ValidatingWebhookConfiguration, alloc: std.mem.Allocator) ![3][]const u8 {
     return .{
         try dupe(alloc, item.metadata.name),
         try countItems(alloc, item.webhooks),
@@ -589,7 +591,7 @@ pub const ValidatingWebhookConfigurationsView = ResourceView(klient.types.Valida
     },
 }, transformVWC);
 
-fn transformMWC(item: klient.types.MutatingWebhookConfiguration, alloc: std.mem.Allocator) ![3][]const u8 {
+pub fn transformMWC(item: klient.types.MutatingWebhookConfiguration, alloc: std.mem.Allocator) ![3][]const u8 {
     return .{
         try dupe(alloc, item.metadata.name),
         try countItems(alloc, item.webhooks),
@@ -770,6 +772,48 @@ pub const StorageVersionMigrationsView = ResourceView(klient.types.StorageVersio
         .{ .name = "AGE", .min_width = 6, .max_width = 12, .priority = P.MEDIUM, .sort_key = 'A' },
     },
 }, transformSVM);
+
+fn expectRecordTransformParity(
+    comptime T: type,
+    comptime count: usize,
+    comptime constructor: anytype,
+    comptime transform: anytype,
+    json: []const u8,
+) !void {
+    var parsed = try std.json.parseFromSlice(T, std.testing.allocator, json, .{ .ignore_unknown_fields = true });
+    defer parsed.deinit();
+    var record = try constructor(std.testing.allocator, parsed.value);
+    defer record.deinit(std.testing.allocator);
+    const legacy: [count][]const u8 = try transform(parsed.value, std.testing.allocator);
+    const projected: [count][]const u8 = try record.columns(std.testing.allocator);
+    defer for (legacy) |column| std.testing.allocator.free(column);
+    defer for (projected) |column| std.testing.allocator.free(column);
+    for (legacy, projected) |left, right| try std.testing.expectEqualStrings(left, right);
+}
+
+test "DRA and platform retained transforms match compact projections" {
+    try expectRecordTransformParity(klient.ResourceClaim, 4, @import("../k8s/ResourceClaimRecord.zig").fromResourceClaim, transformResourceClaim,
+        \\{"metadata":{"uid":"claim-1","namespace":"team","name":"gpu"},"spec":{"devices":{}},"status":{"allocation":{}}}
+    );
+    try expectRecordTransformParity(klient.DeviceClass, 3, @import("../k8s/DeviceClassRecord.zig").fromDeviceClass, transformDeviceClass,
+        \\{"metadata":{"uid":"dc-1","name":"gpu"},"spec":{"selectors":[{},{}]}}
+    );
+    try expectRecordTransformParity(klient.PriorityClass, 4, @import("../k8s/PriorityClassRecord.zig").fromPriorityClass, transformPriorityClass,
+        \\{"metadata":{"uid":"pc-1","name":"critical"},"value":1000,"globalDefault":true}
+    );
+    try expectRecordTransformParity(klient.RuntimeClass, 3, @import("../k8s/RuntimeClassRecord.zig").fromRuntimeClass, transformRuntimeClass,
+        \\{"metadata":{"uid":"rc-1","name":"sandboxed"},"handler":"runsc"}
+    );
+    try expectRecordTransformParity(klient.Lease, 4, @import("../k8s/LeaseRecord.zig").fromLease, transformLease,
+        \\{"metadata":{"uid":"lease-1","namespace":"kube-system","name":"leader"},"spec":{"holderIdentity":"controller-a"}}
+    );
+    try expectRecordTransformParity(klient.CertificateSigningRequest, 4, @import("../k8s/CSRRecord.zig").fromCSR, transformCSR,
+        \\{"metadata":{"uid":"csr-1","name":"node"},"spec":{"request":"YQ==","signerName":"kubernetes.io/kubelet-serving"},"status":{"certificate":"Y2VydA=="}}
+    );
+    try expectRecordTransformParity(klient.StorageVersionMigration, 3, @import("../k8s/StorageVersionMigrationRecord.zig").fromStorageVersionMigration, transformSVM,
+        \\{"metadata":{"uid":"svm-1","name":"pods"},"spec":{"resource":{"resource":"pods"}},"status":{"resourceVersion":"42"}}
+    );
+}
 
 test "joinStrs empty is <none>" {
     const empty: ?[]const []const u8 = &.{};

@@ -6,9 +6,9 @@ const std = @import("std");
 const Terminal = @import("../core/Terminal.zig").Terminal;
 const theme_loader = @import("../model/theme_loader.zig");
 const Theme = theme_loader;
-const Logger = @import("../core/logger.zig");
 const k8s_service_mod = @import("../services/K8sService.zig");
 const K8sService = k8s_service_mod.K8sService;
+const keys = @import("../k8s/ResourceKey.zig");
 const TableState = @import("../ui/TableState.zig").TableState;
 
 /// Access status for a single verb on a resource
@@ -56,7 +56,7 @@ pub const AccessRow = struct {
 };
 
 // Core resource types to check access for
-const core_resources = [_]struct { resource: []const u8, group: []const u8 }{
+pub const core_resources = [_]struct { resource: []const u8, group: []const u8 }{
     .{ .resource = "pods", .group = "" },
     .{ .resource = "deployments", .group = "apps" },
     .{ .resource = "services", .group = "" },
@@ -72,6 +72,9 @@ pub const AccessReviewTab = struct {
     k8s_service: *K8sService,
     table: TableState(AccessRow),
     conditional_auth_available: ?bool = null, // null = not yet detected
+    active_key: ?keys.RequestKey = null,
+    active_serial: u64 = 0,
+    refresh_requested: bool = false,
 
     pub fn init(allocator: std.mem.Allocator, k8s_service: *K8sService) AccessReviewTab {
         return AccessReviewTab{
@@ -85,71 +88,14 @@ pub const AccessReviewTab = struct {
         self.table.deinit();
     }
 
-    /// Refresh access review data from the cluster
-    pub fn refresh(self: *AccessReviewTab) !void {
-        self.table.loading = true;
-        defer self.table.loading = false;
+    pub fn requestRefresh(self: *AccessReviewTab) void {
+        self.refresh_requested = true;
+    }
 
-        self.table.clearItems();
-
-        if (!self.k8s_service.isConnected()) {
-            try self.table.setError("Not connected to Kubernetes cluster");
-            return;
-        }
-
-        // Detect conditional auth support on first run
-        if (self.conditional_auth_available == null) {
-            self.conditional_auth_available = self.k8s_service.detectConditionalAuth() catch false;
-        }
-
-        const namespace = self.k8s_service.getCurrentNamespace();
-
-        // Check access for each resource x verb combination
-        for (core_resources) |res| {
-            var row = AccessRow{
-                .resource = try self.allocator.dupe(u8, res.resource),
-                .group = try self.allocator.dupe(u8, res.group),
-                .allocator = self.allocator,
-            };
-
-            // Check each verb
-            const verbs_to_check = [_][]const u8{ "get", "list", "create", "update", "delete", "watch" };
-            for (verbs_to_check, 0..) |verb, i| {
-                // A failed check must leave the cell `.unknown`, never `.denied`.
-                const result = self.k8s_service.checkAccess(verb, res.group, res.resource, namespace) catch |err| {
-                    Logger.warn("checkAccess {s} {s}: {t}", .{ verb, res.resource, err });
-                    continue; // field keeps its .unknown default
-                };
-                const status: AccessStatus = if (result.conditional)
-                    .conditional
-                else if (result.allowed)
-                    .allowed
-                else
-                    .denied;
-
-                switch (i) {
-                    0 => row.get = status,
-                    1 => row.list = status,
-                    2 => row.create = status,
-                    3 => row.update = status,
-                    4 => row.delete = status,
-                    5 => row.watch = status,
-                    else => {},
-                }
-
-                if (result.condition_count > 0) {
-                    row.condition_count = (row.condition_count orelse 0) + result.condition_count;
-                }
-            }
-
-            if (self.conditional_auth_available != null and !self.conditional_auth_available.?) {
-                row.condition_count = null; // Mark as n/a
-            }
-
-            try self.table.appendItem(row);
-        }
-
-        try self.applyFilter(self.table.filter_text);
+    pub fn takeRefreshRequest(self: *AccessReviewTab) bool {
+        const requested = self.refresh_requested;
+        self.refresh_requested = false;
+        return requested;
     }
 
     pub fn render(self: *AccessReviewTab, term: *Terminal, x: u16, y: u16, width: u16, height: u16, theme: *const theme_loader.ThemeColors) !void {
@@ -249,7 +195,7 @@ pub const AccessReviewTab = struct {
         return self.table.getSelectedItem();
     }
 
-    fn accessMatchFn(item: *const AccessRow, filter: []const u8) bool {
+    pub fn accessMatchFn(item: *const AccessRow, filter: []const u8) bool {
         return std.mem.indexOf(u8, item.resource, filter) != null;
     }
 };

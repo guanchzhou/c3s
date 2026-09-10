@@ -85,6 +85,27 @@ pub const ViewManager = struct {
         return self.view_ptrs.items.len;
     }
 
+    /// Write `pods > logs` into `buf`. Empty when the stack is empty.
+    pub fn writeCrumbs(self: *const ViewManager, buf: []u8) []const u8 {
+        var n: usize = 0;
+        for (self.view_ptrs.items, 0..) |ptr, i| {
+            const view = View{
+                .ptr = @ptrFromInt(ptr),
+                .vtable = @ptrFromInt(self.view_vtables.items[i]),
+            };
+            const name = view.getName();
+            if (i > 0) {
+                if (n + 3 > buf.len) break;
+                @memcpy(buf[n .. n + 3], " > ");
+                n += 3;
+            }
+            const take = @min(name.len, buf.len - n);
+            @memcpy(buf[n .. n + take], name[0..take]);
+            n += take;
+        }
+        return buf[0..n];
+    }
+
     /// Clear all views and reset to empty stack
     pub fn clear(self: *ViewManager) void {
         while (self.view_ptrs.items.len > 0) {

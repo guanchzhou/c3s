@@ -17,7 +17,11 @@ const sort_util = @import("../viewmodel/sort.zig");
 const age_util = @import("../viewmodel/age.zig");
 const TableState = @import("../ui/TableState.zig").TableState;
 const table_layout = @import("../ui/table_layout.zig");
-const PodMetric = @import("../services/k8s_types.zig").PodMetric;
+const k9s_query = @import("../viewmodel/k9s_query.zig");
+const filter_util = @import("../viewmodel/filter.zig");
+const PodRecord = @import("../k8s/PodRecord.zig");
+const PodProjection = @import("../k8s/ResourceProjection.zig").ResourceProjection(PodRecord);
+const projection_mod = @import("../k8s/ResourceProjection.zig");
 
 /// Column definition for a resource view
 pub const ColumnDef = struct {
@@ -67,10 +71,16 @@ pub fn ResourceView(
     comptime config: Config,
     comptime transformFn: fn (KlientType, std.mem.Allocator) anyerror![config.columns.len][]const u8,
 ) type {
+    _ = KlientResourceType;
+    _ = transformFn;
     const col_count = config.columns.len;
 
     return struct {
         const Self = @This();
+        const is_pods = std.mem.eql(u8, config.name, "pods");
+
+        pub const SubscriptionRequest = enum { none, start, restart };
+        pub const PodSubscriptionRequest = SubscriptionRequest;
 
         /// The view's Config, exposed so tests can check that what a view advertises
         /// (sort keys, columns) matches what it can actually do. ~14 advertised sort
@@ -85,6 +95,9 @@ pub fn ResourceView(
         /// Cached widths bake in whether NAMESPACE is hidden, so the cache is
         /// only valid while the namespace scope is unchanged.
         cached_show_all: bool = false,
+        projection_adapter: ?ProjectionAdapter = null,
+        subscription_started: bool = false,
+        subscription_request: SubscriptionRequest = .none,
         /// Column display order, and how many of them are shown.
         ///
         /// Populated once at init from views.yaml. `column_order[0..visible_columns]`
@@ -98,16 +111,27 @@ pub fn ResourceView(
         visible_columns: u8 = col_count,
         /// Scratch buffer for the decorated box title ("pods(default)[8]").
         title_buf: [192]u8 = undefined,
+        /// k9s ctrl-w: when false, VERY_LOW (CPU/MEM) columns are force-hidden.
+        /// Defaults true so an existing wide terminal still shows metrics.
+        show_wide: bool = true,
+        /// k9s ctrl-z: keep only rows whose STATUS/READY look unhealthy.
+        faults_only: bool = false,
+        cached_show_wide: bool = true,
 
         /// Row data: uniform array of display strings
         pub const RowData = struct {
             columns: [col_count][]const u8,
             allocator: std.mem.Allocator,
+            uid: []const u8 = &.{},
+            /// Flattened `k=v,k=v` from metadata.labels. Empty slice is not owned.
+            labels: []const u8 = &.{},
 
             pub fn deinit(self: *RowData) void {
                 for (&self.columns) |*col| {
                     self.allocator.free(col.*);
                 }
+                if (self.labels.len > 0) self.allocator.free(self.labels);
+                if (self.uid.len > 0) self.allocator.free(self.uid);
             }
 
             /// Get column value by index (used for sorting)
@@ -123,6 +147,132 @@ pub fn ResourceView(
             /// instantiation per view rather than one per (view, column).
             fn getColumnAt(row: *const RowData, idx: usize) []const u8 {
                 return row.columns[idx];
+            }
+        };
+
+        pub const ProjectionAdapter = struct {
+            pub const ViewRollback = struct {
+                ptr: *anyopaque,
+                alignment: std.mem.Alignment,
+                restoreFn: *const fn (*anyopaque, *anyopaque, std.mem.Allocator) void,
+                deinitFn: *const fn (*anyopaque, std.mem.Alignment, std.mem.Allocator) void,
+
+                fn restore(self: *ViewRollback, projection: *anyopaque, allocator: std.mem.Allocator) void {
+                    self.restoreFn(projection, self.ptr, allocator);
+                    self.ptr = undefined;
+                }
+
+                fn deinit(self: *ViewRollback, allocator: std.mem.Allocator) void {
+                    self.deinitFn(self.ptr, self.alignment, allocator);
+                    self.ptr = undefined;
+                }
+            };
+
+            ptr: *anyopaque,
+            countFn: *const fn (*anyopaque) usize,
+            loadingFn: *const fn (*anyopaque) bool,
+            visibleCountFn: *const fn (*anyopaque) usize,
+            visibleUidFn: *const fn (*anyopaque, usize) ?[]const u8,
+            labelsFn: *const fn (*anyopaque, []const u8) ?[]const u8,
+            selectedUidFn: *const fn (*anyopaque) ?[]const u8,
+            selectUidFn: *const fn (*anyopaque, []const u8) bool,
+            captureViewFn: *const fn (*anyopaque, std.mem.Allocator) anyerror!ViewRollback,
+            setViewFn: *const fn (*anyopaque, []const u8, u8, bool) anyerror!void,
+            columnsFn: *const fn (*anyopaque, []const u8, std.mem.Allocator) anyerror!?[col_count][]const u8,
+
+            pub fn init(
+                comptime Record: type,
+                projection: *projection_mod.ResourceProjection(Record),
+                comptime columns_fn: fn (
+                    *projection_mod.ResourceProjection(Record),
+                    *const Record,
+                    std.mem.Allocator,
+                ) anyerror![col_count][]const u8,
+            ) ProjectionAdapter {
+                const Projection = projection_mod.ResourceProjection(Record);
+                const Adapter = struct {
+                    fn typedProjection(raw: *anyopaque) *Projection {
+                        return @ptrCast(@alignCast(raw));
+                    }
+                    fn count(raw: *anyopaque) usize {
+                        return typedProjection(raw).count();
+                    }
+                    fn loading(raw: *anyopaque) bool {
+                        return typedProjection(raw).isLoading();
+                    }
+                    fn visibleCount(raw: *anyopaque) usize {
+                        return typedProjection(raw).visibleCount();
+                    }
+                    fn visibleUid(raw: *anyopaque, row: usize) ?[]const u8 {
+                        return typedProjection(raw).visibleUid(row);
+                    }
+                    fn labels(raw: *anyopaque, uid: []const u8) ?[]const u8 {
+                        const record = typedProjection(raw).record(uid) orelse return null;
+                        return record.key.labels;
+                    }
+                    fn selectedUid(raw: *anyopaque) ?[]const u8 {
+                        return typedProjection(raw).selectedUid();
+                    }
+                    fn selectUid(raw: *anyopaque, uid: []const u8) bool {
+                        return typedProjection(raw).selectUid(uid);
+                    }
+                    fn captureView(raw: *anyopaque, allocator: std.mem.Allocator) anyerror!ViewRollback {
+                        const Snapshot = Projection.ViewSnapshot;
+                        const snapshot = try allocator.create(Snapshot);
+                        errdefer allocator.destroy(snapshot);
+                        snapshot.* = try typedProjection(raw).captureView();
+                        return .{
+                            .ptr = snapshot,
+                            .alignment = .of(Snapshot),
+                            .restoreFn = restoreView,
+                            .deinitFn = adapterDeinitView,
+                        };
+                    }
+                    fn restoreView(raw: *anyopaque, erased: *anyopaque, allocator: std.mem.Allocator) void {
+                        const snapshot: *Projection.ViewSnapshot = @ptrCast(@alignCast(erased));
+                        typedProjection(raw).restoreView(snapshot);
+                        allocator.destroy(snapshot);
+                    }
+                    fn adapterDeinitView(
+                        erased: *anyopaque,
+                        _: std.mem.Alignment,
+                        allocator: std.mem.Allocator,
+                    ) void {
+                        const snapshot: *Projection.ViewSnapshot = @ptrCast(@alignCast(erased));
+                        snapshot.deinit(snapshot.allocator);
+                        allocator.destroy(snapshot);
+                    }
+                    fn setView(
+                        raw: *anyopaque,
+                        filter: []const u8,
+                        column: u8,
+                        ascending: bool,
+                    ) anyerror!void {
+                        try typedProjection(raw).setView(filter, column, ascending);
+                    }
+                    fn columns(
+                        raw: *anyopaque,
+                        uid: []const u8,
+                        allocator: std.mem.Allocator,
+                    ) anyerror!?[col_count][]const u8 {
+                        const typed = typedProjection(raw);
+                        const record = typed.record(uid) orelse return null;
+                        return try columns_fn(typed, record, allocator);
+                    }
+                };
+                return .{
+                    .ptr = @ptrCast(projection),
+                    .countFn = Adapter.count,
+                    .loadingFn = Adapter.loading,
+                    .visibleCountFn = Adapter.visibleCount,
+                    .visibleUidFn = Adapter.visibleUid,
+                    .labelsFn = Adapter.labels,
+                    .selectedUidFn = Adapter.selectedUid,
+                    .selectUidFn = Adapter.selectUid,
+                    .captureViewFn = Adapter.captureView,
+                    .setViewFn = Adapter.setView,
+                    .columnsFn = Adapter.columns,
+                };
             }
         };
 
@@ -155,6 +305,12 @@ pub fn ResourceView(
                 for (self.column_order[0..self.visible_columns]) |ci| listed[ci] = true;
                 for (0..col_count) |ci| {
                     if (!listed[ci]) mask[ci] = true;
+                }
+            }
+
+            if (!self.show_wide) {
+                inline for (config.columns, 0..) |cd, ci| {
+                    if (cd.priority == table_layout.ColumnPriority.VERY_LOW) mask[ci] = true;
                 }
             }
             return mask;
@@ -222,111 +378,67 @@ pub fn ResourceView(
             self.table.deinit();
         }
 
+        pub fn bindProjection(self: *Self, adapter: ProjectionAdapter) void {
+            self.projection_adapter = adapter;
+        }
+
+        pub fn bindPodProjection(self: *Self, projection: *PodProjection) void {
+            if (is_pods) {
+                self.bindProjection(ProjectionAdapter.init(
+                    PodRecord,
+                    projection,
+                    podProjectionColumns,
+                ));
+            }
+        }
+
+        pub fn markSubscriptionStarted(self: *Self) void {
+            self.subscription_started = true;
+            self.subscription_request = .none;
+        }
+
+        pub fn markSubscriptionStopped(self: *Self) void {
+            self.subscription_started = false;
+        }
+
+        pub fn takeSubscriptionRequest(self: *Self) SubscriptionRequest {
+            const request = self.subscription_request;
+            self.subscription_request = .none;
+            return request;
+        }
+
+        pub fn markPodSubscriptionStarted(self: *Self) void {
+            if (is_pods) self.markSubscriptionStarted();
+        }
+
+        pub fn markPodSubscriptionStopped(self: *Self) void {
+            if (is_pods) self.markSubscriptionStopped();
+        }
+
+        pub fn takePodSubscriptionRequest(self: *Self) PodSubscriptionRequest {
+            if (!is_pods) return .none;
+            return self.takeSubscriptionRequest();
+        }
+
         pub fn refresh(self: *Self) !void {
-            // If connection not yet attempted, stay in loading state
-            if (!self.k8s_service.isConnected() and !self.k8s_service.hasAttemptedConnect()) {
-                self.table.loading = true;
-                return;
-            }
-
             self.table.loading = true;
-            defer self.table.loading = false;
-            self.table.clearItems();
+            self.table.loading_detail = "Loading " ++ config.name ++ "...";
+            self.subscription_request = if (self.subscription_started) .restart else .start;
+        }
 
-            // Invalidate column width cache on refresh
-            if (self.cached_col_widths) |*w| {
-                w.deinit();
-                self.cached_col_widths = null;
+        /// Queue a data-plane subscription start or restart and set the loading hint.
+        pub fn scheduleRefresh(self: *Self, hint: []const u8) void {
+            self.table.loading = true;
+            self.table.loading_detail = hint;
+            self.subscription_request = if (self.subscription_started) .restart else .start;
+        }
+
+        pub fn getStatusHint(self: *const Self) ?[]const u8 {
+            if (self.table.loading) {
+                if (self.table.loading_detail.len > 0) return self.table.loading_detail;
+                return "Loading...";
             }
-
-            if (!self.k8s_service.isConnected()) {
-                try self.table.setError("Not connected to Kubernetes cluster");
-                return;
-            }
-
-            // Fetch items via k8s_service — ParsedList keeps JSON alive during transform
-            var parsed_list = if (config.is_namespaced and !self.table.show_all_namespaces)
-                self.k8s_service.listInNsGenericPub(KlientType, KlientResourceType, null) catch |err| {
-                    try self.table.setConnectionError(config.name, err);
-                    return;
-                }
-            else
-                self.k8s_service.listAllGenericPub(KlientType, KlientResourceType) catch |err| {
-                    try self.table.setConnectionError(config.name, err);
-                    return;
-                };
-            defer parsed_list.deinit();
-
-            // Transform each item to display strings (items valid until parsed_list.deinit)
-            for (parsed_list.items()) |item| {
-                const cols = transformFn(item, self.table.allocator) catch |err| {
-                    Logger.err("Failed to transform {s} item: {}", .{ config.name, err });
-                    continue;
-                };
-                try self.table.appendItem(.{
-                    .columns = cols,
-                    .allocator = self.table.allocator,
-                });
-            }
-
-            // Overwrite the cpu/mem placeholder columns with live metrics, when
-            // the config opts in. The metrics server is optional: on any error
-            // the map is treated as absent. cpu/mem placeholders are left as-is
-            // when a pod has no metrics; %-of-request cells are always rewritten
-            // (to "<pct>" or "n/a") so the raw request integer the transform
-            // stored there never reaches the display.
-            if (config.metrics_columns) |mc| {
-                var maybe_map: ?std.StringHashMap(PodMetric) =
-                    self.k8s_service.getPodMetrics(self.table.show_all_namespaces) catch null;
-                defer if (maybe_map) |*m| self.k8s_service.freePodMetrics(m);
-
-                const alloc = self.table.allocator;
-                for (self.table.items.items) |*row| {
-                    const ns = row.columns[config.namespace_column.?];
-                    const nm = row.columns[config.name_column];
-                    var keybuf: [512]u8 = undefined;
-                    const key = std.fmt.bufPrint(&keybuf, "{s}/{s}", .{ ns, nm }) catch continue;
-                    const pm: ?PodMetric =
-                        if (maybe_map) |*m| m.get(key) else null;
-
-                    if (pm) |metric| {
-                        // Both cells are duped before either old value is freed: the
-                        // previous order freed cpu AND mem up front, so a failure on
-                        // the first dupe left two dangling column pointers that the
-                        // row's own cleanup would free again. The %-columns just below
-                        // already got this ordering right.
-                        const new_cpu = try alloc.dupe(u8, metric.cpu);
-                        errdefer alloc.free(new_cpu);
-                        const new_mem = try alloc.dupe(u8, metric.mem);
-
-                        alloc.free(row.columns[mc.cpu]);
-                        alloc.free(row.columns[mc.mem]);
-                        row.columns[mc.cpu] = new_cpu;
-                        row.columns[mc.mem] = new_mem;
-                    }
-
-                    if (mc.cpu_pct) |ci| {
-                        const req = std.fmt.parseInt(u64, row.columns[ci], 10) catch 0;
-                        const cell = if (pm != null and req > 0)
-                            try std.fmt.allocPrint(alloc, "{d}", .{pm.?.cpu_milli * 100 / req})
-                        else
-                            try alloc.dupe(u8, "n/a");
-                        alloc.free(row.columns[ci]);
-                        row.columns[ci] = cell;
-                    }
-                    if (mc.mem_pct) |mi| {
-                        const req = std.fmt.parseInt(u64, row.columns[mi], 10) catch 0;
-                        const cell = if (pm != null and req > 0)
-                            try std.fmt.allocPrint(alloc, "{d}", .{pm.?.mem_bytes * 100 / req})
-                        else
-                            try alloc.dupe(u8, "n/a");
-                        alloc.free(row.columns[mi]);
-                        row.columns[mi] = cell;
-                    }
-                }
-            }
-
-            try self.applyFilter(self.table.filter_text);
+            return null;
         }
 
         pub fn getSelectedResourceInfo(self: *Self) ?view_mod.ResourceInfo {
@@ -346,17 +458,130 @@ pub fn ResourceView(
                 w.deinit();
                 self.cached_col_widths = null;
             }
+            if (self.projection_adapter != null) {
+                const owned_filter: []const u8 = if (filter.len > 0)
+                    try self.table.allocator.dupe(u8, filter)
+                else
+                    "";
+                errdefer if (owned_filter.len > 0) self.table.allocator.free(owned_filter);
+                try self.setProjectionViewAndSync(
+                    filter,
+                    self.table.sort_column orelse config.name_column,
+                    self.table.sort_ascending,
+                );
+                if (self.table.filter_text.len > 0) self.table.allocator.free(self.table.filter_text);
+                self.table.filter_text = owned_filter;
+                if (self.faults_only) self.retainFaultsOnly();
+                return;
+            }
             try self.table.applyFilter(filter, matchFn);
+            if (self.faults_only) self.retainFaultsOnly();
             self.applySorting();
         }
 
+        fn setProjectionViewAndSync(
+            self: *Self,
+            filter: []const u8,
+            column: u8,
+            ascending: bool,
+        ) !void {
+            const adapter = self.projection_adapter orelse return;
+            var rollback = try adapter.captureViewFn(adapter.ptr, self.table.allocator);
+            adapter.setViewFn(adapter.ptr, "", column, ascending) catch |err| {
+                rollback.deinit(self.table.allocator);
+                return err;
+            };
+            self.syncProjectionFiltered(filter) catch |err| {
+                rollback.restore(adapter.ptr, self.table.allocator);
+                return err;
+            };
+            rollback.deinit(self.table.allocator);
+        }
+
+        fn retainFaultsOnly(self: *Self) void {
+            const status_i: ?u8 = comptime blk: {
+                for (config.columns, 0..) |cd, i| {
+                    if (std.mem.eql(u8, cd.name, "STATUS")) break :blk @as(u8, @intCast(i));
+                }
+                break :blk null;
+            };
+            const ready_i: ?u8 = comptime blk: {
+                for (config.columns, 0..) |cd, i| {
+                    if (std.mem.eql(u8, cd.name, "READY")) break :blk @as(u8, @intCast(i));
+                }
+                break :blk null;
+            };
+            const desired_i: ?u8 = comptime blk: {
+                for (config.columns, 0..) |cd, i| {
+                    if (std.mem.eql(u8, cd.name, "DESIRED")) break :blk @as(u8, @intCast(i));
+                }
+                break :blk null;
+            };
+            if (status_i == null and ready_i == null) return;
+
+            var write: usize = 0;
+            for (self.table.filtered_indices.items) |idx| {
+                const row = &self.table.items.items[idx];
+                const st: ?[]const u8 = if (status_i) |si| row.columns[si] else null;
+                const rd: ?[]const u8 = if (ready_i) |ri| row.columns[ri] else null;
+                const bare_ready_fault = if (rd) |ready|
+                    if (desired_i) |di|
+                        std.mem.indexOfScalar(u8, ready, '/') == null and
+                            !std.mem.eql(u8, ready, row.columns[di])
+                    else
+                        false
+                else
+                    false;
+                if (k9s_query.isFault(st, rd) or bare_ready_fault) {
+                    self.table.filtered_indices.items[write] = idx;
+                    write += 1;
+                }
+            }
+            self.table.filtered_indices.shrinkRetainingCapacity(write);
+            self.table.clampSelectionIntoView();
+        }
+
         /// Bulk mark operations over the currently-filtered rows.
-        /// `.all` marks every filtered row (idempotent); `.invert` toggles each.
-        /// Clearing is `table.clearMarks()` directly. toggleMark dupes the key,
-        /// so reusing one stack buffer across rows is safe.
-        const MarkOp = enum { all, invert };
+        /// `.all` marks every filtered row (idempotent); `.invert` toggles each;
+        /// `.range` fills from the nearest already-marked filtered row to the
+        /// cursor (k9s Ctrl-Space). Clearing is `table.clearMarks()` directly.
+        /// toggleMark dupes the key, so reusing one stack buffer across rows is safe.
+        const MarkOp = enum { all, invert, range };
         fn applyMarkOp(self: *Self, op: MarkOp) void {
             var key_buf: [512]u8 = undefined;
+            const n = self.table.filtered_indices.items.len;
+            if (n == 0) return;
+
+            if (op == .range) {
+                const sel = @min(self.table.selected_row, @as(u32, @intCast(n - 1)));
+                var anchor: ?u32 = null;
+                var best: u32 = std.math.maxInt(u32);
+                for (self.table.filtered_indices.items, 0..) |idx, i| {
+                    const item: *const RowData = &self.table.items.items[idx];
+                    const key = rowKey(item, &key_buf);
+                    if (!self.table.isMarked(key)) continue;
+                    const ui: u32 = @intCast(i);
+                    const dist = if (ui > sel) ui - sel else sel - ui;
+                    if (dist < best) {
+                        best = dist;
+                        anchor = ui;
+                    }
+                }
+                const a = anchor orelse sel;
+                var i = @min(a, sel);
+                const hi = @max(a, sel);
+                while (i <= hi) : (i += 1) {
+                    const idx = self.table.filtered_indices.items[i];
+                    const item: *const RowData = &self.table.items.items[idx];
+                    const key = rowKey(item, &key_buf);
+                    if (!self.table.isMarked(key)) {
+                        self.table.toggleMark(key) catch |err|
+                            Logger.err("Failed to mark range in {s}: {}", .{ config.name, err });
+                    }
+                }
+                return;
+            }
+
             for (self.table.filtered_indices.items) |idx| {
                 const item: *const RowData = &self.table.items.items[idx];
                 const key = rowKey(item, &key_buf);
@@ -367,26 +592,194 @@ pub fn ResourceView(
                     },
                     .invert => self.table.toggleMark(key) catch |err|
                         Logger.err("Failed to invert mark in {s}: {}", .{ config.name, err }),
+                    .range => unreachable,
                 }
             }
         }
 
         fn applySorting(self: *Self) void {
-            if (self.table.sort_column) |col| {
-                if (col < col_count) {
-                    self.table.sortByColumn(&RowData.getColumnAt, col);
-                }
+            if (self.projection_adapter != null) {
+                self.setProjectionViewAndSync(
+                    self.table.filter_text,
+                    self.table.sort_column orelse config.name_column,
+                    self.table.sort_ascending,
+                ) catch return;
+                if (self.faults_only) self.retainFaultsOnly();
+                return;
+            }
+            if (self.table.sort_column) |column| {
+                if (column < col_count) self.table.sortByColumn(RowData.getColumnAt, column);
             }
         }
 
+        fn invalidateWidths(self: *Self) void {
+            if (self.cached_col_widths) |*w| {
+                w.deinit();
+                self.cached_col_widths = null;
+            }
+        }
+
+        fn rotateColumns(self: *Self, dir: i8) void {
+            const n = self.visible_columns;
+            if (n < 2) return;
+            if (dir > 0) {
+                const last = self.column_order[n - 1];
+                var i = n;
+                while (i > 1) : (i -= 1) {
+                    self.column_order[i - 1] = self.column_order[i - 2];
+                }
+                self.column_order[0] = last;
+            } else {
+                const first = self.column_order[0];
+                var i: u8 = 0;
+                while (i + 1 < n) : (i += 1) {
+                    self.column_order[i] = self.column_order[i + 1];
+                }
+                self.column_order[n - 1] = first;
+            }
+            self.invalidateWidths();
+        }
+
         fn matchFn(item: *const RowData, filter: []const u8) bool {
-            // Search only columns marked as searchable
+            var cols: [col_count][]const u8 = undefined;
+            var n: usize = 0;
             inline for (config.columns, 0..) |col_def, idx| {
                 if (col_def.searchable) {
-                    if (std.mem.indexOf(u8, item.columns[idx], filter) != null) return true;
+                    cols[n] = item.columns[idx];
+                    n += 1;
                 }
             }
-            return false;
+            return k9s_query.matchSearchable(cols[0..n], item.labels, filter);
+        }
+
+        pub fn syncProjection(self: *Self) !void {
+            try self.syncProjectionFiltered(self.table.filter_text);
+        }
+
+        fn syncProjectionFiltered(self: *Self, filter: []const u8) !void {
+            const adapter = self.projection_adapter orelse return;
+            self.syncProjectionSelection();
+            const previous_selected_row = self.table.selected_row;
+            const previous_scroll_offset = self.table.scroll_offset;
+
+            var next_items: std.ArrayListUnmanaged(RowData) = .empty;
+            errdefer {
+                for (next_items.items) |*row| row.deinit();
+                next_items.deinit(self.table.allocator);
+            }
+            var next_indices: std.ArrayListUnmanaged(usize) = .empty;
+            errdefer next_indices.deinit(self.table.allocator);
+            const visible_count = adapter.visibleCountFn(adapter.ptr);
+            try next_items.ensureTotalCapacity(self.table.allocator, visible_count);
+            try next_indices.ensureTotalCapacity(self.table.allocator, visible_count);
+
+            var row_index: usize = 0;
+            while (row_index < visible_count) : (row_index += 1) {
+                const uid = adapter.visibleUidFn(adapter.ptr, row_index) orelse continue;
+                const columns = try adapter.columnsFn(adapter.ptr, uid, self.table.allocator) orelse continue;
+                var columns_owned = true;
+                errdefer if (columns_owned) for (columns) |column| self.table.allocator.free(column);
+                const owned_uid = try self.table.allocator.dupe(u8, uid);
+                var identity_owned = true;
+                errdefer if (identity_owned) self.table.allocator.free(owned_uid);
+                const owned_labels: []const u8 = if (adapter.labelsFn(adapter.ptr, uid)) |labels|
+                    if (labels.len > 0) try self.table.allocator.dupe(u8, labels) else &.{}
+                else
+                    &.{};
+                errdefer if (identity_owned and owned_labels.len > 0) self.table.allocator.free(owned_labels);
+                const row = RowData{
+                    .columns = columns,
+                    .allocator = self.table.allocator,
+                    .uid = owned_uid,
+                    .labels = owned_labels,
+                };
+                next_items.appendAssumeCapacity(row);
+                columns_owned = false;
+                identity_owned = false;
+                if (filter.len == 0 or matchFn(&next_items.items[next_items.items.len - 1], filter)) {
+                    next_indices.appendAssumeCapacity(next_items.items.len - 1);
+                }
+            }
+
+            self.table.clearItems();
+            self.table.items.deinit(self.table.allocator);
+            self.table.filtered_indices.deinit(self.table.allocator);
+            self.table.items = next_items;
+            self.table.filtered_indices = next_indices;
+            next_items = .empty;
+            next_indices = .empty;
+            self.table.loading = adapter.loadingFn(adapter.ptr);
+            if (!self.table.loading) self.table.loading_detail = "";
+
+            if (self.faults_only) self.retainFaultsOnly();
+            if (is_pods) self.sortProjectedPodRows();
+            var selection_mapped = false;
+            if (adapter.selectedUidFn(adapter.ptr)) |selected_uid| {
+                for (self.table.filtered_indices.items, 0..) |item_index, visible_index| {
+                    if (std.mem.eql(u8, self.table.items.items[item_index].uid, selected_uid)) {
+                        self.table.selected_row = @intCast(visible_index);
+                        selection_mapped = true;
+                        break;
+                    }
+                }
+            }
+            if (!selection_mapped) {
+                // A selection the filter removed must not disable every action: keep
+                // the cursor where it was, clamped into the surviving rows.
+                self.table.selected_row = @intCast(@min(
+                    previous_selected_row,
+                    @as(u32, @intCast(self.table.filtered_indices.items.len -| 1)),
+                ));
+                self.table.scroll_offset = @min(
+                    previous_scroll_offset,
+                    self.table.selected_row,
+                );
+            }
+            // Needed on the mapped path too: the row rebuild ran through clearItems,
+            // which zeroes scroll_offset, so a surviving UID far down the list would
+            // otherwise be selected outside the painted window.
+            self.table.clampSelectionIntoView();
+            if (!selection_mapped) {
+                if (self.table.getSelectedItem()) |selected| {
+                    if (selected.uid.len > 0) _ = adapter.selectUidFn(adapter.ptr, selected.uid);
+                }
+            }
+            self.invalidateWidths();
+        }
+
+        fn sortProjectedPodRows(self: *Self) void {
+            const column = self.table.sort_column orelse return;
+            const Context = struct {
+                rows: []const RowData,
+                column: u8,
+                ascending: bool,
+
+                fn lessThan(ctx: @This(), left: usize, right: usize) bool {
+                    const a = &ctx.rows[left];
+                    const b = &ctx.rows[right];
+                    const order = podCellOrder(a.columns[ctx.column], b.columns[ctx.column], ctx.column);
+                    if (order == .eq) {
+                        const uid_order = std.mem.order(u8, a.uid, b.uid);
+                        return if (ctx.ascending) uid_order == .lt else uid_order == .gt;
+                    }
+                    return if (ctx.ascending) order == .lt else order == .gt;
+                }
+            };
+            std.sort.pdq(usize, self.table.filtered_indices.items, Context{
+                .rows = self.table.items.items,
+                .column = column,
+                .ascending = self.table.sort_ascending,
+            }, Context.lessThan);
+        }
+
+        pub fn syncPodProjection(self: *Self) !void {
+            if (is_pods) try self.syncProjection();
+        }
+
+        fn syncProjectionSelection(self: *Self) void {
+            const adapter = self.projection_adapter orelse return;
+            const selected = self.table.getSelectedItem() orelse return;
+            if (selected.uid.len > 0) _ = adapter.selectUidFn(adapter.ptr, selected.uid);
         }
 
         pub fn createView(self: *Self) View {
@@ -444,7 +837,8 @@ pub fn ResourceView(
 
             const use_cache = self.cached_col_widths != null and
                 self.cached_terminal_width == available_width and
-                self.cached_show_all == self.table.show_all_namespaces;
+                self.cached_show_all == self.table.show_all_namespaces and
+                self.cached_show_wide == self.show_wide;
 
             const col_widths = if (use_cache) blk: {
                 break :blk &self.cached_col_widths.?;
@@ -453,7 +847,12 @@ pub fn ResourceView(
                 var rows_data = try std.ArrayList([]const []const u8).initCapacity(allocator, self.table.filtered_indices.items.len);
                 defer rows_data.deinit(allocator);
 
-                for (self.table.filtered_indices.items) |item_idx| {
+                // Scanning 4k+ rows every redraw was freezing navigation after
+                // all-namespaces toggle. Sample the first N filtered rows for
+                // width — enough for representative column sizing.
+                const width_sample_max = 256;
+                const width_sample_len = @min(self.table.filtered_indices.items.len, width_sample_max);
+                for (self.table.filtered_indices.items[0..width_sample_len]) |item_idx| {
                     // Point into the stable items backing array, NOT a loop-local
                     // copy: `&item.columns` on a by-value copy aliases one stack
                     // slot, so every row would carry the last item's values and
@@ -481,6 +880,7 @@ pub fn ResourceView(
                 self.cached_col_widths = new_widths;
                 self.cached_terminal_width = available_width;
                 self.cached_show_all = self.table.show_all_namespaces;
+                self.cached_show_wide = self.show_wide;
                 break :blk &self.cached_col_widths.?;
             };
 
@@ -596,11 +996,22 @@ pub fn ResourceView(
         // Key handling
         // ====================================================================
 
-        const is_pods = std.mem.eql(u8, config.name, "pods");
         // Node-specific keys, mirroring the is_pods branch below.
         const is_nodes = std.mem.eql(u8, config.name, "nodes");
         const is_secrets = std.mem.eql(u8, config.name, "secrets");
         const is_services = std.mem.eql(u8, config.name, "services");
+        const is_deployments = std.mem.eql(u8, config.name, "deployments");
+        const is_statefulsets = std.mem.eql(u8, config.name, "statefulsets");
+        const is_daemonsets = std.mem.eql(u8, config.name, "daemonsets");
+        const is_replicasets = std.mem.eql(u8, config.name, "replicasets");
+        const is_cronjobs = std.mem.eql(u8, config.name, "cronjobs");
+        const is_used_by_view = std.mem.eql(u8, config.name, "serviceaccounts") or
+            std.mem.eql(u8, config.name, "secrets") or
+            std.mem.eql(u8, config.name, "configmaps") or
+            std.mem.eql(u8, config.name, "persistentvolumeclaims");
+        const is_restart_view = is_deployments or is_statefulsets or is_daemonsets;
+        const is_scale_view = is_deployments or is_statefulsets or is_replicasets;
+        const is_rollback_view = is_restart_view or is_replicasets;
 
         /// pub so tests can drive the real key handler. It is already reachable
         /// through the vtable; a mutation that deleted the secrets `x` mapping survived
@@ -608,7 +1019,10 @@ pub fn ResourceView(
         pub fn handleKey(ptr: *anyopaque, key: Key) !KeyResult {
             const self: *Self = @ptrCast(@alignCast(ptr));
 
-            if (self.table.handleNavigationKey(key)) |result| return result;
+            if (self.table.handleNavigationKey(key)) |result| {
+                self.syncProjectionSelection();
+                return result;
+            }
 
             // Pod-specific action keys (comptime-gated; inert for every other
             // view). Mirrors the action map of the former bespoke PodsView so
@@ -624,19 +1038,16 @@ pub fn ResourceView(
             if (is_nodes) {
                 switch (key) {
                     .char => |c| switch (c) {
-                        // Cordon / uncordon only. Drain is deliberately NOT bound
-                        // here: k9s uses `r`, which in c3s is refresh -- binding a
-                        // workload-evicting operation to the key users press to
-                        // refresh is an accident generator. It also needs a
-                        // confirmation flow, like delete has.
-                        'c' => return .request_cordon,
-                        'u' => return .request_uncordon,
-                        // Uppercase D, NOT k9s's `r`: `r` is refresh in c3s, and
-                        // binding an eviction to the key users press to refresh would
-                        // be an accident generator. Only 'G' is remapped by
-                        // Terminal.readKey, so 'D' arrives as a plain char, and nodes
-                        // has no 'D' sort key.
-                        'D' => return .request_drain,
+                        // k9s: `u` toggles cordon. STATUS carries kubectl's
+                        // `,SchedulingDisabled` when spec.unschedulable is set.
+                        'u' => {
+                            const item = self.table.getSelectedItem() orelse return .handled;
+                            if (std.mem.indexOf(u8, item.columns[1], "SchedulingDisabled") != null)
+                                return .request_uncordon;
+                            return .request_cordon;
+                        },
+                        // k9s drain is `r`. `D` stays as a silent extra.
+                        'r', 'D' => return .request_drain,
                         else => {},
                     },
                     else => {},
@@ -658,6 +1069,7 @@ pub fn ResourceView(
                         'z' => return .request_sanitize,
                         't' => return .request_transfer,
                         'F' => return .request_port_forward,
+                        'f' => return .request_show_port_forwards,
                         else => {},
                     },
                     else => {},
@@ -668,13 +1080,64 @@ pub fn ResourceView(
                 switch (key) {
                     .char => |c| switch (c) {
                         'F' => return .request_port_forward,
+                        'f' => return .request_show_port_forwards,
                         else => {},
                     },
                     else => {},
                 }
             }
 
+            if (is_cronjobs) {
+                switch (key) {
+                    .char => |c| switch (c) {
+                        'p' => return .request_suspend,
+                        't' => return .request_trigger,
+                        else => {},
+                    },
+                    else => {},
+                }
+            }
+
+            if (is_used_by_view) {
+                switch (key) {
+                    .char => |c| if (c == 'u') return .request_used_by,
+                    else => {},
+                }
+            }
+
             switch (key) {
+                .ctrl_r => {
+                    self.refresh() catch |err| Logger.err("Failed to refresh {s}: {}", .{ config.name, err });
+                    return .handled;
+                },
+                .ctrl_backslash => {
+                    self.table.clearMarks();
+                    return .handled;
+                },
+                .ctrl_space => {
+                    self.applyMarkOp(.range);
+                    return .handled;
+                },
+                .ctrl_w => {
+                    self.show_wide = !self.show_wide;
+                    self.invalidateWidths();
+                    return .handled;
+                },
+                .ctrl_z => {
+                    self.faults_only = !self.faults_only;
+                    self.applyFilter(self.table.filter_text) catch |err|
+                        Logger.err("Failed to apply faults filter on {s}: {}", .{ config.name, err });
+                    return .handled;
+                },
+                .ctrl_l => if (is_rollback_view) return .request_rollback else return .not_handled,
+                .shift_left => {
+                    self.rotateColumns(-1);
+                    return .handled;
+                },
+                .shift_right => {
+                    self.rotateColumns(1);
+                    return .handled;
+                },
                 .char => |c| {
                     // Space toggles a k9s-style mark on the current row. Marks
                     // persist by row identity as the cursor moves/refreshes.
@@ -711,14 +1174,16 @@ pub fn ResourceView(
                         return .request_edit;
                     }
 
-                    // Refresh
+                    // Refresh. k9s uses Ctrl-r. Lowercase `r` stays refresh only
+                    // where it is not drain (nodes, handled above) or restart.
                     if (c == 'r') {
+                        if (is_restart_view) return .request_restart;
                         self.refresh() catch |err| Logger.err("Failed to refresh {s}: {}", .{ config.name, err });
                         return .handled;
                     }
 
                     // Traffic view (deployments only)
-                    if (c == 't' and std.mem.eql(u8, config.name, "deployments")) {
+                    if (c == 't' and is_deployments) {
                         return .request_traffic;
                     }
 
@@ -726,9 +1191,24 @@ pub fn ResourceView(
                     if (config.is_namespaced and c == '0') {
                         self.table.show_all_namespaces = !self.table.show_all_namespaces;
                         self.table.gotoTop();
-                        self.refresh() catch |err| Logger.err("Failed to refresh {s}: {}", .{ config.name, err });
+                        const hint = if (self.table.show_all_namespaces)
+                            "Loading all namespaces (large clusters may take a minute)..."
+                        else
+                            "Loading namespace...";
+                        self.scheduleRefresh(hint);
                         return .handled;
                     }
+
+                    if (c == 'z' and is_deployments) return .request_view_replicasets;
+                    if (c == 'R' and is_restart_view) return .request_restart;
+                    if (c == 's' and is_scale_view) return .request_scale;
+
+                    // Copy/warp/jump. Nodes `u` is cordon-toggle (handled above);
+                    // `c` is copy there too, matching k9s.
+                    if (c == 'c') return .request_copy;
+                    if (c == 'n') return .request_copy_namespace;
+                    if (c == 'w' and config.is_namespaced) return .request_warp;
+                    if (c == 'J') return .request_jump_owner;
 
                     // Comptime-generated sort key dispatch
                     inline for (config.columns, 0..) |col_def, idx| {
@@ -753,18 +1233,11 @@ pub fn ResourceView(
 
         fn onShow(ptr: *anyopaque) void {
             const self: *Self = @ptrCast(@alignCast(ptr));
-            // Re-showing must be instant (Esc back from a sub-view / switching
-            // back): show already-loaded rows, never block on kubectl. Only
-            // auto-load when empty; `r` forces a refresh. See PodsView.
-            if (self.table.items.items.len > 0) return;
-            self.refresh() catch |err| {
-                Logger.err("Failed to refresh {s}: {}", .{ config.name, err });
-                if (self.table.error_message == null) {
-                    self.table.setError("Unexpected error during refresh") catch {
-                        Logger.err("Failed to allocate error message", .{});
-                    };
-                }
-            };
+            if (!self.subscription_started and self.subscription_request == .none) {
+                self.refresh() catch |err| {
+                    Logger.err("Failed to start {s} subscription: {}", .{ config.name, err });
+                };
+            }
         }
 
         fn onHide(_: *anyopaque) void {}
@@ -829,6 +1302,21 @@ pub fn ResourceView(
             return self.getSelectedResourceInfo();
         }
 
+        fn vtableSetShowAllNamespaces(ptr: *anyopaque, all: bool) void {
+            const self: *Self = @ptrCast(@alignCast(ptr));
+            self.table.show_all_namespaces = all;
+        }
+
+        fn vtableShowsAllNamespaces(ptr: *anyopaque) bool {
+            const self: *const Self = @ptrCast(@alignCast(ptr));
+            return self.table.show_all_namespaces;
+        }
+
+        fn vtableGetStatusHint(ptr: *anyopaque) ?[]const u8 {
+            const self: *const Self = @ptrCast(@alignCast(ptr));
+            return self.getStatusHint();
+        }
+
         const vtable = View.VTable{
             .render = render,
             .handleKey = handleKey,
@@ -842,6 +1330,170 @@ pub fn ResourceView(
             .clearFilter = vtableClearFilter,
             .refresh = vtableRefresh,
             .getSelectedResource = vtableGetSelectedResource,
+            .setShowAllNamespaces = vtableSetShowAllNamespaces,
+            .showsAllNamespaces = vtableShowsAllNamespaces,
+            .getStatusHint = vtableGetStatusHint,
         };
     };
+}
+
+fn podProjectionColumns(
+    projection: *PodProjection,
+    record: *const PodRecord,
+    allocator: std.mem.Allocator,
+) ![12][]const u8 {
+    var columns: [12][]const u8 = undefined;
+    var initialized: usize = 0;
+    errdefer for (columns[0..initialized]) |column| allocator.free(column);
+    columns[0] = try allocator.dupe(u8, record.key.namespace);
+    initialized += 1;
+    columns[1] = try allocator.dupe(u8, record.key.name);
+    initialized += 1;
+    columns[2] = try std.fmt.allocPrint(allocator, "{d}/{d}", .{
+        record.ready_count,
+        record.container_count,
+    });
+    initialized += 1;
+    columns[3] = try allocator.dupe(
+        u8,
+        if (record.status_reason.len > 0)
+            record.status_reason
+        else if (record.phase.len > 0)
+            record.phase
+        else
+            "Unknown",
+    );
+    initialized += 1;
+    columns[4] = try std.fmt.allocPrint(allocator, "{d}", .{record.restart_count});
+    initialized += 1;
+    const metrics = projection.metricsFor(record.key.uid);
+    if (metrics != null and metrics.?.revision > 0) {
+        columns[5] = try formatPodCpu(allocator, metrics.?.cpu_milli);
+        initialized += 1;
+        columns[6] = try formatPodMemory(allocator, metrics.?.mem_bytes);
+        initialized += 1;
+        columns[7] = try formatPodPercent(allocator, metrics.?.cpu_milli, record.cpu_request_milli);
+        initialized += 1;
+        columns[8] = try formatPodPercent(allocator, metrics.?.mem_bytes, record.mem_request_bytes);
+        initialized += 1;
+    } else {
+        columns[5] = try allocator.dupe(u8, "n/a");
+        initialized += 1;
+        columns[6] = try allocator.dupe(u8, "n/a");
+        initialized += 1;
+        columns[7] = try allocator.dupe(u8, "n/a");
+        initialized += 1;
+        columns[8] = try allocator.dupe(u8, "n/a");
+        initialized += 1;
+    }
+    columns[9] = try allocator.dupe(u8, if (record.pod_ip.len > 0) record.pod_ip else "-");
+    initialized += 1;
+    columns[10] = try allocator.dupe(u8, if (record.node_name.len > 0) record.node_name else "-");
+    initialized += 1;
+    const age = try projection.ageCell(record.key.uid, record.creation_timestamp, 11);
+    columns[11] = try allocator.dupe(u8, age);
+    return columns;
+}
+
+fn formatPodCpu(allocator: std.mem.Allocator, milli: u64) ![]u8 {
+    if (milli >= 1000 and milli % 1000 == 0)
+        return std.fmt.allocPrint(allocator, "{d}", .{milli / 1000});
+    return std.fmt.allocPrint(allocator, "{d}m", .{milli});
+}
+
+fn formatPodMemory(allocator: std.mem.Allocator, bytes: u64) ![]u8 {
+    if (bytes >= 1024 * 1024 * 1024 and bytes % (1024 * 1024 * 1024) == 0)
+        return std.fmt.allocPrint(allocator, "{d}Gi", .{bytes / (1024 * 1024 * 1024)});
+    if (bytes >= 1024 * 1024)
+        return std.fmt.allocPrint(allocator, "{d}Mi", .{bytes / (1024 * 1024)});
+    if (bytes >= 1024)
+        return std.fmt.allocPrint(allocator, "{d}Ki", .{bytes / 1024});
+    return std.fmt.allocPrint(allocator, "{d}", .{bytes});
+}
+
+fn formatPodPercent(allocator: std.mem.Allocator, usage: u64, request: u64) ![]u8 {
+    if (request == 0) return allocator.dupe(u8, "n/a");
+    return std.fmt.allocPrint(allocator, "{d}", .{usage *| 100 / request});
+}
+
+fn podCellOrder(left: []const u8, right: []const u8, column: u8) std.math.Order {
+    return switch (column) {
+        2 => compareReady(left, right),
+        4, 7, 8 => compareOptionalNumber(left, right),
+        5 => std.math.order(parseCpu(left), parseCpu(right)),
+        6 => std.math.order(parseMemory(left), parseMemory(right)),
+        11 => std.math.order(parseAge(left), parseAge(right)),
+        else => std.mem.order(u8, left, right),
+    };
+}
+
+fn compareReady(left: []const u8, right: []const u8) std.math.Order {
+    const left_slash = std.mem.indexOfScalar(u8, left, '/') orelse return std.mem.order(u8, left, right);
+    const right_slash = std.mem.indexOfScalar(u8, right, '/') orelse return std.mem.order(u8, left, right);
+    const ready_order = std.math.order(
+        std.fmt.parseInt(u64, left[0..left_slash], 10) catch 0,
+        std.fmt.parseInt(u64, right[0..right_slash], 10) catch 0,
+    );
+    if (ready_order != .eq) return ready_order;
+    return std.math.order(
+        std.fmt.parseInt(u64, left[left_slash + 1 ..], 10) catch 0,
+        std.fmt.parseInt(u64, right[right_slash + 1 ..], 10) catch 0,
+    );
+}
+
+fn compareOptionalNumber(left: []const u8, right: []const u8) std.math.Order {
+    const left_value = std.fmt.parseInt(u64, left, 10) catch 0;
+    const right_value = std.fmt.parseInt(u64, right, 10) catch 0;
+    return std.math.order(left_value, right_value);
+}
+
+fn parseCpu(value: []const u8) u64 {
+    if (std.mem.eql(u8, value, "n/a")) return 0;
+    if (std.mem.endsWith(u8, value, "m")) {
+        return std.fmt.parseInt(u64, value[0 .. value.len - 1], 10) catch 0;
+    }
+    return (std.fmt.parseInt(u64, value, 10) catch 0) *| 1000;
+}
+
+fn parseMemory(value: []const u8) u64 {
+    if (std.mem.eql(u8, value, "n/a")) return 0;
+    const units = [_]struct { suffix: []const u8, multiplier: u64 }{
+        .{ .suffix = "Gi", .multiplier = 1024 * 1024 * 1024 },
+        .{ .suffix = "Mi", .multiplier = 1024 * 1024 },
+        .{ .suffix = "Ki", .multiplier = 1024 },
+    };
+    for (units) |unit| {
+        if (std.mem.endsWith(u8, value, unit.suffix)) {
+            return (std.fmt.parseInt(u64, value[0 .. value.len - unit.suffix.len], 10) catch 0) *| unit.multiplier;
+        }
+    }
+    return std.fmt.parseInt(u64, value, 10) catch 0;
+}
+
+fn parseAge(value: []const u8) u64 {
+    if (value.len < 2 or std.mem.eql(u8, value, "n/a")) return 0;
+    const multiplier: u64 = switch (value[value.len - 1]) {
+        's' => 1,
+        'm' => 60,
+        'h' => 60 * 60,
+        'd' => 24 * 60 * 60,
+        else => return 0,
+    };
+    return (std.fmt.parseInt(u64, value[0 .. value.len - 1], 10) catch 0) *| multiplier;
+}
+
+test "pod projection metrics format raw CPU and memory values" {
+    const cpu = try formatPodCpu(std.testing.allocator, 125);
+    defer std.testing.allocator.free(cpu);
+    const memory = try formatPodMemory(std.testing.allocator, 4 * 1024);
+    defer std.testing.allocator.free(memory);
+    try std.testing.expectEqualStrings("125m", cpu);
+    try std.testing.expectEqualStrings("4Ki", memory);
+    const percent = try formatPodPercent(std.testing.allocator, 125, 250);
+    defer std.testing.allocator.free(percent);
+    try std.testing.expectEqualStrings("50", percent);
+    try std.testing.expectEqual(std.math.Order.lt, podCellOrder("9", "10", 4));
+    try std.testing.expectEqual(std.math.Order.lt, podCellOrder("900m", "1", 5));
+    try std.testing.expectEqual(std.math.Order.lt, podCellOrder("900Mi", "1Gi", 6));
+    try std.testing.expectEqual(std.math.Order.lt, podCellOrder("59m", "1h", 11));
 }

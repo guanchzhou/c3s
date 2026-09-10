@@ -23,6 +23,8 @@ pub const Header = struct {
     title_with_version: []const u8,
     cpu_str: []const u8,
     mem_str: []const u8,
+    readonly: bool = false,
+    namespace_scope: []const u8,
     last_height: u16 = 0,
     debug: bool = false,
 
@@ -57,6 +59,7 @@ pub const Header = struct {
             .title_with_version = title_with_version,
             .cpu_str = cpu_str,
             .mem_str = mem_str,
+            .namespace_scope = try allocator.dupe(u8, "all-namespaces"),
             .debug = debug,
         };
     }
@@ -83,6 +86,7 @@ pub const Header = struct {
             .title_with_version = title_with_version,
             .cpu_str = cpu_str,
             .mem_str = mem_str,
+            .namespace_scope = try allocator.dupe(u8, "all-namespaces"),
             .debug = false,
         };
     }
@@ -463,6 +467,22 @@ pub const Header = struct {
         self.user = new_user;
     }
 
+    pub fn setReadonlyScope(self: *Header, readonly: bool, namespace_scope: []const u8) !void {
+        self.readonly = readonly;
+        if (std.mem.eql(u8, self.namespace_scope, namespace_scope)) return;
+        const replacement = try self.allocator.dupe(u8, namespace_scope);
+        self.allocator.free(self.namespace_scope);
+        self.namespace_scope = replacement;
+    }
+
+    pub fn safetyText(self: *const Header, buffer: []u8) ![]const u8 {
+        return std.fmt.bufPrint(
+            buffer,
+            "{s} | context: {s} | namespace: {s}",
+            .{ if (self.readonly) "READONLY" else "READWRITE", self.context, self.namespace_scope },
+        );
+    }
+
     /// Update the displayed Kubernetes server version
     pub fn updateK8sVersion(self: *Header, k8s_version: []const u8) !void {
         // Only update if the value actually changed
@@ -471,16 +491,17 @@ pub const Header = struct {
         self.k8s_version = try self.allocator.dupe(u8, k8s_version);
     }
 
-    pub fn updateCpuMem(self: *Header, cpu_pct: u8, mem_pct: u8) !void {
+    pub fn updateCpuMem(
+        self: *Header,
+        cpu_pct: u8,
+        mem_pct: u8,
+        new_cpu: []u8,
+        new_mem: []u8,
+    ) void {
         self.cpu_usage = cpu_pct;
         self.mem_usage = mem_pct;
-        // The header renders cpu_str/mem_str (not the u8 fields), so the
-        // displayed values must be rebuilt here — otherwise CPU/MEM stay stuck
-        // at the "0%"/"n/a" placeholder set at init.
-        const new_cpu = try std.fmt.allocPrint(self.allocator, "{d}%", .{cpu_pct});
         self.allocator.free(self.cpu_str);
         self.cpu_str = new_cpu;
-        const new_mem = try std.fmt.allocPrint(self.allocator, "{d}%", .{mem_pct});
         self.allocator.free(self.mem_str);
         self.mem_str = new_mem;
     }
@@ -496,6 +517,7 @@ pub const Header = struct {
         self.allocator.free(self.title_with_version);
         self.allocator.free(self.cpu_str);
         self.allocator.free(self.mem_str);
+        self.allocator.free(self.namespace_scope);
     }
 
     fn clearRows(terminal: *Terminal, x: u16, y: u16, width: u16, rows: u16) !void {
@@ -538,9 +560,9 @@ pub const Header = struct {
                 }
             }
 
-            // Calculate and render compact header with progressive compression
-            const compact_level = self.calculateCompactLevel(width);
-            try self.renderCompactHeader(terminal, x, y, width, compact_level);
+            var safety_buffer: [512]u8 = undefined;
+            const safety = try self.safetyText(&safety_buffer);
+            try Theme.writeStringWithTheme(terminal, x, y, safety, self.theme.hi_fg, self.theme.main_bg);
 
             self.last_height = box_height;
             return;
@@ -574,12 +596,15 @@ pub const Header = struct {
         const label_width = 9; // Fixed width for all labels for alignment
         var line: u16 = y + 1;
 
+        try Theme.writeStringWithTheme(terminal, x + 1, line, if (self.readonly) "READONLY" else "READWRITE", self.theme.status_failed, self.theme.main_bg);
+        line += 1;
+
         try Theme.writeStringWithTheme(terminal, x + 1, line, "Context:", self.theme.main_fg, self.theme.main_bg);
         try Theme.writeStringWithTheme(terminal, x + 1 + label_width, line, self.context, self.theme.hi_fg, self.theme.main_bg);
         line += 1;
 
-        try Theme.writeStringWithTheme(terminal, x + 1, line, "Cluster:", self.theme.main_fg, self.theme.main_bg);
-        try Theme.writeStringWithTheme(terminal, x + 1 + label_width, line, self.cluster, self.theme.hi_fg, self.theme.main_bg);
+        try Theme.writeStringWithTheme(terminal, x + 1, line, "Namespace:", self.theme.main_fg, self.theme.main_bg);
+        try Theme.writeStringWithTheme(terminal, x + 1 + label_width + 1, line, self.namespace_scope, self.theme.hi_fg, self.theme.main_bg);
         line += 1;
 
         try Theme.writeStringWithTheme(terminal, x + 1, line, "User:", self.theme.main_fg, self.theme.main_bg);
@@ -1180,7 +1205,24 @@ fn makeHeader(theme: *const theme_loader.ThemeColors) Header {
         .title_with_version = "",
         .cpu_str = "",
         .mem_str = "",
+        .namespace_scope = "",
     };
+}
+
+test "readonly context and namespace safety text never compresses" {
+    const theme = try theme_loader.defaultTheme(testing.allocator);
+    defer theme_loader.deinitTheme(@constCast(&theme));
+    var header = makeHeader(&theme);
+    header.readonly = true;
+    header.context = "dev4.as";
+    header.namespace_scope = "all-namespaces";
+    for ([_]u16{ 200, 80, 20, 1 }) |_| {
+        var buffer: [128]u8 = undefined;
+        try testing.expectEqualStrings(
+            "READONLY | context: dev4.as | namespace: all-namespaces",
+            try header.safetyText(&buffer),
+        );
+    }
 }
 
 test "Header progressive compact levels" {

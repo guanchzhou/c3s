@@ -37,3 +37,21 @@ pub fn io() std.Io {
     }
     return current.?;
 }
+
+/// Sleep in 1ms slices so `Future.cancel` can be observed on Darwin, where a
+/// single long `nanosleep` is not reliably interrupted.
+pub fn sleepCancelable(io_impl: std.Io, nanoseconds: i96) std.Io.Cancelable!void {
+    var remaining = nanoseconds;
+    while (remaining > 0) {
+        const slice = @min(remaining, std.time.ns_per_ms);
+        try io_impl.sleep(.{ .nanoseconds = slice }, .awake);
+        remaining -= slice;
+    }
+}
+
+/// Block until the calling Future is canceled.
+pub fn sleepUntilCanceled(io_impl: std.Io) std.Io.Cancelable!void {
+    while (true) {
+        try io_impl.sleep(.{ .nanoseconds = std.time.ns_per_ms }, .awake);
+    }
+}

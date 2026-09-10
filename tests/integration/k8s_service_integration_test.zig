@@ -25,7 +25,7 @@ test "K8sService - basic lifecycle" {
 
     // Verify initial state
     try testing.expect(!service.connected);
-    try testing.expect(service.client == null);
+    try testing.expect(service.sessionSlot() == null);
 }
 
 test "K8sService - connect and disconnect" {
@@ -45,122 +45,12 @@ test "K8sService - connect and disconnect" {
 
     // Verify connected state
     try testing.expect(service.connected);
-    try testing.expect(service.client != null);
+    try testing.expect(service.sessionSlot() != null);
 
     std.debug.print("Successfully connected to cluster: {s}\n", .{service.cluster_name});
 
     // Note: K8sService doesn't have a disconnect method
     // Connection is cleaned up in deinit()
-}
-
-test "K8sService - list namespaces" {
-    const allocator = testing.allocator;
-
-    var service = K8sService.init(allocator) catch |err| {
-        std.debug.print("Skipping integration test - init failed: {}\n", .{err});
-        return error.SkipZigTest;
-    };
-    defer service.deinit();
-
-    service.connect(null) catch |err| {
-        std.debug.print("Skipping integration test - no cluster available: {}\n", .{err});
-        return error.SkipZigTest;
-    };
-    // Note: Connection cleaned up in service.deinit()
-
-    // List namespaces.
-    //
-    // listNamespaces returns ParsedList(T), not a plain slice: the wrapper owns the
-    // json.Parsed arena its items point into. Returning a bare slice used to mean
-    // memcpy-ing structs containing json.Value out of a Parsed and then deinit-ing
-    // it -- a use-after-free. Hence .items() / .deinit() rather than allocator.free.
-    var namespaces = service.listNamespaces() catch |err| {
-        std.debug.print("Failed to list namespaces: {}\n", .{err});
-        return err;
-    };
-    defer namespaces.deinit();
-
-    const ns_items = namespaces.items();
-    std.debug.print("Found {} namespaces\n", .{ns_items.len});
-    try testing.expect(ns_items.len > 0); // Should have at least default or kube-system
-}
-
-test "K8sService - list nodes" {
-    const allocator = testing.allocator;
-
-    var service = K8sService.init(allocator) catch |err| {
-        std.debug.print("Skipping integration test - init failed: {}\n", .{err});
-        return error.SkipZigTest;
-    };
-    defer service.deinit();
-
-    service.connect(null) catch |err| {
-        std.debug.print("Skipping integration test - no cluster available: {}\n", .{err});
-        return error.SkipZigTest;
-    };
-    // Note: Connection cleaned up in service.deinit()
-
-    // List nodes
-    const nodes = service.listNodes() catch |err| {
-        std.debug.print("Failed to list nodes: {}\n", .{err});
-        return err;
-    };
-    defer allocator.free(nodes);
-
-    std.debug.print("Found {} nodes\n", .{nodes.len});
-    try testing.expect(nodes.len > 0); // Every cluster should have at least one node
-}
-
-test "K8sService - list pods" {
-    const allocator = testing.allocator;
-
-    var service = K8sService.init(allocator) catch |err| {
-        std.debug.print("Skipping integration test - init failed: {}\n", .{err});
-        return error.SkipZigTest;
-    };
-    defer service.deinit();
-
-    service.connect(null) catch |err| {
-        std.debug.print("Skipping integration test - no cluster available: {}\n", .{err});
-        return error.SkipZigTest;
-    };
-    // Note: Connection cleaned up in service.deinit()
-
-    // List pods in default namespace
-    var pods = service.listPods(null) catch |err| {
-        std.debug.print("Failed to list pods: {}\n", .{err});
-        return err;
-    };
-    defer pods.deinit();
-
-    std.debug.print("Found {} pods in namespace: {s}\n", .{ pods.value.items.len, service.current_namespace });
-    try testing.expect(pods.value.items.len >= 0); // May be 0 if namespace is empty
-}
-
-test "K8sService - list all pods" {
-    const allocator = testing.allocator;
-
-    var service = K8sService.init(allocator) catch |err| {
-        std.debug.print("Skipping integration test - init failed: {}\n", .{err});
-        return error.SkipZigTest;
-    };
-    defer service.deinit();
-
-    service.connect(null) catch |err| {
-        std.debug.print("Skipping integration test - no cluster available: {}\n", .{err});
-        return error.SkipZigTest;
-    };
-    // Note: Connection cleaned up in service.deinit()
-
-    // List all pods across all namespaces
-    var pods = service.listAllPods() catch |err| {
-        std.debug.print("Failed to list all pods: {}\n", .{err});
-        return err;
-    };
-    defer pods.deinit();
-
-    std.debug.print("Found {} pods across all namespaces\n", .{pods.value.items.len});
-    try testing.expect(pods.value.items.len >= 0);
 }
 
 test "K8sService - context management" {

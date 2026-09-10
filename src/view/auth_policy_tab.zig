@@ -6,9 +6,9 @@ const std = @import("std");
 const Terminal = @import("../core/Terminal.zig").Terminal;
 const theme_loader = @import("../model/theme_loader.zig");
 const Theme = theme_loader;
-const Logger = @import("../core/logger.zig");
 const k8s_service_mod = @import("../services/K8sService.zig");
 const K8sService = k8s_service_mod.K8sService;
+const keys = @import("../k8s/ResourceKey.zig");
 const TableState = @import("../ui/TableState.zig").TableState;
 
 pub const PolicyRow = struct {
@@ -48,6 +48,9 @@ pub const PolicyBrowserTab = struct {
     k8s_service: *K8sService,
     table: TableState(PolicyRow),
     cedar_available: ?bool = null,
+    active_key: ?keys.RequestKey = null,
+    active_serial: u64 = 0,
+    refresh_requested: bool = false,
 
     pub fn init(allocator: std.mem.Allocator, k8s_service: *K8sService) PolicyBrowserTab {
         return PolicyBrowserTab{
@@ -61,73 +64,14 @@ pub const PolicyBrowserTab = struct {
         self.table.deinit();
     }
 
-    /// Refresh policy browser data from the cluster
-    pub fn refresh(self: *PolicyBrowserTab) !void {
-        self.table.loading = true;
-        defer self.table.loading = false;
+    pub fn requestRefresh(self: *PolicyBrowserTab) void {
+        self.refresh_requested = true;
+    }
 
-        self.table.clearItems();
-
-        if (!self.k8s_service.isConnected()) {
-            try self.table.setError("Not connected to Kubernetes cluster");
-            return;
-        }
-
-        // Fetch RBAC roles and bindings
-        const rbac_policies = self.k8s_service.listRBACPolicies() catch |err| {
-            try self.table.setConnectionError("RBAC policies", err);
-            return;
-        };
-        defer {
-            for (rbac_policies) |*p| {
-                var mp = p.*;
-                mp.deinit();
-            }
-            self.allocator.free(rbac_policies);
-        }
-
-        for (rbac_policies) |p| {
-            try self.table.appendItem(PolicyRow{
-                .source = try self.allocator.dupe(u8, p.source),
-                .policy_type = .rbac,
-                .resource = try self.allocator.dupe(u8, p.resource),
-                .verbs = try self.allocator.dupe(u8, p.verbs),
-                .subjects = try self.allocator.dupe(u8, p.subjects),
-                .allocator = self.allocator,
-            });
-        }
-
-        // Detect Cedar and fetch policies
-        if (self.cedar_available == null) {
-            self.cedar_available = self.k8s_service.detectCedarAuth() catch false;
-        }
-
-        if (self.cedar_available.?) {
-            const cedar_policies = self.k8s_service.listCedarPolicies() catch |err| {
-                Logger.warn("Failed to list Cedar policies: {}", .{err});
-                return;
-            };
-            defer {
-                for (cedar_policies) |*p| {
-                    var mp = p.*;
-                    mp.deinit();
-                }
-                self.allocator.free(cedar_policies);
-            }
-
-            for (cedar_policies) |p| {
-                try self.table.appendItem(PolicyRow{
-                    .source = try self.allocator.dupe(u8, p.source),
-                    .policy_type = .cedar,
-                    .resource = try self.allocator.dupe(u8, p.resource),
-                    .verbs = try self.allocator.dupe(u8, p.verbs),
-                    .subjects = try self.allocator.dupe(u8, p.subjects),
-                    .allocator = self.allocator,
-                });
-            }
-        }
-
-        try self.applyFilter(self.table.filter_text);
+    pub fn takeRefreshRequest(self: *PolicyBrowserTab) bool {
+        const requested = self.refresh_requested;
+        self.refresh_requested = false;
+        return requested;
     }
 
     pub fn render(self: *PolicyBrowserTab, term: *Terminal, x: u16, y: u16, width: u16, height: u16, theme: *const theme_loader.ThemeColors) !void {
@@ -195,7 +139,7 @@ pub const PolicyBrowserTab = struct {
         self.table.pageUp();
     }
 
-    fn policyMatchFn(item: *const PolicyRow, filter: []const u8) bool {
+    pub fn policyMatchFn(item: *const PolicyRow, filter: []const u8) bool {
         return std.mem.indexOf(u8, item.source, filter) != null or
             std.mem.indexOf(u8, item.resource, filter) != null or
             std.mem.indexOf(u8, item.subjects, filter) != null;

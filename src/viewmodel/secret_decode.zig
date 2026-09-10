@@ -139,10 +139,10 @@ fn redactSecretMap(
     replacements: *std.ArrayListUnmanaged([]u8),
 ) Error!void {
     const v = maybe orelse return;
-    if (v.* != .object) return;
+    if (v.* != .object) return Error.NotAnObject;
     var it = v.object.iterator();
     while (it.next()) |entry| {
-        if (entry.value_ptr.* != .string) continue;
+        if (entry.value_ptr.* != .string) return Error.NotAnObject;
         const label = try std.fmt.allocPrint(allocator, "<redacted {d} bytes>", .{entry.value_ptr.string.len});
         try replacements.append(allocator, label);
         entry.value_ptr.* = .{ .string = label };

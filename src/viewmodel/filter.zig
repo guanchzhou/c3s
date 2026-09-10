@@ -49,28 +49,55 @@ pub fn applyFilter(
         }
     }
 
-    // Try to restore selection to the same item if it's still in the filtered list
-    if (old_selected_idx) |item_idx| {
-        for (filtered_indices.items, 0..) |filtered_idx, i| {
-            if (filtered_idx == item_idx) {
-                current_selected_row.* = @intCast(i);
-                // Adjust scroll to keep selection visible
-                if (current_selected_row.* < current_scroll_offset.*) {
-                    current_scroll_offset.* = current_selected_row.*;
-                } else if (current_selected_row.* >= current_scroll_offset.* + visible_rows) {
-                    current_scroll_offset.* = if (current_selected_row.* >= visible_rows)
-                        current_selected_row.* - visible_rows + 1
-                    else
-                        0;
-                }
-                return;
-            }
-        }
-    }
+    if (restoreSelectionByItemIndex(
+        filtered_indices.items,
+        old_selected_idx,
+        current_selected_row,
+        current_scroll_offset,
+        visible_rows,
+    )) return;
 
     // If we couldn't restore the selection, reset to top
     current_selected_row.* = 0;
     current_scroll_offset.* = 0;
+}
+
+/// Keep the cursor on the same underlying item after a list rebuild.
+///
+/// `item_idx` is an index into the full `items` slice; `filtered_indices` maps
+/// visible rows back to those indices (after filter and sort).
+pub fn restoreSelectionByItemIndex(
+    filtered_indices: []const usize,
+    item_idx: ?usize,
+    selected_row: *u32,
+    scroll_offset: *u32,
+    visible_rows: u32,
+) bool {
+    if (item_idx) |idx| {
+        for (filtered_indices, 0..) |filtered_idx, row| {
+            if (filtered_idx == idx) {
+                selected_row.* = @intCast(row);
+                adjustScrollForSelection(selected_row.*, scroll_offset, visible_rows);
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+fn adjustScrollForSelection(selected_row: u32, scroll_offset: *u32, visible_rows: u32) void {
+    if (visible_rows == 0) {
+        scroll_offset.* = selected_row;
+        return;
+    }
+    if (selected_row < scroll_offset.*) {
+        scroll_offset.* = selected_row;
+    } else if (selected_row >= scroll_offset.* + visible_rows) {
+        scroll_offset.* = if (selected_row >= visible_rows)
+            selected_row - visible_rows + 1
+        else
+            0;
+    }
 }
 
 // --- Tests ---
@@ -83,6 +110,39 @@ const TestItem = struct {
 
 fn nameMatchFn(item: *const TestItem, filter: []const u8) bool {
     return std.mem.indexOf(u8, item.name, filter) != null;
+}
+
+test "restoreSelectionByItemIndex finds item after rebuild" {
+    var filtered_indices = [_]usize{ 2, 0, 1 };
+    var selected_row: u32 = 0;
+    var scroll_offset: u32 = 0;
+
+    const restored = restoreSelectionByItemIndex(
+        &filtered_indices,
+        1,
+        &selected_row,
+        &scroll_offset,
+        10,
+    );
+
+    try std.testing.expect(restored);
+    try std.testing.expectEqual(@as(u32, 2), selected_row);
+}
+
+test "restoreSelectionByItemIndex handles unknown viewport height" {
+    const filtered_indices = [_]usize{ 0, 1, 2 };
+    var selected_row: u32 = 0;
+    var scroll_offset: u32 = 0;
+
+    try std.testing.expect(restoreSelectionByItemIndex(
+        &filtered_indices,
+        2,
+        &selected_row,
+        &scroll_offset,
+        0,
+    ));
+    try std.testing.expectEqual(@as(u32, 2), selected_row);
+    try std.testing.expectEqual(@as(u32, 2), scroll_offset);
 }
 
 test "filter with empty filter text shows all items" {

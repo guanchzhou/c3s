@@ -97,6 +97,13 @@ pub const ContextsView = struct {
         try self.applyFilter(self.filter_text);
     }
 
+    pub fn setError(self: *ContextsView, err: anyerror) !void {
+        const message = try std.fmt.allocPrint(self.allocator, "Context switch failed: {any}", .{err});
+        if (self.error_message) |old| self.allocator.free(old);
+        self.error_message = message;
+        self.loading = false;
+    }
+
     pub fn getSelectedResourceInfo(self: *ContextsView) ?ResourceInfo {
         _ = self;
         return null;
@@ -272,6 +279,10 @@ pub const ContextsView = struct {
     fn handleKey(ctx: *anyopaque, key: Key) anyerror!KeyResult {
         const self: *ContextsView = @ptrCast(@alignCast(ctx));
         switch (key) {
+            .ctrl_r => {
+                try self.refresh();
+                return .handled;
+            },
             .char => |c| switch (c) {
                 'j' => {
                     if (self.selected_row < self.filtered_indices.items.len -| 1) self.selected_row += 1;
@@ -286,13 +297,7 @@ pub const ContextsView = struct {
                     return .handled;
                 },
                 '\r', '\n' => {
-                    // Switch to selected context, then let the app return to
-                    // the view that was active before entering contexts.
                     if (self.filtered_indices.items.len > 0 and self.selected_row < self.filtered_indices.items.len) {
-                        const idx = self.filtered_indices.items[self.selected_row];
-                        const selected = self.items.items[idx];
-                        try self.k8s_service.switchContext(selected.name);
-                        try self.refresh();
                         return .context_switched;
                     }
                     return .handled;
@@ -318,13 +323,7 @@ pub const ContextsView = struct {
                 return .handled;
             },
             .enter => {
-                // Switch to selected context, then let the app return to
-                // the view that was active before entering contexts.
                 if (self.filtered_indices.items.len > 0 and self.selected_row < self.filtered_indices.items.len) {
-                    const idx = self.filtered_indices.items[self.selected_row];
-                    const selected = self.items.items[idx];
-                    try self.k8s_service.switchContext(selected.name);
-                    try self.refresh();
                     return .context_switched;
                 }
                 return .handled;
@@ -363,6 +362,12 @@ pub const ContextsView = struct {
             },
             else => return .not_handled,
         }
+    }
+
+    pub fn selectedContextName(self: *const ContextsView) ?[]const u8 {
+        if (self.selected_row >= self.filtered_indices.items.len) return null;
+        const index = self.filtered_indices.items[self.selected_row];
+        return self.items.items[index].name;
     }
 
     fn onShow(ctx: *anyopaque) void {

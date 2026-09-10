@@ -12,6 +12,12 @@ fn realtime() std.c.timespec {
     return ts;
 }
 
+fn monotonic() std.c.timespec {
+    var ts: std.c.timespec = undefined;
+    _ = std.c.clock_gettime(.MONOTONIC, &ts);
+    return ts;
+}
+
 /// Seconds since the Unix epoch.
 pub fn timestamp() i64 {
     return @intCast(realtime().sec);
@@ -27,4 +33,16 @@ pub fn milliTimestamp() i64 {
 pub fn nanoTimestamp() i128 {
     const ts = realtime();
     return @as(i128, @intCast(ts.sec)) * 1_000_000_000 + @as(i128, @intCast(ts.nsec));
+}
+
+/// Nanoseconds from the host monotonic clock.
+pub fn monotonicNanoTimestamp() i128 {
+    const ts = monotonic();
+    return @as(i128, @intCast(ts.sec)) * 1_000_000_000 + @as(i128, @intCast(ts.nsec));
+}
+
+test "monotonic nanoseconds never move backward" {
+    const before = monotonicNanoTimestamp();
+    const after = monotonicNanoTimestamp();
+    try std.testing.expect(after >= before);
 }

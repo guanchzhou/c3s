@@ -6,6 +6,11 @@ zig-pkg/
 # Local planning + agent tooling artifacts
 tasks/
 docs/superpowers/
+docs/design/
+
+# Python
+__pycache__/
+*.pyc
 
 # Build files
 .build_number
@@ -33,6 +38,7 @@ Thumbs.db
 test_*
 !test_*.zig
 !test_*.sh
+!test_*.py
 
 # Temporary files
 *.tmp

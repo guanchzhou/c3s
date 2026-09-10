@@ -10,6 +10,7 @@ pub const Footer = struct {
     current_view: ?[]const u8 = null, // Additional view status (e.g., "help")
     status: ?[]const u8 = null, // e.g., connection status
     preview_status: ?[]const u8 = null, // e.g., "previewing snazzy"
+    crumbs: []const u8 = "",
 
     pub fn init(allocator: std.mem.Allocator, theme: *const theme_loader.ThemeColors) !Footer {
         return Footer{
@@ -36,6 +37,10 @@ pub const Footer = struct {
         self.preview_status = theme_name;
     }
 
+    pub fn setCrumbs(self: *Footer, crumbs: []const u8) void {
+        self.crumbs = crumbs;
+    }
+
     pub fn setHelpMode(self: *Footer, help_visible: bool) void {
         if (help_visible) {
             self.current_view = "help";
@@ -57,7 +62,10 @@ pub const Footer = struct {
         // Display current resource and view status with padding like other components (offset by 1)
         // Use bold text without brackets, like btop: "pods | help" or just "pod"
         var display_len: usize = 0;
-        if (self.current_view) |view| {
+        if (self.crumbs.len > 0) {
+            try Theme.writeStringWithBold(terminal, x + 1, y, self.crumbs, self.theme.hi_fg, self.theme.main_bg);
+            display_len = self.crumbs.len;
+        } else if (self.current_view) |view| {
             // Format: "resource | view"
             var status_buffer: [64]u8 = undefined;
             const status_text = try std.fmt.bufPrint(&status_buffer, "{s} | {s}", .{ self.current_resource, view });

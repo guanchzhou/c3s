@@ -1,6 +1,7 @@
 const std = @import("std");
 const testing = std.testing;
-const App = @import("src").App;
+const c3s = @import("src");
+const App = c3s.App;
 
 // App.init takes a Cli.Config; all fields default, so `.{}` is sufficient here.
 // Terminal.init does not require a TTY (raw mode is only enabled later), so
@@ -59,6 +60,110 @@ test "app memory management" {
 
 const Key = @import("src").Terminal.Key;
 
+fn installLocalAppSession(app: *App, allocator: std.mem.Allocator) !void {
+    const session = session: {
+        const client = try allocator.create(c3s.K8sClient);
+        errdefer allocator.destroy(client);
+        client.* = try c3s.K8sClient.init(allocator, c3s.runtime.io(), .{
+            .server = "http://127.0.0.1",
+            .namespace = "default",
+        });
+        errdefer client.deinit();
+        break :session try c3s.ActiveContextSession.adopt(
+            allocator,
+            c3s.runtime.io(),
+            1,
+            .{
+                .context_name = "app-test-context",
+                .kubeconfig_path = null,
+                .default_namespace = "default",
+                .force_proxy = false,
+                .readonly = false,
+            },
+            .{
+                .shared_event = app.shared_event,
+                .client = client,
+                .cluster_name = "app-test-cluster",
+                .user_name = "app-test-user",
+                .readiness_verified = true,
+            },
+        );
+    };
+    errdefer session.deinit();
+    _ = try app.active_session_slot.commit(session);
+    app.k8s_service.connected = true;
+}
+
+test "real Enter switches namespace then pushes and refreshes pods" {
+    const allocator = testing.allocator;
+    var app = try App.init(allocator, .{});
+    defer app.deinit();
+    try installLocalAppSession(&app, allocator);
+    try app.switchToView("namespaces");
+
+    const namespaces = &app.namespaces_view.table;
+    try namespaces.appendItem(.{
+        .name = try allocator.dupe(u8, "kube-system"),
+        .status = try allocator.dupe(u8, "Active"),
+        .age = try allocator.dupe(u8, "1d"),
+        .allocator = allocator,
+    });
+    try namespaces.filtered_indices.append(allocator, 0);
+    namespaces.selected_row = 0;
+
+    const pods = &app.pods_view.table;
+    try pods.appendItem(.{ .columns = .{
+        try allocator.dupe(u8, "default"), try allocator.dupe(u8, "stale"),
+        try allocator.dupe(u8, "1/1"),     try allocator.dupe(u8, "Running"),
+        try allocator.dupe(u8, "0"),       try allocator.dupe(u8, "1m"),
+        try allocator.dupe(u8, "2Mi"),     try allocator.dupe(u8, "1"),
+        try allocator.dupe(u8, "1"),       try allocator.dupe(u8, "10.0.0.2"),
+        try allocator.dupe(u8, "node-1"),  try allocator.dupe(u8, "1d"),
+    }, .allocator = allocator });
+    try pods.filtered_indices.append(allocator, 0);
+
+    const namespace_depth = app.view_manager.getDepth();
+    try app.handleKey(.enter);
+
+    try testing.expectEqualStrings("kube-system", app.k8s_service.getCurrentNamespace());
+    try testing.expectEqualStrings("pods", app.current_view_name);
+    try testing.expectEqualStrings("pods", app.view_manager.getCurrentView().?.getName());
+    try testing.expectEqual(namespace_depth + 1, app.view_manager.getDepth());
+    try testing.expectEqual(@as(usize, 1), namespaces.items.items.len);
+    try testing.expectEqual(@as(usize, 1), pods.items.items.len);
+
+    try app.handleKey(.escape);
+    try testing.expectEqual(namespace_depth, app.view_manager.getDepth());
+    try testing.expectEqualStrings("namespaces", app.current_view_name);
+    try testing.expectEqualStrings(
+        "namespaces",
+        app.view_manager.getCurrentView().?.getName(),
+    );
+}
+
+test "failed namespace Enter stays on namespaces" {
+    const allocator = testing.allocator;
+    var app = try App.init(allocator, .{});
+    defer app.deinit();
+    try app.switchToView("namespaces");
+
+    const namespaces = &app.namespaces_view.table;
+    try namespaces.appendItem(.{
+        .name = try allocator.dupe(u8, "kube-system"),
+        .status = try allocator.dupe(u8, "Active"),
+        .age = try allocator.dupe(u8, "1d"),
+        .allocator = allocator,
+    });
+    try namespaces.filtered_indices.append(allocator, 0);
+    const namespace_depth = app.view_manager.getDepth();
+
+    try app.handleKey(.enter);
+
+    try testing.expectEqualStrings("default", app.k8s_service.getCurrentNamespace());
+    try testing.expectEqualStrings("namespaces", app.current_view_name);
+    try testing.expectEqual(namespace_depth, app.view_manager.getDepth());
+}
+
 test "x on the secrets view reaches the view, not App's global filter-clear" {
     var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
@@ -73,6 +178,18 @@ test "x on the secrets view reaches the view, not App's global filter-clear" {
     // Put a filter in place. If App's global 'x' handler wins, the filter is cleared
     // and the decode never happens -- which is exactly the shipped bug.
     try app.applyFilterToCurrentView("keep-me");
+    try app.secrets_view.table.appendItem(.{
+        .columns = .{
+            try allocator.dupe(u8, "default"),
+            try allocator.dupe(u8, "selected-secret"),
+            try allocator.dupe(u8, "Opaque"),
+            try allocator.dupe(u8, "1"),
+            try allocator.dupe(u8, "1m"),
+        },
+        .allocator = allocator,
+        .uid = try allocator.dupe(u8, "secret-uid"),
+    });
+    try app.secrets_view.table.filtered_indices.append(allocator, 0);
     try app.handleKey(.{ .char = 'x' });
 
     // The filter survived, so 'x' was consumed by the view rather than the global
@@ -96,6 +213,60 @@ test "x on a view with no decode still clears the filter" {
 
     try app.handleKey(.{ .char = 'x' });
     try testing.expectEqual(@as(usize, 0), app.configmaps_view.table.filter_text.len);
+}
+
+test "z on projected deployment opens replicasets in selected namespace" {
+    const allocator = testing.allocator;
+    var app = try App.init(allocator, .{});
+    defer app.deinit();
+    try installLocalAppSession(&app, allocator);
+    const DeploymentRecord = c3s.DeploymentRecord;
+    const keys = c3s.k8s_resource_key;
+    const Projection = @TypeOf(app.resource_families.deployment_projection);
+    const changes = try allocator.alloc(keys.TypedChange(DeploymentRecord), 1);
+    changes[0] = .{ .initial_upsert = DeploymentRecord{
+        .key = try (keys.ObjectKey{
+            .uid = "deployment-uid",
+            .namespace = "team-a",
+            .name = "api",
+        }).clone(allocator),
+        .ready_replicas = 2,
+        .desired_replicas = 3,
+        .updated_replicas = 3,
+        .available_replicas = 2,
+        .ready_sort_key = DeploymentRecord.ratioSortKey(2, 3),
+        .updated_sort_key = DeploymentRecord.countSortKey(3),
+        .available_sort_key = DeploymentRecord.countSortKey(2),
+    } };
+    var batch = keys.TypedBatch(DeploymentRecord){
+        .generation = 1,
+        .subscription_id = 1,
+        .revision = 1,
+        .changes = changes,
+        .sync = .list_started,
+        .owned_bytes = 1,
+    };
+    defer batch.deinit(allocator);
+    var plan = try Projection.handler().preflight(
+        @ptrCast(&app.resource_families.deployment_projection),
+        &batch,
+        allocator,
+    );
+    Projection.handler().commit(
+        @ptrCast(&app.resource_families.deployment_projection),
+        &batch,
+        &plan,
+    );
+    plan.deinit(allocator);
+    try testing.expect(app.resource_families.deployment_projection.selectUid("deployment-uid"));
+    try app.deployments_view.syncProjection();
+    try app.switchToView("deployments");
+
+    try app.handleKey(.{ .char = 'z' });
+
+    try testing.expectEqualStrings("replicasets", app.current_view_name);
+    try testing.expectEqualStrings("team-a", app.k8s_service.getCurrentNamespace());
+    try testing.expectEqualStrings("api", app.replicasets_view.table.filter_text);
 }
 
 test "Ctrl-D on the port-forwards view stops a forward instead of asking to delete" {
@@ -211,6 +382,39 @@ test "Ctrl-b pages up in a table-backed view" {
     try testing.expect(t.selected_row < 9);
 }
 
+test "arrow down navigates through App on a table-backed view" {
+    // Some terminals send SS3 sequences (ESC O B) rather than
+    // CSI (ESC [ B). Before the decodeCsi fix those arrived as Key.unsupported and
+    // App dropped them silently — arrows felt dead while j/k still worked.
+    var gpa = std.heap.DebugAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
+    var app = try App.init(allocator, .{});
+    defer app.deinit();
+
+    try app.switchToView("namespaces");
+    const t = &app.namespaces_view.table;
+    for ([_][]const u8{ "one", "two", "three" }) |name| {
+        try t.appendItem(.{
+            .name = try allocator.dupe(u8, name),
+            .status = try allocator.dupe(u8, "Active"),
+            .age = try allocator.dupe(u8, "1d"),
+            .allocator = allocator,
+        });
+    }
+    t.filtered_indices.clearRetainingCapacity();
+    for (0..3) |i| try t.filtered_indices.append(allocator, i);
+    try testing.expectEqual(@as(u32, 0), t.selected_row);
+
+    try app.handleKey(.down);
+    try testing.expectEqual(@as(u32, 1), t.selected_row);
+    try testing.expect(app.dirty);
+
+    try app.handleKey(.up);
+    try testing.expectEqual(@as(u32, 0), t.selected_row);
+}
+
 test "? on a view with no ViewType shows generic help, not Pods' help" {
     // Nine resource types have no ViewType of their own, so currentViewType() used to
     // fall back to .pods -- meaning `?` on an Ingress advertised Shell, Logs, Attach
@@ -305,8 +509,436 @@ test "drain refuses under --readonly without even prompting" {
     try t.filtered_indices.append(allocator, 0);
     t.selected_row = 0;
 
-    try app.handleKey(.{ .char = 'D' });
+    try app.handleKey(.{ .char = 'r' });
 
     // No confirmation was armed, so pressing y next cannot drain anything.
     try testing.expect(app.pending_input == .none);
+}
+
+test "readonly top-level dispatch refuses every mutating result before side effects" {
+    var gpa = std.heap.DebugAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+    var app = try App.init(allocator, .{ .readonly = true });
+    defer app.deinit();
+
+    const mutations = [_]c3s.View.KeyResult{
+        .request_delete,
+        .request_kill,
+        .request_edit,
+        .request_shell,
+        .request_attach,
+        .request_port_forward,
+        .request_set_image,
+        .request_sanitize,
+        .request_transfer,
+        .request_kill_finalizers,
+        .request_drain,
+        .request_cordon,
+        .request_uncordon,
+        .request_restart,
+        .request_scale,
+        .request_suspend,
+        .request_trigger,
+        .request_rollback,
+    };
+    for (mutations) |result| {
+        try app.dispatchViewResultForTest(result);
+        try testing.expect(!app.command_input.visible);
+        try testing.expect(app.pending_input == .none);
+        try testing.expect(!app.delete_pending);
+        try testing.expectEqual(@as(usize, 0), app.port_forward_registry.count());
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Synchronous active-session ownership
+// ---------------------------------------------------------------------------
+
+test "App owns one shared Event before its session slot" {
+    var app = try App.init(testing.allocator, .{});
+    defer app.deinit();
+
+    try testing.expect(app.active_session_slot.shared_event == app.shared_event);
+    try testing.expect(app.change_queue.shared_event == app.shared_event);
+    try testing.expect(app.change_queue.wakeup == app.wakeup);
+    try testing.expect(app.k8s_service.sessionSlot() == app.active_session_slot);
+    const view = app.active_session_slot.view();
+    try testing.expectEqual(@import("src").SessionState.empty, view.state);
+    try testing.expectEqual(@as(u64, 0), view.generation);
+}
+
+test "App init failures preserve Event slot and service teardown order" {
+    for (0..3) |fail_index| {
+        var failing = testing.FailingAllocator.init(testing.allocator, .{
+            .fail_index = fail_index,
+        });
+        if (App.init(failing.allocator(), .{})) |value| {
+            var app = value;
+            app.deinit();
+        } else |err| {
+            try testing.expectEqual(error.OutOfMemory, err);
+        }
+        try testing.expect(failing.has_induced_failure);
+        try testing.expectEqual(failing.allocated_bytes, failing.freed_bytes);
+    }
+}
+
+fn readTask4ASource(path: []const u8) ![]u8 {
+    return std.Io.Dir.cwd().readFileAlloc(
+        testing.io,
+        path,
+        testing.allocator,
+        .limited(2 * 1024 * 1024),
+    );
+}
+
+test "Task 4A source contains only synchronous session ownership" {
+    const files = [_][]const u8{
+        "src/k8s/ActiveContextSession.zig",
+        "src/k8s/ActiveSessionSlot.zig",
+        "src/services/K8sService.zig",
+        "src/index.zig",
+    };
+    const forbidden = [_][]const u8{
+        "std.Io.Group",
+        "Future",
+        "Completion =",
+        "CompletionKind",
+        "CompletionSink",
+        "TaskControl",
+        "task_reapers",
+        "completion_owners",
+        "PreparationControl",
+        "CandidateSink",
+        "CancellationSpawnGate",
+        "reaper_scheduled",
+        "work_finished",
+        "delivery_finished",
+        "startTask",
+        "collectTask",
+        "collectCompleted",
+        "cancelTask",
+        "reapTask",
+        "ContextCoordinator",
+    };
+
+    for (files) |path| {
+        const source = try readTask4ASource(path);
+        defer testing.allocator.free(source);
+        for (forbidden) |needle| {
+            if (std.mem.indexOf(u8, source, needle) != null) {
+                std.debug.print("forbidden Task 4A source token '{s}' in {s}\n", .{ needle, path });
+                return error.ForbiddenLifecycleSource;
+            }
+        }
+    }
+
+    const coordinator = std.Io.Dir.cwd().readFileAlloc(
+        testing.io,
+        "src/k8s/ContextCoordinator.zig",
+        testing.allocator,
+        .limited(2 * 1024 * 1024),
+    );
+    if (coordinator) |source| {
+        testing.allocator.free(source);
+        return error.ContextCoordinatorStillExists;
+    } else |err| {
+        try testing.expectEqual(error.FileNotFound, err);
+    }
+}
+
+test "App constructs and tears down shared Event storage in safe order" {
+    const source = try readTask4ASource("src/App.zig");
+    defer testing.allocator.free(source);
+
+    const event_init = std.mem.indexOf(u8, source, "shared_event.* = .unset") orelse
+        return error.SharedEventInitializationMissing;
+    const slot_init = std.mem.indexOf(u8, source, "ActiveSessionSlot.init") orelse
+        return error.ActiveSessionSlotInitializationMissing;
+    try testing.expect(event_init < slot_init);
+
+    const invalidate = std.mem.indexOf(u8, source, "self.finishLifecycle()") orelse
+        return error.SupervisorShutdownMissing;
+    const event_destroy = std.mem.indexOf(u8, source, "allocator.destroy(self.shared_event)") orelse
+        return error.SharedEventDestructionMissing;
+    try testing.expect(invalidate < event_destroy);
+}
+
+fn containsStandaloneFingerprint(source: []const u8, needle: []const u8) bool {
+    var start: usize = 0;
+    while (std.mem.indexOfPos(u8, source, start, needle)) |index| {
+        const before_is_name = index > 0 and
+            (std.ascii.isAlphanumeric(source[index - 1]) or source[index - 1] == '_');
+        const after_index = index + needle.len;
+        const after_is_name = after_index < source.len and
+            (std.ascii.isAlphanumeric(source[after_index]) or source[after_index] == '_');
+        if (!before_is_name and !after_is_name) return true;
+        start = index + 1;
+    }
+    return false;
+}
+
+test "Task 4A production files contain no publisher fingerprints" {
+    const files = [_][]const u8{
+        "src/k8s/ActiveContextSession.zig",
+        "src/k8s/ActiveSessionSlot.zig",
+        "src/services/K8sService.zig",
+        "src/App.zig",
+        "src/index.zig",
+    };
+    const forbidden = [_][]const u8{
+        "Cur" ++ "sor",
+        "cursor" ++ "agent",
+        "Clau" ++ "de",
+        "Co" ++ "pilot",
+        "Chat" ++ "GPT",
+    };
+    for (files) |path| {
+        const source = try readTask4ASource(path);
+        defer testing.allocator.free(source);
+        for (forbidden) |needle| {
+            try testing.expect(!containsStandaloneFingerprint(source, needle));
+        }
+    }
+}
+
+test "App owns the process-long supervisor endpoints and awaits root once" {
+    var app = try App.init(testing.allocator, .{});
+    defer app.deinit();
+
+    try testing.expect(app.lifecycle_producer.inbox == app.lifecycle_inbox);
+    try testing.expect(app.lifecycle_producer.cancellations == app.cancellation_intents);
+    try testing.expect(app.lifecycle_supervisor.inbox == app.lifecycle_inbox);
+    try testing.expect(app.lifecycle_supervisor.active_slot == app.active_session_slot);
+    try testing.expect(app.lifecycle_supervisor.change_queue == app.change_queue);
+
+    app.finishLifecycle();
+    try testing.expectEqual(@as(usize, 1), app.lifecycle_root_await_count);
+    app.finishLifecycle();
+    try testing.expectEqual(@as(usize, 1), app.lifecycle_root_await_count);
+}
+
+const TaskProbe = struct {
+    runs: std.atomic.Value(usize) = .init(0),
+    started: std.Io.Event = .unset,
+    gate: std.Io.Event = .unset,
+};
+
+fn immediateLifecycleTask(
+    raw: ?*anyopaque,
+    _: *App.ChildControl,
+    _: std.Io,
+) anyerror!void {
+    const probe: *TaskProbe = @ptrCast(@alignCast(raw.?));
+    _ = probe.runs.fetchAdd(1, .acq_rel);
+}
+
+fn blockingLifecycleTask(
+    raw: ?*anyopaque,
+    _: *App.ChildControl,
+    io: std.Io,
+) anyerror!void {
+    const probe: *TaskProbe = @ptrCast(@alignCast(raw.?));
+    _ = probe.runs.fetchAdd(1, .acq_rel);
+    probe.started.set(io);
+    try probe.gate.wait(io);
+}
+
+fn noTaskSpecDeinit(_: ?*anyopaque, _: std.mem.Alignment, _: std.mem.Allocator) void {}
+
+fn startLifecycleRequest(
+    app: *App,
+    task_context: *anyopaque,
+    runFn: *const fn (?*anyopaque, *App.ChildControl, std.Io) anyerror!void,
+) !App.ChildKey {
+    const key = try app.lifecycle_producer.reserveChild();
+    try app.lifecycle_producer.tryPushStart(.{ .start_request = .{
+        .child_key = key,
+        .expected_generation = 1,
+        .key = .{ .generation = 1, .subscription_id = key.slot + 1 },
+        .spec = .{
+            .ptr = task_context,
+            .alignment = .@"1",
+            .runFn = runFn,
+            .deinitFn = noTaskSpecDeinit,
+        },
+    } });
+    return key;
+}
+
+test "supervisor naturally reaps an immediately completing child" {
+    var app = try App.init(testing.allocator, .{});
+    defer app.deinit();
+    try installLocalAppSession(&app, testing.allocator);
+
+    var probe = TaskProbe{};
+    _ = try startLifecycleRequest(&app, &probe, immediateLifecycleTask);
+    app.finishLifecycle();
+
+    try testing.expectEqual(@as(usize, 1), probe.runs.load(.acquire));
+    try testing.expectEqual(app.lifecycle_supervisor.metrics.launched, app.lifecycle_supervisor.metrics.reaped);
+    try testing.expectEqual(@as(usize, 0), app.lifecycle_supervisor.liveChildren());
+}
+
+test "stale expected generation destroys the task without running it" {
+    var app = try App.init(testing.allocator, .{});
+    defer app.deinit();
+    try installLocalAppSession(&app, testing.allocator);
+    var probe = TaskProbe{};
+    const key = try app.lifecycle_producer.reserveChild();
+    try app.lifecycle_producer.tryPushStart(.{ .start_request = .{
+        .child_key = key,
+        .expected_generation = 2,
+        .key = .{ .generation = 2, .subscription_id = 1 },
+        .spec = .{
+            .ptr = &probe,
+            .alignment = .of(TaskProbe),
+            .runFn = immediateLifecycleTask,
+            .deinitFn = noTaskSpecDeinit,
+        },
+    } });
+    app.finishLifecycle();
+
+    try testing.expectEqual(@as(usize, 0), probe.runs.load(.acquire));
+    try testing.expect(!app.lifecycle_producer.tryRequestCancel(key));
+}
+
+test "canceling one child does not consume its sibling lifecycle" {
+    var app = try App.init(testing.allocator, .{});
+    defer app.deinit();
+    try installLocalAppSession(&app, testing.allocator);
+
+    var canceled_probe = TaskProbe{};
+    var sibling_probe = TaskProbe{};
+    const canceled_key = try startLifecycleRequest(&app, &canceled_probe, blockingLifecycleTask);
+    _ = try startLifecycleRequest(&app, &sibling_probe, blockingLifecycleTask);
+    try canceled_probe.started.wait(testing.io);
+    try sibling_probe.started.wait(testing.io);
+
+    try testing.expect(app.lifecycle_producer.tryRequestCancel(canceled_key));
+    sibling_probe.gate.set(testing.io);
+    app.finishLifecycle();
+
+    try testing.expectEqual(@as(usize, 1), canceled_probe.runs.load(.acquire));
+    try testing.expectEqual(@as(usize, 1), sibling_probe.runs.load(.acquire));
+    try testing.expect(app.lifecycle_supervisor.metrics.canceled >= 1);
+    try testing.expectEqual(app.lifecycle_supervisor.metrics.launched, app.lifecycle_supervisor.metrics.reaped);
+}
+
+const DeliveryProbe = struct {
+    allocator: std.mem.Allocator,
+    acknowledgements: std.atomic.Value(usize) = .init(0),
+    published: std.Io.Event = .unset,
+    done: std.Io.Event = .unset,
+};
+
+fn makeLifecycleEnvelope(allocator: std.mem.Allocator, target: c3s.k8s_resource_key.EnvelopeTarget) !c3s.k8s_resource_key.Envelope {
+    const payload = try allocator.create(u8);
+    payload.* = 1;
+    return c3s.k8s_resource_key.erasePayload(
+        u8,
+        allocator,
+        target,
+        payload,
+        &c3s.k8s_resource_key.test_noop_u8_handler,
+        1,
+        1,
+        1,
+        1,
+        null,
+    );
+}
+
+fn reusableDeliveryTask(
+    raw: ?*anyopaque,
+    control: *App.ChildControl,
+    io: std.Io,
+) anyerror!void {
+    const probe: *DeliveryProbe = @ptrCast(@alignCast(raw.?));
+    for (0..2) |_| {
+        const envelope = try makeLifecycleEnvelope(
+            probe.allocator,
+            .{ .resource = .{ .generation = 1, .subscription_id = 1 } },
+        );
+        _ = try control.publishDelivery(envelope);
+        _ = probe.acknowledgements.fetchAdd(1, .acq_rel);
+    }
+    probe.done.set(io);
+}
+
+fn heldDeliveryTask(
+    raw: ?*anyopaque,
+    control: *App.ChildControl,
+    io: std.Io,
+) anyerror!void {
+    const probe: *DeliveryProbe = @ptrCast(@alignCast(raw.?));
+    control.outcome = .{ .delivery = try makeLifecycleEnvelope(
+        probe.allocator,
+        .{ .resource = .{ .generation = 1, .subscription_id = 1 } },
+    ) };
+    control.phase.store(.delivery_ready, .release);
+    control.shared_event.set(io);
+    probe.published.set(io);
+    try control.delivery_ack.wait(io);
+    control.delivery_ack.reset();
+}
+
+test "delivery acknowledgement resets and can be reused" {
+    var app = try App.init(testing.allocator, .{});
+    defer app.deinit();
+    try installLocalAppSession(&app, testing.allocator);
+    var probe = DeliveryProbe{ .allocator = testing.allocator };
+
+    _ = try startLifecycleRequest(
+        &app,
+        &probe,
+        reusableDeliveryTask,
+    );
+    try probe.done.wait(testing.io);
+    app.finishLifecycle();
+
+    try testing.expectEqual(@as(usize, 2), probe.acknowledgements.load(.acquire));
+}
+
+test "cancellation owns a delivery blocked by a full queue" {
+    var app = try App.init(testing.allocator, .{});
+    defer app.deinit();
+    try installLocalAppSession(&app, testing.allocator);
+    for (0..c3s.k8s_resource_key.Limits.default.max_data_batches) |_| {
+        try app.change_queue.tryPush(try makeLifecycleEnvelope(
+            testing.allocator,
+            .{ .resource = .{ .generation = 1, .subscription_id = 1 } },
+        ));
+    }
+    var probe = DeliveryProbe{ .allocator = testing.allocator };
+    const key = try startLifecycleRequest(
+        &app,
+        &probe,
+        heldDeliveryTask,
+    );
+    try probe.published.wait(testing.io);
+    try testing.expect(app.lifecycle_producer.tryRequestCancel(key));
+    app.finishLifecycle();
+
+    try testing.expectEqual(app.lifecycle_supervisor.metrics.launched, app.lifecycle_supervisor.metrics.reaped);
+    try testing.expectEqual(@as(usize, 0), app.lifecycle_supervisor.liveChildren());
+}
+
+test "Task 4B source has one root Future exception and no forbidden ownership" {
+    const app_source = try readTask4ASource("src/App.zig");
+    defer testing.allocator.free(app_source);
+    const supervisor_source = try readTask4ASource("src/k8s/LifecycleSupervisor.zig");
+    defer testing.allocator.free(supervisor_source);
+
+    try testing.expectEqual(@as(usize, 0), std.mem.count(u8, app_source, "std.Io.Future(void)"));
+    try testing.expectEqual(
+        @as(usize, 1),
+        std.mem.count(u8, supervisor_source, "std.Io.Future(void)"),
+    );
+    try testing.expect(std.mem.indexOf(u8, app_source, "std.Io." ++ "Group") == null);
+    try testing.expect(std.mem.indexOf(u8, supervisor_source, "std.Io." ++ "Group") == null);
+    try testing.expect(std.mem.indexOf(u8, supervisor_source, "std." ++ "Thread") == null);
+    try testing.expect(std.mem.indexOf(u8, supervisor_source, "Completion" ++ "Sink") == null);
+    try testing.expect(std.mem.indexOf(u8, supervisor_source, "Candidate" ++ "Sink") == null);
 }

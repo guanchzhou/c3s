@@ -15,7 +15,6 @@ const view_mod = @import("../viewmodel/view.zig");
 const View = view_mod.View;
 const Key = @import("../core/Terminal.zig").Key;
 const KeyResult = View.KeyResult;
-const Logger = @import("../core/logger.zig");
 const k8s_service_mod = @import("../services/K8sService.zig");
 const K8sService = k8s_service_mod.K8sService;
 const hints_model = @import("../model/hints.zig");
@@ -54,6 +53,26 @@ pub const AuthorizationView = struct {
         access_review = 1,
         policy_browser = 2,
         condition_inspector = 3,
+    };
+
+    pub const RefreshRequest = union(Tab) {
+        access_review,
+        policy_browser,
+        condition_inspector: struct {
+            resource: []u8,
+            group: []u8,
+        },
+
+        pub fn deinit(self: *RefreshRequest, allocator: std.mem.Allocator) void {
+            switch (self.*) {
+                .condition_inspector => |value| {
+                    allocator.free(value.resource);
+                    allocator.free(value.group);
+                },
+                else => {},
+            }
+            self.* = undefined;
+        }
     };
 
     // ===== Compatibility accessors =====
@@ -122,61 +141,75 @@ pub const AuthorizationView = struct {
         self.condition_tab.table.clearItems();
     }
 
-    // ===== Data fetching =====
-
-    /// Refresh Tab 1: Access Review data
     pub fn refreshAccessReview(self: *AuthorizationView) !void {
-        self.loading = true;
-        defer self.loading = false;
-
-        // Sync error state: clear coordinator error before refresh
-        if (self.error_message) |msg| {
-            self.allocator.free(msg);
-            self.error_message = null;
-        }
-
-        try self.access_tab.refresh();
-
-        // Propagate error from tab to coordinator for backward compat
-        if (self.access_tab.table.error_message) |msg| {
-            self.error_message = try self.allocator.dupe(u8, msg);
-        }
+        self.access_tab.requestRefresh();
     }
 
-    /// Refresh Tab 2: Policy Browser data
     pub fn refreshPolicies(self: *AuthorizationView) !void {
-        self.loading = true;
-        defer self.loading = false;
-
-        if (self.error_message) |msg| {
-            self.allocator.free(msg);
-            self.error_message = null;
-        }
-
-        try self.policy_tab.refresh();
-
-        // Propagate error from tab to coordinator
-        if (self.policy_tab.table.error_message) |msg| {
-            self.error_message = try self.allocator.dupe(u8, msg);
-        }
+        self.policy_tab.requestRefresh();
     }
 
-    /// Refresh Tab 3: Condition Inspector for a specific resource
     pub fn refreshConditions(self: *AuthorizationView, resource: []const u8, group: []const u8) !void {
+        try self.condition_tab.requestRefresh(resource, group);
+    }
+
+    pub fn takeRefreshRequest(self: *AuthorizationView) ?RefreshRequest {
+        if (self.access_tab.takeRefreshRequest()) return .access_review;
+        if (self.policy_tab.takeRefreshRequest()) return .policy_browser;
+        if (self.condition_tab.takeRefreshRequest()) |value| {
+            return .{ .condition_inspector = .{
+                .resource = value.resource,
+                .group = value.group,
+            } };
+        }
+        return null;
+    }
+
+    pub fn beginRequest(self: *AuthorizationView, tab: Tab) u64 {
+        const serial = switch (tab) {
+            .access_review => &self.access_tab.active_serial,
+            .policy_browser => &self.policy_tab.active_serial,
+            .condition_inspector => &self.condition_tab.active_serial,
+        };
+        serial.* +%= 1;
+        if (serial.* == 0) serial.* = 1;
         self.loading = true;
-        defer self.loading = false;
+        if (self.error_message) |message| self.allocator.free(message);
+        self.error_message = null;
+        return serial.*;
+    }
 
-        if (self.error_message) |msg| {
-            self.allocator.free(msg);
-            self.error_message = null;
+    pub fn activeKey(self: *AuthorizationView, tab: Tab) *?@import("../k8s/ResourceKey.zig").RequestKey {
+        return switch (tab) {
+            .access_review => &self.access_tab.active_key,
+            .policy_browser => &self.policy_tab.active_key,
+            .condition_inspector => &self.condition_tab.active_key,
+        };
+    }
+
+    pub fn activeSerial(self: *const AuthorizationView, tab: Tab) u64 {
+        return switch (tab) {
+            .access_review => self.access_tab.active_serial,
+            .policy_browser => self.policy_tab.active_serial,
+            .condition_inspector => self.condition_tab.active_serial,
+        };
+    }
+
+    pub fn hasActiveRequests(self: *const AuthorizationView) bool {
+        return self.access_tab.active_key != null or
+            self.policy_tab.active_key != null or
+            self.condition_tab.active_key != null;
+    }
+
+    pub fn hasActiveRequestExcept(self: *const AuthorizationView, excluded: Tab) bool {
+        inline for ([_]Tab{ .access_review, .policy_browser, .condition_inspector }) |tab| {
+            if (tab != excluded and switch (tab) {
+                .access_review => self.access_tab.active_key,
+                .policy_browser => self.policy_tab.active_key,
+                .condition_inspector => self.condition_tab.active_key,
+            } != null) return true;
         }
-
-        try self.condition_tab.refresh(resource, group, self.access_tab.conditional_auth_available);
-
-        // Propagate error from tab to coordinator
-        if (self.condition_tab.table.error_message) |msg| {
-            self.error_message = try self.allocator.dupe(u8, msg);
-        }
+        return false;
     }
 
     // ===== Filter =====
@@ -248,7 +281,12 @@ pub const AuthorizationView = struct {
     }
     fn vtableRefresh(ptr: *anyopaque) anyerror!void {
         const self: *AuthorizationView = @ptrCast(@alignCast(ptr));
-        try self.refreshAccessReview();
+        switch (self.active_tab) {
+            .access_review => try self.refreshAccessReview(),
+            .policy_browser => try self.refreshPolicies(),
+            .condition_inspector => if (self.access_tab.getSelectedRow()) |row|
+                try self.refreshConditions(row.resource, row.group),
+        }
     }
     fn vtableGetSelectedResource(ptr: *anyopaque) ?view_mod.ResourceInfo {
         const self: *AuthorizationView = @ptrCast(@alignCast(ptr));
@@ -343,9 +381,7 @@ pub const AuthorizationView = struct {
                     '2' => {
                         self.active_tab = .policy_browser;
                         if (self.policy_tab.table.items.items.len == 0) {
-                            self.refreshPolicies() catch |err| {
-                                Logger.err("Failed to refresh policies: {}", .{err});
-                            };
+                            try self.refreshPolicies();
                         }
                         return .handled;
                     },
@@ -362,9 +398,7 @@ pub const AuthorizationView = struct {
                         };
                         // Lazy-load policy data
                         if (self.active_tab == .policy_browser and self.policy_tab.table.items.items.len == 0) {
-                            self.refreshPolicies() catch |err| {
-                                Logger.err("Failed to refresh policies: {}", .{err});
-                            };
+                            try self.refreshPolicies();
                         }
                         return .handled;
                     },
@@ -387,18 +421,12 @@ pub const AuthorizationView = struct {
                     'r' => {
                         // Refresh current tab
                         switch (self.active_tab) {
-                            .access_review => self.refreshAccessReview() catch |err| {
-                                Logger.err("Failed to refresh access review: {}", .{err});
-                            },
-                            .policy_browser => self.refreshPolicies() catch |err| {
-                                Logger.err("Failed to refresh policies: {}", .{err});
-                            },
+                            .access_review => try self.refreshAccessReview(),
+                            .policy_browser => try self.refreshPolicies(),
                             .condition_inspector => {
                                 const sel = self.access_tab.getSelectedRow();
                                 if (sel) |row| {
-                                    self.refreshConditions(row.resource, row.group) catch |err| {
-                                        Logger.err("Failed to refresh conditions: {}", .{err});
-                                    };
+                                    try self.refreshConditions(row.resource, row.group);
                                 }
                             },
                         }
@@ -416,6 +444,19 @@ pub const AuthorizationView = struct {
                     '/' => return .request_filter,
                     else => return .not_handled,
                 }
+            },
+            .ctrl_r => {
+                switch (self.active_tab) {
+                    .access_review => try self.refreshAccessReview(),
+                    .policy_browser => try self.refreshPolicies(),
+                    .condition_inspector => {
+                        const sel = self.access_tab.getSelectedRow();
+                        if (sel) |row| {
+                            try self.refreshConditions(row.resource, row.group);
+                        }
+                    },
+                }
+                return .handled;
             },
             .down => {
                 self.moveDown();
@@ -453,9 +494,7 @@ pub const AuthorizationView = struct {
                 // In Tab 1, Enter on a conditional row opens Tab 3
                 if (self.active_tab == .access_review) {
                     if (self.access_tab.getSelectedRow()) |row| {
-                        self.refreshConditions(row.resource, row.group) catch |err| {
-                            Logger.err("Failed to refresh conditions: {}", .{err});
-                        };
+                        try self.refreshConditions(row.resource, row.group);
                         self.active_tab = .condition_inspector;
                         return .handled;
                     }
@@ -470,9 +509,7 @@ pub const AuthorizationView = struct {
         const self: *AuthorizationView = @ptrCast(@alignCast(ptr));
         // Refresh access review on show
         if (self.access_tab.table.items.items.len == 0) {
-            self.refreshAccessReview() catch |err| {
-                Logger.err("Failed to refresh access review on show: {}", .{err});
-            };
+            self.refreshAccessReview() catch {};
         }
     }
 
@@ -991,7 +1028,7 @@ test "AuthorizationView filter with data" {
     try testing.expectEqual(@as(usize, 3), view.access_tab.table.filtered_indices.items.len);
 }
 
-test "AuthorizationView refreshAccessReview without connection" {
+test "AuthorizationView refreshAccessReview queues child work" {
     const testing = std.testing;
     const allocator = testing.allocator;
 
@@ -1005,14 +1042,14 @@ test "AuthorizationView refreshAccessReview without connection" {
     var view = try AuthorizationView.init(allocator, &theme, &k8s);
     defer view.deinit();
 
-    // Not connected - should set error message
     try view.refreshAccessReview();
-    try testing.expect(view.error_message != null);
-    try testing.expectEqualStrings("Not connected to Kubernetes cluster", view.error_message.?);
+    var request = view.takeRefreshRequest() orelse return error.MissingRefreshRequest;
+    defer request.deinit(allocator);
+    try testing.expectEqual(AuthorizationView.Tab.access_review, std.meta.activeTag(request));
     try testing.expectEqual(@as(usize, 0), view.access_tab.table.items.items.len);
 }
 
-test "AuthorizationView refreshPolicies without connection" {
+test "AuthorizationView refreshPolicies queues child work" {
     const testing = std.testing;
     const allocator = testing.allocator;
 
@@ -1027,12 +1064,13 @@ test "AuthorizationView refreshPolicies without connection" {
     defer view.deinit();
 
     try view.refreshPolicies();
-    try testing.expect(view.error_message != null);
-    try testing.expectEqualStrings("Not connected to Kubernetes cluster", view.error_message.?);
+    var request = view.takeRefreshRequest() orelse return error.MissingRefreshRequest;
+    defer request.deinit(allocator);
+    try testing.expectEqual(AuthorizationView.Tab.policy_browser, std.meta.activeTag(request));
     try testing.expectEqual(@as(usize, 0), view.policy_tab.table.items.items.len);
 }
 
-test "AuthorizationView refreshConditions without connection" {
+test "AuthorizationView refreshConditions queues owned arguments" {
     const testing = std.testing;
     const allocator = testing.allocator;
 
@@ -1047,10 +1085,11 @@ test "AuthorizationView refreshConditions without connection" {
     defer view.deinit();
 
     try view.refreshConditions("pods", "");
-    try testing.expect(view.error_message != null);
-    try testing.expectEqualStrings("Not connected to Kubernetes cluster", view.error_message.?);
-    try testing.expect(view.condition_tab.condition_resource != null);
-    try testing.expectEqualStrings("pods", view.condition_tab.condition_resource.?);
+    var request = view.takeRefreshRequest() orelse return error.MissingRefreshRequest;
+    defer request.deinit(allocator);
+    try testing.expectEqualStrings("pods", request.condition_inspector.resource);
+    try testing.expectEqualStrings("", request.condition_inspector.group);
+    try testing.expect(view.condition_tab.condition_resource == null);
 }
 
 test "AuthorizationView refreshConditions when conditional auth unavailable" {
@@ -1428,7 +1467,7 @@ test "authorization_view: tab cycling" {
 }
 
 // Test refresh without connection sets error
-test "authorization_view: refresh without connection" {
+test "authorization_view: refresh methods queue requests" {
     // std.testing.allocator FAILS the test on a leak. The previous form used a
     // DebugAllocator and printed to stderr without failing, so a leak here was
     // invisible in CI -- a leak check that cannot fail is not a check.
@@ -1443,18 +1482,18 @@ test "authorization_view: refresh without connection" {
     var view = try AuthorizationView.init(allocator, &theme, &k8s_service);
     defer view.deinit();
 
-    // Refresh each tab type
     try view.refreshAccessReview();
-    try std.testing.expect(view.error_message != null);
-    try std.testing.expect(std.mem.eql(u8, view.error_message.?, "Not connected to Kubernetes cluster"));
-
+    var access_request = view.takeRefreshRequest() orelse return error.MissingRefreshRequest;
+    defer access_request.deinit(allocator);
     try view.refreshPolicies();
-    try std.testing.expect(view.error_message != null);
-
+    var policy_request = view.takeRefreshRequest() orelse return error.MissingRefreshRequest;
+    defer policy_request.deinit(allocator);
     try view.refreshConditions("pods", "");
-    try std.testing.expect(view.error_message != null);
-    try std.testing.expect(view.condition_tab.condition_resource != null);
-    try std.testing.expect(std.mem.eql(u8, view.condition_tab.condition_resource.?, "pods"));
+    var condition_request = view.takeRefreshRequest() orelse return error.MissingRefreshRequest;
+    defer condition_request.deinit(allocator);
+    try std.testing.expectEqual(AuthorizationView.Tab.access_review, std.meta.activeTag(access_request));
+    try std.testing.expectEqual(AuthorizationView.Tab.policy_browser, std.meta.activeTag(policy_request));
+    try std.testing.expectEqualStrings("pods", condition_request.condition_inspector.resource);
 }
 
 // Test data row init/deinit
