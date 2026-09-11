@@ -4,7 +4,7 @@
 
 [![CI](https://github.com/guanchzhou/c3s/actions/workflows/ci.yml/badge.svg)](https://github.com/guanchzhou/c3s/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue)]()
-[![Zig](https://img.shields.io/badge/zig-0.16.0-orange)]()
+[![Zig](https://img.shields.io/badge/zig-0.16.0%20%7C%200.17--dev-orange)]()
 
 ---
 
