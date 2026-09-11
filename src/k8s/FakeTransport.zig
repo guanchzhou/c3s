@@ -44,6 +44,7 @@ pub const FakeTransport = struct {
     next_script: usize = 0,
     requests: std.ArrayList(RecordedRequest) = .empty,
     last_read_failure: ReadFailure = .none,
+    mutex: std.Io.Mutex = .init,
     block_until_cancel: bool = false,
     cancel_flag: ?*std.atomic.Value(bool) = null,
 
@@ -85,6 +86,9 @@ pub const FakeTransport = struct {
         }
 
         try transport_mod.validateReadPath(request.path);
+        const io = @import("../core/runtime.zig").io();
+        self.mutex.lockUncancelable(io);
+        defer self.mutex.unlock(io);
         if (self.next_script >= self.scripts.len) return error.NoScriptedResponse;
         const script = self.scripts[self.next_script];
         self.next_script += 1;
@@ -108,6 +112,9 @@ pub const FakeTransport = struct {
     fn record(self: *FakeTransport, request: ReadRequest) !void {
         const path_copy = try self.allocator.dupe(u8, request.path);
         errdefer self.allocator.free(path_copy);
+        const io = @import("../core/runtime.zig").io();
+        self.mutex.lockUncancelable(io);
+        defer self.mutex.unlock(io);
         try self.requests.append(self.allocator, .{
             .path = path_copy,
             .pagination_fallback = request.pagination_fallback,
