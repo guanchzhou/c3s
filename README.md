@@ -212,21 +212,35 @@ zig build
 
 ## 🎨 **Screenshots**
 
-### Main Interface
-```
-┌─ pods(default)[8] ─────────────────────────────────────────────────┐
-│ Context: my-cluster │ Namespace: default │ CPU: 45% │ MEM: 67%      │
-└────────────────────────────────────────────────────────────────────┘
+Captured from a live v1.37.0 cluster.
 
-NAME                       READY  STATUS   CPU   MEM    IP           AGE ▲
-nginx-7c6d9d7d4-abc12      1/1    Running  12m   34Mi   10.0.1.4     3d
-redis-5f6c8b8d-xyz89       1/1    Running  3m    18Mi   10.0.1.9     2d
-coredns-6d4b75cb-12345     1/1    Running  5m    22Mi   10.0.0.3     30d
+### Pods, all namespaces
 
-┌────────────────────────────────────────────────────────────────────┐
-│ j/k:Nav │ Space:Mark │ Shift-N:Sort │ /:Filter │ 0:All NS │ ::Cmd   │
-└────────────────────────────────────────────────────────────────────┘
-```
+![c3s pods view](docs/screenshots/01-pods.png)
+
+### Live filter
+
+Press `/` and type; the row count and the active filter show in the title.
+
+![c3s filter](docs/screenshots/02-filter.png)
+
+### Fuzzy command palette
+
+Press `:` and type a fragment — `ga` ranks `gatewayclasses`, `refgrant`, and the admission-policy views.
+
+![c3s command palette](docs/screenshots/03-palette.png)
+
+### Aliases
+
+Every API resource discovered from the cluster, with short names and kinds.
+
+![c3s aliases view](docs/screenshots/04-aliases.png)
+
+### Deployments and services
+
+![c3s deployments view](docs/screenshots/05-deployments.png)
+
+![c3s services view](docs/screenshots/06-services.png)
 
 ---
 
