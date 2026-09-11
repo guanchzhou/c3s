@@ -9,7 +9,7 @@ pub const JobRecord = @This();
 key: keys.ObjectKey,
 succeeded: i32,
 desired: i32,
-completions_sort_key: [41]u8 = [_]u8{'0'} ** 41,
+completions_sort_key: [41]u8 = @splat('0'),
 start_time: ?[]u8 = null,
 completion_time: ?[]u8 = null,
 creation_timestamp: ?[]u8 = null,
@@ -85,7 +85,7 @@ pub fn columns(self: *const JobRecord, allocator: std.mem.Allocator) ![5][]const
 }
 
 pub fn ratioSortKey(succeeded: i32, desired: i32) [41]u8 {
-    var result = [_]u8{'0'} ** 41;
+    var result: [41]u8 = @splat('0');
     result[20] = '/';
     writeCount(result[0..20], succeeded);
     writeCount(result[21..41], desired);

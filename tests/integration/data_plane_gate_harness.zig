@@ -51,9 +51,13 @@ pub fn exerciseFakeGet(path: []const u8, body: []const u8) !void {
 
 pub fn expectGetOnlyTransport() !void {
     const VTable = c3s.k8s_read_transport.ReadTransport.VTable;
-    const fields = @typeInfo(VTable).@"struct".fields;
-    try std.testing.expectEqual(@as(usize, 1), fields.len);
-    try std.testing.expectEqualStrings("get", fields[0].name);
+    const vtable_info = @typeInfo(VTable).@"struct";
+    const field_count = if (comptime @hasField(@TypeOf(vtable_info), "fields"))
+        vtable_info.fields.len
+    else
+        vtable_info.field_names.len;
+    try std.testing.expectEqual(@as(usize, 1), field_count);
+    try std.testing.expect(@hasField(VTable, "get"));
     inline for (.{ "post", "put", "patch", "delete", "write" }) |name| {
         try std.testing.expect(!@hasField(VTable, name));
     }

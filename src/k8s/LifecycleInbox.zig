@@ -273,7 +273,7 @@ pub const CancellationIntents = struct {
     pub const max_generation: u60 = std.math.maxInt(u60);
     pub const ClaimResult = enum { none, accepted_not_launched, live };
 
-    cells: [capacity]std.atomic.Value(u64) = [_]std.atomic.Value(u64){std.atomic.Value(u64).init(0)} ** capacity,
+    cells: [capacity]std.atomic.Value(u64) = @splat(std.atomic.Value(u64).init(0)),
 
     pub fn init() CancellationIntents {
         return .{};
@@ -421,7 +421,7 @@ pub const LifecycleInbox = struct {
     pub const shutdown_capacity = 1;
     pub const max_task_spec_bytes = 64 << 10;
 
-    entries: [capacity]?LifecycleCommand = [_]?LifecycleCommand{null} ** capacity,
+    entries: [capacity]?LifecycleCommand = @splat(null),
     head: std.atomic.Value(u64) = .init(0),
     tail: std.atomic.Value(u64) = .init(0),
     normal_occupied: std.atomic.Value(u32) = .init(0),

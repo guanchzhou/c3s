@@ -107,9 +107,7 @@ pub fn build(b: *std.Build) void {
 
     // This allows the user to pass arguments to the application in the build
     // command itself, like this: `zig build run -- arg1 arg2 etc`
-    if (b.args) |args| {
-        run_cmd.addArgs(args);
-    }
+    addPassthruArgs(b, run_cmd);
 
     const task15_preflight_cmd = b.addRunArtifact(exe);
     task15_preflight_cmd.addArg("task15-preflight");
@@ -121,7 +119,7 @@ pub fn build(b: *std.Build) void {
 
     const task15_manifest_cmd = b.addRunArtifact(exe);
     task15_manifest_cmd.addArg("task15-manifest");
-    if (b.args) |args| task15_manifest_cmd.addArgs(args);
+    addPassthruArgs(b, task15_manifest_cmd);
     const task15_manifest_step = b.step(
         "task15-manifest",
         "Print a network-free sanitized Task 15 kubeconfig manifest",
@@ -218,17 +216,29 @@ pub fn build(b: *std.Build) void {
     const perf_cmd = b.addSystemCommand(&.{"python3"});
     perf_cmd.addFileArg(b.path("tools/perf/compare.py"));
     perf_cmd.step.dependOn(b.getInstallStep());
-    if (b.args) |args| {
-        perf_cmd.addArgs(args);
-    }
+    addPassthruArgs(b, perf_cmd);
     const perf_step = b.step("perf", "Measure c3s vs k9s (read-only PTY; pass --context)");
     perf_step.dependOn(&perf_cmd.step);
 
     // Formatting gate (ghostty/Zig convention: zig fmt is enforced).
     const fmt_step = b.step("fmt", "Check formatting with zig fmt --check");
-    const fmt_check = b.addFmt(.{
-        .paths = &.{ "src", "tests", "tools", "build.zig" },
-        .check = true,
-    });
+    const fmt_check = if (comptime @hasField(std.Build, "build_root"))
+        b.addFmt(.{
+            .paths = &.{ "src", "tests", "tools", "build.zig" },
+            .check = true,
+        })
+    else
+        b.addFmt(.{
+            .paths = &.{ b.path("src"), b.path("tests"), b.path("tools"), b.path("build.zig") },
+            .check = true,
+        });
     fmt_step.dependOn(&fmt_check.step);
+}
+
+fn addPassthruArgs(b: *std.Build, run: *std.Build.Step.Run) void {
+    if (comptime @hasDecl(std.Build.Step.Run, "addPassthruArgs")) {
+        run.addPassthruArgs();
+    } else if (@field(b, "args")) |args| {
+        run.addArgs(args);
+    }
 }

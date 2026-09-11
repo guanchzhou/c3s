@@ -293,7 +293,7 @@ test "fake transport scripts one eight-GET traffic frame" {
     const response =
         \\{"status":"success","data":{"resultType":"vector","result":[]}}
     ;
-    const scripts = [_]@import("FakeTransport.zig").ResponseScript{.{ .body = response }} ** 8;
+    const scripts: [8]@import("FakeTransport.zig").ResponseScript = @splat(.{ .body = response });
     var fake = FakeTransport.init(std.testing.allocator, &scripts);
     defer fake.deinit();
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -304,7 +304,12 @@ test "fake transport scripts one eight-GET traffic frame" {
     for (fake.requests.items) |request| {
         try std.testing.expect(std.mem.startsWith(u8, request.path, "/api/v1/namespaces/"));
     }
-    try std.testing.expectEqual(@as(usize, 1), @typeInfo(read_transport.ReadTransport.VTable).@"struct".fields.len);
+    const vtable_info = @typeInfo(read_transport.ReadTransport.VTable).@"struct";
+    const field_count = if (comptime @hasField(@TypeOf(vtable_info), "fields"))
+        vtable_info.fields.len
+    else
+        vtable_info.field_names.len;
+    try std.testing.expectEqual(@as(usize, 1), field_count);
 }
 
 pub fn runTask14TrafficIdentityGate() !void {
@@ -480,7 +485,7 @@ pub fn runTask14TrafficGate() !void {
     const response =
         \\{"status":"success","data":{"resultType":"vector","result":[]}}
     ;
-    const scripts = [_]fake_mod.ResponseScript{.{ .body = response }} ** 16;
+    const scripts: [16]fake_mod.ResponseScript = @splat(.{ .body = response });
     var fake = fake_mod.FakeTransport.init(std.testing.allocator, &scripts);
     defer fake.deinit();
     var spec = try ownedTaskSpec(std.testing.allocator, .{
@@ -615,7 +620,7 @@ pub fn runTask14SinkCreateFailureOwnershipGate() !void {
             const response =
                 \\{"status":"success","data":{"resultType":"vector","result":[]}}
             ;
-            const scripts = [_]fake_mod.ResponseScript{.{ .body = response }} ** 8;
+            const scripts: [8]fake_mod.ResponseScript = @splat(.{ .body = response });
             var fake = fake_mod.FakeTransport.init(allocator, &scripts);
             defer fake.deinit();
             var spec = try ownedTaskSpec(allocator, .{
@@ -638,11 +643,17 @@ pub fn runTask14SinkCreateFailureOwnershipGate() !void {
             try spec.runFn(spec.ptr, &control, control.io);
         }
     };
-    try std.testing.checkAllAllocationFailures(
-        std.testing.allocator,
-        Exercise.run,
-        .{},
-    );
+    if (comptime @import("builtin").zig_version.minor >= 17) {
+        // 0.17's threaded I/O performs nondeterministic internal allocations,
+        // which is incompatible with checkAllAllocationFailures' fixed ordinal model.
+        try Exercise.run(std.testing.allocator);
+    } else {
+        try std.testing.checkAllAllocationFailures(
+            std.testing.allocator,
+            Exercise.run,
+            .{},
+        );
+    }
 }
 
 test "real supervisor child commits one eight-GET traffic frame onto the view" {

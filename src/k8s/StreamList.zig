@@ -312,7 +312,7 @@ test "empty list and metadata before or after items return owned resourceVersion
     var second = try runBody(
         std.testing.allocator,
         "{\"unknown\":{\"deep\":[1,2]},\"items\":[],\"metadata\":{\"resourceVersion\":\"11\"}}",
-        &([_]usize{1} ** 8),
+        &(comptime @as([8]usize, @splat(1))),
         &clock,
         &capture,
     );
@@ -447,11 +447,11 @@ test "multi-megabyte list streams in bounded batches without retaining objects" 
     var body: std.ArrayList(u8) = .empty;
     defer body.deinit(std.testing.allocator);
     try body.appendSlice(std.testing.allocator, "{\"items\":[");
-    const padding = "x" ** 4096;
+    const padding: [4096]u8 = @splat('x');
     for (0..1536) |index| {
         if (index != 0) try body.append(std.testing.allocator, ',');
         try body.appendSlice(std.testing.allocator, "{\"metadata\":{\"name\":\"p\"},\"padding\":\"");
-        try body.appendSlice(std.testing.allocator, padding);
+        try body.appendSlice(std.testing.allocator, &padding);
         try body.appendSlice(std.testing.allocator, "\"}");
     }
     try body.appendSlice(

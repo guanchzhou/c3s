@@ -294,14 +294,14 @@ pub fn ResourceView(
         ///
         /// pub so a test can assert the mask rather than infer it from rendered output.
         pub fn hiddenMask(self: *const Self) [col_count]bool {
-            var mask = [_]bool{false} ** col_count;
+            var mask: [col_count]bool = @splat(false);
 
             if (config.is_namespaced and !self.table.show_all_namespaces) {
                 if (config.namespace_column) |ns_col| mask[ns_col] = true;
             }
 
             if (self.visible_columns < col_count) {
-                var listed = [_]bool{false} ** col_count;
+                var listed: [col_count]bool = @splat(false);
                 for (self.column_order[0..self.visible_columns]) |ci| listed[ci] = true;
                 for (0..col_count) |ci| {
                     if (!listed[ci]) mask[ci] = true;
@@ -326,7 +326,7 @@ pub fn ResourceView(
 
             var order: [col_count]u8 = undefined;
             var n: u8 = 0;
-            var used = [_]bool{false} ** col_count;
+            var used: [col_count]bool = @splat(false);
 
             for (wanted) |want| {
                 var found = false;

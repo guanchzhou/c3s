@@ -9,7 +9,7 @@ key: keys.ObjectKey,
 schedule: []u8,
 @"suspend": bool,
 active: i32,
-active_sort_key: [20]u8 = [_]u8{'0'} ** 20,
+active_sort_key: [20]u8 = @splat('0'),
 last_schedule_time: ?[]u8 = null,
 creation_timestamp: ?[]u8 = null,
 
@@ -92,7 +92,7 @@ pub fn columns(self: *const CronJobRecord, allocator: std.mem.Allocator) ![6][]c
 }
 
 pub fn countSortKey(value: i32) [20]u8 {
-    var result = [_]u8{'0'} ** 20;
+    var result: [20]u8 = @splat('0');
     var buffer: [20]u8 = undefined;
     const text = std.fmt.bufPrint(&buffer, "{d}", .{@max(value, 0)}) catch unreachable;
     @memcpy(result[result.len - text.len ..], text);

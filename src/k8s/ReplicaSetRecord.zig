@@ -9,9 +9,9 @@ key: keys.ObjectKey,
 desired: i32,
 current: i32,
 ready: i32,
-desired_sort_key: [20]u8 = [_]u8{'0'} ** 20,
-current_sort_key: [20]u8 = [_]u8{'0'} ** 20,
-ready_sort_key: [20]u8 = [_]u8{'0'} ** 20,
+desired_sort_key: [20]u8 = @splat('0'),
+current_sort_key: [20]u8 = @splat('0'),
+ready_sort_key: [20]u8 = @splat('0'),
 creation_timestamp: ?[]u8 = null,
 
 pub fn fromReplicaSet(allocator: std.mem.Allocator, value: klient.ReplicaSet) !ReplicaSetRecord {

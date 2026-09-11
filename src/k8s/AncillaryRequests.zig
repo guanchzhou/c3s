@@ -38,7 +38,7 @@ pub const AncillaryRequests = struct {
     allocator: std.mem.Allocator,
     producer: lifecycle.LifecycleProducer,
     change_queue: *queue_mod.ChangeQueue,
-    entries: [capacity]?Entry = [_]?Entry{null} ** capacity,
+    entries: [capacity]?Entry = @splat(null),
     next_subscription_id: keys.SubscriptionId = 1,
     count: usize = 0,
 
@@ -55,7 +55,7 @@ pub const AncillaryRequests = struct {
     }
 
     pub fn deinit(self: *AncillaryRequests) void {
-        self.entries = [_]?Entry{null} ** capacity;
+        self.entries = @splat(null);
         self.count = 0;
     }
 
@@ -480,7 +480,7 @@ pub fn runTask14ProductionShutdownGate() !void {
     const traffic_response =
         \\{"status":"success","data":{"resultType":"vector","result":[]}}
     ;
-    const traffic_scripts = [_]fake_mod.ResponseScript{.{ .body = traffic_response }} ** 8;
+    const traffic_scripts: [8]fake_mod.ResponseScript = @splat(.{ .body = traffic_response });
     var traffic_fake = fake_mod.FakeTransport.init(testing.allocator, &traffic_scripts);
     defer traffic_fake.deinit();
     const detail_scripts = [_]fake_mod.ResponseScript{
@@ -646,7 +646,7 @@ pub fn runTask14ProductionShutdownGate() !void {
     try testing.expectEqual(@as(usize, 0), requests.trackedCount());
     try testing.expectEqual(@as(usize, 0), supervisor.liveChildren());
     try testing.expectEqual(supervisor.metrics.launched, supervisor.metrics.reaped);
-    try testing.expectEqual(@as(usize, 0), active_session.leaseCount());
+    try testing.expectEqual(@as(usize, 0), slot.leaseCount());
 }
 
 test "all ancillary classes share one exact monotonic identity allocator" {

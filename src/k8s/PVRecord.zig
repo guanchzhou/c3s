@@ -149,7 +149,7 @@ fn abbreviateAccessMode(mode: []const u8) []const u8 {
 }
 
 pub fn capacitySortKey(value: []const u8) [32]u8 {
-    var result = [_]u8{'0'} ** 32;
+    var result: [32]u8 = @splat('0');
     var digits: usize = 0;
     while (digits < value.len and std.ascii.isDigit(value[digits])) : (digits += 1) {}
     const copy_len = @min(digits, result.len);

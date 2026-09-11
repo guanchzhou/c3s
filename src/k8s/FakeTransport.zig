@@ -186,9 +186,13 @@ test "fake records every request and only ever serves the GET vtable entry" {
     var fake = FakeTransport.init(std.testing.allocator, &scripts);
     defer fake.deinit();
 
-    const vtable_fields = @typeInfo(ReadTransport.VTable).@"struct".fields;
-    try std.testing.expectEqual(@as(usize, 1), vtable_fields.len);
-    try std.testing.expectEqualStrings("get", vtable_fields[0].name);
+    const vtable_info = @typeInfo(ReadTransport.VTable).@"struct";
+    const field_count = if (comptime @hasField(@TypeOf(vtable_info), "fields"))
+        vtable_info.fields.len
+    else
+        vtable_info.field_names.len;
+    try std.testing.expectEqual(@as(usize, 1), field_count);
+    try std.testing.expect(@hasField(ReadTransport.VTable, "get"));
 
     const Capture = struct {
         fn receive(_: *anyopaque, _: ResponseMeta, reader: *std.Io.Reader) anyerror!void {

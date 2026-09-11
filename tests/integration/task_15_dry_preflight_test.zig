@@ -4,12 +4,24 @@ const c3s = @import("c3s");
 test "Task 15 dry preflight validates schema controls and request enforcement" {
     const diagnostics = c3s.task15_diagnostics;
     try std.testing.expectEqual(@as(u8, 2), diagnostics.schema_version);
-    try std.testing.expectEqual(@as(usize, 15), @typeInfo(diagnostics.Family).@"enum".fields.len);
+    const family_info = @typeInfo(diagnostics.Family).@"enum";
+    const family_count = if (comptime @hasField(@TypeOf(family_info), "fields"))
+        family_info.fields.len
+    else
+        family_info.field_names.len;
+    try std.testing.expectEqual(@as(usize, 15), family_count);
     try std.testing.expectEqual(@as(usize, 2), diagnostics.allowed_contexts.len);
 
-    inline for (@typeInfo(diagnostics.Family).@"enum".fields) |field| {
-        const family = @field(diagnostics.Family, field.name);
-        try std.testing.expectEqual(family, try diagnostics.parseFamily(field.name));
+    if (comptime @hasField(@TypeOf(family_info), "fields")) {
+        inline for (family_info.fields) |field| {
+            const family = @field(diagnostics.Family, field.name);
+            try std.testing.expectEqual(family, try diagnostics.parseFamily(field.name));
+        }
+    } else {
+        inline for (family_info.field_names) |name| {
+            const family = @field(diagnostics.Family, name);
+            try std.testing.expectEqual(family, try diagnostics.parseFamily(name));
+        }
     }
 
     try std.testing.expectError(

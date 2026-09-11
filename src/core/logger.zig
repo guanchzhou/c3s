@@ -39,7 +39,7 @@ pub const Logger = struct {
 
         // Open (creating if needed) with append semantics; O_APPEND removes the
         // need to seek to end before each write. Needs a null-terminated path.
-        const path_z = try global_allocator.dupeZ(u8, log_file_path);
+        const path_z = try global_allocator.dupeSentinel(u8, log_file_path, 0);
         defer global_allocator.free(path_z);
         const log_fd = sys.openAppend(path_z) orelse return error.LogFileOpenFailed;
 

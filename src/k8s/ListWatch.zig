@@ -625,7 +625,7 @@ const Script = struct {
     list_calls: usize = 0,
     watch_calls: usize = 0,
     watched_rv_len: usize = 0,
-    watched_rv: [32]u8 = [_]u8{0} ** 32,
+    watched_rv: [32]u8 = @splat(0),
     /// Observed by scenarios that assert delivery latency from inside the callback.
     sink: ?*Sink = null,
     reconnects_before_cancel: usize = 0,
@@ -783,7 +783,7 @@ const Sink = struct {
     watch_connected_count: usize = 0,
     list_complete_count: usize = 0,
     list_complete_rv_len: usize = 0,
-    list_complete_rv: [32]u8 = [_]u8{0} ** 32,
+    list_complete_rv: [32]u8 = @splat(0),
     observed: [32]Observed = undefined,
     observed_len: usize = 0,
 
@@ -847,7 +847,7 @@ const Sink = struct {
 const Waiter = struct {
     waits: usize = 0,
     cancel_wait: bool = false,
-    delays: [8]u64 = [_]u64{0} ** 8,
+    delays: [8]u64 = @splat(0),
 
     fn hooks(self: *Waiter) RetryHooks {
         return .{ .context = self, .wait_fn = wait };

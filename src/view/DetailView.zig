@@ -376,7 +376,7 @@ pub const DetailView = struct {
     /// jump column-to-column instead of one char at a time.
     fn computeColumnStops(self: *DetailView) !void {
         self.col_stops.clearRetainingCapacity();
-        var counts = [_]u16{0} ** 256;
+        var counts: [256]u16 = @splat(0);
         var nonempty: u32 = 0;
         for (self.lines.items) |line| {
             if (std.mem.indexOfNone(u8, line, " ") == null) continue; // blank

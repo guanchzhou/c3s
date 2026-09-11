@@ -353,10 +353,12 @@ test "current previous and fallback log paths use only GET-safe requests" {
     try std.testing.expect(std.mem.indexOf(u8, fake.requests.items[1].path, "previous=true") != null);
     try std.testing.expect(std.mem.indexOf(u8, fake.requests.items[3].path, "container=app") != null);
     for (fake.requests.items) |request| _ = try read_transport.ReadRequest.init(request.path);
-    try std.testing.expectEqual(
-        @as(usize, 1),
-        @typeInfo(read_transport.ReadTransport.VTable).@"struct".fields.len,
-    );
+    const vtable_info = @typeInfo(read_transport.ReadTransport.VTable).@"struct";
+    const field_count = if (comptime @hasField(@TypeOf(vtable_info), "fields"))
+        vtable_info.fields.len
+    else
+        vtable_info.field_names.len;
+    try std.testing.expectEqual(@as(usize, 1), field_count);
 }
 
 test "failed fallback publishes no replacement body" {
@@ -676,7 +678,7 @@ pub fn runTask14DetailLogsGate() !void {
     var stale_detail: ?keys.Envelope = null;
     var stale_yaml: ?keys.Envelope = null;
     var stale_logs: ?keys.Envelope = null;
-    var deferred_lifecycle = [_]?keys.Envelope{null} ** 3;
+    var deferred_lifecycle: [3]?keys.Envelope = @splat(null);
     var deferred_count: usize = 0;
     defer for (&deferred_lifecycle) |*envelope| {
         if (envelope.*) |*value| value.deinit(std.testing.allocator);

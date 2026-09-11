@@ -8,7 +8,7 @@ pub const StatefulSetRecord = @This();
 key: keys.ObjectKey,
 ready_replicas: i32,
 desired_replicas: i32,
-ready_sort_key: [41]u8 = [_]u8{'0'} ** 41,
+ready_sort_key: [41]u8 = @splat('0'),
 creation_timestamp: ?[]u8 = null,
 
 pub fn fromStatefulSet(allocator: std.mem.Allocator, value: klient.StatefulSet) !StatefulSetRecord {

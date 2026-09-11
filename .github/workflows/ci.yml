@@ -98,3 +98,39 @@ jobs:
         run: zig build
       - name: Tests
         run: zig build test-all
+
+  # Non-blocking early warning for the next Zig release. The release baseline
+  # remains 0.16.0 until 0.17 is stable.
+  zig-master-canary:
+    name: Zig master (canary)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v6
+      - name: Clone sibling dependencies
+        run: |
+          cd "$(dirname "$GITHUB_WORKSPACE")"
+          git clone --depth 1 https://github.com/guanchzhou/zig-klient zig-klient
+          git clone --depth 1 https://github.com/guanchzhou/kubectl-traffic kubectl-traffic
+      - name: Install Zig master
+        run: |
+          set -euo pipefail
+          curl -fsSL https://ziglang.org/download/index.json -o index.json
+          url=$(jq -er '.master."x86_64-linux".tarball' index.json)
+          sha=$(jq -er '.master."x86_64-linux".shasum' index.json)
+          ver=$(jq -er '.master.version' index.json)
+          echo "Zig master is $ver"
+          echo "ZIG_MASTER_VERSION=$ver" >> "$GITHUB_ENV"
+          curl -fsSL "$url" -o zig.tar.xz
+          echo "$sha  zig.tar.xz" | shasum -a 256 -c -
+          mkdir -p zig-master
+          tar -xf zig.tar.xz -C zig-master --strip-components=1
+          echo "$PWD/zig-master" >> "$GITHUB_PATH"
+      - name: Verify Zig
+        run: |
+          zig version
+          test "$(zig version)" = "$ZIG_MASTER_VERSION"
+      - name: Build
+        run: zig build
+      - name: Tests
+        run: zig build test-all

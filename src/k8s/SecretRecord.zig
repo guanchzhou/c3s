@@ -8,7 +8,7 @@ pub const SecretRecord = @This();
 key: keys.ObjectKey,
 secret_type: []u8,
 data_count: usize,
-data_sort_key: [20]u8 = [_]u8{'0'} ** 20,
+data_sort_key: [20]u8 = @splat('0'),
 creation_timestamp: ?[]u8 = null,
 
 pub fn fromSecret(allocator: std.mem.Allocator, value: klient.Secret) !SecretRecord {

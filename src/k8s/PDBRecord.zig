@@ -8,10 +8,10 @@ pub const PDBRecord = @This();
 key: keys.ObjectKey,
 min_available: []u8,
 max_unavailable: []u8,
-min_available_sort_key: [21]u8 = [_]u8{'0'} ** 21,
-max_unavailable_sort_key: [21]u8 = [_]u8{'0'} ** 21,
+min_available_sort_key: [21]u8 = @splat('0'),
+max_unavailable_sort_key: [21]u8 = @splat('0'),
 allowed_disruptions: i32,
-allowed_sort_key: [20]u8 = [_]u8{'0'} ** 20,
+allowed_sort_key: [20]u8 = @splat('0'),
 creation_timestamp: ?[]u8 = null,
 
 pub fn fromPodDisruptionBudget(
@@ -99,7 +99,7 @@ pub fn columns(self: *const PDBRecord, allocator: std.mem.Allocator) ![6][]const
 }
 
 pub fn countSortKey(value: i32) [20]u8 {
-    var result = [_]u8{'0'} ** 20;
+    var result: [20]u8 = @splat('0');
     var buffer: [20]u8 = undefined;
     const text = std.fmt.bufPrint(&buffer, "{d}", .{@max(value, 0)}) catch unreachable;
     @memcpy(result[result.len - text.len ..], text);
@@ -107,7 +107,7 @@ pub fn countSortKey(value: i32) [20]u8 {
 }
 
 pub fn intOrStringSortKey(value: []const u8) [21]u8 {
-    var result = [_]u8{'0'} ** 21;
+    var result: [21]u8 = @splat('0');
     const is_percent = value.len > 1 and value[value.len - 1] == '%';
     const numeric = if (is_percent) value[0 .. value.len - 1] else value;
     if (std.fmt.parseInt(u64, numeric, 10)) |number| {

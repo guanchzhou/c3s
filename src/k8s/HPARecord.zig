@@ -9,9 +9,9 @@ key: keys.ObjectKey,
 min_replicas: i32,
 max_replicas: i32,
 current_replicas: i32,
-min_sort_key: [20]u8 = [_]u8{'0'} ** 20,
-max_sort_key: [20]u8 = [_]u8{'0'} ** 20,
-current_sort_key: [20]u8 = [_]u8{'0'} ** 20,
+min_sort_key: [20]u8 = @splat('0'),
+max_sort_key: [20]u8 = @splat('0'),
+current_sort_key: [20]u8 = @splat('0'),
 creation_timestamp: ?[]u8 = null,
 
 pub fn fromHorizontalPodAutoscaler(
@@ -83,7 +83,7 @@ pub fn columns(self: *const HPARecord, allocator: std.mem.Allocator) ![6][]const
 }
 
 pub fn countSortKey(value: i32) [20]u8 {
-    var result = [_]u8{'0'} ** 20;
+    var result: [20]u8 = @splat('0');
     var buffer: [20]u8 = undefined;
     const text = std.fmt.bufPrint(&buffer, "{d}", .{@max(value, 0)}) catch unreachable;
     @memcpy(result[result.len - text.len ..], text);

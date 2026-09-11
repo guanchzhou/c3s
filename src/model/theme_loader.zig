@@ -107,7 +107,7 @@ const YamlValues = struct {
 /// Parse the YAML content once: collect anchors, then walk the indentation tree
 /// and resolve every key from theme_mappings in one pass.
 fn extractAllYamlValues(content: []const u8) YamlValues {
-    var result = YamlValues{ .values = .{null} ** theme_mappings.len };
+    var result = YamlValues{ .values = @splat(null) };
 
     // --- Pass 1: collect YAML anchors ---
     // Handles both formats:

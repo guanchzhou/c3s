@@ -8,7 +8,7 @@ pub const ConfigMapRecord = @This();
 
 key: keys.ObjectKey,
 data_count: usize,
-data_sort_key: [20]u8 = [_]u8{'0'} ** 20,
+data_sort_key: [20]u8 = @splat('0'),
 creation_timestamp: ?[]u8 = null,
 
 pub fn fromConfigMap(allocator: std.mem.Allocator, value: klient.ConfigMap) !ConfigMapRecord {
@@ -68,7 +68,7 @@ fn objectCount(value: ?std.json.Value) usize {
 }
 
 pub fn numericSortKey(value: usize) [20]u8 {
-    var result = [_]u8{'0'} ** 20;
+    var result: [20]u8 = @splat('0');
     var buffer: [20]u8 = undefined;
     const text = std.fmt.bufPrint(&buffer, "{d}", .{value}) catch unreachable;
     @memcpy(result[result.len - text.len ..], text);
