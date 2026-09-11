@@ -236,6 +236,12 @@ Every API resource discovered from the cluster, with short names and kinds.
 
 ![c3s aliases view](docs/screenshots/04-aliases.png)
 
+### Compact header
+
+`Ctrl-E` collapses the header to a single line (or set `ui.compact` in config), giving the table back six rows.
+
+![c3s compact header](docs/screenshots/07-compact.png)
+
 ### Deployments and services
 
 ![c3s deployments view](docs/screenshots/05-deployments.png)
