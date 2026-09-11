@@ -19,6 +19,13 @@ The release workflow extracts the section matching the git tag (`vX.Y.Z` →
 - Removed the obsolete root `plan.txt`; maintained design and roadmap documents
   live under `docs/design/`.
 
+### Fixed
+
+- Synchronized the fake read transport used by concurrent lifecycle tests so
+  request recording and scripted responses cannot race.
+- Kept the Zig 0.17 allocation gate deterministic despite threaded-I/O
+  allocator activity.
+
 ## [0.2.0] - 2026-09-09
 
 ### Added
