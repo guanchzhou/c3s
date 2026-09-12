@@ -507,6 +507,49 @@ pub const Header = struct {
         );
     }
 
+    fn compactText(self: *const Header, buffer: []u8, width: u16) ![]const u8 {
+        const access = if (self.readonly) "READONLY" else "READWRITE";
+
+        const full = std.fmt.bufPrint(
+            buffer,
+            "c3s {s} | {s} | context: {s} | namespace: {s} | cluster: {s} | user: {s} | k8s: {s} | CPU: {s} | MEM: {s}",
+            .{
+                self.title_with_version,
+                access,
+                self.context,
+                self.namespace_scope,
+                self.cluster,
+                self.user,
+                self.k8s_version,
+                self.cpu_str,
+                self.mem_str,
+            },
+        ) catch null;
+        if (full) |text| {
+            if (text.len <= width) return text;
+        }
+
+        const dense = std.fmt.bufPrint(
+            buffer,
+            "c3s | {s} | context: {s} | namespace: {s} | k8s: {s} | CPU: {s} | MEM: {s}",
+            .{
+                access,
+                self.context,
+                self.namespace_scope,
+                self.k8s_version,
+                self.cpu_str,
+                self.mem_str,
+            },
+        ) catch null;
+        if (dense) |text| {
+            if (text.len <= width) return text;
+        }
+
+        const safety = try self.safetyText(buffer);
+        if (safety.len <= width) return safety;
+        return safety[0..@min(safety.len, width)];
+    }
+
     /// Update the displayed Kubernetes server version
     pub fn updateK8sVersion(self: *Header, k8s_version: []const u8) !void {
         // Only update if the value actually changed
@@ -584,9 +627,9 @@ pub const Header = struct {
                 }
             }
 
-            var safety_buffer: [512]u8 = undefined;
-            const safety = try self.safetyText(&safety_buffer);
-            try Theme.writeStringWithTheme(terminal, x, y, safety, self.theme.hi_fg, self.theme.main_bg);
+            var compact_buffer: [2048]u8 = undefined;
+            const compact_text = try self.compactText(&compact_buffer, width);
+            try Theme.writeStringWithTheme(terminal, x, y, compact_text, self.theme.hi_fg, self.theme.main_bg);
 
             self.last_height = box_height;
             return;
@@ -1060,6 +1103,43 @@ test "header: compact mode at various widths" {
     const widths = [_]u16{ 200, 180, 160, 140, 120, 100, 80, 70, 60, 50, 40, 30 };
     for (widths) |width| {
         try header.render(&terminal, 0, 0, width, 1, hints_cfg);
+    }
+}
+
+test "compact header retains operational and safety information at normal width" {
+    const allocator = std.testing.allocator;
+    const theme = try theme_loader.defaultTheme(allocator);
+    defer theme_loader.deinitTheme(@constCast(&theme));
+    var header = try Header.init(allocator, &theme, true);
+    defer header.deinit();
+
+    try header.setReadonlyScope(true, "all-namespaces");
+
+    var buffer: [2048]u8 = undefined;
+    const text = try header.compactText(&buffer, 240);
+
+    try std.testing.expect(std.mem.startsWith(u8, text, "c3s "));
+    try std.testing.expect(std.mem.indexOf(u8, text, "READONLY") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "context:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "namespace: all-namespaces") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "cluster:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "user:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "k8s:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "CPU:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "MEM:") != null);
+}
+
+test "compact header never exceeds the terminal width" {
+    const allocator = std.testing.allocator;
+    const theme = try theme_loader.defaultTheme(allocator);
+    defer theme_loader.deinitTheme(@constCast(&theme));
+    var header = try Header.init(allocator, &theme, true);
+    defer header.deinit();
+
+    var buffer: [2048]u8 = undefined;
+    for ([_]u16{ 200, 120, 80, 40, 1, 0 }) |width| {
+        const text = try header.compactText(&buffer, width);
+        try std.testing.expect(text.len <= width);
     }
 }
 
