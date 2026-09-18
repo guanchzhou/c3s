@@ -859,7 +859,7 @@ pub const NodesView = ResourceView(klient.types.Node, klient.resources.Nodes, .{
         .{ .name = "NAME", .min_width = 12, .max_width = 28, .priority = P.CRITICAL, .sort_key = 'N', .searchable = true },
         .{ .name = "STATUS", .min_width = 8, .max_width = 28, .priority = P.HIGH, .sort_key = 'S' },
         .{ .name = "ROLES", .min_width = 8, .max_width = 16, .priority = P.HIGH, .sort_key = 'R' },
-        .{ .name = "VERSION", .min_width = 8, .max_width = 16, .priority = P.MEDIUM, .sort_key = 'V' },
+        .{ .name = "VERSION", .min_width = 8, .max_width = 16, .priority = P.MEDIUM, .sort_key = 'V', .searchable = true },
         .{ .name = "INTERNAL-IP", .min_width = 10, .max_width = 20, .priority = P.MEDIUM },
         .{ .name = "AGE", .min_width = 6, .max_width = 12, .priority = P.MEDIUM, .sort_key = 'A' },
     },

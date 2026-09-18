@@ -10,6 +10,16 @@ The release workflow extracts the section matching the git tag (`vX.Y.Z` →
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-09-18
+
+### Fixed
+
+- Nodes slash-filter matches the VERSION column, so queries such as `1.33`
+  hit kubelet strings like `v1.33.x`. INTERNAL-IP, AGE, STATUS, and ROLES stay
+  out of the search.
+- Pod CPU/MEM metrics start on the first watch upsert after an empty initial
+  list, instead of remaining `n/a` for that subscription.
+
 ## [0.3.0] - 2026-09-18
 
 ### Added

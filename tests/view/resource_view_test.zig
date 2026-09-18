@@ -804,6 +804,68 @@ fn applyPodBatch(projection: *PodProjection, batch: *pod_keys.TypedBatch(c3s.Pod
     plan.deinit(testing.allocator);
 }
 
+const NodeProjection = c3s.k8s_resource_projection.ResourceProjection(c3s.NodeRecord);
+
+fn projectedNodeMatch(record: *const c3s.NodeRecord, filter: []const u8) bool {
+    return c3s.k9s_query.matchSearchable(
+        &.{ record.key.name, record.version },
+        record.key.labels,
+        filter,
+    );
+}
+
+fn projectedNodeSort(record: *const c3s.NodeRecord, _: u8) []const u8 {
+    return record.key.name;
+}
+
+fn projectedNodeColumns(
+    _: *NodeProjection,
+    record: *const c3s.NodeRecord,
+    allocator: std.mem.Allocator,
+) ![6][]const u8 {
+    return record.columns(allocator);
+}
+
+fn applyNodeBatch(projection: *NodeProjection, batch: *pod_keys.TypedBatch(c3s.NodeRecord)) !void {
+    var plan = try NodeProjection.handler().preflight(@ptrCast(projection), batch, testing.allocator);
+    NodeProjection.handler().commit(@ptrCast(projection), batch, &plan);
+    plan.deinit(testing.allocator);
+}
+
+fn makeProjectedNode(
+    uid: []const u8,
+    name: []const u8,
+    version: []const u8,
+    internal_ip: []const u8,
+) !c3s.NodeRecord {
+    const allocator = testing.allocator;
+    return .{
+        .key = try (pod_keys.ObjectKey{
+            .uid = uid,
+            .namespace = "",
+            .name = name,
+        }).clone(allocator),
+        .status = try allocator.dupe(u8, "Ready"),
+        .roles = try allocator.dupe(u8, "worker"),
+        .version = try allocator.dupe(u8, version),
+        .internal_ip = try allocator.dupe(u8, internal_ip),
+    };
+}
+
+fn nodeBatch(
+    revision: u64,
+    changes: []pod_keys.TypedChange(c3s.NodeRecord),
+) pod_keys.TypedBatch(c3s.NodeRecord) {
+    return .{
+        .generation = 1,
+        .subscription_id = 1,
+        .revision = revision,
+        .changes = changes,
+        .sync = null,
+        .owned_bytes = 1,
+    };
+}
+
 fn makeProjectedPod(
     uid: []const u8,
     name: []const u8,
@@ -939,6 +1001,44 @@ test "projected rows use shared inverse label fuzzy and plain filters" {
     try testing.expectEqualStrings("nginx-api", view.table.items.items[view.table.filtered_indices.items[0]].columns[1]);
     try view.applyFilter("-f ngx");
     try testing.expectEqualStrings("nginx-api", view.table.items.items[view.table.filtered_indices.items[0]].columns[1]);
+}
+
+test "projected nodes filter matches searchable VERSION and ignores labels and INTERNAL-IP" {
+    const allocator = testing.allocator;
+    var projection = NodeProjection.init(allocator, .{
+        .matchFn = projectedNodeMatch,
+        .sortKeyFn = projectedNodeSort,
+    });
+    defer projection.deinit();
+    var svc = try c3s.K8sService.init(allocator);
+    defer svc.deinit();
+    var theme = try c3s.theme_loader.defaultTheme(allocator);
+    defer c3s.theme_loader.deinitTheme(&theme);
+    var view = try c3s.NodesView.init(allocator, &theme, &svc);
+    defer view.deinit();
+    view.bindProjection(c3s.NodesView.ProjectionAdapter.init(
+        c3s.NodeRecord,
+        &projection,
+        projectedNodeColumns,
+    ));
+
+    const changes = try allocator.alloc(pod_keys.TypedChange(c3s.NodeRecord), 1);
+    changes[0] = .{ .initial_upsert = try makeProjectedNode("worker-uid", "worker-1", "v1.33.4", "10.1.33.4") };
+    var batch = nodeBatch(1, changes);
+    defer batch.deinit(allocator);
+    try applyNodeBatch(&projection, &batch);
+    try view.syncProjection();
+
+    try view.applyFilter("1.33");
+    try testing.expectEqual(@as(usize, 1), view.table.filtered_indices.items.len);
+    try testing.expectEqualStrings("worker-1", view.table.items.items[view.table.filtered_indices.items[0]].columns[0]);
+    try view.applyFilter("-f 1.33");
+    try testing.expectEqual(@as(usize, 1), view.table.filtered_indices.items.len);
+    try testing.expectEqualStrings("worker-1", view.table.items.items[view.table.filtered_indices.items[0]].columns[0]);
+    try view.applyFilter("-l 1.33");
+    try testing.expectEqual(@as(usize, 0), view.table.filtered_indices.items.len);
+    try view.applyFilter("10.1");
+    try testing.expectEqual(@as(usize, 0), view.table.filtered_indices.items.len);
 }
 
 test "projection-level filters read the labels projected onto the record" {
