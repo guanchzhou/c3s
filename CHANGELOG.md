@@ -10,6 +10,31 @@ The release workflow extracts the section matching the git tag (`vX.Y.Z` →
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-09-18
+
+### Added
+
+- Generic discovery-driven custom-resource views with server-side Kubernetes
+  Table columns, including Karpenter NodeClaims, NodePools, and EC2NodeClasses.
+- Semantic Kubernetes-version sorting in the Nodes view with `Shift-V`.
+- A synthetic projection benchmark for large resource lists.
+
+### Changed
+
+- Large pod lists use indexed projection updates, progressive merging, and
+  coalesced UI synchronization to avoid repeated full table rebuilds.
+- Interactive terminal output is damage-aware and paced up to 120 Hz, with
+  synchronized presentation for Metal-backed terminals.
+- Palette view commands replace the root view from any navigation depth.
+
+### Fixed
+
+- Dynamic-resource views no longer crash while rendering their first header.
+- Command-palette selection text uses the selected foreground theme color.
+- Numeric and time-based pod sorting remains correct with projected rows.
+- Metrics startup cannot leak across pod-subscription restarts, and time-derived
+  cells refresh without defeating row reuse.
+
 ## [0.2.1] - 2026-09-10
 
 ### Changed

@@ -161,6 +161,7 @@ pub const k8s_detail_request = @import("k8s/DetailRequest.zig");
 pub const k8s_logs_request = @import("k8s/LogsRequest.zig");
 pub const k8s_authorization_request = @import("k8s/AuthorizationRequest.zig");
 pub const k8s_read_transport = @import("k8s/ReadTransport.zig");
+pub const k8s_dynamic_resource = @import("k8s/DynamicResource.zig");
 pub const k8s_fake_transport = @import("k8s/FakeTransport.zig");
 pub const k8s_stream_list = @import("k8s/StreamList.zig");
 pub const k8s_pod_record = @import("k8s/PodRecord.zig");

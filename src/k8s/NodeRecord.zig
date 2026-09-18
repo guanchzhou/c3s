@@ -9,6 +9,7 @@ key: keys.ObjectKey,
 status: []u8,
 roles: []u8,
 version: []u8,
+version_sort_key: []u8 = &.{},
 internal_ip: []u8,
 creation_timestamp: ?[]u8 = null,
 
@@ -22,6 +23,8 @@ pub fn fromNode(allocator: std.mem.Allocator, node: klient.Node) !NodeRecord {
     errdefer allocator.free(roles);
     const version = try allocator.dupe(u8, nodeVersion(node));
     errdefer allocator.free(version);
+    const version_sort_key = try kubernetesVersionSortKey(allocator, version);
+    errdefer allocator.free(version_sort_key);
     const internal_ip = try allocator.dupe(u8, nodeInternalIp(node));
     errdefer allocator.free(internal_ip);
     const creation_timestamp = if (node.metadata.creationTimestamp) |value|
@@ -34,6 +37,7 @@ pub fn fromNode(allocator: std.mem.Allocator, node: klient.Node) !NodeRecord {
         .status = status,
         .roles = roles,
         .version = version,
+        .version_sort_key = version_sort_key,
         .internal_ip = internal_ip,
         .creation_timestamp = creation_timestamp,
     };
@@ -48,6 +52,8 @@ pub fn clone(self: NodeRecord, allocator: std.mem.Allocator) !NodeRecord {
     errdefer allocator.free(roles);
     const version = try allocator.dupe(u8, self.version);
     errdefer allocator.free(version);
+    const version_sort_key = try kubernetesVersionSortKey(allocator, version);
+    errdefer allocator.free(version_sort_key);
     const internal_ip = try allocator.dupe(u8, self.internal_ip);
     errdefer allocator.free(internal_ip);
     const creation_timestamp = if (self.creation_timestamp) |value|
@@ -59,6 +65,7 @@ pub fn clone(self: NodeRecord, allocator: std.mem.Allocator) !NodeRecord {
         .status = status,
         .roles = roles,
         .version = version,
+        .version_sort_key = version_sort_key,
         .internal_ip = internal_ip,
         .creation_timestamp = creation_timestamp,
     };
@@ -69,6 +76,7 @@ pub fn deinit(self: *NodeRecord, allocator: std.mem.Allocator) void {
     allocator.free(self.status);
     allocator.free(self.roles);
     allocator.free(self.version);
+    if (self.version_sort_key.len > 0) allocator.free(self.version_sort_key);
     allocator.free(self.internal_ip);
     if (self.creation_timestamp) |value| allocator.free(value);
     self.* = undefined;
@@ -161,6 +169,66 @@ fn nodeVersion(node: klient.Node) []const u8 {
     return "unknown";
 }
 
+const KubernetesVersion = struct {
+    major: u64,
+    minor: u64,
+    patch: u64,
+};
+
+fn parseKubernetesVersion(value: []const u8) ?KubernetesVersion {
+    if (value.len < 2 or value[0] != 'v') return null;
+    var cursor: usize = 1;
+    const major = parseVersionComponent(value, &cursor) orelse return null;
+    if (cursor >= value.len or value[cursor] != '.') return null;
+    cursor += 1;
+    const minor = parseVersionComponent(value, &cursor) orelse return null;
+    if (cursor >= value.len or value[cursor] != '.') return null;
+    cursor += 1;
+    const patch = parseVersionComponent(value, &cursor) orelse return null;
+    if (cursor < value.len and value[cursor] != '+' and value[cursor] != '-') return null;
+    if (cursor + 1 == value.len) return null;
+    return .{ .major = major, .minor = minor, .patch = patch };
+}
+
+fn parseVersionComponent(value: []const u8, cursor: *usize) ?u64 {
+    const start = cursor.*;
+    while (cursor.* < value.len and std.ascii.isDigit(value[cursor.*])) cursor.* += 1;
+    if (cursor.* == start) return null;
+    return std.fmt.parseInt(u64, value[start..cursor.*], 10) catch null;
+}
+
+pub fn compareKubernetesVersions(left: []const u8, right: []const u8) std.math.Order {
+    const left_version = parseKubernetesVersion(left) orelse return std.mem.order(u8, left, right);
+    const right_version = parseKubernetesVersion(right) orelse return std.mem.order(u8, left, right);
+    inline for (.{ "major", "minor", "patch" }) |field| {
+        const order = std.math.order(@field(left_version, field), @field(right_version, field));
+        if (order != .eq) return order;
+    }
+    return .eq;
+}
+
+pub fn kubernetesVersionSortKey(allocator: std.mem.Allocator, value: []const u8) ![]u8 {
+    const parsed = parseKubernetesVersion(value) orelse {
+        const result = try allocator.alloc(u8, value.len + 1);
+        result[0] = '0';
+        @memcpy(result[1..], value);
+        return result;
+    };
+    const result = try allocator.alloc(u8, 61);
+    result[0] = '1';
+    writeNumericSortComponent(result[1..21], parsed.major);
+    writeNumericSortComponent(result[21..41], parsed.minor);
+    writeNumericSortComponent(result[41..61], parsed.patch);
+    return result;
+}
+
+fn writeNumericSortComponent(result: []u8, value: u64) void {
+    @memset(result, '0');
+    var buffer: [20]u8 = undefined;
+    const text = std.fmt.bufPrint(&buffer, "{d}", .{value}) catch unreachable;
+    @memcpy(result[result.len - text.len ..], text);
+}
+
 test "node record preserves scheduling status and display columns" {
     const allocator = std.testing.allocator;
     var conditions = [_]klient.types.NodeCondition{
@@ -194,4 +262,42 @@ test "node record preserves scheduling status and display columns" {
 test "UID-less node is malformed" {
     const node = klient.Node{ .metadata = .{ .name = "worker" } };
     try std.testing.expectError(error.MissingUid, fromNode(std.testing.allocator, node));
+}
+
+test "Kubernetes versions sort by numeric core and accept vendor suffixes" {
+    try std.testing.expectEqual(
+        std.math.Order.lt,
+        compareKubernetesVersions("v1.9.9", "v1.30.0"),
+    );
+    try std.testing.expectEqual(
+        std.math.Order.lt,
+        compareKubernetesVersions("v1.35.2+k3s9", "v1.35.3+k3s1"),
+    );
+    try std.testing.expectEqual(
+        std.math.Order.lt,
+        compareKubernetesVersions("v1.31.3-eks-ffff", "v1.31.4-eks-abc123"),
+    );
+    try std.testing.expectEqual(
+        std.math.Order.eq,
+        compareKubernetesVersions("v1.31.4", "v1.31.4-eks-abc123"),
+    );
+    try std.testing.expectEqual(
+        std.math.Order.lt,
+        compareKubernetesVersions("not-a-version", "unknown"),
+    );
+}
+
+test "Kubernetes version sort keys preserve semantic ordering" {
+    const allocator = std.testing.allocator;
+    const old = try kubernetesVersionSortKey(allocator, "v1.9.9");
+    defer allocator.free(old);
+    const new = try kubernetesVersionSortKey(allocator, "v1.30.0");
+    defer allocator.free(new);
+    const k3s = try kubernetesVersionSortKey(allocator, "v1.35.3+k3s1");
+    defer allocator.free(k3s);
+    const eks = try kubernetesVersionSortKey(allocator, "v1.31.4-eks-abc123");
+    defer allocator.free(eks);
+
+    try std.testing.expectEqual(std.math.Order.lt, std.mem.order(u8, old, new));
+    try std.testing.expectEqual(std.math.Order.lt, std.mem.order(u8, eks, k3s));
 }

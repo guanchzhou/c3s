@@ -22,6 +22,7 @@ const filter_util = @import("../viewmodel/filter.zig");
 const PodRecord = @import("../k8s/PodRecord.zig");
 const PodProjection = @import("../k8s/ResourceProjection.zig").ResourceProjection(PodRecord);
 const projection_mod = @import("../k8s/ResourceProjection.zig");
+const resource_key = @import("../k8s/ResourceKey.zig");
 
 /// Column definition for a resource view
 pub const ColumnDef = struct {
@@ -96,6 +97,7 @@ pub fn ResourceView(
         /// only valid while the namespace scope is unchanged.
         cached_show_all: bool = false,
         projection_adapter: ?ProjectionAdapter = null,
+        projection_sync_count: usize = 0,
         subscription_started: bool = false,
         subscription_request: SubscriptionRequest = .none,
         /// Column display order, and how many of them are shown.
@@ -125,6 +127,9 @@ pub fn ResourceView(
             uid: []const u8 = &.{},
             /// Flattened `k=v,k=v` from metadata.labels. Empty slice is not owned.
             labels: []const u8 = &.{},
+            object_revision: resource_key.Revision = 0,
+            metrics_revision: resource_key.Revision = 0,
+            time_generation: u64 = 0,
 
             pub fn deinit(self: *RowData) void {
                 for (&self.columns) |*col| {
@@ -151,6 +156,12 @@ pub fn ResourceView(
         };
 
         pub const ProjectionAdapter = struct {
+            const Revisions = struct {
+                object: resource_key.Revision,
+                metrics: resource_key.Revision,
+                time: u64,
+            };
+
             pub const ViewRollback = struct {
                 ptr: *anyopaque,
                 alignment: std.mem.Alignment,
@@ -176,6 +187,8 @@ pub fn ResourceView(
             labelsFn: *const fn (*anyopaque, []const u8) ?[]const u8,
             selectedUidFn: *const fn (*anyopaque) ?[]const u8,
             selectUidFn: *const fn (*anyopaque, []const u8) bool,
+            revisionsFn: *const fn (*anyopaque, []const u8) ?Revisions,
+            refreshTimeFn: *const fn (*anyopaque) void,
             captureViewFn: *const fn (*anyopaque, std.mem.Allocator) anyerror!ViewRollback,
             setViewFn: *const fn (*anyopaque, []const u8, u8, bool) anyerror!void,
             columnsFn: *const fn (*anyopaque, []const u8, std.mem.Allocator) anyerror!?[col_count][]const u8,
@@ -215,6 +228,17 @@ pub fn ResourceView(
                     }
                     fn selectUid(raw: *anyopaque, uid: []const u8) bool {
                         return typedProjection(raw).selectUid(uid);
+                    }
+                    fn revisions(raw: *anyopaque, uid: []const u8) ?Revisions {
+                        const projection_value = typedProjection(raw);
+                        return .{
+                            .object = projection_value.objectRevision(uid) orelse return null,
+                            .metrics = projection_value.metricsRevision(uid) orelse return null,
+                            .time = projection_value.currentTimeGeneration(),
+                        };
+                    }
+                    fn refreshTime(raw: *anyopaque) void {
+                        _ = typedProjection(raw).refreshTimeGeneration();
                     }
                     fn captureView(raw: *anyopaque, allocator: std.mem.Allocator) anyerror!ViewRollback {
                         const Snapshot = Projection.ViewSnapshot;
@@ -269,6 +293,8 @@ pub fn ResourceView(
                     .labelsFn = Adapter.labels,
                     .selectedUidFn = Adapter.selectedUid,
                     .selectUidFn = Adapter.selectUid,
+                    .revisionsFn = Adapter.revisions,
+                    .refreshTimeFn = Adapter.refreshTime,
                     .captureViewFn = Adapter.captureView,
                     .setViewFn = Adapter.setView,
                     .columnsFn = Adapter.columns,
@@ -658,9 +684,24 @@ pub fn ResourceView(
 
         fn syncProjectionFiltered(self: *Self, filter: []const u8) !void {
             const adapter = self.projection_adapter orelse return;
+            adapter.refreshTimeFn(adapter.ptr);
             self.syncProjectionSelection();
             const previous_selected_row = self.table.selected_row;
             const previous_scroll_offset = self.table.scroll_offset;
+
+            const PlannedRow = union(enum) {
+                reused: usize,
+                owned: RowData,
+            };
+            var planned_rows: std.ArrayListUnmanaged(PlannedRow) = .empty;
+            var planned_rows_own_data = true;
+            defer planned_rows.deinit(self.table.allocator);
+            errdefer if (planned_rows_own_data) {
+                for (planned_rows.items) |*planned| switch (planned.*) {
+                    .reused => {},
+                    .owned => |*row| row.deinit(),
+                };
+            };
 
             var next_items: std.ArrayListUnmanaged(RowData) = .empty;
             errdefer {
@@ -670,12 +711,42 @@ pub fn ResourceView(
             var next_indices: std.ArrayListUnmanaged(usize) = .empty;
             errdefer next_indices.deinit(self.table.allocator);
             const visible_count = adapter.visibleCountFn(adapter.ptr);
+            try planned_rows.ensureTotalCapacity(self.table.allocator, visible_count);
             try next_items.ensureTotalCapacity(self.table.allocator, visible_count);
             try next_indices.ensureTotalCapacity(self.table.allocator, visible_count);
+
+            var old_rows_by_uid: std.StringHashMapUnmanaged(usize) = .empty;
+            defer old_rows_by_uid.deinit(self.table.allocator);
+            try old_rows_by_uid.ensureTotalCapacity(
+                self.table.allocator,
+                @intCast(self.table.items.items.len),
+            );
+            for (self.table.items.items, 0..) |row, index| {
+                try old_rows_by_uid.put(self.table.allocator, row.uid, index);
+            }
+            const reused_rows = try self.table.allocator.alloc(bool, self.table.items.items.len);
+            defer self.table.allocator.free(reused_rows);
+            @memset(reused_rows, false);
 
             var row_index: usize = 0;
             while (row_index < visible_count) : (row_index += 1) {
                 const uid = adapter.visibleUidFn(adapter.ptr, row_index) orelse continue;
+                const revisions = adapter.revisionsFn(adapter.ptr, uid) orelse continue;
+                if (old_rows_by_uid.get(uid)) |old_index| {
+                    const old_row = &self.table.items.items[old_index];
+                    if (!reused_rows[old_index] and
+                        old_row.object_revision == revisions.object and
+                        old_row.metrics_revision == revisions.metrics and
+                        old_row.time_generation == revisions.time)
+                    {
+                        reused_rows[old_index] = true;
+                        planned_rows.appendAssumeCapacity(.{ .reused = old_index });
+                        if (filter.len == 0 or matchFn(old_row, filter)) {
+                            next_indices.appendAssumeCapacity(planned_rows.items.len - 1);
+                        }
+                        continue;
+                    }
+                }
                 const columns = try adapter.columnsFn(adapter.ptr, uid, self.table.allocator) orelse continue;
                 var columns_owned = true;
                 errdefer if (columns_owned) for (columns) |column| self.table.allocator.free(column);
@@ -692,27 +763,43 @@ pub fn ResourceView(
                     .allocator = self.table.allocator,
                     .uid = owned_uid,
                     .labels = owned_labels,
+                    .object_revision = revisions.object,
+                    .metrics_revision = revisions.metrics,
+                    .time_generation = revisions.time,
                 };
-                next_items.appendAssumeCapacity(row);
+                planned_rows.appendAssumeCapacity(.{ .owned = row });
                 columns_owned = false;
                 identity_owned = false;
-                if (filter.len == 0 or matchFn(&next_items.items[next_items.items.len - 1], filter)) {
-                    next_indices.appendAssumeCapacity(next_items.items.len - 1);
+                if (filter.len == 0 or matchFn(&row, filter)) {
+                    next_indices.appendAssumeCapacity(planned_rows.items.len - 1);
                 }
             }
 
-            self.table.clearItems();
+            planned_rows_own_data = false;
+            for (planned_rows.items) |*planned| switch (planned.*) {
+                .reused => |old_index| next_items.appendAssumeCapacity(
+                    self.table.items.items[old_index],
+                ),
+                .owned => |row| next_items.appendAssumeCapacity(row),
+            };
+            for (self.table.items.items, 0..) |*row, index| {
+                if (!reused_rows[index]) row.deinit();
+            }
             self.table.items.deinit(self.table.allocator);
             self.table.filtered_indices.deinit(self.table.allocator);
             self.table.items = next_items;
             self.table.filtered_indices = next_indices;
             next_items = .empty;
             next_indices = .empty;
+            self.table.selected_row = 0;
+            self.table.scroll_offset = 0;
             self.table.loading = adapter.loadingFn(adapter.ptr);
             if (!self.table.loading) self.table.loading_detail = "";
 
             if (self.faults_only) self.retainFaultsOnly();
-            if (is_pods) self.sortProjectedPodRows();
+            if (is_pods and podSortNeedsFormattedCells(self.table.sort_column)) {
+                self.sortProjectedPodRows();
+            }
             var selection_mapped = false;
             if (adapter.selectedUidFn(adapter.ptr)) |selected_uid| {
                 for (self.table.filtered_indices.items, 0..) |item_index, visible_index| {
@@ -745,6 +832,7 @@ pub fn ResourceView(
                 }
             }
             self.invalidateWidths();
+            self.projection_sync_count +|= 1;
         }
 
         fn sortProjectedPodRows(self: *Self) void {
@@ -1427,6 +1515,14 @@ fn podCellOrder(left: []const u8, right: []const u8, column: u8) std.math.Order 
     };
 }
 
+fn podSortNeedsFormattedCells(column: ?u8) bool {
+    const value = column orelse return false;
+    return switch (value) {
+        2, 4, 5, 6, 7, 8, 11 => true,
+        else => false,
+    };
+}
+
 fn compareReady(left: []const u8, right: []const u8) std.math.Order {
     const left_slash = std.mem.indexOfScalar(u8, left, '/') orelse return std.mem.order(u8, left, right);
     const right_slash = std.mem.indexOfScalar(u8, right, '/') orelse return std.mem.order(u8, left, right);
@@ -1496,4 +1592,14 @@ test "pod projection metrics format raw CPU and memory values" {
     try std.testing.expectEqual(std.math.Order.lt, podCellOrder("900m", "1", 5));
     try std.testing.expectEqual(std.math.Order.lt, podCellOrder("900Mi", "1Gi", 6));
     try std.testing.expectEqual(std.math.Order.lt, podCellOrder("59m", "1h", 11));
+}
+
+test "pod formatted numeric and age columns retain specialized sorting" {
+    for ([_]u8{ 2, 4, 5, 6, 7, 8, 11 }) |column| {
+        try std.testing.expect(podSortNeedsFormattedCells(column));
+    }
+    for ([_]u8{ 0, 1, 3, 9, 10 }) |column| {
+        try std.testing.expect(!podSortNeedsFormattedCells(column));
+    }
+    try std.testing.expect(!podSortNeedsFormattedCells(null));
 }

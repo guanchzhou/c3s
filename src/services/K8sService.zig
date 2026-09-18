@@ -13,6 +13,7 @@ const clock = @import("../core/clock.zig");
 const active_context = @import("../k8s/ActiveContextSession.zig");
 const active_slot = @import("../k8s/ActiveSessionSlot.zig");
 const read_transport = @import("../k8s/ReadTransport.zig");
+const dynamic_resource = @import("../k8s/DynamicResource.zig");
 const task15 = @import("../task15_diagnostics.zig");
 const ActiveContextSession = active_context.ActiveContextSession;
 const ActiveSessionSlot = active_slot.ActiveSessionSlot;
@@ -614,6 +615,22 @@ pub const K8sService = struct {
         return body;
     }
 
+    fn directGetAccept(
+        self: *K8sService,
+        client: *klient.K8sClient,
+        path: []const u8,
+        accept: []const u8,
+    ) ![]u8 {
+        const audit_target = try enforceTask15(.GET, path);
+        self.auditTask15Request(.GET, audit_target, null, "start");
+        const body = client.requestWithAccept(.GET, path, null, accept) catch |err| {
+            self.auditTask15Request(.GET, audit_target, null, "terminal");
+            return err;
+        };
+        self.auditTask15Request(.GET, audit_target, 200, "none");
+        return body;
+    }
+
     fn kubectlRequestOnce(
         self: *K8sService,
         request: *const ResolvedRequest,
@@ -667,6 +684,56 @@ pub const K8sService = struct {
             return error.KubectlFailed;
         }
         return output.stdout;
+    }
+
+    /// Resolve an otherwise unknown palette command against the API server's
+    /// preferred-version discovery catalog.
+    pub fn resolveDynamicResource(
+        self: *K8sService,
+        query: []const u8,
+    ) !?dynamic_resource.Descriptor {
+        if (task15.isLiveMode()) return error.Task15RequestRejected;
+        if (!self.isConnected()) return error.NotConnected;
+        const catalog = try self.listApiResources();
+        defer self.allocator.free(catalog);
+        return dynamic_resource.resolveApiResources(self.allocator, catalog, query);
+    }
+
+    /// Fetch the server-rendered printer table for an arbitrary discovered API
+    /// resource. The caller owns the returned table.
+    pub fn listDynamicResourceTable(
+        self: *K8sService,
+        descriptor: dynamic_resource.Descriptor,
+        all_namespaces: bool,
+    ) !dynamic_resource.TableData {
+        if (task15.isLiveMode()) return error.Task15RequestRejected;
+        if (!self.isConnected()) return error.NotConnected;
+        var request = try self.resolveRequest(.detail);
+        defer request.deinit();
+        const client = request.client orelse return error.NotConnected;
+        const base_path = try descriptor.listPath(
+            self.allocator,
+            self.current_namespace,
+            all_namespaces,
+        );
+        defer self.allocator.free(base_path);
+        const path = try std.fmt.allocPrint(
+            self.allocator,
+            "{s}?includeObject=Metadata",
+            .{base_path},
+        );
+        defer self.allocator.free(path);
+        const body = try self.directGetAccept(
+            client,
+            path,
+            dynamic_resource.table_accept,
+        );
+        defer self.allocator.free(body);
+        var table = try dynamic_resource.parseTable(self.allocator, body);
+        errdefer table.deinit();
+        if (descriptor.namespaced and all_namespaces)
+            try table.prependNamespaceColumn();
+        return table;
     }
 
     /// Build `kubectl [--context <ctx>] <args...>` into an owned argv.

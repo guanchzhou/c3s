@@ -859,7 +859,7 @@ pub const NodesView = ResourceView(klient.types.Node, klient.resources.Nodes, .{
         .{ .name = "NAME", .min_width = 12, .max_width = 28, .priority = P.CRITICAL, .sort_key = 'N', .searchable = true },
         .{ .name = "STATUS", .min_width = 8, .max_width = 28, .priority = P.HIGH, .sort_key = 'S' },
         .{ .name = "ROLES", .min_width = 8, .max_width = 16, .priority = P.HIGH, .sort_key = 'R' },
-        .{ .name = "VERSION", .min_width = 8, .max_width = 16, .priority = P.MEDIUM },
+        .{ .name = "VERSION", .min_width = 8, .max_width = 16, .priority = P.MEDIUM, .sort_key = 'V' },
         .{ .name = "INTERNAL-IP", .min_width = 10, .max_width = 20, .priority = P.MEDIUM },
         .{ .name = "AGE", .min_width = 6, .max_width = 12, .priority = P.MEDIUM, .sort_key = 'A' },
     },
@@ -1356,6 +1356,11 @@ test "nodes projection preserves scheduling actions and UID selection" {
     );
     _ = try NodesView.handleKey(&nodes, .{ .char = 'N' });
     try std.testing.expectEqual(@as(usize, 1), nodes.table.filtered_indices.items.len);
+    try std.testing.expectEqual(
+        @import("../viewmodel/view.zig").View.KeyResult.handled,
+        try NodesView.handleKey(&nodes, .{ .char = 'V' }),
+    );
+    try std.testing.expectEqual(@as(?u8, 3), nodes.table.sort_column);
 }
 
 fn expectSameColumns(

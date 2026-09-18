@@ -186,6 +186,7 @@ pub fn ResourceProjection(comptime Record: type) type {
         const State = struct {
             allocator: std.mem.Allocator,
             entries: std.ArrayListUnmanaged(Entry) = .empty,
+            uid_index: std.StringHashMapUnmanaged(usize) = .empty,
             fqn_index: std.ArrayListUnmanaged(usize) = .empty,
             visible: std.ArrayListUnmanaged(usize) = .empty,
             selected_uid: ?[]const u8 = null,
@@ -195,8 +196,10 @@ pub fn ResourceProjection(comptime Record: type) type {
             revision: keys.Revision = 0,
             list_loading: bool = false,
             list_pending_replace: bool = false,
+            list_sync_in_progress: bool = false,
 
             fn deinit(self: *State) void {
+                self.uid_index.deinit(self.allocator);
                 for (self.entries.items) |entry| {
                     self.allocator.free(entry.uid);
                     entry.box.release();
@@ -217,6 +220,7 @@ pub fn ResourceProjection(comptime Record: type) type {
             fn deinit(raw: ?*anyopaque, _: std.mem.Alignment, allocator: std.mem.Allocator) void {
                 const self: *Plan = @ptrCast(@alignCast(raw orelse return));
                 if (!self.committed) {
+                    self.state.uid_index.deinit(self.state.allocator);
                     for (self.state.entries.items) |entry| {
                         self.state.allocator.free(entry.uid);
                         if (entry.plan_owned) entry.box.release();
@@ -269,22 +273,22 @@ pub fn ResourceProjection(comptime Record: type) type {
         }
 
         pub fn record(self: *const Self, uid: []const u8) ?*const Record {
-            const index = findEntry(self.state.entries.items, uid) orelse return null;
+            const index = lookupEntry(&self.state, uid) orelse return null;
             return &self.state.entries.items[index].box.record;
         }
 
         pub fn objectRevision(self: *const Self, uid: []const u8) ?keys.Revision {
-            const index = findEntry(self.state.entries.items, uid) orelse return null;
+            const index = lookupEntry(&self.state, uid) orelse return null;
             return self.state.entries.items[index].box.object_revision;
         }
 
         pub fn metricsRevision(self: *const Self, uid: []const u8) ?keys.Revision {
-            const index = findEntry(self.state.entries.items, uid) orelse return null;
+            const index = lookupEntry(&self.state, uid) orelse return null;
             return self.state.entries.items[index].box.metrics_revision;
         }
 
         pub fn metricsFor(self: *const Self, uid: []const u8) ?Metrics {
-            const index = findEntry(self.state.entries.items, uid) orelse return null;
+            const index = lookupEntry(&self.state, uid) orelse return null;
             const box = self.state.entries.items[index].box;
             return .{
                 .cpu_milli = box.cpu_milli,
@@ -311,7 +315,7 @@ pub fn ResourceProjection(comptime Record: type) type {
         }
 
         pub fn selectUid(self: *Self, uid: []const u8) bool {
-            const index = findEntry(self.state.entries.items, uid) orelse return false;
+            const index = lookupEntry(&self.state, uid) orelse return false;
             if (visibleRow(self.state.visible.items, index) == null) return false;
             const hint = self.allocator.dupe(u8, self.state.entries.items[index].uid) catch return false;
             if (self.state.selection_hint) |old| self.allocator.free(old);
@@ -396,8 +400,12 @@ pub fn ResourceProjection(comptime Record: type) type {
             return true;
         }
 
+        pub fn currentTimeGeneration(self: *const Self) u64 {
+            return self.time_generation;
+        }
+
         pub fn cacheKey(self: *const Self, uid: []const u8, column: u16) ?CellKey {
-            const index = findEntry(self.state.entries.items, uid) orelse return null;
+            const index = lookupEntry(&self.state, uid) orelse return null;
             const box = self.state.entries.items[index].box;
             return .{
                 .uid = uid,
@@ -486,6 +494,28 @@ pub fn ResourceProjection(comptime Record: type) type {
             }
             const replaces_entries = new_identity or
                 (self.state.list_pending_replace and (has_initial_changes or completes_list));
+            var progressive_list = self.state.list_sync_in_progress and
+                has_initial_changes and
+                !completes_list and
+                !new_identity;
+            if (progressive_list) {
+                for (batch.changes) |change| switch (change) {
+                    .initial_upsert => |maybe_record| {
+                        const record_value = maybe_record orelse {
+                            progressive_list = false;
+                            break;
+                        };
+                        if (lookupEntry(&self.state, record_value.key.uid) != null) {
+                            progressive_list = false;
+                            break;
+                        }
+                    },
+                    else => {
+                        progressive_list = false;
+                        break;
+                    },
+                };
+            }
             const selection_hint = self.state.selected_uid orelse self.state.selection_hint;
             if (selection_hint) |uid| {
                 plan.state.selection_hint = try allocator.dupe(u8, uid);
@@ -500,6 +530,12 @@ pub fn ResourceProjection(comptime Record: type) type {
                     });
                 }
             }
+            try plan.state.uid_index.ensureTotalCapacity(
+                allocator,
+                @intCast(plan.state.entries.items.len + batch.changes.len),
+            );
+            try buildUidIndex(&plan.state);
+            const previous_entry_count = plan.state.entries.items.len;
 
             for (batch.changes) |change| switch (change) {
                 .initial_upsert, .watch_upsert => |maybe_record| {
@@ -510,21 +546,37 @@ pub fn ResourceProjection(comptime Record: type) type {
                 .delete => |key| planDelete(&plan.state, key.uid),
                 .metrics => {},
             };
-            try buildFqnIndex(&plan.state);
-            for (batch.changes) |change| switch (change) {
-                .metrics => |metrics| try planMetrics(&plan.state, metrics, allocator),
-                else => {},
-            };
+            if (progressive_list) {
+                if (!replaces_entries) {
+                    try plan.state.visible.appendSlice(allocator, self.state.visible.items);
+                }
+                try mergeVisible(
+                    self.config,
+                    plan.state.entries.items,
+                    previous_entry_count,
+                    self.filter_text,
+                    self.sort_column,
+                    self.sort_ascending,
+                    allocator,
+                    &plan.state.visible,
+                );
+            } else {
+                try buildFqnIndex(&plan.state);
+                for (batch.changes) |change| switch (change) {
+                    .metrics => |metrics| try planMetrics(&plan.state, metrics, allocator),
+                    else => {},
+                };
 
-            try buildVisible(
-                self.config,
-                plan.state.entries.items,
-                self.filter_text,
-                self.sort_column,
-                self.sort_ascending,
-                allocator,
-                &plan.state.visible,
-            );
+                try buildVisible(
+                    self.config,
+                    plan.state.entries.items,
+                    self.filter_text,
+                    self.sort_column,
+                    self.sort_ascending,
+                    allocator,
+                    &plan.state.visible,
+                );
+            }
             plan.state.selected_uid = chooseSelection(
                 plan.state.entries.items,
                 plan.state.visible.items,
@@ -544,6 +596,14 @@ pub fn ResourceProjection(comptime Record: type) type {
                 plan.state.list_loading = self.state.list_loading;
                 plan.state.list_pending_replace = self.state.list_pending_replace;
             }
+            plan.state.list_sync_in_progress = if (starts_list)
+                true
+            else if (completes_list)
+                false
+            else if (!new_identity)
+                self.state.list_sync_in_progress
+            else
+                false;
             return .{
                 .scratch = plan,
                 .scratch_alignment = .of(Plan),
@@ -598,6 +658,7 @@ pub fn ResourceProjection(comptime Record: type) type {
                     .plan_owned = false,
                 });
             }
+            try buildUidIndex(&plan.state);
             try buildFqnIndex(&plan.state);
             for (batch.changes) |change| switch (change) {
                 .metrics => |metrics| try planMetrics(&plan.state, metrics, allocator),
@@ -616,6 +677,7 @@ pub fn ResourceProjection(comptime Record: type) type {
             plan.state.revision = self.state.revision;
             plan.state.list_loading = self.state.list_loading;
             plan.state.list_pending_replace = self.state.list_pending_replace;
+            plan.state.list_sync_in_progress = self.state.list_sync_in_progress;
             return .{
                 .scratch = plan,
                 .scratch_alignment = .of(Plan),
@@ -635,7 +697,7 @@ pub fn ResourceProjection(comptime Record: type) type {
             revision: keys.Revision,
             allocator: std.mem.Allocator,
         ) !void {
-            const existing = findEntry(state.entries.items, source.key.uid);
+            const existing = lookupEntry(state, source.key.uid);
             const uid: ?[]u8 = if (existing == null)
                 try allocator.dupe(u8, source.key.uid)
             else
@@ -679,14 +741,20 @@ pub fn ResourceProjection(comptime Record: type) type {
                 entry.plan_owned = true;
                 return;
             }
+            const new_index = state.entries.items.len;
             state.entries.appendAssumeCapacity(.{ .uid = uid.?, .box = box, .plan_owned = true });
+            state.uid_index.putAssumeCapacity(state.entries.items[new_index].uid, new_index);
         }
 
         fn planDelete(state: *State, uid: []const u8) void {
-            const index = findEntry(state.entries.items, uid) orelse return;
+            const index = lookupEntry(state, uid) orelse return;
+            _ = state.uid_index.remove(uid);
             const removed = state.entries.orderedRemove(index);
             state.allocator.free(removed.uid);
             if (removed.plan_owned) removed.box.release();
+            for (state.entries.items[index..], index..) |entry, shifted_index| {
+                state.uid_index.getPtr(entry.uid).?.* = shifted_index;
+            }
         }
 
         fn planMetrics(
@@ -738,6 +806,14 @@ pub fn ResourceProjection(comptime Record: type) type {
             );
         }
 
+        fn buildUidIndex(state: *State) !void {
+            state.uid_index.clearRetainingCapacity();
+            try state.uid_index.ensureTotalCapacity(state.allocator, @intCast(state.entries.items.len));
+            for (state.entries.items, 0..) |entry, index| {
+                try state.uid_index.put(state.allocator, entry.uid, index);
+            }
+        }
+
         fn resolveFqn(state: *const State, namespace: []const u8, name: []const u8) ?usize {
             var match: ?usize = null;
             for (state.fqn_index.items) |index| {
@@ -751,6 +827,104 @@ pub fn ResourceProjection(comptime Record: type) type {
                 match = index;
             }
             return match;
+        }
+
+        fn mergeVisible(
+            config: Config,
+            entries: []const Entry,
+            start: usize,
+            filter: []const u8,
+            column: u8,
+            ascending: bool,
+            allocator: std.mem.Allocator,
+            visible: *std.ArrayListUnmanaged(usize),
+        ) !void {
+            if (start >= entries.len) return;
+            var incoming: std.ArrayListUnmanaged(usize) = .empty;
+            defer incoming.deinit(allocator);
+            try incoming.ensureTotalCapacity(allocator, entries.len - start);
+            for (entries[start..], start..) |entry, index| {
+                if (filter.len == 0 or config.matchFn(&entry.box.record, filter)) {
+                    incoming.appendAssumeCapacity(index);
+                }
+            }
+            sortVisible(config, entries, column, ascending, incoming.items);
+
+            var merged: std.ArrayListUnmanaged(usize) = .empty;
+            errdefer merged.deinit(allocator);
+            try merged.ensureTotalCapacity(allocator, visible.items.len + incoming.items.len);
+            var old_index: usize = 0;
+            var new_index: usize = 0;
+            while (old_index < visible.items.len and new_index < incoming.items.len) {
+                if (visibleLessThan(
+                    config,
+                    entries,
+                    column,
+                    ascending,
+                    incoming.items[new_index],
+                    visible.items[old_index],
+                )) {
+                    merged.appendAssumeCapacity(incoming.items[new_index]);
+                    new_index += 1;
+                } else {
+                    merged.appendAssumeCapacity(visible.items[old_index]);
+                    old_index += 1;
+                }
+            }
+            merged.appendSliceAssumeCapacity(visible.items[old_index..]);
+            merged.appendSliceAssumeCapacity(incoming.items[new_index..]);
+            visible.deinit(allocator);
+            visible.* = merged;
+        }
+
+        fn visibleLessThan(
+            config: Config,
+            entries: []const Entry,
+            column: u8,
+            ascending: bool,
+            left: usize,
+            right: usize,
+        ) bool {
+            const left_key = config.sortKeyFn(&entries[left].box.record, column);
+            const right_key = config.sortKeyFn(&entries[right].box.record, column);
+            const order = std.mem.order(u8, left_key, right_key);
+            if (order == .eq) {
+                const uid_order = std.mem.order(u8, entries[left].uid, entries[right].uid);
+                return if (ascending) uid_order == .lt else uid_order == .gt;
+            }
+            return if (ascending) order == .lt else order == .gt;
+        }
+
+        fn sortVisible(
+            config: Config,
+            entries: []const Entry,
+            column: u8,
+            ascending: bool,
+            visible: []usize,
+        ) void {
+            const Context = struct {
+                config: Config,
+                entries: []const Entry,
+                column: u8,
+                ascending: bool,
+
+                fn lessThan(ctx: @This(), left: usize, right: usize) bool {
+                    return visibleLessThan(
+                        ctx.config,
+                        ctx.entries,
+                        ctx.column,
+                        ctx.ascending,
+                        left,
+                        right,
+                    );
+                }
+            };
+            std.sort.pdq(usize, visible, Context{
+                .config = config,
+                .entries = entries,
+                .column = column,
+                .ascending = ascending,
+            }, Context.lessThan);
         }
 
         fn buildVisible(
@@ -768,29 +942,7 @@ pub fn ResourceProjection(comptime Record: type) type {
                     visible.appendAssumeCapacity(index);
                 }
             }
-            const Context = struct {
-                entries: []const Entry,
-                keyFn: SortKeyFn,
-                column: u8,
-                ascending: bool,
-
-                fn lessThan(ctx: @This(), left: usize, right: usize) bool {
-                    const left_key = ctx.keyFn(&ctx.entries[left].box.record, ctx.column);
-                    const right_key = ctx.keyFn(&ctx.entries[right].box.record, ctx.column);
-                    const order = std.mem.order(u8, left_key, right_key);
-                    if (order == .eq) {
-                        const uid_order = std.mem.order(u8, ctx.entries[left].uid, ctx.entries[right].uid);
-                        return if (ctx.ascending) uid_order == .lt else uid_order == .gt;
-                    }
-                    return if (ctx.ascending) order == .lt else order == .gt;
-                }
-            };
-            std.sort.pdq(usize, visible.items, Context{
-                .entries = entries,
-                .keyFn = config.sortKeyFn,
-                .column = column,
-                .ascending = ascending,
-            }, Context.lessThan);
+            sortVisible(config, entries, column, ascending, visible.items);
         }
 
         fn findEntry(entries: []const Entry, uid: []const u8) ?usize {
@@ -800,8 +952,12 @@ pub fn ResourceProjection(comptime Record: type) type {
             return null;
         }
 
+        fn lookupEntry(state: *const State, uid: []const u8) ?usize {
+            return state.uid_index.get(uid);
+        }
+
         fn cacheKeyAt(self: *const Self, uid: []const u8, column: u16, time_generation: u64) ?CellKey {
-            const index = findEntry(self.state.entries.items, uid) orelse return null;
+            const index = lookupEntry(&self.state, uid) orelse return null;
             const box = self.state.entries.items[index].box;
             return .{
                 .uid = uid,
@@ -822,7 +978,7 @@ pub fn ResourceProjection(comptime Record: type) type {
 
         fn selectedRow(state: *const State) ?usize {
             const uid = state.selected_uid orelse return null;
-            const index = findEntry(state.entries.items, uid) orelse return null;
+            const index = lookupEntry(state, uid) orelse return null;
             return visibleRow(state.visible.items, index);
         }
 
@@ -917,6 +1073,97 @@ fn makeBatch(revision: u64, changes: []keys.TypedChange(TestRecord)) keys.TypedB
     };
 }
 
+pub const SyntheticBenchmarkResult = struct {
+    objects: usize,
+    batch_size: usize,
+    initial_sync_ns: u64,
+    single_update_ns: u64,
+};
+
+/// Deterministic offline benchmark for the projection path used by large LISTs.
+pub fn benchmarkSynthetic(
+    allocator: std.mem.Allocator,
+    object_count: usize,
+    batch_size: usize,
+    progressive_list: bool,
+) !SyntheticBenchmarkResult {
+    if (object_count == 0 or batch_size == 0) return error.InvalidBenchmarkSize;
+    var projection = Projection.init(allocator, .{ .matchFn = testMatch, .sortKeyFn = testSort });
+    defer projection.deinit();
+
+    const initial_start = wall_clock.nanoTimestamp();
+    if (progressive_list) {
+        var list_started = makeBatch(1, @constCast(&[_]keys.TypedChange(TestRecord){}));
+        list_started.sync = .list_started;
+        try applyBatch(&projection, &list_started, allocator);
+    }
+    var offset: usize = 0;
+    var revision: u64 = 2;
+    while (offset < object_count) : (revision += 1) {
+        const count = @min(batch_size, object_count - offset);
+        const changes = try allocator.alloc(keys.TypedChange(TestRecord), count);
+        var initialized: usize = 0;
+        errdefer {
+            for (changes[0..initialized]) |*change| change.deinit(allocator);
+            allocator.free(changes);
+        }
+        while (initialized < count) : (initialized += 1) {
+            const index = offset + initialized;
+            var uid_buffer: [32]u8 = undefined;
+            var name_buffer: [32]u8 = undefined;
+            const uid = try std.fmt.bufPrint(&uid_buffer, "uid-{d:0>8}", .{index});
+            const name = try std.fmt.bufPrint(&name_buffer, "pod-{d:0>8}", .{index});
+            changes[initialized] = .{ .initial_upsert = try TestRecord.make(
+                allocator,
+                uid,
+                "benchmark",
+                name,
+                "Running",
+            ) };
+        }
+        var batch = makeBatch(revision, changes);
+        applyBatch(&projection, &batch, allocator) catch |err| {
+            batch.deinit(allocator);
+            return err;
+        };
+        batch.deinit(allocator);
+        offset += count;
+    }
+    if (progressive_list) {
+        var list_complete = makeBatch(revision, @constCast(&[_]keys.TypedChange(TestRecord){}));
+        list_complete.sync = .{ .list_complete = .{
+            .resource_version = try keys.OwnedBytes.clone(allocator, "benchmark-rv"),
+            .object_count = object_count,
+        } };
+        defer list_complete.deinit(allocator);
+        try applyBatch(&projection, &list_complete, allocator);
+        revision += 1;
+    }
+    const initial_sync_ns: u64 = @intCast(@max(wall_clock.nanoTimestamp() - initial_start, 0));
+
+    const update_changes = try allocator.alloc(keys.TypedChange(TestRecord), 1);
+    update_changes[0] = .{ .watch_upsert = try TestRecord.make(
+        allocator,
+        "uid-00000000",
+        "benchmark",
+        "pod-00000000",
+        "Ready",
+    ) };
+    var update_batch = makeBatch(revision, update_changes);
+    defer update_batch.deinit(allocator);
+    const update_start = wall_clock.nanoTimestamp();
+    try applyBatch(&projection, &update_batch, allocator);
+    const single_update_ns: u64 = @intCast(@max(wall_clock.nanoTimestamp() - update_start, 0));
+
+    std.debug.assert(projection.count() == object_count);
+    return .{
+        .objects = object_count,
+        .batch_size = batch_size,
+        .initial_sync_ns = initial_sync_ns,
+        .single_update_ns = single_update_ns,
+    };
+}
+
 test "upsert delete sorted filtered membership and UID selection stability" {
     const allocator = std.testing.allocator;
     var projection = Projection.init(allocator, .{ .matchFn = testMatch, .sortKeyFn = testSort });
@@ -942,6 +1189,35 @@ test "upsert delete sorted filtered membership and UID selection stability" {
     try projection.setView("br", 0, true);
     try std.testing.expectEqual(@as(usize, 1), projection.visibleCount());
     try std.testing.expectEqualStrings("c", projection.visibleUid(0).?);
+}
+
+test "initial list merges progressively in requested order" {
+    const allocator = std.testing.allocator;
+    var projection = Projection.init(allocator, .{ .matchFn = testMatch, .sortKeyFn = testSort });
+    defer projection.deinit();
+
+    var started = makeBatch(1, @constCast(&[_]keys.TypedChange(TestRecord){}));
+    started.sync = .list_started;
+    try applyBatch(&projection, &started, allocator);
+
+    const changes = try allocator.alloc(keys.TypedChange(TestRecord), 2);
+    changes[0] = .{ .initial_upsert = try TestRecord.make(allocator, "z", "ns", "z", "zulu") };
+    changes[1] = .{ .initial_upsert = try TestRecord.make(allocator, "a", "ns", "a", "alpha") };
+    var data = makeBatch(2, changes);
+    defer data.deinit(allocator);
+    try applyBatch(&projection, &data, allocator);
+    try std.testing.expectEqualStrings("a", projection.visibleUid(0).?);
+    try std.testing.expectEqualStrings("z", projection.visibleUid(1).?);
+
+    var complete = makeBatch(3, @constCast(&[_]keys.TypedChange(TestRecord){}));
+    complete.sync = .{ .list_complete = .{
+        .resource_version = try keys.OwnedBytes.clone(allocator, "rv"),
+        .object_count = 2,
+    } };
+    defer complete.deinit(allocator);
+    try applyBatch(&projection, &complete, allocator);
+    try std.testing.expectEqualStrings("a", projection.visibleUid(0).?);
+    try std.testing.expectEqualStrings("z", projection.visibleUid(1).?);
 }
 
 pub fn runTask14UidReplacementGate() !void {

@@ -352,7 +352,7 @@ c3s is built in Zig for maximum performance:
 
 - **Fast startup:** < 1 second
 - **Low memory:** ~50-100MB typical usage
-- **Efficient rendering:** 60 FPS target
+- **Efficient rendering:** Up to 120 FPS while interacting, then idles after one second
 - **Zero overhead:** No garbage collection
 
 ---

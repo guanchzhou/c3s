@@ -31,6 +31,8 @@ pub const Terminal = struct {
     raw_enabled: bool = false,
     original_termios: ?c.termios = null,
     write_buffer: std.ArrayList(u8),
+    last_frame: std.ArrayList(u8),
+    frame_cache_valid: bool = false,
 
     /// Viewport offset — all rendering coordinates are translated by these values.
     /// Set by the app before rendering a view so views use local (0,0) coordinates.
@@ -55,7 +57,9 @@ pub const Terminal = struct {
         const stdout = std.Io.File.stdout();
         const stderr = std.Io.File.stderr();
 
-        const write_buffer = try std.ArrayList(u8).initCapacity(allocator, 32768); // Pre-allocate 32KB for smooth rendering
+        var write_buffer = try std.ArrayList(u8).initCapacity(allocator, 32768); // Pre-allocate 32KB for smooth rendering
+        errdefer write_buffer.deinit(allocator);
+        const last_frame = try std.ArrayList(u8).initCapacity(allocator, 32768);
 
         return Terminal{
             .allocator = allocator,
@@ -63,6 +67,7 @@ pub const Terminal = struct {
             .stdout = stdout,
             .stderr = stderr,
             .write_buffer = write_buffer,
+            .last_frame = last_frame,
         };
     }
 
@@ -71,6 +76,7 @@ pub const Terminal = struct {
             self.disableRawMode();
         }
         self.write_buffer.deinit(self.allocator);
+        self.last_frame.deinit(self.allocator);
     }
 
     /// Write OSC 52 so the outer terminal copies `text`. Flushed immediately:
@@ -300,12 +306,39 @@ pub const Terminal = struct {
         try self.writeAllStdout("\x1b[?2026l");
     }
 
+    /// Request a compositor presentation without rebuilding the scene. Metal-backed
+    /// terminals use the synchronized-output boundary as a lightweight frame signal.
+    pub fn presentCurrentFrame(self: *Terminal) !void {
+        try self.writeAllStdout("\x1b[?2026h\x1b[?2026l");
+    }
+
     pub fn flush(self: *Terminal) !void {
         // Write entire buffer to stdout at once for flicker-free rendering
         if (self.write_buffer.items.len > 0) {
             try self.writeAllStdout(self.write_buffer.items);
             self.write_buffer.clearRetainingCapacity();
         }
+    }
+
+    /// Flush a rendered frame, suppressing an identical ANSI payload. The caller
+    /// still closes DEC synchronized output, so unchanged interactive frames can
+    /// be presented without re-uploading all terminal cells.
+    pub fn flushFrame(self: *Terminal) !void {
+        const frame = self.write_buffer.items;
+        if (self.frame_cache_valid and std.mem.eql(u8, frame, self.last_frame.items)) {
+            self.write_buffer.clearRetainingCapacity();
+            return;
+        }
+
+        self.last_frame.clearRetainingCapacity();
+        self.last_frame.appendSlice(self.allocator, frame) catch {
+            self.frame_cache_valid = false;
+            try self.flush();
+            return;
+        };
+        self.frame_cache_valid = false;
+        try self.flush();
+        self.frame_cache_valid = true;
     }
 
     pub fn fillRow(self: *Terminal, x: u16, y: u16, width: u16, fg_color: []const u8, bg_color: []const u8) !void {
@@ -639,6 +672,25 @@ test "terminal text writing" {
     // Test basic text output
     try terminal.writeString(0, 0, "Hello, World!");
     try terminal.flush();
+}
+
+test "frame flush caches payload and present keep writes no scene data" {
+    var terminal = try Terminal.init(testing.allocator);
+    defer terminal.deinit();
+    const sink = try redirectStdoutToDevNull(&terminal);
+    defer sink.close(testing.io);
+
+    try terminal.writeAll("frame");
+    try terminal.flushFrame();
+    try testing.expect(terminal.frame_cache_valid);
+    try testing.expectEqualStrings("frame", terminal.last_frame.items);
+    try testing.expectEqual(@as(usize, 0), terminal.write_buffer.items.len);
+
+    try terminal.writeAll("frame");
+    try terminal.flushFrame();
+    try testing.expectEqualStrings("frame", terminal.last_frame.items);
+    try testing.expectEqual(@as(usize, 0), terminal.write_buffer.items.len);
+    try terminal.presentCurrentFrame();
 }
 
 test "terminal color support" {

@@ -220,6 +220,23 @@ pub fn build(b: *std.Build) void {
     const perf_step = b.step("perf", "Measure c3s vs k9s (read-only PTY; pass --context)");
     perf_step.dependOn(&perf_cmd.step);
 
+    const projection_bench_exe = b.addExecutable(.{
+        .name = "projection_bench",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tools/perf/projection_bench.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    projection_bench_exe.root_module.addImport("c3s", c3s_module);
+    const projection_bench_run = b.addRunArtifact(projection_bench_exe);
+    addPassthruArgs(b, projection_bench_run);
+    const projection_bench_step = b.step(
+        "bench-projection",
+        "Benchmark synthetic large-resource projection (args: count batch-size)",
+    );
+    projection_bench_step.dependOn(&projection_bench_run.step);
+
     // Formatting gate (ghostty/Zig convention: zig fmt is enforced).
     const fmt_step = b.step("fmt", "Check formatting with zig fmt --check");
     const fmt_check = if (comptime @hasField(std.Build, "build_root"))
