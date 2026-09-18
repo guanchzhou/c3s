@@ -2349,16 +2349,28 @@ pub const App = struct {
         }
         self.pod_projection_sync_pending =
             self.pod_projection_sync_pending or sync_pods;
-        if (start_pod_metrics) {
-            self.pod_metrics_start_pending = true;
-            self.pod_metrics_start_for = self.active_pod_subscription;
-        }
+        self.notePodDrainMetricsStart(sync_pods, start_pod_metrics);
         self.syncPodProjectionIfPending() catch |err| {
             Logger.err("pod projection adapter failed: {any}", .{err});
             self.pod_projection_apply_failed = true;
             self.dirty = true;
         };
         self.tryFinishContextSwitch();
+    }
+
+    fn notePodDrainMetricsStart(
+        self: *App,
+        applied_pod_changes: bool,
+        list_complete_start: bool,
+    ) void {
+        if (!list_complete_start and !shouldStartMetricsAfterListComplete(
+            applied_pod_changes,
+            self.pod_list_complete_revision != null,
+            self.pod_projection.count(),
+            self.pod_metrics_started,
+        )) return;
+        self.pod_metrics_start_pending = true;
+        self.pod_metrics_start_for = self.active_pod_subscription;
     }
 
     fn syncPodProjectionIfPending(self: *App) !void {
@@ -4892,7 +4904,22 @@ fn nodeProjectionColumns(
 
 fn nodeProjectionMatch(record: *const NodeRecord, filter: []const u8) bool {
     if (filter.len == 0) return true;
-    return containsIgnoreCase(record.key.name, filter);
+    return containsIgnoreCase(record.key.name, filter) or
+        containsIgnoreCase(record.version, filter);
+}
+
+test "nodeProjectionMatch searches name and version" {
+    var record: NodeRecord = .{
+        .key = .{ .uid = "uid", .namespace = "", .name = "worker-1" },
+        .status = @constCast("Ready"),
+        .roles = @constCast("worker"),
+        .version = @constCast("v1.33.4"),
+        .internal_ip = @constCast("10.1.33.4"),
+    };
+    try std.testing.expect(nodeProjectionMatch(&record, ""));
+    try std.testing.expect(nodeProjectionMatch(&record, "WORKER"));
+    try std.testing.expect(nodeProjectionMatch(&record, "1.33"));
+    try std.testing.expect(!nodeProjectionMatch(&record, "10.1.33"));
 }
 
 fn nodeProjectionSortKey(record: *const NodeRecord, column: u8) []const u8 {
@@ -6025,6 +6052,18 @@ fn shouldStartMetricsFeed(
 ) bool {
     return is_pod_subscription and
         sync_kind == .list_complete and
+        pod_count > 0 and
+        !already_started;
+}
+
+fn shouldStartMetricsAfterListComplete(
+    applied_pod_changes: bool,
+    list_complete_seen: bool,
+    pod_count: usize,
+    already_started: bool,
+) bool {
+    return applied_pod_changes and
+        list_complete_seen and
         pod_count > 0 and
         !already_started;
 }
@@ -8074,6 +8113,65 @@ test "metrics feed starts only after completed non-empty pod list and only once"
     try std.testing.expect(!shouldStartMetricsFeed(true, .list_complete, 0, false));
     try std.testing.expect(shouldStartMetricsFeed(true, .list_complete, 1, false));
     try std.testing.expect(!shouldStartMetricsFeed(true, .list_complete, 1, true));
+}
+
+test "metrics feed starts on the first pod applied after an empty list complete" {
+    try std.testing.expect(!shouldStartMetricsAfterListComplete(false, true, 1, false));
+    try std.testing.expect(!shouldStartMetricsAfterListComplete(true, false, 1, false));
+    try std.testing.expect(!shouldStartMetricsAfterListComplete(true, true, 0, false));
+    try std.testing.expect(shouldStartMetricsAfterListComplete(true, true, 1, false));
+    try std.testing.expect(!shouldStartMetricsAfterListComplete(true, true, 1, true));
+
+    const allocator = std.testing.allocator;
+    var app = try App.init(allocator, .{});
+    defer app.deinit();
+    const pod_key = lifecycle.SubscriptionKey{ .generation = 3, .subscription_id = 11 };
+    app.active_pod_subscription = pod_key;
+    defer app.active_pod_subscription = null;
+
+    app.pod_list_complete_revision = 1;
+    app.notePodDrainMetricsStart(true, false);
+    try std.testing.expect(!app.pod_metrics_start_pending);
+
+    const changes = try allocator.alloc(resource_key.TypedChange(PodRecord), 1);
+    changes[0] = .{ .watch_upsert = .{
+        .key = try (resource_key.ObjectKey{
+            .uid = "late-pod",
+            .namespace = "default",
+            .name = "late-pod",
+        }).clone(allocator),
+    } };
+    var batch = resource_key.TypedBatch(PodRecord){
+        .generation = pod_key.generation,
+        .subscription_id = pod_key.subscription_id,
+        .revision = 2,
+        .changes = changes,
+        .sync = null,
+        .owned_bytes = 1,
+    };
+    defer batch.deinit(allocator);
+    var plan = try PodProjection.handler().preflight(
+        @ptrCast(app.pod_projection),
+        &batch,
+        allocator,
+    );
+    PodProjection.handler().commit(@ptrCast(app.pod_projection), &batch, &plan);
+    plan.deinit(allocator);
+    try std.testing.expectEqual(@as(usize, 1), app.pod_projection.count());
+
+    app.notePodDrainMetricsStart(true, false);
+    try std.testing.expect(app.pod_metrics_start_pending);
+    try std.testing.expectEqual(pod_key, app.pod_metrics_start_for.?);
+
+    app.active_pod_subscription = .{ .generation = 4, .subscription_id = 12 };
+    try app.syncPodProjectionIfPending();
+    try std.testing.expect(!app.pod_metrics_start_pending);
+    try std.testing.expect(app.pod_metrics_start_for == null);
+    try std.testing.expect(app.active_metrics_subscription == null);
+
+    app.pod_metrics_started = true;
+    app.notePodDrainMetricsStart(true, false);
+    try std.testing.expect(!app.pod_metrics_start_pending);
 }
 
 test "multiple applied pod batches require one projection table sync" {
