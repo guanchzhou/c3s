@@ -191,7 +191,7 @@ jobs:
 
           cd /tmp/homebrew-tap
           git config user.email "maltsev.andrey@gmail.com"
-          git config user.name "Andrei Maltsev"
+          git config user.name "Andrey Maltsev"
           git add Formula/c3s.rb
           git commit -m "Update c3s to v${VER}"
           git push

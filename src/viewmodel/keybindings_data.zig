@@ -475,15 +475,15 @@ pub fn loadGenericResourceBindings(allocator: std.mem.Allocator) ![]const KeyBin
 ///     column-cursor / leftover names. Shift-arrows move columns without a cursor.
 ///   - `namespace_all`, `namespace_default`: superseded by `toggle_all_namespaces`
 ///     on `0`, which is real.
-///   - `xray`, `pulses`, `popeye`, `charts`, `plugins`, `screendump`, `jsonpath`,
-///     `crd_discovery`: owner OUT list (not deferred). Do not advertise.
+///   - `xray`, `pulses`, `popeye`, `charts`, `plugins`, `screendump`, `jsonpath`:
+///     owner OUT list (not deferred). Do not advertise.
 pub const unimplemented_actions = [_][]const u8{
     "view_pods",     "view_rules",        "view_policies", "view_instances",
     "view",          "bench",             "field_next",    "field_previous",
     "reload",        "command_clear",     "left",          "right",
     "namespace_all", "namespace_default", "goto",          "start",
     "xray",          "pulses",            "popeye",        "charts",
-    "plugins",       "screendump",        "jsonpath",      "crd_discovery",
+    "plugins",       "screendump",        "jsonpath",
 };
 
 test "no view advertises an action that nothing implements" {

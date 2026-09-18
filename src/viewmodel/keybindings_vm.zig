@@ -199,7 +199,11 @@ fn loadNodesBindings(allocator: std.mem.Allocator) ![]const KeyBinding {
         .{ .key = "d", .description = "Describe", .category = .resource, .action = "describe" },
 
         // Sorting
+        .{ .key = "Shift-a", .description = "Sort AGE", .category = .sorting, .action = "sort_age" },
+        .{ .key = "Shift-n", .description = "Sort NAME", .category = .sorting, .action = "sort_name" },
         .{ .key = "Shift-r", .description = "Sort ROLE", .category = .sorting, .action = "sort_role" },
+        .{ .key = "Shift-s", .description = "Sort STATUS", .category = .sorting, .action = "sort_status" },
+        .{ .key = "Shift-v", .description = "Sort VERSION", .category = .sorting, .action = "sort_version" },
 
         // General and navigation commands are shared (could extract to common)
         .{ .key = "?", .description = "Help", .category = .general, .action = "help" },
@@ -373,6 +377,44 @@ test "keybindings_vm: nodes view has specific bindings" {
     }
     try std.testing.expect(has_yaml);
     try std.testing.expect(has_describe);
+}
+
+test "keybindings_vm: node sorting help exactly matches wired column keys" {
+    const NodesView = @import("../view/resource_configs.zig").NodesView;
+    var vm = try KeyBindingsViewModel.init(std.testing.allocator, .nodes);
+    defer vm.deinit();
+
+    var advertised_sort_count: usize = 0;
+    for (vm.getBindings()) |binding| {
+        if (binding.category != .sorting) continue;
+        advertised_sort_count += 1;
+        try std.testing.expect(std.mem.startsWith(u8, binding.key, "Shift-"));
+        try std.testing.expectEqual(@as(usize, 7), binding.key.len);
+        const wired_key = std.ascii.toUpper(binding.key[6]);
+        var wired = false;
+        for (NodesView.view_config.columns) |column| {
+            if (column.sort_key == wired_key) wired = true;
+        }
+        try std.testing.expect(wired);
+    }
+
+    var wired_sort_count: usize = 0;
+    for (NodesView.view_config.columns) |column| {
+        const sort_key = column.sort_key orelse continue;
+        wired_sort_count += 1;
+        var advertised = false;
+        for (vm.getBindings()) |binding| {
+            if (binding.category == .sorting and
+                binding.key.len == 7 and
+                std.ascii.toUpper(binding.key[6]) == sort_key)
+            {
+                advertised = true;
+            }
+        }
+        try std.testing.expect(advertised);
+    }
+    try std.testing.expectEqual(wired_sort_count, advertised_sort_count);
+    try std.testing.expectEqual(@as(usize, 5), wired_sort_count);
 }
 
 test "keybindings_vm: deployments advertise traffic, refresh on Ctrl-r, restart on r" {

@@ -174,7 +174,7 @@ pub fn resourceHints() HintConfig {
 
 /// Common hints (for future use - can be merged with view-specific hints)
 pub fn commonHints() HintConfig {
-    const hint_items = [_]Hint{
+    const hint_items = comptime [_]Hint{
         Hint.highlighted("?", "", " help", 1),
         Hint.highlighted(":", "", " command", 2),
         Hint.highlighted("/", "", " filter", 3),
@@ -302,6 +302,37 @@ test "hints: priorities are within valid range" {
     for (hints.hints) |hint| {
         // Priority should be 0-255 (it's a u8, so this is always true, but documenting intent)
         try testing.expect(hint.priority >= 0 and hint.priority <= 255);
+    }
+}
+
+/// Call a hint builder from a deeper frame so a slice into the builder's own
+/// stack would land on a different address than the shallow call.
+fn hintsFromDeeperFrame(builder: *const fn () HintConfig, depth: u8) HintConfig {
+    if (depth == 0) return builder();
+    var padding: [512]u8 = undefined;
+    padding[0] = depth;
+    std.mem.doNotOptimizeAway(&padding);
+    return hintsFromDeeperFrame(builder, depth - 1);
+}
+
+test "hints: every builder returns storage that outlives its call frame" {
+    // A builder that drops `comptime` off its array literal hands back a slice
+    // into a dead frame; the header then renders freed memory and segfaults.
+    const builders = [_]*const fn () HintConfig{
+        podsHints,
+        themesHints,
+        helpHints,
+        detailHints,
+        logsHints,
+        resourceHints,
+        commonHints,
+    };
+
+    for (builders) |builder| {
+        const shallow = builder();
+        const deep = hintsFromDeeperFrame(builder, 4);
+        try testing.expectEqual(shallow.hints.ptr, deep.hints.ptr);
+        try testing.expectEqual(shallow.quick_commands.ptr, deep.quick_commands.ptr);
     }
 }
 

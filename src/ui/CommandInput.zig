@@ -191,8 +191,11 @@ pub const CommandInput = struct {
 
                 const is_selected = (i == self.selected);
                 if (is_selected) {
+                    // cursorBgColor and cursorFgColor are a pair: a skin picks
+                    // its cursor text color to read against its cursor bar, so
+                    // substituting body fg here can land at 1:1 contrast.
                     try terminal.writeAll(self.theme.selected_bg);
-                    try terminal.writeAll(self.theme.main_fg);
+                    try terminal.writeAll(self.theme.selected_fg);
                 } else {
                     try terminal.writeAll(self.theme.main_bg);
                     try terminal.writeAll(self.theme.inactive_fg);
@@ -471,6 +474,212 @@ test "CommandInput suggestions: no suggestion for slash prompt" {
     cmd_input.showWithPrompt("/");
 
     try testing.expect(cmd_input.currentSuggestion() == null);
+}
+
+// ---------------------------------------------------------------------------
+// Suggestion dropdown styling
+// ---------------------------------------------------------------------------
+
+const palette_candidates = [_][]const u8{ "nodes", "horizontalpodautoscalers" };
+
+/// Every theme role gets a unique marker terminated by '>' so no marker can be
+/// a substring of another, which lets a rendered frame be read back as
+/// "which role is active at this byte".
+fn styleProbeTheme(allocator: std.mem.Allocator) theme_loader.ThemeColors {
+    return .{
+        .main_bg = "<BG-BODY>",
+        .main_fg = "<FG-BODY>",
+        .title = "<FG-TITLE>",
+        .hi_fg = "<FG-HI>",
+        .selected_bg = "<BG-CURSOR>",
+        .selected_fg = "<FG-CURSOR>",
+        .inactive_fg = "<FG-INACTIVE>",
+        .proc_box = "<FG-BOX>",
+        .div_line = "<FG-DIV>",
+        .status_running = "<FG-RUNNING>",
+        .status_pending = "<FG-PENDING>",
+        .status_failed = "<FG-FAILED>",
+        .status_succeeded = "<FG-SUCCEEDED>",
+        .key_highlight = "<FG-KEY>",
+        .title_highlight = "<FG-TITLEHI>",
+        .app_name = "<FG-APP>",
+        .prompt_fg = "<FG-PROMPT>",
+        .prompt_bg = "<BG-PROMPT>",
+        .allocator = allocator,
+    };
+}
+
+/// The role in effect where `needle` is written: the last of `roles` emitted
+/// before it, or null when a reset cleared the style first.
+fn activeRole(frame: []const u8, needle: []const u8, roles: []const []const u8) !?[]const u8 {
+    const at = std.mem.indexOf(u8, frame, needle) orelse return error.NeedleNotRendered;
+    const prefix = frame[0..at];
+
+    var winner: ?[]const u8 = null;
+    var winner_at: usize = 0;
+    for (roles) |role| {
+        const role_at = std.mem.lastIndexOf(u8, prefix, role) orelse continue;
+        if (winner == null or role_at > winner_at) {
+            winner = role;
+            winner_at = role_at;
+        }
+    }
+    if (winner == null) return null;
+    if (std.mem.lastIndexOf(u8, prefix, theme_loader.reset)) |reset_at| {
+        if (reset_at > winner_at) return null;
+    }
+    return winner;
+}
+
+fn renderPalette(cmd_input: *CommandInput, terminal: *Terminal) ![]const u8 {
+    terminal.write_buffer.clearRetainingCapacity();
+    try cmd_input.render(terminal, 0, 0, 40);
+    return terminal.write_buffer.items;
+}
+
+fn parseTrueColor(seq: []const u8, prefix: []const u8) ![3]f64 {
+    if (!std.mem.startsWith(u8, seq, prefix) or !std.mem.endsWith(u8, seq, "m")) return error.NotTrueColor;
+    var channels = std.mem.splitScalar(u8, seq[prefix.len .. seq.len - 1], ';');
+    var rgb: [3]f64 = undefined;
+    for (&rgb) |*channel| {
+        const token = channels.next() orelse return error.NotTrueColor;
+        channel.* = @floatFromInt(try std.fmt.parseInt(u8, token, 10));
+    }
+    return rgb;
+}
+
+fn relativeLuminance(rgb: [3]f64) f64 {
+    var linear: [3]f64 = undefined;
+    for (rgb, 0..) |channel, i| {
+        const s = channel / 255.0;
+        linear[i] = if (s <= 0.03928) s / 12.92 else std.math.pow(f64, (s + 0.055) / 1.055, 2.4);
+    }
+    return 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2];
+}
+
+/// WCAG relative-contrast ratio, 1.0 (invisible) to 21.0 (black on white).
+fn contrastRatio(fg_ansi: []const u8, bg_ansi: []const u8) !f64 {
+    const fg = relativeLuminance(try parseTrueColor(fg_ansi, "\x1b[38;2;"));
+    const bg = relativeLuminance(try parseTrueColor(bg_ansi, "\x1b[48;2;"));
+    const lighter = @max(fg, bg);
+    const darker = @min(fg, bg);
+    return (lighter + 0.05) / (darker + 0.05);
+}
+
+test "palette suggestions: the highlighted row uses the theme cursor fg, not body fg" {
+    const allocator = testing.allocator;
+    const theme = styleProbeTheme(allocator);
+
+    var terminal = try Terminal.init(allocator);
+    defer terminal.deinit();
+
+    var cmd_input = try CommandInput.init(allocator, &theme);
+    defer cmd_input.deinit();
+
+    cmd_input.setCandidates(&palette_candidates);
+    cmd_input.showWithPrompt(":");
+    // An empty query keeps every candidate, shortest first, so row 0 is "nodes".
+    try testing.expectEqual(@as(usize, 2), cmd_input.match_count);
+    try testing.expectEqual(@as(usize, 0), cmd_input.selected);
+
+    const frame = try renderPalette(&cmd_input, &terminal);
+    const fg_roles = [_][]const u8{ theme.main_fg, theme.selected_fg, theme.inactive_fg, theme.title_highlight, theme.proc_box };
+    const bg_roles = [_][]const u8{ theme.main_bg, theme.selected_bg, theme.prompt_bg };
+
+    try testing.expectEqualStrings(theme.selected_fg, (try activeRole(frame, " nodes", &fg_roles)).?);
+    try testing.expectEqualStrings(theme.selected_bg, (try activeRole(frame, " nodes", &bg_roles)).?);
+}
+
+test "palette suggestions: unhighlighted rows stay on the body background" {
+    const allocator = testing.allocator;
+    const theme = styleProbeTheme(allocator);
+
+    var terminal = try Terminal.init(allocator);
+    defer terminal.deinit();
+
+    var cmd_input = try CommandInput.init(allocator, &theme);
+    defer cmd_input.deinit();
+
+    cmd_input.setCandidates(&palette_candidates);
+    cmd_input.showWithPrompt(":");
+
+    const frame = try renderPalette(&cmd_input, &terminal);
+    const fg_roles = [_][]const u8{ theme.main_fg, theme.selected_fg, theme.inactive_fg, theme.title_highlight, theme.proc_box };
+    const bg_roles = [_][]const u8{ theme.main_bg, theme.selected_bg, theme.prompt_bg };
+
+    try testing.expectEqualStrings(theme.inactive_fg, (try activeRole(frame, " horizontalpodautoscalers", &fg_roles)).?);
+    try testing.expectEqualStrings(theme.main_bg, (try activeRole(frame, " horizontalpodautoscalers", &bg_roles)).?);
+}
+
+test "palette suggestions: the cursor pair follows the selection" {
+    const allocator = testing.allocator;
+    const theme = styleProbeTheme(allocator);
+
+    var terminal = try Terminal.init(allocator);
+    defer terminal.deinit();
+
+    var cmd_input = try CommandInput.init(allocator, &theme);
+    defer cmd_input.deinit();
+
+    cmd_input.setCandidates(&palette_candidates);
+    cmd_input.showWithPrompt(":");
+    cmd_input.moveSelection(1);
+    try testing.expectEqual(@as(usize, 1), cmd_input.selected);
+
+    const frame = try renderPalette(&cmd_input, &terminal);
+    const fg_roles = [_][]const u8{ theme.main_fg, theme.selected_fg, theme.inactive_fg, theme.title_highlight, theme.proc_box };
+    const bg_roles = [_][]const u8{ theme.main_bg, theme.selected_bg, theme.prompt_bg };
+
+    try testing.expectEqualStrings(theme.selected_fg, (try activeRole(frame, " horizontalpodautoscalers", &fg_roles)).?);
+    try testing.expectEqualStrings(theme.selected_bg, (try activeRole(frame, " horizontalpodautoscalers", &bg_roles)).?);
+    try testing.expectEqualStrings(theme.inactive_fg, (try activeRole(frame, " nodes", &fg_roles)).?);
+    try testing.expectEqualStrings(theme.main_bg, (try activeRole(frame, " nodes", &bg_roles)).?);
+}
+
+test "palette suggestions: highlighted row stays legible when a skin's cursor fg differs from body fg" {
+    const allocator = testing.allocator;
+
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // one-dark's real pairing: near-black cursor text on a bright blue cursor
+    // bar. Body fg on that bar measures 1.05:1 — the palette looked blank while
+    // every table in the app rendered the same selection cleanly.
+    const skin =
+        \\k9s:
+        \\  body:
+        \\    fgColor: "#abb2bf"
+        \\    bgColor: "#282c34"
+        \\  views:
+        \\    table:
+        \\      cursorFgColor: "#080808"
+        \\      cursorBgColor: "#61afef"
+    ;
+    try tmp_dir.dir.writeFile(std.testing.io, .{ .sub_path = "skin.yaml", .data = skin });
+    const dir_path = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}", .{tmp_dir.sub_path});
+    defer allocator.free(dir_path);
+
+    var theme = try theme_loader.loadThemeFromDir(allocator, "skin", dir_path);
+    defer theme_loader.deinitTheme(&theme);
+
+    var terminal = try Terminal.init(allocator);
+    defer terminal.deinit();
+
+    var cmd_input = try CommandInput.init(allocator, &theme);
+    defer cmd_input.deinit();
+
+    cmd_input.setCandidates(&palette_candidates);
+    cmd_input.showWithPrompt(":");
+
+    const frame = try renderPalette(&cmd_input, &terminal);
+    const fg_roles = [_][]const u8{ theme.main_fg, theme.selected_fg, theme.inactive_fg };
+    const bg_roles = [_][]const u8{ theme.main_bg, theme.selected_bg };
+
+    const fg = (try activeRole(frame, " nodes", &fg_roles)).?;
+    const bg = (try activeRole(frame, " nodes", &bg_roles)).?;
+    try testing.expectEqualStrings(theme.selected_fg, fg);
+    try testing.expectEqualStrings(theme.selected_bg, bg);
+    try testing.expect(try contrastRatio(fg, bg) >= 4.5);
 }
 
 test "addChar accepts the characters Terminal routes as separate key variants" {

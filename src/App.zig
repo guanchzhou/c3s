@@ -321,6 +321,7 @@ const CommandRegistry = @import("viewmodel/command.zig").CommandRegistry;
 const rc = @import("view/resource_configs.zig");
 const PodsView = rc.PodsView;
 const AliasesView = @import("view/AliasesView.zig").AliasesView;
+const DynamicResourceView = @import("view/DynamicResourceView.zig").DynamicResourceView;
 const DeploymentsView = rc.DeploymentsView;
 const ServicesView = rc.ServicesView;
 const NamespacesView = @import("view/NamespacesView.zig").NamespacesView;
@@ -834,6 +835,8 @@ pub const App = struct {
     task14_context_install_after_drain: bool = false,
     task14_views_alive_after_await: bool = false,
     pod_projection_sync_pending: bool = false,
+    pod_metrics_start_pending: bool = false,
+    pod_metrics_start_for: ?lifecycle.SubscriptionKey = null,
     pod_projection_apply_failed: bool = false,
     lifecycle_root_await_count: usize = 0,
     terminal: Terminal,
@@ -854,7 +857,9 @@ pub const App = struct {
     /// null when nothing is pending. Keeps a dropped frame from waiting on the full
     /// resize-poll timeout.
     pending_frame_ms: ?i32 = null,
-    min_frame_time_ns: i128 = 16_666_667, // ~60 FPS (16.67ms)
+    min_frame_time_ns: i128 = 8_333_334, // ~120 FPS (8.33ms)
+    last_input_time_ns: i128 = 0,
+    interactive_present_window_ns: i128 = std.time.ns_per_s,
     /// Theme recorded in the config file: what we return to when a preview ends.
     current_theme_name: []const u8,
     /// Theme whose colors are currently loaded into `theme`. Differs from
@@ -937,6 +942,7 @@ pub const App = struct {
     help_view: *HelpView,
     detail_view: *DetailView,
     aliases_view: *AliasesView,
+    dynamic_resource_view: *DynamicResourceView,
     port_forwards_view: *PortForwardsView,
     logs_view: *LogsView,
     authorization_view: *AuthorizationView,
@@ -1216,6 +1222,7 @@ pub const App = struct {
         // AliasesView needs the stable k8s_service pointer; init after the App
         // struct is built (mirrors pods_view).
         const aliases_view = try allocator.create(AliasesView);
+        const dynamic_resource_view = try allocator.create(DynamicResourceView);
 
         const logs_view = try allocator.create(LogsView);
         logs_view.* = try LogsView.init(allocator, theme);
@@ -1334,6 +1341,7 @@ pub const App = struct {
             .help_view = help_view,
             .detail_view = detail_view,
             .aliases_view = aliases_view,
+            .dynamic_resource_view = dynamic_resource_view,
             .port_forwards_view = port_forwards_view,
             .port_forward_registry = port_forward_registry,
             .logs_view = logs_view,
@@ -1345,6 +1353,7 @@ pub const App = struct {
         // pods_view). Must happen AFTER k8s_service is moved into the App struct
         // for a stable pointer.
         aliases_view.* = try AliasesView.init(allocator, theme, app.k8s_service);
+        dynamic_resource_view.* = DynamicResourceView.init(allocator, theme, app.k8s_service);
         inline for (k8s_view_types) |entry| {
             @field(app, entry[0]).* = try entry[1].init(allocator, theme, app.k8s_service);
             if (config.all_namespaces and @hasDecl(entry[1], "view_config") and
@@ -1463,6 +1472,8 @@ pub const App = struct {
         self.allocator.destroy(self.detail_view);
         self.aliases_view.deinit();
         self.allocator.destroy(self.aliases_view);
+        self.dynamic_resource_view.deinit();
+        self.allocator.destroy(self.dynamic_resource_view);
         // View before registry: the view only holds a table, while the registry kills
         // and reaps the children.
         self.port_forwards_view.deinit();
@@ -1679,6 +1690,7 @@ pub const App = struct {
                     Logger.err("readKey error: {any}", .{err});
                     continue;
                 }) |key| {
+                    self.last_input_time_ns = clock.nanoTimestamp();
                     self.handleKey(key) catch |err| {
                         Logger.err("handleKey error: {any}", .{err});
                     };
@@ -1696,10 +1708,22 @@ pub const App = struct {
         self.maybeRefreshHeaderMetrics();
         self.serviceTrafficRequest();
         self.serviceAuthorizationRequest();
+        if (self.view_manager.getCurrentView()) |current| {
+            if (current.ptr == @as(*anyopaque, @ptrCast(self.dynamic_resource_view)) and
+                self.dynamic_resource_view.isRefreshDue(clock.nanoTimestamp()))
+            {
+                current.refresh() catch |err| {
+                    Logger.err("Dynamic resource periodic refresh failed: {any}", .{err});
+                };
+                self.dirty = true;
+            }
+        }
     }
 
     pub fn finishLifecycle(self: *App) void {
         if (self.lifecycle_supervisor.root_future == null) return;
+        self.pod_metrics_start_pending = false;
+        self.pod_metrics_start_for = null;
         if (self.task14.cancel_flag) |flag| flag.store(true, .release);
         var intents: usize = 0;
         if (self.active_metrics_subscription) |key| {
@@ -2018,6 +2042,8 @@ pub const App = struct {
 
     fn startPodSubscription(self: *App) !void {
         if (!self.k8s_service.connected) return;
+        self.pod_metrics_start_pending = false;
+        self.pod_metrics_start_for = null;
         const session_view = self.active_session_slot.view();
         if (session_view.state != .active) return error.NoActiveSession;
         const generation = session_view.generation;
@@ -2160,6 +2186,8 @@ pub const App = struct {
     }
 
     fn cancelMetricsFeed(self: *App) void {
+        self.pod_metrics_start_pending = false;
+        self.pod_metrics_start_for = null;
         if (self.active_metrics_subscription) |key| {
             _ = self.data_plane.cancelSubscription(key);
             self.active_metrics_subscription = null;
@@ -2224,6 +2252,8 @@ pub const App = struct {
             .lifecycleFn = appObserveLifecycle,
         };
         var n: usize = 0;
+        var sync_pods = false;
+        var start_pod_metrics = false;
         const drain_limit = self.task14.drain_batch_limit orelse
             resource_key.Limits.default.drain_batches;
         while (n < drain_limit) : (n += 1) {
@@ -2274,20 +2304,9 @@ pub const App = struct {
             popped.finishConsumed();
             if (target == .resource) {
                 if (effects.sync_pod or effects.sync_metrics) {
-                    self.pods_view.syncPodProjection() catch |err| {
-                        Logger.err("pod projection adapter failed: {any}", .{err});
-                        if (is_pod_subscription) self.pod_projection_apply_failed = true;
-                        self.pod_projection_sync_pending = true;
-                        self.dirty = true;
-                        continue;
-                    };
-                    self.pod_projection_sync_pending = false;
-                    if (effects.start_pod_metrics) {
-                        self.pod_initial_batch_applied = true;
-                        self.startMetricsFeed() catch |err| {
-                            Logger.warn("metrics feed start failed: {any}", .{err});
-                        };
-                    }
+                    sync_pods = true;
+                    start_pod_metrics = start_pod_metrics or effects.start_pod_metrics;
+                    if (initial_changes) self.pod_initial_batch_applied = true;
                 } else if (is_node_subscription) {
                     self.nodes_view.syncProjection() catch |err| {
                         Logger.err("node projection adapter failed: {any}", .{err});
@@ -2328,7 +2347,46 @@ pub const App = struct {
             }
             self.dirty = true;
         }
+        self.pod_projection_sync_pending =
+            self.pod_projection_sync_pending or sync_pods;
+        if (start_pod_metrics) {
+            self.pod_metrics_start_pending = true;
+            self.pod_metrics_start_for = self.active_pod_subscription;
+        }
+        self.syncPodProjectionIfPending() catch |err| {
+            Logger.err("pod projection adapter failed: {any}", .{err});
+            self.pod_projection_apply_failed = true;
+            self.dirty = true;
+        };
         self.tryFinishContextSwitch();
+    }
+
+    fn syncPodProjectionIfPending(self: *App) !void {
+        if (self.pod_projection_sync_pending) {
+            try self.pods_view.syncPodProjection();
+            self.pod_projection_sync_pending = false;
+            self.dirty = true;
+        }
+        if (self.pod_metrics_start_pending) {
+            const expected = self.pod_metrics_start_for orelse {
+                self.pod_metrics_start_pending = false;
+                return;
+            };
+            if (!matchesIdentity(self.active_pod_subscription, .{
+                .generation = expected.generation,
+                .subscription_id = expected.subscription_id,
+            })) {
+                self.pod_metrics_start_pending = false;
+                self.pod_metrics_start_for = null;
+                return;
+            }
+            self.startMetricsFeed() catch |err| {
+                Logger.warn("metrics feed start failed: {any}", .{err});
+                return;
+            };
+            self.pod_metrics_start_pending = false;
+            self.pod_metrics_start_for = null;
+        }
     }
 
     fn task15FamilyForTarget(self: *const App, target: resource_key.EnvelopeTarget) ?task15.Family {
@@ -2563,30 +2621,43 @@ pub const App = struct {
     }
 
     fn renderIfNeeded(self: *App) !void {
-        if (self.pod_projection_sync_pending) {
-            try self.pods_view.syncPodProjection();
-            self.pod_projection_sync_pending = false;
-            self.dirty = true;
-        }
+        try self.syncPodProjectionIfPending();
+        const now = clock.nanoTimestamp();
+        const keep_presenting = shouldKeepPresenting(
+            self.last_input_time_ns,
+            now,
+            self.interactive_present_window_ns,
+        );
         const size = try self.terminal.getSize();
         const size_changed = self.prev_width != size.width or self.prev_height != size.height;
-        if (!size_changed and !self.dirty) return;
+        if (!size_changed and !self.dirty and !keep_presenting) {
+            self.pending_frame_ms = null;
+            return;
+        }
 
-        // Rate limit rendering to prevent excessive updates (60 FPS max).
+        // Rate limit rendering and present-keep frames to 120 FPS.
         //
         // A dropped frame leaves dirty = true, but the loop then blocked in
         // poll(..., 100), so a keypress arriving just after a render was not drawn for
         // up to 100 ms -- visible as the highlight lagging behind a held arrow key.
         // Record how long is left in the frame so the loop can poll for exactly that.
-        const now = clock.nanoTimestamp();
         const elapsed = now - self.last_render_time;
         if (!size_changed and elapsed < self.min_frame_time_ns) {
-            const remaining_ns = self.min_frame_time_ns - elapsed;
-            self.pending_frame_ms = @intCast(@divTrunc(remaining_ns, std.time.ns_per_ms) + 1);
+            self.pending_frame_ms = remainingFrameDelayMs(
+                self.last_render_time,
+                now,
+                self.min_frame_time_ns,
+            );
             return;
         }
         self.pending_frame_ms = null;
         self.last_render_time = now;
+
+        if (!size_changed and !self.dirty) {
+            try self.terminal.presentCurrentFrame();
+            self.scheduleInteractivePresent();
+            return;
+        }
 
         // Start DEC synchronized output mode
         try self.terminal.beginSyncOutput();
@@ -2739,7 +2810,7 @@ pub const App = struct {
             try self.terminal.hideCursor();
         }
 
-        try self.terminal.flush();
+        try self.terminal.flushFrame();
         try self.terminal.endSyncOutput();
         sync_output_open = false;
         self.markPodPaintsAfterFlush();
@@ -2747,6 +2818,21 @@ pub const App = struct {
         self.prev_width = size.width;
         self.prev_height = size.height;
         self.dirty = false;
+        self.scheduleInteractivePresent();
+    }
+
+    fn scheduleInteractivePresent(self: *App) void {
+        const now = clock.nanoTimestamp();
+        if (!shouldKeepPresenting(
+            self.last_input_time_ns,
+            now,
+            self.interactive_present_window_ns,
+        )) return;
+        self.pending_frame_ms = remainingFrameDelayMs(
+            self.last_render_time,
+            now,
+            self.min_frame_time_ns,
+        );
     }
 
     fn emitTask15PaintsAfterFlush(self: *App) void {
@@ -3028,7 +3114,14 @@ pub const App = struct {
                     const cmd_text = if (std.mem.eql(u8, prompt, ":")) blk: {
                         const extras = k9s_query.parseCommand(typed);
                         if (self.command_registry.contains(extras.name)) break :blk typed;
-                        break :blk self.command_input.currentSuggestion() orelse typed;
+                        const suggestion = self.command_input.currentSuggestion() orelse
+                            break :blk typed;
+                        // Complete a genuine prefix (`node` -> `nodes`), but do not
+                        // let an unrelated fuzzy hit steal a discovery command such
+                        // as `nodeclaims` or `nodeclasses`.
+                        if (shouldCompletePaletteCommand(extras.name, suggestion))
+                            break :blk suggestion;
+                        break :blk typed;
                     } else typed;
 
                     if (self.pending_input != .none) {
@@ -3564,12 +3657,22 @@ pub const App = struct {
     fn showSelectedNode(self: *App) !void {
         // Switch to the nodes view (focusing the pod's node would need a node
         // filter; for now just open nodes).
-        if (self.view_manager.getDepth() == 1) {
-            _ = self.view_manager.popView();
-            try self.view_manager.pushView(self.nodes_view.createView());
-            self.current_view_name = "nodes";
-            self.dirty = true;
-        }
+        try self.replaceRootView(self.nodes_view.createView(), "nodes");
+    }
+
+    /// Make `view` the one and only entry on the view stack.
+    ///
+    /// A view switch is navigation, not a sub-view: it has to work from wherever
+    /// the user is. The old rule was "only at depth 1", so any view sitting on
+    /// top of the root list turned every `:view` command into a silent no-op --
+    /// the registry still reported success, so the palette closed with no error
+    /// either. A namespace drill-down (`:ns`, Enter) pushes pods ON TOP of
+    /// namespaces, which is exactly how `:nodes` became unreachable.
+    fn replaceRootView(self: *App, view: View, name: []const u8) !void {
+        while (self.view_manager.getDepth() > 0) _ = self.view_manager.popView();
+        try self.view_manager.pushView(view);
+        self.current_view_name = name;
+        self.dirty = true;
     }
 
     /// Toggle the aliases view (k9s Ctrl-A). It's a full depth-1 view (replaces
@@ -3598,8 +3701,12 @@ pub const App = struct {
             .view_manager = &self.view_manager,
             .data = self,
         };
-        _ = self.command_registry.execute(name, &ctx) catch |err| {
+        const handled = self.command_registry.execute(name, &ctx) catch |err| {
             Logger.err("switchToView({s}) failed: {any}", .{ name, err });
+            return;
+        };
+        if (!handled) _ = self.openDynamicResource(name) catch |err| {
+            Logger.err("switchToView({s}) discovery failed: {any}", .{ name, err });
         };
         try self.serviceResourceSubscriptionRequests();
         self.serviceAuthorizationRequest();
@@ -4088,6 +4195,11 @@ pub const App = struct {
         self.refreshCurrentView();
     }
 
+    fn shouldCompletePaletteCommand(typed_name: []const u8, suggestion: []const u8) bool {
+        return suggestion.len >= typed_name.len and
+            std.ascii.eqlIgnoreCase(suggestion[0..typed_name.len], typed_name);
+    }
+
     fn executePaletteCommand(self: *App, cmd_text: []const u8, record: bool) !void {
         const extras = k9s_query.parseCommand(cmd_text);
         if (extras.context) |ctx_name| {
@@ -4105,8 +4217,18 @@ pub const App = struct {
             .view_manager = &self.view_manager,
             .data = self,
         };
-        const ok = try self.command_registry.execute(extras.name, &ctx);
-        if (!ok) {
+        var handled = try self.command_registry.execute(extras.name, &ctx);
+        if (!handled) {
+            handled = self.openDynamicResource(extras.name) catch |err| {
+                self.footer.setStatus(if (err == error.AmbiguousResource)
+                    "ambiguous resource; use plural.group"
+                else
+                    "resource discovery failed");
+                self.dirty = true;
+                return;
+            };
+        }
+        if (!handled) {
             self.footer.setStatus("unknown command");
             self.dirty = true;
             return;
@@ -4130,6 +4252,22 @@ pub const App = struct {
             try self.applyFilterToCurrentView(f);
         }
         try self.serviceResourceSubscriptionRequests();
+    }
+
+    fn openDynamicResource(self: *App, query: []const u8) !bool {
+        const descriptor = (try self.k8s_service.resolveDynamicResource(query)) orelse
+            return false;
+        const all_namespaces = if (self.view_manager.getCurrentView()) |current|
+            current.showsAllNamespaces()
+        else
+            self.config.all_namespaces;
+
+        // open() takes ownership of descriptor before attempting the Table request.
+        try self.dynamic_resource_view.open(descriptor, all_namespaces);
+        const view = self.dynamic_resource_view.createView();
+        try self.replaceRootView(view, view.getName());
+        self.footer.setStatus(null);
+        return true;
     }
 
     fn recordHistory(self: *App, cmd: []const u8) !void {
@@ -4622,18 +4760,14 @@ fn makeViewCommand(comptime field_name: []const u8, comptime view_name: []const 
     return &struct {
         fn command(ctx_arg: *Command.CommandContext) anyerror!void {
             const app: *App = @ptrCast(@alignCast(ctx_arg.data.?));
-            if (ctx_arg.view_manager.getDepth() == 1) {
-                // Entering the contexts view: remember where we came from so
-                // a context switch can return there (KeyResult.context_switched).
-                if (comptime std.mem.eql(u8, view_name, "contexts")) {
-                    if (!std.mem.eql(u8, app.current_view_name, "contexts")) {
-                        app.pre_contexts_view = app.current_view_name;
-                    }
+            // Entering the contexts view: remember where we came from so
+            // a context switch can return there (KeyResult.context_switched).
+            if (comptime std.mem.eql(u8, view_name, "contexts")) {
+                if (!std.mem.eql(u8, app.current_view_name, "contexts")) {
+                    app.pre_contexts_view = app.current_view_name;
                 }
-                _ = ctx_arg.view_manager.popView();
-                try ctx_arg.view_manager.pushView(@field(app, field_name).createView());
-                app.current_view_name = view_name;
             }
+            try app.replaceRootView(@field(app, field_name).createView(), view_name);
         }
     }.command;
 }
@@ -4766,7 +4900,7 @@ fn nodeProjectionSortKey(record: *const NodeRecord, column: u8) []const u8 {
         0 => record.key.name,
         1 => record.status,
         2 => record.roles,
-        3 => record.version,
+        3 => if (record.version_sort_key.len > 0) record.version_sort_key else record.version,
         4 => record.internal_ip,
         5 => record.creation_timestamp orelse "",
         else => record.key.name,
@@ -5885,11 +6019,27 @@ fn readonlyAction(result: View.KeyResult) ?[]const u8 {
 
 fn shouldStartMetricsFeed(
     is_pod_subscription: bool,
-    initial_changes: bool,
+    sync_kind: ?resource_key.SyncKind,
     pod_count: usize,
     already_started: bool,
 ) bool {
-    return is_pod_subscription and initial_changes and pod_count > 0 and !already_started;
+    return is_pod_subscription and
+        sync_kind == .list_complete and
+        pod_count > 0 and
+        !already_started;
+}
+
+fn shouldKeepPresenting(last_input_ns: i128, now_ns: i128, window_ns: i128) bool {
+    return last_input_ns > 0 and
+        now_ns >= last_input_ns and
+        now_ns - last_input_ns < window_ns;
+}
+
+fn remainingFrameDelayMs(last_frame_ns: i128, now_ns: i128, frame_interval_ns: i128) i32 {
+    const elapsed = @max(now_ns - last_frame_ns, 0);
+    if (elapsed >= frame_interval_ns) return 0;
+    const remaining_ns = frame_interval_ns - elapsed;
+    return @intCast(@divTrunc(remaining_ns + std.time.ns_per_ms - 1, std.time.ns_per_ms));
 }
 
 fn markFamilyStartOutcome(entry: *family_registry.Entry, succeeded: bool) void {
@@ -5931,7 +6081,7 @@ fn decideResourceDrainEffects(
     node: ?lifecycle.SubscriptionKey,
     namespace: ?lifecycle.SubscriptionKey,
     sync_kind: ?resource_key.SyncKind,
-    initial_changes: bool,
+    _: bool,
     pod_count: usize,
     pod_metrics_started: bool,
 ) ResourceDrainEffects {
@@ -5950,7 +6100,7 @@ fn decideResourceDrainEffects(
         .sync_namespace = sync_namespace,
         .start_pod_metrics = shouldStartMetricsFeed(
             sync_pod,
-            initial_changes,
+            sync_kind,
             pod_count,
             pod_metrics_started,
         ),
@@ -7917,12 +8067,80 @@ pub fn runTask14HeaderPeriodicGate() !void {
     try std.testing.expect(app.header.cpu_usage != first_cpu);
 }
 
-test "metrics feed starts only after first applied real pod batch and only once" {
-    try std.testing.expect(!shouldStartMetricsFeed(false, true, 1, false));
-    try std.testing.expect(!shouldStartMetricsFeed(true, false, 0, false));
-    try std.testing.expect(!shouldStartMetricsFeed(true, true, 0, false));
-    try std.testing.expect(shouldStartMetricsFeed(true, true, 1, false));
-    try std.testing.expect(!shouldStartMetricsFeed(true, true, 1, true));
+test "metrics feed starts only after completed non-empty pod list and only once" {
+    try std.testing.expect(!shouldStartMetricsFeed(false, .list_complete, 1, false));
+    try std.testing.expect(!shouldStartMetricsFeed(true, null, 1, false));
+    try std.testing.expect(!shouldStartMetricsFeed(true, .list_started, 1, false));
+    try std.testing.expect(!shouldStartMetricsFeed(true, .list_complete, 0, false));
+    try std.testing.expect(shouldStartMetricsFeed(true, .list_complete, 1, false));
+    try std.testing.expect(!shouldStartMetricsFeed(true, .list_complete, 1, true));
+}
+
+test "multiple applied pod batches require one projection table sync" {
+    const allocator = std.testing.allocator;
+    var app = try App.init(allocator, .{});
+    defer app.deinit();
+
+    for (0..2) |index| {
+        var uid_buffer: [16]u8 = undefined;
+        const uid = try std.fmt.bufPrint(&uid_buffer, "pod-{d}", .{index});
+        const changes = try allocator.alloc(resource_key.TypedChange(PodRecord), 1);
+        changes[0] = .{ .initial_upsert = .{
+            .key = try (resource_key.ObjectKey{
+                .uid = uid,
+                .namespace = "default",
+                .name = uid,
+            }).clone(allocator),
+        } };
+        var batch = resource_key.TypedBatch(PodRecord){
+            .generation = 1,
+            .subscription_id = 1,
+            .revision = index + 1,
+            .changes = changes,
+            .sync = null,
+            .owned_bytes = 1,
+        };
+        defer batch.deinit(allocator);
+        var plan = try PodProjection.handler().preflight(
+            @ptrCast(app.pod_projection),
+            &batch,
+            allocator,
+        );
+        PodProjection.handler().commit(@ptrCast(app.pod_projection), &batch, &plan);
+        plan.deinit(allocator);
+    }
+
+    const sync_count = app.pods_view.projection_sync_count;
+    app.pod_projection_sync_pending = true;
+    try app.syncPodProjectionIfPending();
+    try std.testing.expectEqual(sync_count + 1, app.pods_view.projection_sync_count);
+    try std.testing.expectEqual(@as(usize, 2), app.pods_view.table.items.items.len);
+}
+
+test "pending metrics start cannot cross pod subscription identity" {
+    var app = try App.init(std.testing.allocator, .{});
+    defer app.deinit();
+    app.active_pod_subscription = .{ .generation = 2, .subscription_id = 8 };
+    defer app.active_pod_subscription = null;
+    app.pod_metrics_start_pending = true;
+    app.pod_metrics_start_for = .{ .generation = 1, .subscription_id = 7 };
+
+    try app.syncPodProjectionIfPending();
+    try std.testing.expect(!app.pod_metrics_start_pending);
+    try std.testing.expect(app.pod_metrics_start_for == null);
+    try std.testing.expect(app.active_metrics_subscription == null);
+}
+
+test "interactive present window is bounded and ignores invalid timestamps" {
+    const second: i128 = std.time.ns_per_s;
+    try std.testing.expect(!shouldKeepPresenting(0, second, second));
+    try std.testing.expect(!shouldKeepPresenting(second, second - 1, second));
+    try std.testing.expect(shouldKeepPresenting(second, second, second));
+    try std.testing.expect(shouldKeepPresenting(second, second * 2 - 1, second));
+    try std.testing.expect(!shouldKeepPresenting(second, second * 2, second));
+    try std.testing.expectEqual(@as(i32, 9), remainingFrameDelayMs(0, 0, 8_333_334));
+    try std.testing.expectEqual(@as(i32, 1), remainingFrameDelayMs(0, 8_000_000, 8_333_334));
+    try std.testing.expectEqual(@as(i32, 0), remainingFrameDelayMs(0, 8_333_334, 8_333_334));
 }
 
 test "family restart pending clears only after successful start" {
@@ -8530,7 +8748,7 @@ test "resource family identities isolate envelopes and pod side effects" {
         .generation = 8,
         .subscription_id = 3,
     }));
-    try std.testing.expect(!shouldStartMetricsFeed(false, true, 2, false));
+    try std.testing.expect(!shouldStartMetricsFeed(false, .list_complete, 2, false));
 
     const families = [_]struct {
         key: lifecycle.SubscriptionKey,
@@ -9003,6 +9221,101 @@ test "palette resource switch starts subscription without another key" {
     app.finishLifecycle();
     try std.testing.expectEqual(@as(usize, 0), app.lifecycle_supervisor.liveChildren());
     try std.testing.expectEqual(@as(usize, 0), app.active_session_slot.leaseCount());
+}
+
+test "palette view switch survives a namespace drill-down" {
+    // The reported repro, end to end: `:ns`, Enter on a namespace, `0` for all
+    // namespaces, then `:nodes`. The namespace drill-down pushes pods ON TOP of
+    // namespaces, and every `:view` command used to require depth 1 -- so from
+    // there the palette closed, the registry reported success, and nothing moved.
+    const allocator = std.testing.allocator;
+    const io = runtime.io();
+    var lists = @import("k8s/FakeTransport.zig").PathListTransport.init(
+        allocator,
+        resource_subscription.task14ListBodyForPath,
+    );
+    defer lists.deinit();
+    var app = try App.init(allocator, .{});
+    defer app.deinit();
+
+    const active_session = try task14PrepareLocalSession(
+        undefined,
+        allocator,
+        io,
+        app.shared_event,
+        1,
+        .{
+            .context_name = "nodes-after-drilldown",
+            .kubeconfig_path = null,
+            .default_namespace = "default",
+            .force_proxy = false,
+            .readonly = true,
+        },
+    );
+    _ = try app.active_session_slot.commit(active_session);
+    app.k8s_service.connected = true;
+    app.task14 = .{ .transport = lists.transport(), .hold_watch = true };
+
+    try app.executePaletteCommand("ns", false);
+    try std.testing.expectEqualStrings("namespaces", app.current_view_name);
+
+    try app.namespaces_view.table.appendItem(.{
+        .name = try allocator.dupe(u8, "kube-system"),
+        .status = try allocator.dupe(u8, "Active"),
+        .age = try allocator.dupe(u8, "1d"),
+        .allocator = allocator,
+    });
+    try app.namespaces_view.table.filtered_indices.append(allocator, 0);
+    app.namespaces_view.table.selected_row = 0;
+
+    try app.handleKey(.enter);
+    try std.testing.expectEqualStrings("pods", app.current_view_name);
+    try std.testing.expectEqual(@as(usize, 2), app.view_manager.getDepth());
+
+    try app.handleKey(.{ .char = '0' });
+    try std.testing.expect(app.pods_view.table.show_all_namespaces);
+
+    // Palette Enter on the highlighted `nodes` suggestion.
+    app.command_input.showWithPrompt(":");
+    try app.command_input.setText("node");
+    try std.testing.expectEqualStrings("nodes", app.command_input.currentSuggestion().?);
+    try app.handleKey(.enter);
+
+    try std.testing.expectEqualStrings("nodes", app.current_view_name);
+    try std.testing.expect(app.view_manager.isViewActive("nodes"));
+    try std.testing.expectEqual(@as(usize, 1), app.view_manager.getDepth());
+
+    app.finishLifecycle();
+    try std.testing.expectEqual(@as(usize, 0), app.lifecycle_supervisor.liveChildren());
+    try std.testing.expectEqual(@as(usize, 0), app.active_session_slot.leaseCount());
+}
+
+test "typed :nodes wins over any fuzzy suggestion from any depth" {
+    // `nodes` and `no` are hardcoded view aliases: a registered first token must
+    // execute verbatim, never be replaced by whatever the dropdown highlighted
+    // (that is what keeps a CR-discovery fall-through from stealing `nodes`).
+    var app = try App.init(std.testing.allocator, .{});
+    defer app.deinit();
+
+    try app.executePaletteCommand("nodes", false);
+    try std.testing.expectEqualStrings("nodes", app.current_view_name);
+
+    try app.executePaletteCommand("pods", false);
+    try app.view_manager.pushView(app.help_view.createView());
+    try std.testing.expectEqual(@as(usize, 2), app.view_manager.getDepth());
+
+    app.command_input.showWithPrompt(":");
+    try app.command_input.setText("no");
+    try app.handleKey(.enter);
+    try std.testing.expectEqualStrings("nodes", app.current_view_name);
+    try std.testing.expect(app.view_manager.isViewActive("nodes"));
+    try std.testing.expectEqual(@as(usize, 1), app.view_manager.getDepth());
+}
+
+test "palette prefix completion does not steal dynamic resource names" {
+    try std.testing.expect(App.shouldCompletePaletteCommand("node", "nodes"));
+    try std.testing.expect(!App.shouldCompletePaletteCommand("nodeclaims", "nodes"));
+    try std.testing.expect(!App.shouldCompletePaletteCommand("nodeclasses", "nodes"));
 }
 
 test "shouldLiveFilter refuses every prompt that is not a live filter" {
