@@ -92,6 +92,50 @@ pub const Input = struct {
     api_version: []const u8 = "v1",
 };
 
+/// Parse the one-line can-i query into its fields.
+///
+/// The shape is `principal action resource [-n namespace] [-g apiGroup]`, which is the
+/// `kubectl auth can-i` muscle memory a reviewer already has. It is one line rather than
+/// a five-step wizard because this is the key people press repeatedly while reading a
+/// policy, and five prompts per question is five times the friction.
+///
+/// Slices point into `line`; the caller owns it for as long as the result is used.
+pub fn parseQuery(line: []const u8) Error!Input {
+    var input = Input{ .principal = "", .action = "", .resource = "" };
+    var positional: usize = 0;
+
+    var fields = std.mem.tokenizeAny(u8, line, " \t");
+    while (fields.next()) |field| {
+        const flag: ?*[]const u8 =
+            if (std.mem.eql(u8, field, "-n") or std.mem.eql(u8, field, "--namespace"))
+                &input.namespace
+            else if (std.mem.eql(u8, field, "-g") or std.mem.eql(u8, field, "--group"))
+                &input.api_group
+            else if (std.mem.eql(u8, field, "-v") or std.mem.eql(u8, field, "--api-version"))
+                &input.api_version
+            else
+                null;
+        if (flag) |slot| {
+            slot.* = fields.next() orelse return Error.InvalidSegment;
+            continue;
+        }
+        switch (positional) {
+            0 => input.principal = field,
+            1 => input.action = field,
+            2 => input.resource = field,
+            // A fourth bare word is a typo, not an extra field. Taking it silently
+            // would authorize a question the user did not ask.
+            else => return Error.InvalidSegment,
+        }
+        positional += 1;
+    }
+
+    if (input.principal.len == 0) return Error.EmptyPrincipal;
+    if (input.action.len == 0) return Error.EmptyAction;
+    if (input.resource.len == 0) return Error.EmptyResource;
+    return input;
+}
+
 pub const Error = error{
     EmptyPrincipal,
     EmptyAction,
@@ -106,10 +150,9 @@ pub const Error = error{
 /// Kubernetes verbs, per the frozen PoC's Action vocabulary. A bare word from this
 /// list is what tips an otherwise ambiguous request into `.k8s` mode.
 const k8s_verbs = [_][]const u8{
-    "get",           "list",   "watch",      "create", "update", "patch",
-    "delete",        "proxy",  "deletecollection",
-    "impersonate",   "sign",   "approve",    "bind",   "escalate",
-    "attest",        "use",
+    "get",    "list",     "watch",            "create",      "update", "patch",
+    "delete", "proxy",    "deletecollection", "impersonate", "sign",   "approve",
+    "bind",   "escalate", "attest",           "use",
 };
 
 /// The verbs the decision matrix evaluates alongside the asked-for one. Read verbs
@@ -231,8 +274,8 @@ pub fn build(allocator: std.mem.Allocator, input: Input) (Error || std.mem.Alloc
         const parts = splitResource(resource_raw);
         if (parts.plural.len == 0) return Error.EmptyResource;
         for ([_][]const u8{
-            parts.plural,       parts.object_name, parts.subresource,
-            namespace,          api_group,         api_version,
+            parts.plural, parts.object_name, parts.subresource,
+            namespace,    api_group,         api_version,
         }) |segment| {
             if (!validSegment(segment)) return Error.InvalidSegment;
         }
@@ -687,6 +730,36 @@ fn trim(value: []const u8) []const u8 {
 // --- Tests ---
 
 const testing = std.testing;
+
+test "the can-i line parses into positional fields and flags" {
+    const query = try parseQuery("  alice  list pods -n kube-system -g apps  ");
+    try std.testing.expectEqualStrings("alice", query.principal);
+    try std.testing.expectEqualStrings("list", query.action);
+    try std.testing.expectEqualStrings("pods", query.resource);
+    try std.testing.expectEqualStrings("kube-system", query.namespace);
+    try std.testing.expectEqualStrings("apps", query.api_group);
+    try std.testing.expectEqualStrings("v1", query.api_version);
+}
+
+test "a flag without a value, or a stray fourth word, is refused rather than guessed" {
+    try std.testing.expectError(Error.InvalidSegment, parseQuery("alice list pods -n"));
+    try std.testing.expectError(Error.InvalidSegment, parseQuery("alice list pods extra"));
+}
+
+test "a can-i line missing a field names the field" {
+    try std.testing.expectError(Error.EmptyPrincipal, parseQuery("   "));
+    try std.testing.expectError(Error.EmptyAction, parseQuery("alice"));
+    try std.testing.expectError(Error.EmptyResource, parseQuery("alice list"));
+}
+
+test "a parsed can-i line builds the request it describes" {
+    const query = try parseQuery("system:serviceaccount:team:ci create deployments -n team -g apps");
+    var request = try build(std.testing.allocator, query);
+    defer request.deinit();
+    try std.testing.expectEqual(Mode.k8s, request.mode);
+    try std.testing.expectEqualStrings("k8s::ServiceAccount", request.principal.type);
+    try std.testing.expectEqualStrings("/apis/apps/v1/namespaces/team/deployments", request.resource.id);
+}
 
 test "a bare Kubernetes verb selects the k8s vocabulary" {
     try testing.expectEqual(Mode.k8s, detectMode("get", "", ""));

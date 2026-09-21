@@ -593,3 +593,51 @@ test "a stub that denies produces DENY, and one that errors produces INDETERMINA
         try testing.expectEqual(Decision.indeterminate, result.decision);
     }
 }
+
+test "the real cedar binary agrees with the exit codes and output shape assumed here" {
+    // The stub tests above pin the plumbing; this one pins the contract. Skipped when
+    // cedar is not installed, because the suite must run on machines without it -- but
+    // when it is installed, a cedar release that changes its exit codes or drops the
+    // explanation block should fail here rather than in front of a user.
+    const a = testing.allocator;
+    var cli = CedarCli.init(a);
+    defer cli.deinit();
+    if (!cli.available()) return error.SkipZigTest;
+
+    const policy = "@id(\"allow-list\")\npermit(principal, action == k8s::Action::\"list\", resource);\n";
+    const entities =
+        \\[{"uid":{"type":"k8s::User","id":"alice"},"attrs":{"name":"alice"},"parents":[]}]
+    ;
+    const input = AuthorizeInput{
+        .policies = policy,
+        .entities_json = entities,
+        .principal = "k8s::User::\"alice\"",
+        .action = "k8s::Action::\"list\"",
+        .resource = "k8s::Resource::\"/api/v1/pods\"",
+    };
+
+    var allowed = try cli.authorize(input);
+    defer allowed.deinit(a);
+    try testing.expectEqual(Decision.allow, allowed.decision);
+    try testing.expectEqualStrings("allow-list", allowed.determining);
+
+    var other_verb = input;
+    other_verb.action = "k8s::Action::\"create\"";
+    var denied = try cli.authorize(other_verb);
+    defer denied.deinit(a);
+    try testing.expectEqual(Decision.deny, denied.decision);
+
+    var parsed = try cli.checkParse(policy);
+    defer parsed.deinit(a);
+    try testing.expect(parsed.ok);
+
+    var broken = try cli.checkParse("permit(principal");
+    defer broken.deinit(a);
+    try testing.expect(!broken.ok);
+    try testing.expect(broken.diagnostics.len > 0);
+
+    var formatted = try cli.format(policy);
+    defer formatted.deinit(a);
+    try testing.expect(formatted.ok);
+    try testing.expect(std.mem.indexOf(u8, formatted.diagnostics, "permit (") != null);
+}

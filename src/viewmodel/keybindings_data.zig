@@ -230,6 +230,22 @@ pub fn loadAliasesBindings(allocator: std.mem.Allocator) ![]const KeyBinding {
     return try allocator.dupe(KeyBinding, &bindings);
 }
 
+/// Cedar workbench bindings. Every one of these runs the official `cedar` binary
+/// against the selected Policy object; none of them mutate the cluster.
+pub fn loadCedarBindings(allocator: std.mem.Allocator) ![]const KeyBinding {
+    const bindings = [_]KeyBinding{
+        .{ .key = "Enter", .description = "Policy source", .category = .resource, .action = "cedar_source" },
+        .{ .key = "Shift-p", .description = "Check parse", .category = .resource, .action = "cedar_check_parse" },
+        .{ .key = "Shift-c", .description = "Format", .category = .resource, .action = "cedar_format" },
+        .{ .key = "Shift-v", .description = "Validate (schema)", .category = .resource, .action = "cedar_validate" },
+        .{ .key = "Shift-a", .description = "Scan all policies", .category = .resource, .action = "cedar_scan" },
+        .{ .key = "Shift-i", .description = "Can-i (P do A on R)", .category = .resource, .action = "cedar_can_i" },
+        .{ .key = "r", .description = "Refresh", .category = .resource, .action = "refresh" },
+        .{ .key = "/", .description = "Filter", .category = .navigation, .action = "filter" },
+    };
+    return try allocator.dupe(KeyBinding, &bindings);
+}
+
 // --- Tests ---
 
 test "keybindings_data: all load functions return valid bindings" {
@@ -254,6 +270,7 @@ test "keybindings_data: all load functions return valid bindings" {
         loadContextsBindings,
         loadPortForwardsBindings,
         loadAliasesBindings,
+        loadCedarBindings,
     };
 
     inline for (load_functions) |load_fn| {
@@ -555,6 +572,15 @@ const view_scoped_actions = [_]OwnedActions{
     .{ .views = &.{"cronjobs"}, .actions = &.{ "suspend", "trigger" } },
     .{ .views = &.{ "pods", "services", "events", "secrets", "configmaps", "serviceaccounts", "persistentvolumeclaims", "deployments", "replicasets", "statefulsets", "daemonsets", "cronjobs", "jobs", "roles", "rolebindings" }, .actions = &.{"warp"} },
     .{ .views = &.{ "serviceaccounts", "secrets", "configmaps", "persistentvolumeclaims" }, .actions = &.{"used_by"} },
+    // CedarView.zig. These need a Cedar Policy object's source, so they exist nowhere
+    // else -- the aggregated policy table deliberately does not carry it.
+    .{
+        .views = &.{"cedar"},
+        .actions = &.{
+            "cedar_source",   "cedar_check_parse", "cedar_format",
+            "cedar_validate", "cedar_scan",        "cedar_can_i",
+        },
+    },
     // PortForwardsView's own handleKey.
     .{ .views = &.{"portforwards"}, .actions = &.{"stop"} },
 };

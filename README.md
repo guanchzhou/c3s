@@ -194,6 +194,29 @@ zig build
 |-----|--------|
 | `t` | Open live Istio traffic view |
 
+### **Cedar Policy Workbench** (`:cedar`)
+
+Lists `cedar.k8s.aws` Policy objects and runs the official
+[`cedar`](https://github.com/cedar-policy/cedar) CLI against them. Read-only:
+nothing here writes to the cluster. Install the binary with
+`cargo install cedar-policy-cli`; without it the list still works and the
+analysis keys say why they cannot run.
+
+| Key | Action |
+|-----|--------|
+| `Enter` | Policy source |
+| `Shift-P` | `cedar check-parse` on the selected policy |
+| `Shift-C` | `cedar format` |
+| `Shift-V` | `cedar validate` against a schema you name |
+| `Shift-A` | Scan every policy and tally the parse failures |
+| `Shift-I` | Can-i: `principal action resource [-n ns] [-g group]` |
+
+`Shift-I` evaluates the question against the policies that parsed. If any
+policy could not be read or parsed, the answer is `INDETERMINATE` rather than
+`ALLOW` or `DENY` — an answer from an incomplete policy set is not an answer.
+This is Cedar, not Kubernetes RBAC: it does not call the admission webhook, and
+it is not a substitute for `kubectl auth can-i`.
+
 ### **Essential Commands**
 
 ```
@@ -206,6 +229,7 @@ zig build
 :contexts           # Manage contexts
 :events             # View cluster events
 :hpa                # View HorizontalPodAutoscalers
+:cedar              # Cedar policy workbench (`:cedarpol`)
 ```
 
 ---

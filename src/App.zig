@@ -389,6 +389,9 @@ const ViewType = @import("viewmodel/keybindings_vm.zig").ViewType;
 const DetailView = @import("view/DetailView.zig").DetailView;
 const LogsView = @import("view/LogsView.zig").LogsView;
 const AuthorizationView = @import("view/AuthorizationView.zig").AuthorizationView;
+const CedarView = @import("view/CedarView.zig").CedarView;
+const cedar_request = @import("k8s/CedarRequest.zig");
+const cedar_query = @import("viewmodel/cedar_request.zig");
 const TrafficView = @import("view/TrafficView.zig").TrafficView;
 
 // Service imports
@@ -817,6 +820,9 @@ pub const App = struct {
     logs_request_serial: u64 = 0,
     logs_request_target: logs_request.UiTarget = undefined,
     authorization_request_target: authorization_request.UiTarget = undefined,
+    active_cedar_request: ?resource_key.RequestKey = null,
+    cedar_request_serial: u64 = 0,
+    cedar_request_target: cedar_request.UiTarget = undefined,
     pod_metrics_started: bool = false,
     pod_initial_batch_applied: bool = false,
     pod_first_paint_emitted: bool = false,
@@ -949,6 +955,7 @@ pub const App = struct {
     aliases_view: *AliasesView,
     dynamic_resource_view: *DynamicResourceView,
     port_forwards_view: *PortForwardsView,
+    cedar_view: *CedarView,
     logs_view: *LogsView,
     authorization_view: *AuthorizationView,
     traffic_view: *TrafficView,
@@ -961,7 +968,17 @@ pub const App = struct {
     delete_resource_type: ?ResourceType = null,
 
     // Generic text-input prompt (set-image / port-forward / transfer / sanitize).
-    pending_input: enum { none, set_image, port_forward, transfer, sanitize, drain, scale } = .none,
+    pending_input: enum {
+        none,
+        set_image,
+        port_forward,
+        transfer,
+        sanitize,
+        drain,
+        scale,
+        cedar_validate,
+        cedar_can_i,
+    } = .none,
     pending_name: ?[]u8 = null,
     pending_namespace: ?[]u8 = null,
     pending_type: ?ResourceType = null,
@@ -1231,6 +1248,10 @@ pub const App = struct {
         help_view.* = try HelpView.init(allocator, theme);
         errdefer help_view.deinit();
 
+        const cedar_view = try allocator.create(CedarView);
+        cedar_view.* = try CedarView.init(allocator, theme);
+        errdefer cedar_view.deinit();
+
         const detail_view = try allocator.create(DetailView);
         detail_view.* = try DetailView.init(allocator, theme);
         errdefer detail_view.deinit();
@@ -1360,6 +1381,7 @@ pub const App = struct {
             .aliases_view = aliases_view,
             .dynamic_resource_view = dynamic_resource_view,
             .port_forwards_view = port_forwards_view,
+            .cedar_view = cedar_view,
             .port_forward_registry = port_forward_registry,
             .logs_view = logs_view,
             .authorization_view = app_views.authorization_view,
@@ -1498,6 +1520,8 @@ pub const App = struct {
         // and reaps the children.
         self.port_forwards_view.deinit();
         self.allocator.destroy(self.port_forwards_view);
+        self.cedar_view.deinit();
+        self.allocator.destroy(self.cedar_view);
         self.port_forward_registry.deinit();
         self.allocator.destroy(self.port_forward_registry);
         self.logs_view.deinit();
@@ -2505,6 +2529,20 @@ pub const App = struct {
                 self.authorization_request_target = .{ .view = self.authorization_view };
                 break :blk @ptrCast(&self.authorization_request_target);
             },
+            .cedar => |key| blk: {
+                const active = self.active_cedar_request orelse break :blk null;
+                if (!active.eql(key) or !self.ancillary_requests.contains(key, .cedar))
+                    break :blk null;
+                self.cedar_request_target = .{
+                    .view = self.cedar_view,
+                    .detail = self.detail_view,
+                    .view_manager = &self.view_manager,
+                    .active_key = active,
+                    .active_serial = self.cedar_request_serial,
+                    .dirty = &self.dirty,
+                };
+                break :blk @ptrCast(&self.cedar_request_target);
+            },
         };
     }
 
@@ -2558,6 +2596,18 @@ pub const App = struct {
                 }
                 if (self.active_logs_request) |active| {
                     if (active.eql(completed)) self.active_logs_request = null;
+                }
+                if (self.active_cedar_request) |active| {
+                    if (active.eql(completed)) {
+                        self.active_cedar_request = null;
+                        // A rejected start never reaches payloadCommit, so the view
+                        // would otherwise spin on "Loading" forever.
+                        if (completion.* == .start_rejected) {
+                            self.cedar_view.loading = false;
+                            self.cedar_view.setError("Cedar request could not start") catch {};
+                            self.dirty = true;
+                        }
+                    }
                 }
                 var authorization_completed = false;
                 inline for (.{ AuthorizationView.Tab.access_review, .policy_browser, .condition_inspector }) |tab| {
@@ -3597,6 +3647,16 @@ pub const App = struct {
             .request_transfer => self.promptTransfer() catch |e| Logger.err("transfer prompt: {any}", .{e}),
             .request_sanitize => self.promptSanitize(),
             .request_traffic => self.showTrafficView() catch |e| Logger.err("traffic view failed: {any}", .{e}),
+            .request_cedar_source => self.startCedarRequest(.source) catch |e| Logger.err("cedar source: {any}", .{e}),
+            .request_cedar_refresh => self.startCedarRequest(.list) catch |e| Logger.err("cedar list: {any}", .{e}),
+            .request_cedar_check_parse => self.startCedarRequest(.check_parse) catch |e| Logger.err("cedar check-parse: {any}", .{e}),
+            .request_cedar_format => self.startCedarRequest(.format) catch |e| Logger.err("cedar format: {any}", .{e}),
+            .request_cedar_scan => self.startCedarRequest(.scan) catch |e| Logger.err("cedar scan: {any}", .{e}),
+            .request_cedar_validate => self.promptCedar(.cedar_validate, "cedar validate (schema path):"),
+            .request_cedar_can_i => self.promptCedar(
+                .cedar_can_i,
+                "cedar can-i (principal action resource [-n ns] [-g group]):",
+            ),
             .request_copy => self.copySelectedField(.name),
             .request_copy_namespace => self.copySelectedField(.namespace),
             .request_copy_detail_value => self.copySelectedDetail(.value),
@@ -3906,19 +3966,23 @@ pub const App = struct {
 
     /// Apply the value typed at a pending input prompt.
     fn dispatchPendingInput(self: *App, value: []const u8) void {
-        if (self.k8s_service.readonly and self.pending_input != .none) {
-            const action: []const u8 = switch (self.pending_input) {
-                .set_image => "set-image",
-                .port_forward => "port-forward",
-                .transfer => "cp",
-                .sanitize => "sanitize",
-                .drain => "drain",
-                .scale => "scale",
-                .none => unreachable,
-            };
-            _ = self.refuseIfReadonly(action);
-            self.clearPendingInput();
-            return;
+        // Cedar prompts read policy text and run an analyzer; nothing reaches the
+        // cluster, so --readonly has no business refusing them.
+        const mutating_action: ?[]const u8 = switch (self.pending_input) {
+            .set_image => "set-image",
+            .port_forward => "port-forward",
+            .transfer => "cp",
+            .sanitize => "sanitize",
+            .drain => "drain",
+            .scale => "scale",
+            .cedar_validate, .cedar_can_i, .none => null,
+        };
+        if (self.k8s_service.readonly) {
+            if (mutating_action) |action| {
+                _ = self.refuseIfReadonly(action);
+                self.clearPendingInput();
+                return;
+            }
         }
         switch (self.pending_input) {
             .set_image => self.doSetImage(value) catch |e| Logger.err("set image failed: {any}", .{e}),
@@ -3935,6 +3999,8 @@ pub const App = struct {
                 }
             },
             .scale => self.doScale(value) catch |e| Logger.err("scale failed: {any}", .{e}),
+            .cedar_validate => self.runCedarValidate(value) catch |e| Logger.err("cedar validate: {any}", .{e}),
+            .cedar_can_i => self.runCedarCanI(value) catch |e| Logger.err("cedar can-i: {any}", .{e}),
             .none => {},
         }
         self.clearPendingInput();
@@ -4068,6 +4134,109 @@ pub const App = struct {
             session_view.generation,
             &spec,
         );
+    }
+
+    /// Open a Cedar prompt. These read; none of them touch the cluster.
+    fn promptCedar(self: *App, kind: @TypeOf(self.pending_input), label: []const u8) void {
+        if (!std.mem.eql(u8, self.current_view_name, "cedar")) return;
+        self.clearPendingInput();
+        self.pending_input = kind;
+        self.command_input.showWithPrompt(label);
+        self.dirty = true;
+    }
+
+    fn runCedarValidate(self: *App, schema_path: []const u8) !void {
+        const path = std.mem.trim(u8, schema_path, " \t");
+        if (path.len == 0) {
+            self.cedar_view.setError("cedar validate needs a schema path") catch {};
+            self.dirty = true;
+            return;
+        }
+        try self.startCedarRequestWith(.validate, .{ .schema_path = path });
+    }
+
+    fn runCedarCanI(self: *App, line: []const u8) !void {
+        const query = cedar_query.parseQuery(line) catch |err| {
+            self.cedar_view.setError(switch (err) {
+                error.EmptyPrincipal => "can-i: missing principal",
+                error.EmptyAction => "can-i: missing action",
+                error.EmptyResource => "can-i: missing resource",
+                else => "can-i: expected 'principal action resource [-n ns] [-g group]'",
+            }) catch {};
+            self.dirty = true;
+            return;
+        };
+        try self.startCedarRequestWith(.can_i, .{
+            .principal = query.principal,
+            .action = query.action,
+            .resource = query.resource,
+            .namespace = query.namespace,
+            .api_group = query.api_group,
+        });
+    }
+
+    /// Extra inputs a Cedar action may carry beyond the selected policy.
+    const CedarExtras = struct {
+        schema_path: []const u8 = "",
+        principal: []const u8 = "",
+        action: []const u8 = "",
+        resource: []const u8 = "",
+        namespace: []const u8 = "",
+        api_group: []const u8 = "",
+    };
+
+    fn startCedarRequest(self: *App, kind: cedar_request.Kind) !void {
+        try self.startCedarRequestWith(kind, .{});
+    }
+
+    /// Submit one supervised Cedar request, replacing any in flight.
+    ///
+    /// Only one runs at a time on purpose: a scan can be dozens of `cedar` processes,
+    /// and the answer the user is waiting for is the one they asked for last.
+    fn startCedarRequestWith(self: *App, kind: cedar_request.Kind, extras: CedarExtras) !void {
+        const session_view = self.active_session_slot.view();
+        if (session_view.state != .active) return error.NoActiveSession;
+
+        const row = self.cedar_view.table.getSelectedItem();
+        const needs_selection = switch (kind) {
+            .source, .check_parse, .format, .validate => true,
+            .list, .scan, .can_i => false,
+        };
+        if (needs_selection and row == null) {
+            self.cedar_view.setError("Select a Cedar policy first") catch {};
+            self.dirty = true;
+            return;
+        }
+
+        self.cedar_request_serial +%= 1;
+        if (self.cedar_request_serial == 0) self.cedar_request_serial = 1;
+
+        var spec = try cedar_request.ownedTaskSpec(self.allocator, .{
+            .serial = self.cedar_request_serial,
+            .kind = kind,
+            .service = self.k8s_service,
+            .context = self.header.context,
+            .name = if (row) |value| value.name else "",
+            .content = if (row) |value| value.content else "",
+            .schema_path = extras.schema_path,
+            .principal = extras.principal,
+            .action = extras.action,
+            .resource = extras.resource,
+            .namespace = extras.namespace,
+            .api_group = extras.api_group,
+        });
+        errdefer spec.deinit(self.allocator);
+
+        if (self.active_cedar_request) |active| _ = self.ancillary_requests.cancelRequest(active);
+        self.active_cedar_request = null;
+        self.active_cedar_request = try self.ancillary_requests.startRequest(
+            .cedar,
+            session_view.generation,
+            &spec,
+        );
+        self.cedar_view.clearError();
+        self.cedar_view.loading = true;
+        self.dirty = true;
     }
 
     /// Base64-decode the selected Secret and show it in the detail view.
@@ -4987,6 +5156,9 @@ const view_commands = [_]ViewCommandEntry{
     .{ .field = "contexts_view", .view_name = "contexts", .aliases = &.{ "contexts", "context", "ctx" } },
     .{ .field = "themes_view", .view_name = "themes", .aliases = &.{"themes"} },
     .{ .field = "authorization_view", .view_name = "authorization", .aliases = &.{ "authorization", "auth" } },
+    // Not ":policies": Kyverno owns that plural, and a Cedar action firing on a
+    // Kyverno table is exactly the confusion the k9s plugin ran into.
+    .{ .field = "cedar_view", .view_name = "cedar", .aliases = &.{ "cedar", "cedarpol", "cedarpolicies" } },
 };
 
 /// Generate a view switch command from a field name and primary view enum.
@@ -5002,6 +5174,11 @@ fn makeViewCommand(comptime field_name: []const u8, comptime view_name: []const 
                 }
             }
             try app.replaceRootView(@field(app, field_name).createView(), view_name);
+            // Cedar has no watch behind it: the list is a one-shot fetch, so entering
+            // the view is what triggers it.
+            if (comptime std.mem.eql(u8, view_name, "cedar")) {
+                app.startCedarRequest(.list) catch |err| Logger.warn("cedar list: {any}", .{err});
+            }
         }
     }.command;
 }
@@ -9347,6 +9524,15 @@ test "readonly dispatch classification exhaustively gates mutations and permits 
         .request_jump_owner,
         .request_used_by,
         .request_view_replicasets,
+        // Cedar reads policy objects and runs an analyzer; --readonly must not
+        // refuse any of it.
+        .request_cedar_source,
+        .request_cedar_refresh,
+        .request_cedar_check_parse,
+        .request_cedar_format,
+        .request_cedar_validate,
+        .request_cedar_scan,
+        .request_cedar_can_i,
     };
     for (reads) |result| try std.testing.expect(readonlyAction(result) == null);
 }
@@ -9405,6 +9591,22 @@ fn task15TerminalMessage(completion: lifecycle.LifecycleCompletion) ?[]const u8 
         .limit => "Terminal response limit exceeded",
         .canceled => return null,
     };
+}
+
+test "the Cedar workbench is reachable by command, and never as :policies" {
+    var found = false;
+    for (view_commands) |entry| {
+        for (entry.aliases) |alias| {
+            // Kyverno's ClusterPolicy plural. Resolving it here is what made the k9s
+            // plugin fire on the wrong table.
+            try std.testing.expect(!std.mem.eql(u8, alias, "policies"));
+            if (std.mem.eql(u8, alias, "cedar") or std.mem.eql(u8, alias, "cedarpol")) {
+                try std.testing.expectEqualStrings("cedar", entry.view_name);
+                found = true;
+            }
+        }
+    }
+    try std.testing.expect(found);
 }
 
 test "pod envelope routing requires exact active identity" {
