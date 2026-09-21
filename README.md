@@ -19,11 +19,11 @@ Every resource view — pods, deployments, services, daemonsets, PDBs, and the r
 - ✅ **UTF-8-safe truncation:** long values are clipped on glyph boundaries — no broken multi-byte characters.
 - ✅ **Per-column sorting:** `Shift-<letter>` toggles the sort key with a ▲/▼ indicator (e.g. pods: `Shift-N` name, `Shift-R` ready, `Shift-S` status, `Shift-C` cpu, `Shift-M` mem, `Shift-I` ip, `Shift-A` age).
 - ✅ **Row marking:** `Space` toggles a k9s-style mark on the current row; marks persist by row identity across cursor moves and refreshes.
-- ✅ **Live filtering:** `/` filters the table; the title shows a `</term>` indicator. Clear with `x` or `Esc`. Prefixes: `!term` inverse, `-f term` fuzzy, `-l k=v` label selector. `Ctrl-Z` toggles faults-only.
+- ✅ **Live filtering:** `/` filters the table; the title shows a `</term>` indicator. Clear with `x` or `Esc`. Prefixes: `!term` inverse, `-f term` fuzzy, `-l k=v` label selector. Typed comparisons include `status=CrashLoopBackOff`, `cpu>500m`, `memory>1Gi`, `restarts>=5`, and `age<2h`. `Ctrl-Z` toggles faults-only.
 - ✅ **Namespace scoping:** `0` toggles all-namespaces. The box title reflects scope and count k9s-style — `pods(default)[8]` or `pods(all)[104]` — and the redundant NAMESPACE column is hidden when scoped to a single namespace.
 
 ### **Fuzzy Command Palette**
-Press `:` or `Ctrl-P` to open a live, fuzzy-ranked command dropdown (bordered popup). Type to filter, `Tab`/`↑`/`↓` to navigate, `Enter` to run. Every resource view and `:aliases` is a command.
+Press `:` or `Ctrl-P` to open a live, fuzzy-ranked command dropdown (bordered popup). Type to filter, `Tab`/`↑`/`↓` to navigate, `Enter` to run. Commands can read like `:deployments social in production`; discovery-only suggestions are filtered by `list` permission.
 
 ### **Aliases View**
 `Ctrl-A` (or `:aliases`) opens a real table of API resources — NAME / SHORTNAMES / APIVERSION / NAMESPACED / KIND — with working filter. `Ctrl-A` again toggles it off.
@@ -166,6 +166,10 @@ zig build
 | `Shift-<letter>` | Sort by that column (▲/▼) |
 | `/` | Filter (`!` inverse, `-f` fuzzy, `-l` labels) |
 | `Ctrl-Z` | Toggle faults-only |
+| `Tab` / `Shift-Tab` | Next / previous common resource kind |
+| `Shift-Y` | Pick and copy a full, untruncated column value |
+| `Shift-T` | Session timeline for the selected object |
+| `Shift-X` | Explain unhealthy workload from status and Warning events |
 | `x` | Clear filter |
 | `0` | Toggle all namespaces |
 | `r` | Refresh |
@@ -206,7 +210,16 @@ zig build
 :contexts           # Manage contexts
 :events             # View cluster events
 :hpa                # View HorizontalPodAutoscalers
+:pf                 # Manage, start, stop, and inspect port-forwards
 ```
+
+Argo CD `applications.argoproj.io` views add `Shift-R` refresh, `Shift-H` hard
+refresh, and `Shift-S` Kubernetes-native sync details. They do not perform sync,
+prune, rollback, or claim to show a manifest diff.
+
+Metric colors use conservative defaults and can be tuned under `c3s.ui` with
+`cpu_warn_milli`, `cpu_error_milli`, `memory_warn_bytes`,
+`memory_error_bytes`, `restarts_warn`, and `restarts_error`.
 
 ---
 
