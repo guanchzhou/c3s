@@ -640,4 +640,11 @@ test "the real cedar binary agrees with the exit codes and output shape assumed 
     defer formatted.deinit(a);
     try testing.expect(formatted.ok);
     try testing.expect(std.mem.indexOf(u8, formatted.diagnostics, "permit (") != null);
+
+    var validated = try cli.validate(
+        policy,
+        "tests/fixtures/cedar/k8s-authorization.cedarschema",
+    );
+    defer validated.deinit(a);
+    try testing.expect(validated.ok);
 }
