@@ -147,6 +147,15 @@ pub const View = struct {
         /// Open the port-forwards list (`f` on pods/services, k9s).
         request_show_port_forwards,
         request_start_port_forward_manager,
+        /// Cedar workbench actions. Each runs the official `cedar` binary against the
+        /// selected Policy object and opens the result in a pane.
+        request_cedar_source,
+        request_cedar_refresh,
+        request_cedar_check_parse,
+        request_cedar_format,
+        request_cedar_validate,
+        request_cedar_scan,
+        request_cedar_can_i,
     };
 
     pub fn render(self: View, terminal_inst: *Terminal, x: u16, y: u16, width: u16, height: u16) !void {

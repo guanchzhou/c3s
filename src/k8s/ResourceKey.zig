@@ -263,6 +263,7 @@ pub const RequestClass = enum {
     logs,
     authorization,
     palette_discovery,
+    cedar,
 };
 
 pub const EnvelopeTarget = union(enum) {
@@ -275,6 +276,7 @@ pub const EnvelopeTarget = union(enum) {
     logs: RequestKey,
     authorization: RequestKey,
     palette_discovery: RequestKey,
+    cedar: RequestKey,
 };
 
 pub fn requestKey(target: EnvelopeTarget) ?RequestKey {
@@ -286,6 +288,7 @@ pub fn requestKey(target: EnvelopeTarget) ?RequestKey {
         .logs => |key| key,
         .authorization => |key| key,
         .palette_discovery => |key| key,
+        .cedar => |key| key,
         .resource, .lifecycle => null,
     };
 }
@@ -299,6 +302,7 @@ pub fn requestClass(target: EnvelopeTarget) ?RequestClass {
         .logs => .logs,
         .authorization => .authorization,
         .palette_discovery => .palette_discovery,
+        .cedar => .cedar,
         .resource, .lifecycle => null,
     };
 }

@@ -1643,8 +1643,12 @@ pub const K8sService = struct {
         return klient.Discovery.init(active_client).hasGroup(cedar_group);
     }
 
-    /// List Cedar policies from CRDs
-    pub fn listCedarPolicies(self: *K8sService) ![]PolicyInfo {
+    /// Fetch the raw Policy list body. Null means the CRD is not installed, which is
+    /// a normal state for most clusters and not an error.
+    ///
+    /// Shared by the authorization view's summary rows and the Cedar workbench, which
+    /// need the same objects read two different ways.
+    fn fetchCedarPolicyBody(self: *K8sService) !?[]u8 {
         if (task15.isLiveMode()) return error.Task15RequestRejected;
         if (!self.isConnected()) return error.NotConnected;
         var request = try self.resolveRequest(.authorization);
@@ -1656,17 +1660,100 @@ pub const K8sService = struct {
         const info = (disco.findResource(cedar_group, "Policy") catch |err| {
             Logger.warn("Cedar discovery failed: {}", .{err});
             return error.RequestFailed;
-        }) orelse return &.{};
+        }) orelse return null;
         defer disco.freeResource(info);
 
         // Policy is cluster-scoped, which discovery reports via info.namespaced.
         const path = try info.resourcePath(self.allocator, null, null);
         defer self.allocator.free(path);
 
-        const response = self.directGet(active_client, path) catch |err| {
+        return self.directGet(active_client, path) catch |err| {
             Logger.warn("listCedarPolicies failed for {s}: {}", .{ path, err });
             return error.RequestFailed;
         };
+    }
+
+    /// Cedar Policy objects with their source text, for the Cedar workbench.
+    pub fn listCedarPolicyDocuments(self: *K8sService) ![]k8s_types.CedarPolicy {
+        const response = (try self.fetchCedarPolicyBody()) orelse return &.{};
+        defer self.allocator.free(response);
+
+        var parsed = std.json.parseFromSlice(std.json.Value, self.allocator, response, .{}) catch {
+            return error.ParseFailed;
+        };
+        defer parsed.deinit();
+
+        const root = parsed.value;
+        if (root != .object) return &.{};
+        const items = root.object.get("items") orelse return &.{};
+        if (items != .array) return &.{};
+
+        var results = std.ArrayListUnmanaged(k8s_types.CedarPolicy).empty;
+        errdefer {
+            for (results.items) |*p| p.deinit();
+            results.deinit(self.allocator);
+        }
+
+        for (items.array.items) |item| {
+            if (item != .object) continue;
+            const name = stringField(item.object.get("metadata"), "name") orelse continue;
+            const spec = item.object.get("spec");
+
+            var policy = k8s_types.CedarPolicy{
+                .name = try self.allocator.dupe(u8, name),
+                .content = undefined,
+                .validation = undefined,
+                .created_at = undefined,
+                .allocator = self.allocator,
+            };
+            errdefer self.allocator.free(policy.name);
+            policy.content = try self.allocator.dupe(u8, stringField(spec, "content") orelse "");
+            errdefer self.allocator.free(policy.content);
+            policy.validation = try self.allocator.dupe(u8, validationMode(spec));
+            errdefer self.allocator.free(policy.validation);
+            policy.created_at = try self.allocator.dupe(
+                u8,
+                stringField(item.object.get("metadata"), "creationTimestamp") orelse "",
+            );
+
+            try results.append(self.allocator, policy);
+        }
+
+        return results.toOwnedSlice(self.allocator);
+    }
+
+    fn stringField(object: ?std.json.Value, key: []const u8) ?[]const u8 {
+        const value = object orelse return null;
+        if (value != .object) return null;
+        const field = value.object.get(key) orelse return null;
+        return if (field == .string) field.string else null;
+    }
+
+    /// Summarise `spec.validation`, whose schema is
+    /// `{ enforced: bool (required), validationMode: strict|permissive|partial }`
+    /// per the CRD's openAPIV3Schema.
+    ///
+    /// Verified against the CRD rather than inferred: an earlier pass at Cedar in c3s
+    /// read three spec fields that do not exist, and every row rendered a wildcard.
+    /// This column says what the object actually declares, and "?" when it declares
+    /// something this code does not recognise.
+    fn validationMode(spec: ?std.json.Value) []const u8 {
+        const value = spec orelse return "?";
+        if (value != .object) return "?";
+        const validation = value.object.get("validation") orelse return "?";
+        if (validation != .object) return "?";
+
+        const enforced = validation.object.get("enforced");
+        if (enforced == null or enforced.? != .bool) return "?";
+        if (!enforced.?.bool) return "off";
+
+        const mode = validation.object.get("validationMode") orelse return "on";
+        return if (mode == .string) mode.string else "on";
+    }
+
+    /// List Cedar policies from CRDs
+    pub fn listCedarPolicies(self: *K8sService) ![]PolicyInfo {
+        const response = (try self.fetchCedarPolicyBody()) orelse return &.{};
         defer self.allocator.free(response);
 
         var parsed = std.json.parseFromSlice(std.json.Value, self.allocator, response, .{}) catch {
