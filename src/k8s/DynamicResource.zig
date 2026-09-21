@@ -95,10 +95,13 @@ pub fn resolveApiResources(
     while (lines.next()) |line| {
         if (std.mem.trim(u8, line, " \t\r").len == 0) continue;
         const cells = apiResourceCells(line, offsets);
-        const slash = std.mem.lastIndexOfScalar(u8, cells[2], '/') orelse continue;
-        const group = cells[2][0..slash];
-        const version = cells[2][slash + 1 ..];
-        if (group.len == 0 or version.len == 0) continue;
+        const slash = std.mem.lastIndexOfScalar(u8, cells[2], '/');
+        const group = if (slash) |index|
+            cells[2][0..index]
+        else
+            "";
+        const version = if (slash) |index| cells[2][index + 1 ..] else cells[2];
+        if (version.len == 0) continue;
 
         const exact = eqlIgnoreCase(query, cells[0]) or
             eqlIgnoreCase(query, cells[4]) or
@@ -168,6 +171,73 @@ pub fn collectCompletionNames(
         }
     }
     return names.toOwnedSlice(allocator);
+}
+
+pub const CompletionResource = struct {
+    name: []u8,
+    group: []u8,
+    resource: []u8,
+    namespaced: bool,
+
+    pub fn deinit(self: *CompletionResource, allocator: std.mem.Allocator) void {
+        allocator.free(self.name);
+        allocator.free(self.group);
+        allocator.free(self.resource);
+    }
+};
+
+pub fn collectCompletionResources(
+    allocator: std.mem.Allocator,
+    output: []const u8,
+) ![]CompletionResource {
+    var result: std.ArrayListUnmanaged(CompletionResource) = .empty;
+    errdefer {
+        for (result.items) |*item| item.deinit(allocator);
+        result.deinit(allocator);
+    }
+    var lines = std.mem.splitScalar(u8, output, '\n');
+    const header = lines.next() orelse return result.toOwnedSlice(allocator);
+    const offsets = apiResourceOffsets(header) orelse return error.InvalidDiscoveryOutput;
+    while (lines.next()) |line| {
+        if (std.mem.trim(u8, line, " \t\r").len == 0) continue;
+        const cells = apiResourceCells(line, offsets);
+        const group = if (std.mem.lastIndexOfScalar(u8, cells[2], '/')) |slash|
+            cells[2][0..slash]
+        else
+            "";
+        if (cells[0].len == 0) continue;
+        try appendCompletionResource(allocator, &result, cells[0], group, cells[0], cells[3]);
+        var short_names = std.mem.splitScalar(u8, cells[1], ',');
+        while (short_names.next()) |short_name| {
+            const trimmed = std.mem.trim(u8, short_name, " \t\r");
+            if (trimmed.len > 0)
+                try appendCompletionResource(allocator, &result, trimmed, group, cells[0], cells[3]);
+        }
+    }
+    return result.toOwnedSlice(allocator);
+}
+
+fn appendCompletionResource(
+    allocator: std.mem.Allocator,
+    result: *std.ArrayListUnmanaged(CompletionResource),
+    name: []const u8,
+    group: []const u8,
+    resource: []const u8,
+    namespaced: []const u8,
+) !void {
+    for (result.items) |item| if (std.ascii.eqlIgnoreCase(item.name, name)) return;
+    const owned_name = try allocator.dupe(u8, name);
+    errdefer allocator.free(owned_name);
+    const owned_group = try allocator.dupe(u8, group);
+    errdefer allocator.free(owned_group);
+    const owned_resource = try allocator.dupe(u8, resource);
+    errdefer allocator.free(owned_resource);
+    try result.append(allocator, .{
+        .name = owned_name,
+        .group = owned_group,
+        .resource = owned_resource,
+        .namespaced = std.mem.eql(u8, namespaced, "true"),
+    });
 }
 
 fn appendUniqueName(
@@ -632,6 +702,24 @@ test "completion names cover discovery plurals and their short names" {
         try std.testing.expect(found);
     }
     try std.testing.expectEqual(@as(usize, 6), names.len);
+}
+
+test "completion resources include core and grouped APIs" {
+    const catalog =
+        \\NAME          SHORTNAMES   APIVERSION   NAMESPACED   KIND
+        \\pods          po           v1           true         Pod
+        \\deployments   deploy       apps/v1      true         Deployment
+    ;
+    const resources = try collectCompletionResources(std.testing.allocator, catalog);
+    defer {
+        for (resources) |*resource| resource.deinit(std.testing.allocator);
+        std.testing.allocator.free(resources);
+    }
+    try std.testing.expectEqual(@as(usize, 4), resources.len);
+    try std.testing.expectEqualStrings("", resources[0].group);
+    try std.testing.expectEqualStrings("pods", resources[0].resource);
+    try std.testing.expect(resources[0].namespaced);
+    try std.testing.expectEqualStrings("apps", resources[2].group);
 }
 
 test "completion names deduplicate a short name shared with a plural" {

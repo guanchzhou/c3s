@@ -262,6 +262,7 @@ pub const RequestClass = enum {
     yaml,
     logs,
     authorization,
+    palette_discovery,
 };
 
 pub const EnvelopeTarget = union(enum) {
@@ -273,6 +274,7 @@ pub const EnvelopeTarget = union(enum) {
     yaml: RequestKey,
     logs: RequestKey,
     authorization: RequestKey,
+    palette_discovery: RequestKey,
 };
 
 pub fn requestKey(target: EnvelopeTarget) ?RequestKey {
@@ -283,6 +285,7 @@ pub fn requestKey(target: EnvelopeTarget) ?RequestKey {
         .yaml => |key| key,
         .logs => |key| key,
         .authorization => |key| key,
+        .palette_discovery => |key| key,
         .resource, .lifecycle => null,
     };
 }
@@ -295,6 +298,7 @@ pub fn requestClass(target: EnvelopeTarget) ?RequestClass {
         .yaml => .yaml,
         .logs => .logs,
         .authorization => .authorization,
+        .palette_discovery => .palette_discovery,
         .resource, .lifecycle => null,
     };
 }
@@ -966,6 +970,7 @@ test "preflight allocation failure frees partial scratch and leaves target uncha
         .{ .yaml = key },
         .{ .logs = key },
         .{ .authorization = key },
+        .{ .palette_discovery = key },
     };
     for (ancillary) |target| {
         var fail_index: usize = 0;

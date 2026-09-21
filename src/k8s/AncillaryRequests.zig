@@ -248,6 +248,7 @@ pub fn purposeForClass(class: RequestClass) session.LeasePurpose {
         .yaml => .yaml,
         .logs => .logs,
         .authorization => .authorization,
+        .palette_discovery => .palette_discovery,
     };
 }
 
@@ -269,6 +270,7 @@ pub fn runTask14SourceAuditGate() !void {
         @embedFile("DetailRequest.zig"),
         @embedFile("LogsRequest.zig"),
         @embedFile("AuthorizationRequest.zig"),
+        @embedFile("PaletteDiscoveryRequest.zig"),
     }) |source| try expectChildPublishesOnlyThroughQueue(source);
 
     const service_source = @embedFile("../services/K8sService.zig");
@@ -351,6 +353,7 @@ fn requestEnvelope(
         .yaml => .{ .yaml = key },
         .logs => .{ .logs = key },
         .authorization => .{ .authorization = key },
+        .palette_discovery => .{ .palette_discovery = key },
     };
     return keys.erasePayload(
         u8,

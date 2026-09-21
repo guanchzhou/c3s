@@ -556,6 +556,32 @@ test "config: indented keys still parse" {
     try std.testing.expect(nested.compact);
 }
 
+test "config parses metric and restart thresholds" {
+    const cfg = try parseUiConfig(
+        testing.allocator,
+        "ui:\n  cpu_warn_milli: 250\n  cpu_error_milli: 750\n  memory_warn_bytes: 1024\n  memory_error_bytes: 2048\n  restarts_warn: 2\n  restarts_error: 7\n",
+    );
+    defer if (cfg.theme_allocated) |theme| testing.allocator.free(theme);
+    try testing.expectEqual(@as(u64, 250), cfg.metric_thresholds.cpu_warn_milli);
+    try testing.expectEqual(@as(u64, 750), cfg.metric_thresholds.cpu_error_milli);
+    try testing.expectEqual(@as(u64, 1024), cfg.metric_thresholds.memory_warn_bytes);
+    try testing.expectEqual(@as(u64, 2048), cfg.metric_thresholds.memory_error_bytes);
+    try testing.expectEqual(@as(u64, 2), cfg.metric_thresholds.restarts_warn);
+    try testing.expectEqual(@as(u64, 7), cfg.metric_thresholds.restarts_error);
+}
+
+test "invalid metric thresholds preserve defaults" {
+    const cfg = try parseUiConfig(
+        testing.allocator,
+        "ui:\n  cpu_warn_milli: nope\n  cpu_error_milli: -1\n  memory_warn_bytes:\n",
+    );
+    defer if (cfg.theme_allocated) |theme| testing.allocator.free(theme);
+    const defaults = MetricThresholds{};
+    try testing.expectEqual(defaults.cpu_warn_milli, cfg.metric_thresholds.cpu_warn_milli);
+    try testing.expectEqual(defaults.cpu_error_milli, cfg.metric_thresholds.cpu_error_milli);
+    try testing.expectEqual(defaults.memory_warn_bytes, cfg.metric_thresholds.memory_warn_bytes);
+}
+
 test "config: a second theme line does not leak the first" {
     // theme_allocated was overwritten without freeing. testing.allocator fails the
     // test on any leak, so this assertion is the leak check.

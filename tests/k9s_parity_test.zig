@@ -322,7 +322,7 @@ test "daily-driver palette commands are registered; OUT aliases stay absent" {
     try testing.expect(!app.command_registry.contains("popeye"));
 }
 
-test "command extras :po kube-system pins the namespace" {
+test "command extras :po in kube-system pins the namespace" {
     var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
@@ -331,7 +331,7 @@ test "command extras :po kube-system pins the namespace" {
     defer app.deinit();
 
     try app.handleKey(.colon);
-    for ("po kube-system") |c| {
+    for ("po in kube-system") |c| {
         try app.handleKey(.{ .char = c });
     }
     try app.handleKey(.enter);

@@ -45,6 +45,8 @@ pub const DynamicResourceView = struct {
     name_bufs: [2][256]u8 = undefined,
     name_lens: [2]usize = .{ 0, 0 },
     active_name: u1 = 0,
+    selected_cell_names: std.ArrayListUnmanaged([]const u8) = .empty,
+    selected_cell_values: std.ArrayListUnmanaged([]const u8) = .empty,
 
     pub fn init(
         allocator: std.mem.Allocator,
@@ -63,6 +65,8 @@ pub const DynamicResourceView = struct {
         self.clearColumnCache();
         self.freeColumns();
         self.table.deinit();
+        self.selected_cell_names.deinit(self.allocator);
+        self.selected_cell_values.deinit(self.allocator);
         if (self.descriptor) |*descriptor| descriptor.deinit(self.allocator);
     }
 
@@ -294,6 +298,11 @@ pub const DynamicResourceView = struct {
                 return .handled;
             },
             .char => |character| {
+                if (self.isArgoApplication()) {
+                    if (character == 'R') return .request_argo_refresh;
+                    if (character == 'H') return .request_argo_hard_refresh;
+                    if (character == 'S') return .request_argo_sync_details;
+                }
                 if (character == 'r') {
                     self.refresh() catch |err| Logger.err("Dynamic resource refresh failed: {}", .{err});
                     return .handled;
@@ -305,6 +314,7 @@ pub const DynamicResourceView = struct {
                     self.refresh() catch |err| Logger.err("Dynamic resource scope refresh failed: {}", .{err});
                     return .handled;
                 }
+                if (character == 'Y') return .request_copy_column;
                 return .not_handled;
             },
             else => return .not_handled,
@@ -366,7 +376,35 @@ pub const DynamicResourceView = struct {
         const self: *Self = @ptrCast(@alignCast(ptr));
         const row = self.table.getSelectedItem() orelse return null;
         const namespace = if (row.namespace.len > 0) row.namespace else "cluster";
-        return .{ .name = row.name, .namespace = namespace };
+        const descriptor = self.descriptor orelse return null;
+        return .{
+            .name = row.name,
+            .namespace = namespace,
+            .group = descriptor.group,
+            .version = descriptor.version,
+            .resource = descriptor.plural,
+        };
+    }
+
+    fn isArgoApplication(self: *const Self) bool {
+        const descriptor = self.descriptor orelse return false;
+        return std.mem.eql(u8, descriptor.group, "argoproj.io") and
+            std.mem.eql(u8, descriptor.plural, "applications");
+    }
+
+    fn getSelectedCells(ptr: *anyopaque) ?view_mod.SelectedCells {
+        const self: *Self = @ptrCast(@alignCast(ptr));
+        const row = self.table.getSelectedItem() orelse return null;
+        self.selected_cell_names.clearRetainingCapacity();
+        self.selected_cell_values.clearRetainingCapacity();
+        self.selected_cell_names.ensureTotalCapacity(self.allocator, self.columns.len) catch return null;
+        self.selected_cell_values.ensureTotalCapacity(self.allocator, row.cells.len) catch return null;
+        for (self.columns) |name| self.selected_cell_names.appendAssumeCapacity(name);
+        for (row.cells) |value| self.selected_cell_values.appendAssumeCapacity(value);
+        return .{
+            .names = self.selected_cell_names.items,
+            .values = self.selected_cell_values.items,
+        };
     }
 
     fn setShowAllNamespaces(ptr: *anyopaque, all: bool) void {
@@ -393,6 +431,7 @@ pub const DynamicResourceView = struct {
         .clearFilter = vtableClearFilter,
         .refresh = vtableRefresh,
         .getSelectedResource = getSelectedResource,
+        .getSelectedCells = getSelectedCells,
         .setShowAllNamespaces = setShowAllNamespaces,
         .showsAllNamespaces = showsAllNamespaces,
     };

@@ -9,11 +9,11 @@
 //   -l sel   label selector (AND of comma-separated k=v pairs against stored labels)
 //   -f term  subsequence (fuzzy) match on searchable columns
 //
-// Palette extras after the alias (`:po kube-system /fred app=x @ctx`):
+// Palette extras after the alias (`:po fred in kube-system /running app=x @ctx`):
 //   /foo     apply filter `foo` after switching
 //   k=v      apply as a `-l` label filter
 //   @name    switch kube context first
-//   other    treat as a namespace
+//   other    first bare token names an object; `in` or `ns=` names a namespace
 
 const std = @import("std");
 
@@ -150,13 +150,16 @@ pub fn parseAge(value: []const u8) ?u64 {
 
 pub const CommandExtras = struct {
     name: []const u8,
+    object_name: ?[]const u8 = null,
     namespace: ?[]const u8 = null,
     filter: ?[]const u8 = null,
     labels: ?[]const u8 = null,
     context: ?[]const u8 = null,
 };
 
-/// First token is the command/alias; remaining tokens are extras.
+/// First token is the command/alias. A bare token names an object; `in <ns>`
+/// or `ns=<ns>` scopes the destination. Existing `/`, label, and `@context`
+/// phrases remain composable.
 pub fn parseCommand(raw: []const u8) CommandExtras {
     const trimmed = std.mem.trim(u8, raw, " \t");
     if (trimmed.len == 0) return .{ .name = trimmed };
@@ -164,16 +167,24 @@ pub fn parseCommand(raw: []const u8) CommandExtras {
     var it = std.mem.tokenizeScalar(u8, trimmed, ' ');
     const name = it.next() orelse return .{ .name = trimmed };
     var extras = CommandExtras{ .name = name };
+    var namespace_next = false;
     while (it.next()) |tok| {
         if (tok.len == 0) continue;
-        if (tok[0] == '/') {
+        if (namespace_next) {
+            extras.namespace = tok;
+            namespace_next = false;
+        } else if (std.ascii.eqlIgnoreCase(tok, "in")) {
+            namespace_next = true;
+        } else if (std.mem.startsWith(u8, tok, "ns=")) {
+            extras.namespace = tok["ns=".len..];
+        } else if (tok[0] == '/') {
             extras.filter = tok[1..];
         } else if (tok[0] == '@') {
             extras.context = tok[1..];
         } else if (std.mem.indexOfScalar(u8, tok, '=')) |_| {
             extras.labels = tok;
         } else {
-            extras.namespace = tok;
+            if (extras.object_name == null) extras.object_name = tok;
         }
     }
     return extras;
@@ -237,7 +248,14 @@ pub fn matchSearchable(columns: []const []const u8, labels: []const u8, filter: 
         .substring, .inverse => columnsHit(columns, parsed.query, false),
         .fuzzy => columnsHit(columns, parsed.query, true),
         .label => labelsMatch(labels, parsed.query),
-        .comparison => false,
+        .comparison => blk: {
+            const comparison = parseComparison(parsed.query) orelse break :blk false;
+            if (!std.ascii.eqlIgnoreCase(comparison.field, "status")) break :blk false;
+            for (columns) |column| {
+                if (matchesComparison(column, comparison, .text)) break :blk true;
+            }
+            break :blk false;
+        },
     };
     return if (parsed.kind == .inverse) !hit else hit;
 }
@@ -385,6 +403,12 @@ test "typed comparisons parse and compare Kubernetes quantities" {
     try std.testing.expect(matchesComparison("6", parseComparison("restarts>=5").?, .integer));
     try std.testing.expect(matchesComparison("90m", parseComparison("age<2h").?, .age));
     try std.testing.expect(matchesComparison("CrashLoopBackOff", parseComparison("status=crashloopbackoff").?, .text));
+    try std.testing.expect(matchesComparison("Running", parseComparison("status!=failed").?, .text));
+    try std.testing.expect(!matchesComparison("Running", parseComparison("status>failed").?, .text));
+    try std.testing.expect(!matchesComparison("n/a", comparison, .cpu));
+    try std.testing.expect(parseComparison("cpu>=") == null);
+    try std.testing.expect(parseComparison(">=500m") == null);
+    try std.testing.expect(parseComparison("unknown=1") == null);
 }
 
 test "parseCommand extras" {
@@ -392,8 +416,9 @@ test "parseCommand extras" {
     try std.testing.expectEqualStrings("po", a.name);
     try std.testing.expect(a.namespace == null);
 
-    const b = parseCommand("po kube-system");
+    const b = parseCommand("po nginx in kube-system");
     try std.testing.expectEqualStrings("po", b.name);
+    try std.testing.expectEqualStrings("nginx", b.object_name.?);
     try std.testing.expectEqualStrings("kube-system", b.namespace.?);
 
     const c = parseCommand("dp /fred");
@@ -404,10 +429,14 @@ test "parseCommand extras" {
     try std.testing.expectEqualStrings("po", d.name);
     try std.testing.expectEqualStrings("app=web", d.labels.?);
     try std.testing.expectEqualStrings("prod", d.context.?);
+
+    const e = parseCommand("deploy social ns=prod");
+    try std.testing.expectEqualStrings("social", e.object_name.?);
+    try std.testing.expectEqualStrings("prod", e.namespace.?);
 }
 
 test "matchSearchable substring inverse fuzzy labels" {
-    const cols = [_][]const u8{ "default", "nginx-abc" };
+    const cols = [_][]const u8{ "default", "nginx-abc", "Running" };
     try std.testing.expect(matchSearchable(&cols, "app=web", "nginx"));
     try std.testing.expect(!matchSearchable(&cols, "app=web", "redis"));
     try std.testing.expect(matchSearchable(&cols, "app=web", "!redis"));
@@ -417,6 +446,9 @@ test "matchSearchable substring inverse fuzzy labels" {
     try std.testing.expect(matchSearchable(&cols, "app=web,env=prod", "-l app=web"));
     try std.testing.expect(!matchSearchable(&cols, "app=web", "-l app=db"));
     try std.testing.expect(!matchSearchable(&cols, "myapp=web", "-l app=web"));
+    try std.testing.expect(matchSearchable(&cols, "app=web", "status=running"));
+    try std.testing.expect(!matchSearchable(&cols, "app=web", "status=failed"));
+    try std.testing.expect(!matchSearchable(&cols, "app=web", "cpu>500m"));
     try std.testing.expect(matchSearchable(&cols, "app=web", ""));
     try std.testing.expect(matchSearchable(&cols, "app=web", "!"));
 }

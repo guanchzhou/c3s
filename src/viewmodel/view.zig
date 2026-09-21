@@ -9,6 +9,7 @@ pub const ResourceInfo = struct {
     namespace: []const u8,
     uid: []const u8 = "",
     group: []const u8 = "",
+    version: []const u8 = "",
     resource: []const u8 = "",
 };
 
@@ -85,7 +86,13 @@ pub const View = struct {
         request_quit,
         request_describe,
         request_yaml,
+        request_explain_health,
+        request_timeline,
+        request_argo_refresh,
+        request_argo_hard_refresh,
+        request_argo_sync_details,
         request_logs,
+        request_events,
         request_delete,
         // k9s-parity actions
         request_edit,
@@ -124,6 +131,7 @@ pub const View = struct {
         request_traffic,
         request_copy,
         request_copy_namespace,
+        request_copy_column,
         request_copy_detail_value,
         request_copy_detail_line,
         request_warp,
@@ -138,6 +146,7 @@ pub const View = struct {
         request_fullscreen,
         /// Open the port-forwards list (`f` on pods/services, k9s).
         request_show_port_forwards,
+        request_start_port_forward_manager,
     };
 
     pub fn render(self: View, terminal_inst: *Terminal, x: u16, y: u16, width: u16, height: u16) !void {

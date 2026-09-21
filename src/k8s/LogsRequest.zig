@@ -601,6 +601,8 @@ pub fn runTask14DetailLogsGate() !void {
     var dirty = false;
     var detail_target = detail_mod.UiTarget{
         .view = &detail_view,
+        .explain_view = &detail_view,
+        .argo_sync_view = &detail_view,
         .view_manager = &manager,
         .active_key = detail_key,
         .active_serial = 1,
@@ -608,6 +610,8 @@ pub fn runTask14DetailLogsGate() !void {
     };
     var yaml_target = detail_mod.UiTarget{
         .view = &yaml_view,
+        .explain_view = &yaml_view,
+        .argo_sync_view = &yaml_view,
         .view_manager = &manager,
         .active_key = yaml_key,
         .active_serial = 1,

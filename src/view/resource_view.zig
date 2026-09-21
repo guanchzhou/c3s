@@ -24,6 +24,12 @@ const PodProjection = @import("../k8s/ResourceProjection.zig").ResourceProjectio
 const projection_mod = @import("../k8s/ResourceProjection.zig");
 const resource_key = @import("../k8s/ResourceKey.zig");
 const config_model = @import("../model/config.zig");
+const clock = @import("../core/clock.zig");
+
+pub const TimelineSink = struct {
+    ptr: *anyopaque,
+    recordFn: *const fn (*anyopaque, []const u8, []const u8, u64, i64, []const u8) void,
+};
 
 /// Column definition for a resource view
 pub const ColumnDef = struct {
@@ -126,6 +132,7 @@ pub fn ResourceView(
         faults_only: bool = false,
         cached_show_wide: bool = true,
         metric_thresholds: config_model.MetricThresholds = .{},
+        timeline_sink: ?TimelineSink = null,
 
         /// Row data: uniform array of display strings
         pub const RowData = struct {
@@ -429,6 +436,10 @@ pub fn ResourceView(
             self.metric_thresholds = thresholds;
         }
 
+        pub fn bindTimeline(self: *Self, sink: TimelineSink) void {
+            self.timeline_sink = sink;
+        }
+
         pub fn markSubscriptionStarted(self: *Self) void {
             self.subscription_started = true;
             self.subscription_request = .none;
@@ -486,6 +497,8 @@ pub fn ResourceView(
                     item.columns[ns_col]
                 else
                     "cluster",
+                .uid = item.uid,
+                .resource = config.name,
             };
         }
 
@@ -907,6 +920,26 @@ pub fn ResourceView(
             }
             self.invalidateWidths();
             self.projection_sync_count +|= 1;
+            self.captureTimeline();
+        }
+
+        fn captureTimeline(self: *Self) void {
+            const sink = self.timeline_sink orelse return;
+            const item = self.table.getSelectedItem() orelse return;
+            if (item.uid.len == 0 or item.object_revision == 0) return;
+            var buffer: [384]u8 = undefined;
+            var stream = std.Io.Writer.fixed(&buffer);
+            for (config.columns, 0..) |column, index| {
+                if (!std.mem.eql(u8, column.name, "STATUS") and
+                    !std.mem.eql(u8, column.name, "READY") and
+                    !std.mem.eql(u8, column.name, "RESTARTS") and
+                    !std.mem.eql(u8, column.name, "AVAILABLE"))
+                    continue;
+                if (stream.end > 0) stream.writeAll("  ") catch break;
+                stream.print("{s}={s}", .{ column.name, item.columns[index] }) catch break;
+            }
+            const summary = if (stream.end > 0) buffer[0..stream.end] else item.columns[config.name_column];
+            sink.recordFn(sink.ptr, config.name, item.uid, item.object_revision, clock.timestamp(), summary);
         }
 
         fn sortProjectedPodRows(self: *Self) void {
@@ -1171,6 +1204,7 @@ pub fn ResourceView(
         const is_daemonsets = std.mem.eql(u8, config.name, "daemonsets");
         const is_replicasets = std.mem.eql(u8, config.name, "replicasets");
         const is_cronjobs = std.mem.eql(u8, config.name, "cronjobs");
+        const is_jobs = std.mem.eql(u8, config.name, "jobs");
         const is_used_by_view = std.mem.eql(u8, config.name, "serviceaccounts") or
             std.mem.eql(u8, config.name, "secrets") or
             std.mem.eql(u8, config.name, "configmaps") or
@@ -1178,6 +1212,8 @@ pub fn ResourceView(
         const is_restart_view = is_deployments or is_statefulsets or is_daemonsets;
         const is_scale_view = is_deployments or is_statefulsets or is_replicasets;
         const is_rollback_view = is_restart_view or is_replicasets;
+        const supports_health_explain = is_pods or is_deployments or is_statefulsets or
+            is_daemonsets or is_replicasets or is_jobs;
 
         /// pub so tests can drive the real key handler. It is already reachable
         /// through the vtable; a mutation that deleted the secrets `x` mapping survived
@@ -1187,6 +1223,7 @@ pub fn ResourceView(
 
             if (self.table.handleNavigationKey(key)) |result| {
                 self.syncProjectionSelection();
+                self.captureTimeline();
                 return result;
             }
 
@@ -1374,6 +1411,9 @@ pub fn ResourceView(
                     // `c` is copy there too, matching k9s.
                     if (c == 'c') return .request_copy;
                     if (c == 'n') return .request_copy_namespace;
+                    if (c == 'Y') return .request_copy_column;
+                    if (c == 'X' and supports_health_explain) return .request_explain_health;
+                    if (c == 'T') return .request_timeline;
                     if (c == 'w' and config.is_namespaced) return .request_warp;
                     if (c == 'J') return .request_jump_owner;
 
@@ -1631,38 +1671,24 @@ fn compareOptionalNumber(left: []const u8, right: []const u8) std.math.Order {
 }
 
 fn parseCpu(value: []const u8) u64 {
-    if (std.mem.eql(u8, value, "n/a")) return 0;
-    if (std.mem.endsWith(u8, value, "m")) {
-        return std.fmt.parseInt(u64, value[0 .. value.len - 1], 10) catch 0;
-    }
-    return (std.fmt.parseInt(u64, value, 10) catch 0) *| 1000;
+    return k9s_query.parseCpu(value) orelse 0;
 }
 
 fn parseMemory(value: []const u8) u64 {
-    if (std.mem.eql(u8, value, "n/a")) return 0;
-    const units = [_]struct { suffix: []const u8, multiplier: u64 }{
-        .{ .suffix = "Gi", .multiplier = 1024 * 1024 * 1024 },
-        .{ .suffix = "Mi", .multiplier = 1024 * 1024 },
-        .{ .suffix = "Ki", .multiplier = 1024 },
-    };
-    for (units) |unit| {
-        if (std.mem.endsWith(u8, value, unit.suffix)) {
-            return (std.fmt.parseInt(u64, value[0 .. value.len - unit.suffix.len], 10) catch 0) *| unit.multiplier;
-        }
-    }
-    return std.fmt.parseInt(u64, value, 10) catch 0;
+    return k9s_query.parseMemory(value) orelse 0;
 }
 
 fn parseAge(value: []const u8) u64 {
-    if (value.len < 2 or std.mem.eql(u8, value, "n/a")) return 0;
-    const multiplier: u64 = switch (value[value.len - 1]) {
-        's' => 1,
-        'm' => 60,
-        'h' => 60 * 60,
-        'd' => 24 * 60 * 60,
-        else => return 0,
-    };
-    return (std.fmt.parseInt(u64, value[0 .. value.len - 1], 10) catch 0) *| multiplier;
+    return k9s_query.parseAge(value) orelse 0;
+}
+
+test "default metric thresholds preserve warning and error ordering" {
+    const thresholds = config_model.MetricThresholds{};
+    try std.testing.expect(thresholds.cpu_warn_milli < thresholds.cpu_error_milli);
+    try std.testing.expect(thresholds.memory_warn_bytes < thresholds.memory_error_bytes);
+    try std.testing.expect(thresholds.restarts_warn < thresholds.restarts_error);
+    try std.testing.expectEqual(@as(?u64, thresholds.cpu_warn_milli), k9s_query.parseCpu("500m"));
+    try std.testing.expectEqual(@as(?u64, thresholds.memory_error_bytes), k9s_query.parseMemory("1Gi"));
 }
 
 test "pod projection metrics format raw CPU and memory values" {
