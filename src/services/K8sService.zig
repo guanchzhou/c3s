@@ -668,22 +668,66 @@ pub const K8sService = struct {
     /// Run `kubectl api-resources` and return its raw, column-aligned output
     /// (NAME / SHORTNAMES / APIVERSION / NAMESPACED / KIND). Caller frees.
     pub fn listApiResources(self: *K8sService) ![]u8 {
+        var never_cancel = std.atomic.Value(bool).init(false);
+        return self.listApiResourcesCancelable(&never_cancel);
+    }
+
+    pub fn listApiResourcesCancelable(
+        self: *K8sService,
+        cancel_requested: *const std.atomic.Value(bool),
+    ) ![]u8 {
         if (task15.isLiveMode()) return error.Task15RequestRejected;
         var request = try self.resolveRequest(.detail);
         defer request.deinit();
-        const argv = try self.buildKubectlArgvResolved(&request, &.{"api-resources"});
-        defer self.allocator.free(argv);
-        const result = std.process.run(self.allocator, runtime.io(), .{
-            .argv = argv,
-            .stdout_limit = .limited(8 * 1024 * 1024),
+        const argv = try self.buildKubectlArgvResolved(&request, &.{
+            "api-resources",
+            "--request-timeout=5s",
         });
-        const output = result catch return error.KubectlFailed;
+        defer self.allocator.free(argv);
+        const output = runProcessCancelable(
+            self.allocator,
+            argv,
+            cancel_requested,
+            8 * 1024 * 1024,
+        ) catch |err| return if (err == error.Canceled) err else error.KubectlFailed;
         defer self.allocator.free(output.stderr);
         if (output.term.exited != 0) {
             defer self.allocator.free(output.stdout);
             return error.KubectlFailed;
         }
         return output.stdout;
+    }
+
+    pub fn canListResourceCancelable(
+        self: *K8sService,
+        group: []const u8,
+        resource: []const u8,
+        namespace: []const u8,
+        cancel_requested: *const std.atomic.Value(bool),
+    ) !bool {
+        if (cancel_requested.load(.acquire)) return error.Canceled;
+        var request = try self.resolveRequest(.authorization);
+        defer request.deinit();
+        const qualified = if (group.len > 0)
+            try std.fmt.allocPrint(self.allocator, "{s}.{s}", .{ resource, group })
+        else
+            try self.allocator.dupe(u8, resource);
+        defer self.allocator.free(qualified);
+        const args: []const []const u8 = if (namespace.len > 0)
+            &.{ "auth", "can-i", "list", qualified, "--namespace", namespace, "--quiet", "--request-timeout=5s" }
+        else
+            &.{ "auth", "can-i", "list", qualified, "--quiet", "--request-timeout=5s" };
+        const argv = try self.buildKubectlArgvResolved(&request, args);
+        defer self.allocator.free(argv);
+        const output = runProcessCancelable(
+            self.allocator,
+            argv,
+            cancel_requested,
+            64 * 1024,
+        ) catch |err| return if (err == error.Canceled) err else error.KubectlFailed;
+        defer self.allocator.free(output.stdout);
+        defer self.allocator.free(output.stderr);
+        return output.term.exited == 0;
     }
 
     /// Resolve an otherwise unknown palette command against the API server's
@@ -856,6 +900,33 @@ pub const K8sService = struct {
         defer self.allocator.free(result.stdout);
         defer self.allocator.free(result.stderr);
         if (result.term.exited != 0) return error.KubectlFailed;
+    }
+
+    pub fn refreshArgoApplication(
+        self: *K8sService,
+        name: []const u8,
+        namespace: []const u8,
+        hard: bool,
+    ) !void {
+        var target_buffer: [512]u8 = undefined;
+        const target = try std.fmt.bufPrint(
+            &target_buffer,
+            "applications.argoproj.io/{s}",
+            .{name},
+        );
+        const patch = if (hard)
+            "{\"metadata\":{\"annotations\":{\"argocd.argoproj.io/refresh\":\"hard\"}}}"
+        else
+            "{\"metadata\":{\"annotations\":{\"argocd.argoproj.io/refresh\":\"normal\"}}}";
+        try self.runKubectl(&.{
+            "patch",
+            target,
+            "-n",
+            namespace,
+            "--type=merge",
+            "-p",
+            patch,
+        });
     }
 
     /// Spawn a long-running kubectl command detached from the TUI terminal
@@ -1930,6 +2001,57 @@ pub const K8sService = struct {
         self.version_fetch_failed = false;
     }
 };
+
+fn runProcessCancelable(
+    allocator: std.mem.Allocator,
+    argv: []const []const u8,
+    cancel_requested: *const std.atomic.Value(bool),
+    stdout_limit: usize,
+) !std.process.RunResult {
+    if (cancel_requested.load(.acquire)) return error.Canceled;
+    var child = try std.process.spawn(runtime.io(), .{
+        .argv = argv,
+        .stdin = .ignore,
+        .stdout = .pipe,
+        .stderr = .pipe,
+        .create_no_window = true,
+    });
+    defer child.kill(runtime.io());
+
+    var multi_reader_buffer: std.Io.File.MultiReader.Buffer(2) = undefined;
+    var multi_reader: std.Io.File.MultiReader = undefined;
+    multi_reader.init(
+        allocator,
+        runtime.io(),
+        multi_reader_buffer.toStreams(),
+        &.{ child.stdout.?, child.stderr.? },
+    );
+    defer multi_reader.deinit();
+
+    const stdout_reader = multi_reader.reader(0);
+    const stderr_reader = multi_reader.reader(1);
+    while (true) {
+        if (cancel_requested.load(.acquire)) return error.Canceled;
+        multi_reader.fill(64, .{ .duration = .{
+            .raw = .fromMilliseconds(50),
+            .clock = .awake,
+        } }) catch |err| switch (err) {
+            error.Timeout => continue,
+            error.EndOfStream => break,
+            else => return err,
+        };
+        if (stdout_reader.buffered().len > stdout_limit or
+            stderr_reader.buffered().len > 64 * 1024)
+            return error.StreamTooLong;
+    }
+    try multi_reader.checkAnyError();
+    if (cancel_requested.load(.acquire)) return error.Canceled;
+    const term = try child.wait(runtime.io());
+    const stdout = try multi_reader.toOwnedSlice(0);
+    errdefer allocator.free(stdout);
+    const stderr = try multi_reader.toOwnedSlice(1);
+    return .{ .term = term, .stdout = stdout, .stderr = stderr };
+}
 
 const testing = std.testing;
 

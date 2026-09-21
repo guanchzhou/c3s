@@ -52,6 +52,7 @@ pub const LeasePurpose = enum {
     yaml,
     logs,
     authorization,
+    palette_discovery,
     cedar,
     command,
 };

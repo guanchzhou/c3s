@@ -2,7 +2,9 @@
 /// Supports IDE-style folding of JSON objects/arrays: fold/unfold the block at
 /// the cursor (Enter/Space), or fold/unfold everything (f / o).
 const std = @import("std");
-const View = @import("../viewmodel/view.zig").View;
+const view_model = @import("../viewmodel/view.zig");
+const View = view_model.View;
+const ResourceInfo = view_model.ResourceInfo;
 const Terminal = @import("../core/Terminal.zig").Terminal;
 const Key = @import("../core/Terminal.zig").Key;
 const Logger = @import("../core/logger.zig");
@@ -32,6 +34,12 @@ pub const DetailView = struct {
     /// Detected column-start offsets (for column-wise h/l horizontal nav over
     /// space-aligned content like the aliases / api-resources table).
     col_stops: std.ArrayListUnmanaged(u16) = .empty,
+    /// Cell-picker mode: Enter copies the selected value instead of folding.
+    copy_on_enter: bool = false,
+    mode: enum { detail, explain } = .detail,
+    resource_name: ?[]u8 = null,
+    resource_namespace: ?[]u8 = null,
+    resource_resource: ?[]u8 = null,
 
     pub fn init(allocator: std.mem.Allocator, theme: *const theme_loader.ThemeColors) !DetailView {
         return DetailView{
@@ -54,7 +62,18 @@ pub const DetailView = struct {
         self.col_stops.deinit(self.allocator);
     }
 
+    fn clearWorkflowState(self: *DetailView) void {
+        if (self.resource_name) |value| self.allocator.free(value);
+        if (self.resource_namespace) |value| self.allocator.free(value);
+        if (self.resource_resource) |value| self.allocator.free(value);
+        self.resource_name = null;
+        self.resource_namespace = null;
+        self.resource_resource = null;
+        self.mode = .detail;
+    }
+
     fn clearContent(self: *DetailView) void {
+        self.clearWorkflowState();
         for (self.lines.items) |line| {
             self.allocator.free(line);
         }
@@ -71,6 +90,8 @@ pub const DetailView = struct {
 
     /// Set content from raw JSON string, pretty-printed.
     pub fn setContentJson(self: *DetailView, json_str: []const u8, title: []const u8) !void {
+        self.clearWorkflowState();
+        self.copy_on_enter = false;
         var replacement = try DetailView.init(self.allocator, self.theme);
         errdefer replacement.deinit();
         try replacement.setContentJsonInPlace(json_str, title);
@@ -150,15 +171,48 @@ pub const DetailView = struct {
         try self.rebuildVisible();
     }
 
-    /// Set content from raw JSON, formatted as kubectl-describe style.
     /// Set plain-text content (one entry per newline), no JSON parsing — for
     /// simple list overlays like the aliases view.
     pub fn setContentText(self: *DetailView, text: []const u8, title: []const u8) !void {
+        self.clearWorkflowState();
+        self.copy_on_enter = false;
         var replacement = try DetailView.init(self.allocator, self.theme);
         errdefer replacement.deinit();
         try replacement.setContentTextInPlace(text, title);
         self.swapContent(&replacement);
         replacement.deinit();
+    }
+
+    pub fn setCellPicker(self: *DetailView, text: []const u8) !void {
+        try self.setContentText(text, "Copy column");
+        self.copy_on_enter = true;
+    }
+
+    pub fn setExplainContent(
+        self: *DetailView,
+        text: []const u8,
+        title: []const u8,
+        name: []const u8,
+        namespace: []const u8,
+        resource: []const u8,
+    ) !void {
+        try self.setContentText(text, title);
+        self.resource_name = try self.allocator.dupe(u8, name);
+        errdefer {
+            self.allocator.free(self.resource_name.?);
+            self.resource_name = null;
+        }
+        self.resource_namespace = try self.allocator.dupe(u8, namespace);
+        errdefer {
+            self.allocator.free(self.resource_namespace.?);
+            self.resource_namespace = null;
+        }
+        self.resource_resource = try self.allocator.dupe(u8, resource);
+        self.mode = .explain;
+    }
+
+    pub fn setArgoSyncContent(self: *DetailView, text: []const u8, title: []const u8) !void {
+        try self.setContentText(text, title);
     }
 
     fn setContentTextInPlace(self: *DetailView, text: []const u8, title: []const u8) !void {
@@ -175,7 +229,10 @@ pub const DetailView = struct {
         try self.rebuildVisible();
     }
 
+    /// Set content from raw JSON, formatted as kubectl-describe style.
     pub fn setContentDescribe(self: *DetailView, json_str: []const u8, title: []const u8) !void {
+        self.clearWorkflowState();
+        self.copy_on_enter = false;
         var replacement = try DetailView.init(self.allocator, self.theme);
         errdefer replacement.deinit();
         try replacement.setContentDescribeInPlace(json_str, title);
@@ -510,6 +567,7 @@ pub const DetailView = struct {
         .getName = getName,
         .getHints = getHints,
         .deinit = deinitView,
+        .getSelectedResource = getSelectedResource,
     };
 
     // Fold-gutter / indent-guide glyphs (1 display cell each; same family as the
@@ -688,6 +746,18 @@ pub const DetailView = struct {
         const self: *DetailView = @ptrCast(@alignCast(ptr));
         const count: u32 = @intCast(self.visible.items.len);
 
+        if (self.mode == .explain) {
+            switch (key) {
+                .enter => return .request_describe,
+                .char => |c| switch (c) {
+                    'E' => return .request_events,
+                    'l' => return .request_logs,
+                    else => {},
+                },
+                else => {},
+            }
+        }
+
         switch (key) {
             .char => |c| switch (c) {
                 'j' => {
@@ -730,6 +800,7 @@ pub const DetailView = struct {
             },
             .ctrl_f => return .request_fullscreen,
             .enter => {
+                if (self.copy_on_enter) return .request_copy_detail_value;
                 try self.toggleFoldAtCursor();
                 return .handled;
             },
@@ -819,6 +890,15 @@ pub const DetailView = struct {
             .escape => return .not_handled, // Let parent handle pop
             else => return .not_handled,
         }
+    }
+
+    fn getSelectedResource(ptr: *anyopaque) ?ResourceInfo {
+        const self: *DetailView = @ptrCast(@alignCast(ptr));
+        return .{
+            .name = self.resource_name orelse return null,
+            .namespace = self.resource_namespace orelse "",
+            .resource = self.resource_resource orelse "",
+        };
     }
 
     fn onShow(ptr: *anyopaque) void {
@@ -987,6 +1067,22 @@ test "DetailView fold: describe (indent-based, no braces) is foldable" {
     const full = dv.visible.items.len;
     try dv.setAllFolds(true);
     try testing.expect(dv.visible.items.len < full);
+}
+
+test "ExplainView navigation keys target resource, events, and logs" {
+    var theme = try theme_loader.defaultTheme(std.testing.allocator);
+    defer theme_loader.deinitTheme(&theme);
+    var view = try DetailView.init(std.testing.allocator, &theme);
+    defer view.deinit();
+
+    try view.setExplainContent("Phase: Failed", "Explain unhealthy pod/web", "web", "default", "pods");
+    try std.testing.expectEqual(View.KeyResult.request_describe, try DetailView.handleKey(&view, .enter));
+    try std.testing.expectEqual(View.KeyResult.request_events, try DetailView.handleKey(&view, .{ .char = 'E' }));
+    try std.testing.expectEqual(View.KeyResult.request_logs, try DetailView.handleKey(&view, .{ .char = 'l' }));
+    const resource = view.createView().getSelectedResource().?;
+    try std.testing.expectEqualStrings("web", resource.name);
+    try std.testing.expectEqualStrings("default", resource.namespace);
+    try std.testing.expectEqualStrings("pods", resource.resource);
 }
 
 test "DetailView: column-aligned content yields column stops for h/l nav" {

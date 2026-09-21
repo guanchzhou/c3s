@@ -10,6 +10,10 @@ const KeyBinding = @import("../model/keybindings.zig").KeyBinding;
 pub const daily_driver_bindings = [_]KeyBinding{
     .{ .key = "c", .description = "Copy Name", .category = .resource, .action = "copy" },
     .{ .key = "n", .description = "Copy Namespace", .category = .resource, .action = "copy_namespace" },
+    .{ .key = "Shift-y", .description = "Copy Column", .category = .resource, .action = "copy_column" },
+    .{ .key = "Shift-t", .description = "Session Timeline", .category = .resource, .action = "timeline" },
+    .{ .key = "Tab", .description = "Next Kind", .category = .navigation, .action = "next_kind" },
+    .{ .key = "Shift-Tab", .description = "Previous Kind", .category = .navigation, .action = "previous_kind" },
     .{ .key = "Shift-j", .description = "Jump to Owner", .category = .resource, .action = "jump_owner" },
     .{ .key = "-", .description = "Last Command", .category = .general, .action = "last_command" },
     .{ .key = "[", .description = "History Back", .category = .general, .action = "history_back" },
@@ -60,7 +64,6 @@ pub fn loadEventsBindings(allocator: std.mem.Allocator) ![]const KeyBinding {
     const bindings = [_]KeyBinding{
         .{ .key = "d", .description = "Describe", .category = .resource, .action = "describe" },
         .{ .key = "y", .description = "YAML", .category = .resource, .action = "yaml" },
-        .{ .key = "Shift-t", .description = "Sort Type", .category = .sorting, .action = "sort_type" },
         .{ .key = "Shift-r", .description = "Sort Reason", .category = .sorting, .action = "sort_reason" },
         .{ .key = "w", .description = "Warp Namespace", .category = .resource, .action = "warp" },
     };
@@ -113,6 +116,7 @@ pub fn loadPVCsBindings(allocator: std.mem.Allocator) ![]const KeyBinding {
 /// ReplicaSets bindings
 pub fn loadReplicaSetsBindings(allocator: std.mem.Allocator) ![]const KeyBinding {
     const bindings = [_]KeyBinding{
+        .{ .key = "Shift-x", .description = "Explain Unhealthy", .category = .resource, .action = "explain_health" },
         .{ .key = "d", .description = "Describe", .category = .resource, .action = "describe" },
         .{ .key = "y", .description = "YAML", .category = .resource, .action = "yaml" },
         .{ .key = "Ctrl-d", .description = "Delete", .category = .resource, .action = "delete" },
@@ -126,6 +130,7 @@ pub fn loadReplicaSetsBindings(allocator: std.mem.Allocator) ![]const KeyBinding
 /// StatefulSets bindings
 pub fn loadStatefulSetsBindings(allocator: std.mem.Allocator) ![]const KeyBinding {
     const bindings = [_]KeyBinding{
+        .{ .key = "Shift-x", .description = "Explain Unhealthy", .category = .resource, .action = "explain_health" },
         .{ .key = "d", .description = "Describe", .category = .resource, .action = "describe" },
         .{ .key = "y", .description = "YAML", .category = .resource, .action = "yaml" },
         .{ .key = "Ctrl-d", .description = "Delete", .category = .resource, .action = "delete" },
@@ -140,6 +145,7 @@ pub fn loadStatefulSetsBindings(allocator: std.mem.Allocator) ![]const KeyBindin
 /// DaemonSets bindings
 pub fn loadDaemonSetsBindings(allocator: std.mem.Allocator) ![]const KeyBinding {
     const bindings = [_]KeyBinding{
+        .{ .key = "Shift-x", .description = "Explain Unhealthy", .category = .resource, .action = "explain_health" },
         .{ .key = "d", .description = "Describe", .category = .resource, .action = "describe" },
         .{ .key = "y", .description = "YAML", .category = .resource, .action = "yaml" },
         .{ .key = "Ctrl-d", .description = "Delete", .category = .resource, .action = "delete" },
@@ -170,6 +176,7 @@ pub fn loadCronJobsBindings(allocator: std.mem.Allocator) ![]const KeyBinding {
 /// Jobs bindings
 pub fn loadJobsBindings(allocator: std.mem.Allocator) ![]const KeyBinding {
     const bindings = [_]KeyBinding{
+        .{ .key = "Shift-x", .description = "Explain Unhealthy", .category = .resource, .action = "explain_health" },
         .{ .key = "d", .description = "Describe", .category = .resource, .action = "describe" },
         .{ .key = "y", .description = "YAML", .category = .resource, .action = "yaml" },
         .{ .key = "Ctrl-d", .description = "Delete", .category = .resource, .action = "delete" },
@@ -220,6 +227,7 @@ pub fn loadContextsBindings(allocator: std.mem.Allocator) ![]const KeyBinding {
 pub fn loadPortForwardsBindings(allocator: std.mem.Allocator) ![]const KeyBinding {
     const bindings = [_]KeyBinding{
         .{ .key = "Ctrl-d", .description = "Stop", .category = .resource, .action = "stop" },
+        .{ .key = "Shift-f", .description = "Start", .category = .resource, .action = "start" },
     };
     return try allocator.dupe(KeyBinding, &bindings);
 }
@@ -366,11 +374,7 @@ test "keybindings_data: all bindings are UTF-8 valid" {
     }
 }
 
-test "keybindings_data: portforwards advertises stop but not start" {
-    // Stop is real (PortForwardsView binds Ctrl-D). Start was NOT: `Shift-f` is only
-    // handled in resource_view's is_pods branch, and PortForwardsView has no `F` case
-    // at all -- you start a forward from the pods view, not from this one. The original
-    // test asserted both existed, which is how the whole class went unnoticed here.
+test "keybindings_data: portforwards advertises implemented start and stop" {
     var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
@@ -378,12 +382,29 @@ test "keybindings_data: portforwards advertises stop but not start" {
     const bindings = try loadPortForwardsBindings(allocator);
     defer allocator.free(bindings);
 
+    var has_start = false;
     var has_stop = false;
     for (bindings) |binding| {
+        if (std.mem.eql(u8, binding.action, "start")) has_start = true;
         if (std.mem.eql(u8, binding.action, "stop")) has_stop = true;
-        try std.testing.expect(!std.mem.eql(u8, binding.action, "start"));
     }
+    try std.testing.expect(has_start);
     try std.testing.expect(has_stop);
+}
+
+test "keybindings_data: Argo applications advertise refresh and sync details" {
+    const bindings = try loadArgoApplicationBindings(std.testing.allocator);
+    defer std.testing.allocator.free(bindings);
+
+    var refresh = false;
+    var hard_refresh = false;
+    var sync_details = false;
+    for (bindings) |binding| {
+        if (std.mem.eql(u8, binding.action, "argo_refresh")) refresh = true;
+        if (std.mem.eql(u8, binding.action, "argo_hard_refresh")) hard_refresh = true;
+        if (std.mem.eql(u8, binding.action, "argo_sync_details")) sync_details = true;
+    }
+    try std.testing.expect(refresh and hard_refresh and sync_details);
 }
 
 test "keybindings_data: pvcs has capacity sorting" {
@@ -471,6 +492,17 @@ pub fn loadGenericResourceBindings(allocator: std.mem.Allocator) ![]const KeyBin
     return withDailyDriver(allocator, &bindings);
 }
 
+pub fn loadArgoApplicationBindings(allocator: std.mem.Allocator) ![]const KeyBinding {
+    const argo = [_]KeyBinding{
+        .{ .key = "Shift-r", .description = "Argo Refresh", .category = .resource, .action = "argo_refresh" },
+        .{ .key = "Shift-h", .description = "Argo Hard Refresh", .category = .resource, .action = "argo_hard_refresh" },
+        .{ .key = "Shift-s", .description = "Argo Sync Details", .category = .resource, .action = "argo_sync_details" },
+    };
+    const generic = try loadGenericResourceBindings(allocator);
+    defer allocator.free(generic);
+    return concatBindings(allocator, generic, &argo);
+}
+
 /// Actions with no implementation anywhere in c3s.
 ///
 /// This is the canonical list, and the test below enforces it across EVERY ViewType.
@@ -501,10 +533,9 @@ pub const unimplemented_actions = [_][]const u8{
     "view",              "bench",         "field_next",
     "field_previous",    "reload",        "command_clear",
     "left",              "right",         "namespace_all",
-    "namespace_default", "goto",          "start",
-    "xray",              "pulses",        "popeye",
-    "charts",            "plugins",       "screendump",
-    "jsonpath",
+    "namespace_default", "goto",          "xray",
+    "pulses",            "popeye",        "charts",
+    "plugins",           "screendump",    "jsonpath",
 };
 
 test "no view advertises an action that nothing implements" {
@@ -583,6 +614,8 @@ const view_scoped_actions = [_]OwnedActions{
     },
     // PortForwardsView's own handleKey.
     .{ .views = &.{"portforwards"}, .actions = &.{"stop"} },
+    // DynamicResourceView's applications.argoproj.io branch.
+    .{ .views = &.{"applications"}, .actions = &.{ "argo_refresh", "argo_hard_refresh", "argo_sync_details" } },
 };
 
 test "no view advertises an action implemented only for a different view" {

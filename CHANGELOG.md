@@ -19,6 +19,21 @@ The release workflow extracts the section matching the git tag (`vX.Y.Z` →
   cluster-wide scan, and a can-i evaluation with a verb matrix. Read-only, off
   the UI thread, and fail-closed — an incomplete policy set answers
   `INDETERMINATE` rather than `ALLOW` or `DENY`.
+- Typed status, CPU, memory, restart, and age filters, configurable metric
+  thresholds, and faults-mode titles.
+- Sentence-style palette targeting, kind cycling, full-column copy picker, and
+  permission-aware discovery suggestions.
+- Bounded session timelines and deterministic unhealthy-workload reports with
+  rollout, container, condition, and Warning-event findings.
+- Kubernetes-native Argo CD Application refresh and truthful sync-details
+  reporting without Argo credentials or an `argocd` binary.
+- Port-forwards can be started directly from `:pf`; failed/exited forwards stay
+  visible with their exit code.
+
+### Changed
+
+- Namespace selection preserves the active resource kind instead of always
+  returning to pods.
 
 ## [0.3.2] - 2026-09-21
 

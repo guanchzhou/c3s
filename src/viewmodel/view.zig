@@ -7,6 +7,17 @@ const hints_model = @import("../model/hints.zig");
 pub const ResourceInfo = struct {
     name: []const u8,
     namespace: []const u8,
+    uid: []const u8 = "",
+    group: []const u8 = "",
+    version: []const u8 = "",
+    resource: []const u8 = "",
+};
+
+/// Borrowed, full-fidelity values for the selected row. Values are never
+/// terminal-truncated; callers must consume them before the next refresh.
+pub const SelectedCells = struct {
+    names: []const []const u8,
+    values: []const []const u8,
 };
 
 /// View trait - all views must implement this interface
@@ -53,6 +64,9 @@ pub const View = struct {
         /// Get selected resource info for describe/delete/logs
         getSelectedResource: *const fn (ptr: *anyopaque) ?ResourceInfo = &noopGetSelectedResource,
 
+        /// Get all full cell values for copy/picker workflows.
+        getSelectedCells: *const fn (ptr: *anyopaque) ?SelectedCells = &noopGetSelectedCells,
+
         /// Warp / `:po ns-x` pin the view to one namespace. No-op on cluster-scoped views.
         setShowAllNamespaces: *const fn (ptr: *anyopaque, all: bool) void = &noopSetShowAllNamespaces,
 
@@ -72,7 +86,13 @@ pub const View = struct {
         request_quit,
         request_describe,
         request_yaml,
+        request_explain_health,
+        request_timeline,
+        request_argo_refresh,
+        request_argo_hard_refresh,
+        request_argo_sync_details,
         request_logs,
+        request_events,
         request_delete,
         // k9s-parity actions
         request_edit,
@@ -111,6 +131,7 @@ pub const View = struct {
         request_traffic,
         request_copy,
         request_copy_namespace,
+        request_copy_column,
         request_copy_detail_value,
         request_copy_detail_line,
         request_warp,
@@ -125,6 +146,7 @@ pub const View = struct {
         request_fullscreen,
         /// Open the port-forwards list (`f` on pods/services, k9s).
         request_show_port_forwards,
+        request_start_port_forward_manager,
         /// Cedar workbench actions. Each runs the official `cedar` binary against the
         /// selected Policy object and opens the result in a pane.
         request_cedar_source,
@@ -184,6 +206,10 @@ pub const View = struct {
         return self.vtable.getSelectedResource(self.ptr);
     }
 
+    pub fn getSelectedCells(self: View) ?SelectedCells {
+        return self.vtable.getSelectedCells(self.ptr);
+    }
+
     pub fn setShowAllNamespaces(self: View, all: bool) void {
         return self.vtable.setShowAllNamespaces(self.ptr, all);
     }
@@ -215,6 +241,9 @@ pub const View = struct {
     }
     fn noopRefresh(_: *anyopaque) anyerror!void {}
     fn noopGetSelectedResource(_: *anyopaque) ?ResourceInfo {
+        return null;
+    }
+    fn noopGetSelectedCells(_: *anyopaque) ?SelectedCells {
         return null;
     }
     fn noopSetShowAllNamespaces(_: *anyopaque, _: bool) void {}

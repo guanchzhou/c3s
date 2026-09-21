@@ -248,6 +248,7 @@ pub fn purposeForClass(class: RequestClass) session.LeasePurpose {
         .yaml => .yaml,
         .logs => .logs,
         .authorization => .authorization,
+        .palette_discovery => .palette_discovery,
         .cedar => .cedar,
     };
 }
@@ -270,6 +271,7 @@ pub fn runTask14SourceAuditGate() !void {
         @embedFile("DetailRequest.zig"),
         @embedFile("LogsRequest.zig"),
         @embedFile("AuthorizationRequest.zig"),
+        @embedFile("PaletteDiscoveryRequest.zig"),
         @embedFile("CedarRequest.zig"),
     }) |source| try expectChildPublishesOnlyThroughQueue(source);
 
@@ -353,6 +355,7 @@ fn requestEnvelope(
         .yaml => .{ .yaml = key },
         .logs => .{ .logs = key },
         .authorization => .{ .authorization = key },
+        .palette_discovery => .{ .palette_discovery = key },
         .cedar => .{ .cedar = key },
     };
     return keys.erasePayload(
@@ -381,6 +384,7 @@ pub fn runTask14AncillaryIdentityGate() !void {
         .yaml,
         .logs,
         .authorization,
+        .palette_discovery,
         .cedar,
     };
     var keys_by_class: [classes.len]RequestKey = undefined;

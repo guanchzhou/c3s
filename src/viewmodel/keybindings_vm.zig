@@ -35,6 +35,7 @@ pub const ViewType = enum {
     /// Fallback for any resource view with no ViewType of its own. Before this,
     /// currentViewType() fell back to `.pods`, so `?` on an Ingress showed PODS' help.
     generic,
+    applications,
 
     // Misc views
     contexts,
@@ -107,6 +108,7 @@ fn loadBindingsForView(allocator: std.mem.Allocator, view_type: ViewType) ![]con
         // Misc views (use generic or specific bindings)
         .contexts => try bindings_data.loadContextsBindings(allocator),
         .generic => try bindings_data.loadGenericResourceBindings(allocator),
+        .applications => try bindings_data.loadArgoApplicationBindings(allocator),
         .portforwards => try bindings_data.loadPortForwardsBindings(allocator),
         .aliases => try bindings_data.loadAliasesBindings(allocator),
         .cedar => try bindings_data.loadCedarBindings(allocator),
@@ -144,6 +146,7 @@ fn loadPodsBindings(allocator: std.mem.Allocator) ![]const KeyBinding {
         .{ .key = "t", .description = "Transfer", .category = .resource, .action = "transfer" },
         .{ .key = "y", .description = "YAML", .category = .resource, .action = "yaml" },
         .{ .key = "z", .description = "Sanitize", .category = .resource, .action = "sanitize" },
+        .{ .key = "Shift-x", .description = "Explain Unhealthy", .category = .resource, .action = "explain_health" },
 
         // GENERAL COMMANDS
         .{ .key = "?", .description = "Help", .category = .general, .action = "help" },
@@ -181,7 +184,6 @@ fn loadPodsBindings(allocator: std.mem.Allocator) ![]const KeyBinding {
         .{ .key = "Shift-o", .description = "Node", .category = .sorting, .action = "sort_node" },
         .{ .key = "Shift-r", .description = "Ready", .category = .sorting, .action = "sort_ready" },
         .{ .key = "Shift-s", .description = "Status", .category = .sorting, .action = "sort_status" },
-        .{ .key = "Shift-t", .description = "Restart", .category = .sorting, .action = "sort_restart" },
         .{ .key = "w", .description = "Warp Namespace", .category = .resource, .action = "warp" },
     };
 
@@ -232,6 +234,7 @@ fn loadDeploymentsBindings(allocator: std.mem.Allocator) ![]const KeyBinding {
         .{ .key = "d", .description = "Describe", .category = .resource, .action = "describe" },
         .{ .key = "y", .description = "YAML", .category = .resource, .action = "yaml" },
         .{ .key = "Ctrl-d", .description = "Delete", .category = .resource, .action = "delete" },
+        .{ .key = "Shift-x", .description = "Explain Unhealthy", .category = .resource, .action = "explain_health" },
 
         .{ .key = "?", .description = "Help", .category = .general, .action = "help" },
         .{ .key = ":q", .description = "Quit", .category = .general, .action = "quit" },
@@ -249,8 +252,6 @@ fn loadServicesBindings(allocator: std.mem.Allocator) ![]const KeyBinding {
         .{ .key = "Shift-f", .description = "Port-Forward", .category = .resource, .action = "port_forward" },
         .{ .key = "f", .description = "Show Port-Forwards", .category = .resource, .action = "show_portforward" },
         .{ .key = "w", .description = "Warp Namespace", .category = .resource, .action = "warp" },
-
-        .{ .key = "Shift-t", .description = "Sort Type", .category = .sorting, .action = "sort_type" },
 
         .{ .key = "?", .description = "Help", .category = .general, .action = "help" },
         .{ .key = ":q", .description = "Quit", .category = .general, .action = "quit" },

@@ -385,10 +385,10 @@ test "every advertised sort key maps to a column that can actually sort" {
     // sort_key on one of that view's columns. The key-press side is covered below.
     const Case = struct { name: []const u8, keys: []const u8 };
     const cases = [_]Case{
-        // pods advertises Shift- A C I M N O P R S T
-        .{ .name = "pods", .keys = "ACIMNOPRST" },
+        // Shift-T is reserved for the session timeline; B retains the displaced sort.
+        .{ .name = "pods", .keys = "ABCIMNOPRS" },
         .{ .name = "nodes", .keys = "ANRS" },
-        .{ .name = "services", .keys = "ANT" },
+        .{ .name = "services", .keys = "ABN" },
         .{ .name = "jobs", .keys = "ACN" },
         .{ .name = "persistentvolumeclaims", .keys = "ACNS" },
     };
@@ -436,9 +436,9 @@ test "pressing an advertised sort key actually sorts" {
     var view = try c3s.ServicesView.init(allocator, &theme, &svc);
     defer view.deinit();
 
-    // TYPE gained sort_key 'T' in this commit; Shift-t was advertised and did nothing.
+    // TYPE uses B because Shift-T is the global session-timeline action.
     try testing.expectEqual(@as(?u8, null), view.table.sort_column);
-    const result = try c3s.ServicesView.handleKey(&view, .{ .char = 'T' });
+    const result = try c3s.ServicesView.handleKey(&view, .{ .char = 'B' });
     try testing.expectEqual(c3s.View.KeyResult.handled, result);
     try testing.expect(view.table.sort_column != null);
 }

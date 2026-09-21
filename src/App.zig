@@ -33,6 +33,7 @@ const traffic_request = @import("k8s/TrafficRequest.zig");
 const detail_request = @import("k8s/DetailRequest.zig");
 const logs_request = @import("k8s/LogsRequest.zig");
 const authorization_request = @import("k8s/AuthorizationRequest.zig");
+const palette_discovery_request = @import("k8s/PaletteDiscoveryRequest.zig");
 const PodRecord = @import("k8s/PodRecord.zig");
 const PodProjection = @import("k8s/ResourceProjection.zig").ResourceProjection(PodRecord);
 const pod_subscription = @import("k8s/PodSubscription.zig");
@@ -387,6 +388,10 @@ const ThemesView = @import("view/ThemesView.zig").ThemesView;
 const HelpView = @import("view/HelpView.zig").HelpView;
 const ViewType = @import("viewmodel/keybindings_vm.zig").ViewType;
 const DetailView = @import("view/DetailView.zig").DetailView;
+const ExplainView = @import("view/ExplainView.zig").ExplainView;
+const ArgoSyncView = @import("view/ArgoSyncView.zig").ArgoSyncView;
+const TimelineView = @import("view/TimelineView.zig").TimelineView;
+const ObjectTimeline = @import("viewmodel/ObjectTimeline.zig").ObjectTimeline;
 const LogsView = @import("view/LogsView.zig").LogsView;
 const AuthorizationView = @import("view/AuthorizationView.zig").AuthorizationView;
 const CedarView = @import("view/CedarView.zig").CedarView;
@@ -820,6 +825,8 @@ pub const App = struct {
     logs_request_serial: u64 = 0,
     logs_request_target: logs_request.UiTarget = undefined,
     authorization_request_target: authorization_request.UiTarget = undefined,
+    active_palette_discovery_request: ?resource_key.RequestKey = null,
+    palette_discovery_request_target: palette_discovery_request.UiTarget = undefined,
     active_cedar_request: ?resource_key.RequestKey = null,
     cedar_request_serial: u64 = 0,
     cedar_request_target: cedar_request.UiTarget = undefined,
@@ -952,6 +959,10 @@ pub const App = struct {
     themes_view: *ThemesView,
     help_view: *HelpView,
     detail_view: *DetailView,
+    explain_view: *ExplainView,
+    argo_sync_view: *ArgoSyncView,
+    timeline: *ObjectTimeline,
+    timeline_view: *TimelineView,
     aliases_view: *AliasesView,
     dynamic_resource_view: *DynamicResourceView,
     port_forwards_view: *PortForwardsView,
@@ -967,11 +978,12 @@ pub const App = struct {
     delete_resource_namespace: ?[]u8 = null,
     delete_resource_type: ?ResourceType = null,
 
-    // Generic text-input prompt (set-image / port-forward / transfer / sanitize).
+    // Generic text-input prompt.
     pending_input: enum {
         none,
         set_image,
         port_forward,
+        port_forward_manager,
         transfer,
         sanitize,
         drain,
@@ -994,6 +1006,8 @@ pub const App = struct {
     /// View to return to after switching cluster context (k9s behavior:
     /// selecting a context drops you back where you were, not in contexts).
     pre_contexts_view: []const u8 = "pods",
+    /// Resource kind restored after selecting a namespace.
+    pre_namespace_view: []const u8 = "pods",
     command_history: std.ArrayListUnmanaged([]u8) = .empty,
     history_cursor: usize = 0,
     recent_namespaces: *RecentNamespaces,
@@ -1256,6 +1270,29 @@ pub const App = struct {
         detail_view.* = try DetailView.init(allocator, theme);
         errdefer detail_view.deinit();
 
+        const explain_view = try allocator.create(ExplainView);
+        explain_view.* = try ExplainView.init(allocator, theme);
+        errdefer {
+            explain_view.deinit();
+            allocator.destroy(explain_view);
+        }
+        const argo_sync_view = try allocator.create(ArgoSyncView);
+        argo_sync_view.* = try ArgoSyncView.init(allocator, theme);
+        errdefer {
+            argo_sync_view.deinit();
+            allocator.destroy(argo_sync_view);
+        }
+
+        const timeline = try allocator.create(ObjectTimeline);
+        timeline.* = ObjectTimeline.init(allocator);
+        errdefer {
+            timeline.deinit();
+            allocator.destroy(timeline);
+        }
+        const timeline_view = try allocator.create(TimelineView);
+        errdefer allocator.destroy(timeline_view);
+        timeline_view.* = TimelineView.init(theme, timeline);
+
         // AliasesView needs the stable k8s_service pointer; init after the App
         // struct is built (mirrors pods_view).
         const aliases_view = try allocator.create(AliasesView);
@@ -1378,6 +1415,10 @@ pub const App = struct {
             .themes_view = themes_view,
             .help_view = help_view,
             .detail_view = detail_view,
+            .explain_view = explain_view,
+            .argo_sync_view = argo_sync_view,
+            .timeline = timeline,
+            .timeline_view = timeline_view,
             .aliases_view = aliases_view,
             .dynamic_resource_view = dynamic_resource_view,
             .port_forwards_view = port_forwards_view,
@@ -1395,6 +1436,13 @@ pub const App = struct {
         dynamic_resource_view.* = DynamicResourceView.init(allocator, theme, app.k8s_service);
         inline for (k8s_view_types) |entry| {
             @field(app, entry[0]).* = try entry[1].init(allocator, theme, app.k8s_service);
+            if (@hasDecl(entry[1], "setMetricThresholds"))
+                @field(app, entry[0]).setMetricThresholds(ui_config.ui.metric_thresholds);
+            if (@hasDecl(entry[1], "bindTimeline"))
+                @field(app, entry[0]).bindTimeline(.{
+                    .ptr = app.timeline,
+                    .recordFn = recordTimeline,
+                });
             if (config.all_namespaces and @hasDecl(entry[1], "view_config") and
                 entry[1].view_config.is_namespaced)
             {
@@ -1512,6 +1560,13 @@ pub const App = struct {
         self.allocator.destroy(self.help_view);
         self.detail_view.deinit();
         self.allocator.destroy(self.detail_view);
+        self.explain_view.deinit();
+        self.allocator.destroy(self.explain_view);
+        self.argo_sync_view.deinit();
+        self.allocator.destroy(self.argo_sync_view);
+        self.allocator.destroy(self.timeline_view);
+        self.timeline.deinit();
+        self.allocator.destroy(self.timeline);
         self.aliases_view.deinit();
         self.allocator.destroy(self.aliases_view);
         self.dynamic_resource_view.deinit();
@@ -1976,6 +2031,7 @@ pub const App = struct {
         if (session_view.state == .active) {
             _ = self.ancillary_requests.invalidateGeneration(session_view.generation);
         }
+        self.clearDiscoveredPaletteNames();
         self.active_detail_request = null;
         self.detail_request_serial +%= 1;
         self.active_logs_request = null;
@@ -2529,6 +2585,17 @@ pub const App = struct {
                 self.authorization_request_target = .{ .view = self.authorization_view };
                 break :blk @ptrCast(&self.authorization_request_target);
             },
+            .palette_discovery => |key| blk: {
+                const active = self.active_palette_discovery_request orelse break :blk null;
+                if (!active.eql(key) or
+                    !self.ancillary_requests.contains(key, .palette_discovery))
+                    break :blk null;
+                self.palette_discovery_request_target = .{
+                    .ptr = self,
+                    .applyFn = applyDiscoveredPaletteNames,
+                };
+                break :blk @ptrCast(&self.palette_discovery_request_target);
+            },
             .cedar => |key| blk: {
                 const active = self.active_cedar_request orelse break :blk null;
                 if (!active.eql(key) or !self.ancillary_requests.contains(key, .cedar))
@@ -2555,6 +2622,8 @@ pub const App = struct {
         if (!active.eql(key) or !self.ancillary_requests.contains(key, class)) return null;
         self.detail_request_target = .{
             .view = self.detail_view,
+            .explain_view = self.explain_view,
+            .argo_sync_view = self.argo_sync_view,
             .view_manager = &self.view_manager,
             .active_key = active,
             .active_serial = self.detail_request_serial,
@@ -2596,6 +2665,9 @@ pub const App = struct {
                 }
                 if (self.active_logs_request) |active| {
                     if (active.eql(completed)) self.active_logs_request = null;
+                }
+                if (self.active_palette_discovery_request) |active| {
+                    if (active.eql(completed)) self.active_palette_discovery_request = null;
                 }
                 if (self.active_cedar_request) |active| {
                     if (active.eql(completed)) {
@@ -3485,8 +3557,8 @@ pub const App = struct {
                 self.dirty = true;
             },
             .ctrl_p => {
-                // Ctrl-P opens the fuzzy command palette, same as ':'.
-                // Candidates were set once at startup (setCandidates).
+                // Ctrl-P opens the fuzzy command palette, same as ':'; discovery
+                // can rebuild its candidates asynchronously.
                 self.command_input.showWithPrompt(":");
                 self.dirty = true;
             },
@@ -3514,6 +3586,8 @@ pub const App = struct {
                     try self.handleViewResult(result, current_view, key);
                 }
             },
+            .tab => try self.cycleCommonKind(1),
+            .shift_tab => try self.cycleCommonKind(-1),
         }
     }
 
@@ -3545,15 +3619,19 @@ pub const App = struct {
             },
             .context_switched => {
                 const context_name = self.contexts_view.selectedContextName() orelse return;
+                self.timeline.clear();
                 try self.beginContextSwitch(context_name);
             },
             .namespace_switched => {
-                // Keep namespaces under pods so Esc returns to the namespace picker.
-                self.pods_view.table.show_all_namespaces = false;
-                self.clearPodsForScopeChange();
+                self.timeline.clear();
+                if (self.active_palette_discovery_request) |active|
+                    _ = self.ancillary_requests.cancelRequest(active);
+                self.clearDiscoveredPaletteNames();
                 self.rememberNamespace(self.k8s_service.current_namespace);
-                try self.view_manager.pushView(self.pods_view.createView());
-                self.current_view_name = "pods";
+                const destination = self.pre_namespace_view;
+                if (std.mem.eql(u8, destination, "pods")) self.clearPodsForScopeChange();
+                try self.switchToView(destination);
+                if (self.view_manager.getCurrentView()) |v| v.setShowAllNamespaces(false);
 
                 // onShow preserves existing rows for instant stack navigation, but
                 // those rows belong to the previous namespace. Refresh the new
@@ -3563,6 +3641,7 @@ pub const App = struct {
                         Logger.err("Refresh after namespace switch failed: {any}", .{err});
                     };
                 }
+                self.loadDiscoveredPaletteNames();
                 self.dirty = true;
             },
             .request_decode => self.showDecodedSecret() catch |e| Logger.err("decode secret: {any}", .{e}),
@@ -3590,10 +3669,30 @@ pub const App = struct {
                     Logger.err("Failed to show YAML view: {any}", .{err});
                 };
             },
+            .request_explain_health => {
+                self.showExplainHealth() catch |err| {
+                    Logger.err("Failed to explain resource health: {any}", .{err});
+                };
+            },
+            .request_timeline => {
+                try self.view_manager.pushView(self.timeline_view.createView());
+                self.dirty = true;
+            },
+            .request_argo_refresh => self.refreshSelectedArgo(false) catch |err|
+                Logger.err("Argo refresh failed: {any}", .{err}),
+            .request_argo_hard_refresh => self.refreshSelectedArgo(true) catch |err|
+                Logger.err("Argo hard refresh failed: {any}", .{err}),
+            .request_argo_sync_details => self.showArgoSyncDetails() catch |err|
+                Logger.err("Argo sync details failed: {any}", .{err}),
             .request_logs => {
                 self.showLogsView(false) catch |err| {
                     Logger.err("Failed to show logs view: {any}", .{err});
                 };
+            },
+            .request_events => {
+                const info = current_view.getSelectedResource() orelse return;
+                try self.switchToView("events");
+                try self.applyFilterToCurrentView(info.name);
             },
             .request_logs_previous => {
                 self.showLogsView(true) catch |err| {
@@ -3659,6 +3758,7 @@ pub const App = struct {
             ),
             .request_copy => self.copySelectedField(.name),
             .request_copy_namespace => self.copySelectedField(.namespace),
+            .request_copy_column => self.showCellPicker(current_view) catch |e| Logger.err("copy picker failed: {any}", .{e}),
             .request_copy_detail_value => self.copySelectedDetail(.value),
             .request_copy_detail_line => self.copySelectedDetail(.line),
             .request_warp => self.warpToSelectedNamespace() catch |e| Logger.err("warp failed: {any}", .{e}),
@@ -3676,6 +3776,13 @@ pub const App = struct {
             },
             .request_show_port_forwards => {
                 try self.switchToView("pf");
+            },
+            .request_start_port_forward_manager => {
+                if (self.refuseIfReadonly("port-forward")) return;
+                self.clearPendingInput();
+                self.pending_input = .port_forward_manager;
+                self.command_input.showWithPrompt("target namespace local:remote:");
+                self.dirty = true;
             },
         }
     }
@@ -3810,6 +3917,7 @@ pub const App = struct {
             return;
         }
 
+        if (!std.mem.eql(u8, self.current_view_name, name)) self.timeline.clear();
         while (self.view_manager.getDepth() > 0) _ = self.view_manager.popView();
         try self.view_manager.pushView(view);
         self.current_view_name = name;
@@ -3837,6 +3945,11 @@ pub const App = struct {
     /// Switch to a view by its registered command alias (handles the depth-1
     /// pop+push), e.g. returning from the aliases view.
     pub fn switchToView(self: *App, name: []const u8) !void {
+        if (isNamespaceCommand(name) and
+            !std.mem.eql(u8, self.current_view_name, "namespaces"))
+        {
+            self.pre_namespace_view = self.current_view_name;
+        }
         var ctx = Command.CommandContext{
             .allocator = self.allocator,
             .view_manager = &self.view_manager,
@@ -3971,6 +4084,7 @@ pub const App = struct {
         const mutating_action: ?[]const u8 = switch (self.pending_input) {
             .set_image => "set-image",
             .port_forward => "port-forward",
+            .port_forward_manager => "port-forward",
             .transfer => "cp",
             .sanitize => "sanitize",
             .drain => "drain",
@@ -3987,6 +4101,10 @@ pub const App = struct {
         switch (self.pending_input) {
             .set_image => self.doSetImage(value) catch |e| Logger.err("set image failed: {any}", .{e}),
             .port_forward => self.doPortForward(value) catch |e| Logger.err("port-forward failed: {any}", .{e}),
+            .port_forward_manager => self.doManagerPortForward(value) catch |e| {
+                self.footer.setStatus("port-forward start failed");
+                Logger.err("manager port-forward failed: {any}", .{e});
+            },
             .transfer => self.doTransfer(value) catch |e| Logger.err("transfer failed: {any}", .{e}),
             .drain => {
                 if (std.mem.eql(u8, value, "y") or std.mem.eql(u8, value, "yes")) {
@@ -4038,6 +4156,48 @@ pub const App = struct {
             return err;
         };
         self.footer.setStatus("port-forward started (:pf to list)");
+    }
+
+    fn doManagerPortForward(self: *App, value: []const u8) !void {
+        var tokens = std.mem.tokenizeScalar(u8, value, ' ');
+        const target = tokens.next() orelse {
+            self.footer.setStatus("expected: target namespace local:remote");
+            return;
+        };
+        const namespace = tokens.next() orelse {
+            self.footer.setStatus("expected: target namespace local:remote");
+            return;
+        };
+        const ports = tokens.next() orelse {
+            self.footer.setStatus("expected: target namespace local:remote");
+            return;
+        };
+        if (tokens.next() != null or
+            !PortForwardRegistry.isValidTarget(target) or
+            !PortForwardRegistry.isValidPortForwardSpec(ports) or
+            !PortForwardRegistry.isValidNamespace(namespace))
+        {
+            self.footer.setStatus("invalid port-forward target, namespace, or ports");
+            return;
+        }
+        const child = self.k8s_service.spawnKubectl(&.{
+            "port-forward",
+            target,
+            ports,
+            "-n",
+            namespace,
+        }) catch |err| {
+            self.footer.setStatus("unable to spawn kubectl port-forward");
+            return err;
+        };
+        self.port_forward_registry.add(target, ports, namespace, child) catch |err| {
+            var orphan = child;
+            orphan.kill(runtime.io());
+            return err;
+        };
+        try self.port_forwards_view.refresh();
+        self.footer.setStatus("port-forward started");
+        self.dirty = true;
     }
 
     fn doKillFinalizers(self: *App) !void {
@@ -4092,6 +4252,10 @@ pub const App = struct {
         // Endpoints, StorageClasses) have no ViewType, and falling back to pods meant
         // `?` on an Ingress listed Shell, Logs, Attach and Sanitize -- none of which do
         // anything there. .generic lists only what is true on any resource view.
+        if (std.mem.eql(u8, self.current_view_name, "applications")) {
+            const info = self.getSelectedResourceFromCurrentView() orelse return .generic;
+            if (std.mem.eql(u8, info.group, "argoproj.io")) return .applications;
+        }
         return std.meta.stringToEnum(ViewType, self.current_view_name) orelse .generic;
     }
 
@@ -4110,8 +4274,11 @@ pub const App = struct {
 
     /// Submit one supervised detail or YAML request.
     fn showDetailView(self: *App, describe: bool) !void {
-        const resource_type = self.currentResourceType() orelse return;
         const info = self.getSelectedResourceFromCurrentView() orelse return;
+        const resource_type = if (info.resource.len > 0)
+            std.meta.stringToEnum(ResourceType, info.resource) orelse return
+        else
+            self.currentResourceType() orelse return;
         const session_view = self.active_session_slot.view();
         if (session_view.state != .active) return error.NoActiveSession;
         self.detail_request_serial +%= 1;
@@ -4131,6 +4298,81 @@ pub const App = struct {
         self.active_detail_request = null;
         self.active_detail_request = try self.ancillary_requests.startRequest(
             if (describe) .detail else .yaml,
+            session_view.generation,
+            &spec,
+        );
+    }
+
+    fn showExplainHealth(self: *App) !void {
+        const info = self.getSelectedResourceFromCurrentView() orelse return;
+        const resource_type = if (info.resource.len > 0)
+            std.meta.stringToEnum(ResourceType, info.resource) orelse return
+        else
+            self.currentResourceType() orelse return;
+        const session_view = self.active_session_slot.view();
+        if (session_view.state != .active) return error.NoActiveSession;
+        self.detail_request_serial +%= 1;
+        if (self.detail_request_serial == 0) self.detail_request_serial = 1;
+        const serial = self.detail_request_serial;
+        var spec = try detail_request.ownedTaskSpec(self.allocator, .{
+            .serial = serial,
+            .kind = .explain,
+            .resource_type = resource_type,
+            .name = info.name,
+            .namespace = info.namespace,
+        });
+        errdefer spec.deinit(self.allocator);
+        if (self.active_detail_request) |active|
+            _ = self.ancillary_requests.cancelRequest(active);
+        self.active_detail_request = null;
+        self.active_detail_request = try self.ancillary_requests.startRequest(
+            .detail,
+            session_view.generation,
+            &spec,
+        );
+    }
+
+    fn refreshSelectedArgo(self: *App, hard: bool) !void {
+        const info = self.getSelectedResourceFromCurrentView() orelse return;
+        if (!std.mem.eql(u8, info.group, "argoproj.io") or
+            !std.mem.eql(u8, info.resource, "applications"))
+            return;
+        try self.k8s_service.refreshArgoApplication(info.name, info.namespace, hard);
+        self.footer.setStatus(if (hard) "Argo hard refresh requested" else "Argo refresh requested");
+        self.refreshCurrentView();
+    }
+
+    fn showArgoSyncDetails(self: *App) !void {
+        const info = self.getSelectedResourceFromCurrentView() orelse return;
+        if (!std.mem.eql(u8, info.group, "argoproj.io") or
+            !std.mem.eql(u8, info.resource, "applications"))
+            return;
+        for ([_][]const u8{ info.group, info.version, info.namespace, info.resource, info.name }) |segment|
+            if (!read_transport.validPathSegment(segment)) return error.InvalidReadPath;
+        const session_view = self.active_session_slot.view();
+        if (session_view.state != .active) return error.NoActiveSession;
+        const path = try std.fmt.allocPrint(
+            self.allocator,
+            "/apis/{s}/{s}/namespaces/{s}/{s}/{s}",
+            .{ info.group, info.version, info.namespace, info.resource, info.name },
+        );
+        defer self.allocator.free(path);
+        self.detail_request_serial +%= 1;
+        if (self.detail_request_serial == 0) self.detail_request_serial = 1;
+        var spec = try detail_request.ownedTaskSpec(self.allocator, .{
+            .serial = self.detail_request_serial,
+            .kind = .argo_sync,
+            .resource_type = .deployments,
+            .name = info.name,
+            .namespace = info.namespace,
+            .path_override = path,
+        });
+        errdefer spec.deinit(self.allocator);
+        if (self.active_detail_request) |active|
+            _ = self.ancillary_requests.cancelRequest(active);
+        self.active_detail_request = null;
+        self.active_detail_request = try self.ancillary_requests.startRequest(
+            .detail,
             session_view.generation,
             &spec,
         );
@@ -4272,8 +4514,16 @@ pub const App = struct {
 
     /// Submit one supervised pod-log request.
     fn showLogsView(self: *App, previous: bool) !void {
-        if (!std.mem.eql(u8, self.current_view_name, "pods")) return;
-        const info = self.pods_view.getSelectedResourceInfo() orelse return;
+        const current = self.getSelectedResourceFromCurrentView();
+        const info = if (current) |selected|
+            if (std.mem.eql(u8, selected.resource, "pods"))
+                selected
+            else if (std.mem.eql(u8, self.current_view_name, "pods"))
+                self.pods_view.getSelectedResourceInfo() orelse return
+            else
+                return
+        else
+            return;
         const session_view = self.active_session_slot.view();
         if (session_view.state != .active) return error.NoActiveSession;
         self.logs_request_serial +%= 1;
@@ -4461,6 +4711,11 @@ pub const App = struct {
         service_requests: bool,
     ) !void {
         const extras = k9s_query.parseCommand(cmd_text);
+        if (isNamespaceCommand(extras.name) and
+            !std.mem.eql(u8, self.current_view_name, "namespaces"))
+        {
+            self.pre_namespace_view = self.current_view_name;
+        }
         if (extras.context) |ctx_name| {
             if (ctx_name.len > 0) {
                 self.beginContextSwitch(ctx_name) catch {
@@ -4509,6 +4764,10 @@ pub const App = struct {
         }
         if (extras.filter) |f| {
             try self.applyFilterToCurrentView(f);
+        }
+        if (extras.object_name) |object_name| {
+            if (extras.filter == null and extras.labels == null)
+                try self.applyFilterToCurrentView(object_name);
         }
         if (service_requests) try self.serviceResourceSubscriptionRequests();
     }
@@ -4561,33 +4820,33 @@ pub const App = struct {
     /// api-resources` round trip and must not delay the initial view.
     fn loadDiscoveredPaletteNames(self: *App) void {
         if (!self.k8s_service.isConnected()) return;
-        const catalog = self.k8s_service.listApiResources() catch |err| {
-            Logger.warn("palette discovery catalog unavailable: {any}", .{err});
+        if (self.active_palette_discovery_request != null) return;
+        const session_view = self.active_session_slot.view();
+        if (session_view.state != .active) return;
+        var spec = palette_discovery_request.ownedTaskSpec(
+            self.allocator,
+            self.k8s_service,
+            self.k8s_service.getCurrentNamespace(),
+        ) catch |err| {
+            Logger.warn("palette discovery request build failed: {any}", .{err});
             return;
         };
-        defer self.allocator.free(catalog);
-
-        const names = dynamic_resource.collectCompletionNames(self.allocator, catalog) catch |err| {
-            Logger.warn("palette discovery catalog parse failed: {any}", .{err});
+        self.active_palette_discovery_request = self.ancillary_requests.startRequest(
+            .palette_discovery,
+            session_view.generation,
+            &spec,
+        ) catch |err| {
+            Logger.warn("palette discovery request start failed: {any}", .{err});
             return;
         };
-        defer self.allocator.free(names);
+    }
 
-        var added = false;
-        for (names) |name| {
-            if (self.command_registry.contains(name)) {
-                self.allocator.free(name);
-                continue;
-            }
-            self.discovered_command_names.append(self.allocator, name) catch {
-                self.allocator.free(name);
-                continue;
-            };
-            added = true;
-        }
-        if (!added) return;
+    fn clearDiscoveredPaletteNames(self: *App) void {
+        self.active_palette_discovery_request = null;
+        for (self.discovered_command_names.items) |name| self.allocator.free(name);
+        self.discovered_command_names.clearRetainingCapacity();
         self.rebuildPaletteCandidates() catch |err|
-            Logger.warn("palette candidate rebuild failed: {any}", .{err});
+            Logger.warn("palette candidate reset failed: {any}", .{err});
     }
 
     fn openDynamicResource(self: *App, query: []const u8) !bool {
@@ -4650,6 +4909,23 @@ pub const App = struct {
             return;
         };
         self.footer.setStatus("copied");
+        self.dirty = true;
+    }
+
+    fn showCellPicker(self: *App, source: View) !void {
+        const cells = source.getSelectedCells() orelse return;
+        const count = @min(cells.names.len, cells.values.len);
+        if (count == 0) return;
+        var text: std.ArrayListUnmanaged(u8) = .empty;
+        defer text.deinit(self.allocator);
+        for (cells.names[0..count], cells.values[0..count], 0..) |name, value, index| {
+            if (index > 0) try text.append(self.allocator, '\n');
+            const line = try std.fmt.allocPrint(self.allocator, "{s}: {s}", .{ name, value });
+            defer self.allocator.free(line);
+            try text.appendSlice(self.allocator, line);
+        }
+        try self.detail_view.setCellPicker(text.items);
+        try self.view_manager.pushView(self.detail_view.createView());
         self.dirty = true;
     }
 
@@ -4955,15 +5231,60 @@ pub const App = struct {
         else
             try self.k8s_service.setConfiguredNamespace(stable);
         self.rememberNamespace(stable);
-        self.pods_view.table.show_all_namespaces = false;
-        try self.pods_view.applyFilter("");
-        self.clearPodsForScopeChange();
-        // Numbered namespace selection is global navigation. Re-rooting avoids
-        // refreshing a pushed help/detail view while the hidden pods view keeps
-        // its old namespace subscription.
-        try self.replaceRootView(self.pods_view.createView(), "pods");
+        const destination = if (std.mem.eql(u8, self.current_view_name, "namespaces"))
+            self.pre_namespace_view
+        else
+            self.current_view_name;
+        if (std.mem.eql(u8, destination, "pods")) {
+            try self.pods_view.applyFilter("");
+            self.clearPodsForScopeChange();
+        }
+        // Numbered namespace selection is global navigation and preserves the
+        // active resource kind while replacing any pushed overlay.
+        try self.switchToView(destination);
+        if (self.view_manager.getCurrentView()) |view| view.setShowAllNamespaces(false);
         self.refreshCurrentView();
         return true;
+    }
+
+    fn cycleCommonKind(self: *App, direction: i8) !void {
+        const common = [_][]const u8{
+            "pods",
+            "deployments",
+            "services",
+            "configmaps",
+            "secrets",
+            "nodes",
+            "events",
+            "applications",
+        };
+        var current: usize = 0;
+        for (common, 0..) |name, index| {
+            if (std.mem.eql(u8, name, self.current_view_name)) {
+                current = index;
+                break;
+            }
+        }
+        var attempts: usize = 0;
+        while (attempts < common.len) : (attempts += 1) {
+            current = if (direction > 0)
+                (current + 1) % common.len
+            else if (current == 0)
+                common.len - 1
+            else
+                current - 1;
+            const candidate = common[current];
+            if (self.command_registry.contains(candidate)) {
+                try self.switchToView(candidate);
+                return;
+            }
+            if (!containsName(self.discovered_command_names.items, candidate)) continue;
+            const cached = self.dynamic_resource_view.createView();
+            if (!std.mem.eql(u8, cached.getName(), candidate)) continue;
+            try self.replaceRootView(cached, cached.getName());
+            try self.serviceResourceSubscriptionRequests();
+            return;
+        }
     }
 
     /// Load `theme_name` into the shared theme object every view, the header and
@@ -5087,6 +5408,50 @@ const k8s_view_types = .{
     .{ "contexts_view", ContextsView },
     .{ "authorization_view", AuthorizationView },
 };
+
+fn isNamespaceCommand(name: []const u8) bool {
+    return std.mem.eql(u8, name, "ns") or
+        std.mem.eql(u8, name, "namespace") or
+        std.mem.eql(u8, name, "namespaces");
+}
+
+fn containsName(names: []const []const u8, needle: []const u8) bool {
+    for (names) |name| if (std.mem.eql(u8, name, needle)) return true;
+    return false;
+}
+
+fn recordTimeline(
+    raw: *anyopaque,
+    source: []const u8,
+    uid: []const u8,
+    revision: u64,
+    timestamp: i64,
+    summary: []const u8,
+) void {
+    const timeline: *ObjectTimeline = @ptrCast(@alignCast(raw));
+    timeline.record(source, uid, revision, timestamp, summary) catch |err|
+        Logger.warn("timeline record failed: {any}", .{err});
+}
+
+fn applyDiscoveredPaletteNames(raw: *anyopaque, names: [][]u8) void {
+    const app: *App = @ptrCast(@alignCast(raw));
+    for (app.discovered_command_names.items) |name| app.allocator.free(name);
+    app.discovered_command_names.clearRetainingCapacity();
+    for (names) |name| {
+        if (app.command_registry.contains(name)) {
+            app.allocator.free(name);
+            continue;
+        }
+        app.discovered_command_names.append(app.allocator, name) catch {
+            app.allocator.free(name);
+            continue;
+        };
+    }
+    if (names.len > 0) app.allocator.free(names);
+    app.rebuildPaletteCandidates() catch |err|
+        Logger.warn("palette candidate rebuild failed: {any}", .{err});
+    app.dirty = true;
+}
 
 const ViewCommandEntry = struct {
     field: []const u8,
@@ -6429,6 +6794,7 @@ fn readonlyAction(result: View.KeyResult) ?[]const u8 {
         .request_shell => "shell",
         .request_attach => "attach",
         .request_port_forward => "port-forward",
+        .request_start_port_forward_manager => "port-forward",
         .request_set_image => "set-image",
         .request_sanitize => "sanitize",
         .request_transfer => "cp",
@@ -6441,6 +6807,8 @@ fn readonlyAction(result: View.KeyResult) ?[]const u8 {
         .request_suspend => "suspend",
         .request_trigger => "trigger",
         .request_rollback => "rollback",
+        .request_argo_refresh => "Argo refresh",
+        .request_argo_hard_refresh => "Argo hard refresh",
         else => null,
     };
 }
@@ -9707,6 +10075,17 @@ test "poll timeout cannot restart resource subscriptions" {
     }
 }
 
+test "Tab and Shift-Tab cycle common typed resource kinds" {
+    var app = try App.init(std.testing.allocator, .{});
+    defer app.deinit();
+
+    try std.testing.expectEqualStrings("pods", app.current_view_name);
+    try app.handleKey(.tab);
+    try std.testing.expectEqualStrings("deployments", app.current_view_name);
+    try app.handleKey(.shift_tab);
+    try std.testing.expectEqualStrings("pods", app.current_view_name);
+}
+
 test "palette resource switch starts subscription without another key" {
     const allocator = std.testing.allocator;
     const io = runtime.io();
@@ -9747,11 +10126,7 @@ test "palette resource switch starts subscription without another key" {
     try std.testing.expectEqual(@as(usize, 0), app.active_session_slot.leaseCount());
 }
 
-test "palette view switch survives a namespace drill-down" {
-    // The reported repro, end to end: `:ns`, Enter on a namespace, `0` for all
-    // namespaces, then `:nodes`. The namespace drill-down pushes pods ON TOP of
-    // namespaces, and every `:view` command used to require depth 1 -- so from
-    // there the palette closed, the registry reported success, and nothing moved.
+test "namespace drill-down retains kind and later palette switch replaces the stack" {
     const allocator = std.testing.allocator;
     const io = runtime.io();
     var lists = @import("k8s/FakeTransport.zig").PathListTransport.init(
@@ -9779,15 +10154,8 @@ test "palette view switch survives a namespace drill-down" {
     _ = try app.active_session_slot.commit(active_session);
     app.k8s_service.connected = true;
     app.task14 = .{ .transport = lists.transport(), .hold_watch = true };
-    app.pods_view.table.show_all_namespaces = true;
-    var stale_columns: [PodsView.view_config.columns.len][]const u8 = undefined;
-    for (&stale_columns) |*column| column.* = try allocator.dupe(u8, "stale-pod");
-    try app.pods_view.table.appendItem(.{
-        .columns = stale_columns,
-        .allocator = allocator,
-    });
-    try app.pods_view.table.filtered_indices.append(allocator, 0);
 
+    try app.executePaletteCommand("deployments", false);
     try app.executePaletteCommand("ns", false);
     try std.testing.expectEqualStrings("namespaces", app.current_view_name);
 
@@ -9801,15 +10169,14 @@ test "palette view switch survives a namespace drill-down" {
     app.namespaces_view.table.selected_row = 0;
 
     try app.handleKey(.enter);
-    try std.testing.expectEqualStrings("pods", app.current_view_name);
-    try std.testing.expectEqual(@as(usize, 2), app.view_manager.getDepth());
+    try std.testing.expectEqualStrings("deployments", app.current_view_name);
+    try std.testing.expectEqual(@as(usize, 1), app.view_manager.getDepth());
     try std.testing.expectEqualStrings("kube-system", app.k8s_service.current_namespace);
-    try std.testing.expect(!app.pods_view.table.show_all_namespaces);
-    try std.testing.expectEqual(@as(usize, 0), app.pods_view.table.items.items.len);
-    try std.testing.expect(app.pods_view.table.loading);
+    try std.testing.expect(!app.deployments_view.table.show_all_namespaces);
+    try std.testing.expect(app.deployments_view.table.loading);
 
     try app.handleKey(.{ .char = '0' });
-    try std.testing.expect(app.pods_view.table.show_all_namespaces);
+    try std.testing.expect(app.deployments_view.table.show_all_namespaces);
 
     // Palette Enter on the highlighted `nodes` suggestion.
     app.command_input.showWithPrompt(":");

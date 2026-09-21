@@ -9,15 +9,23 @@
 //   -l sel   label selector (AND of comma-separated k=v pairs against stored labels)
 //   -f term  subsequence (fuzzy) match on searchable columns
 //
-// Palette extras after the alias (`:po kube-system /fred app=x @ctx`):
+// Palette extras after the alias (`:po fred in kube-system /running app=x @ctx`):
 //   /foo     apply filter `foo` after switching
 //   k=v      apply as a `-l` label filter
 //   @name    switch kube context first
-//   other    treat as a namespace
+//   other    first bare token names an object; `in` or `ns=` names a namespace
 
 const std = @import("std");
 
-pub const FilterKind = enum { substring, inverse, label, fuzzy };
+pub const FilterKind = enum { substring, inverse, label, fuzzy, comparison };
+
+pub const ComparisonOperator = enum { eq, ne, gt, gte, lt, lte };
+
+pub const Comparison = struct {
+    field: []const u8,
+    operator: ComparisonOperator,
+    value: []const u8,
+};
 
 pub const ParsedFilter = struct {
     kind: FilterKind,
@@ -37,18 +45,121 @@ pub fn parseFilter(raw: []const u8) ParsedFilter {
     if (std.mem.startsWith(u8, s, "-f")) {
         return .{ .kind = .fuzzy, .query = std.mem.trim(u8, s[2..], " \t") };
     }
+    if (parseComparison(s) != null) {
+        return .{ .kind = .comparison, .query = s };
+    }
     return .{ .kind = .substring, .query = s };
+}
+
+pub fn parseComparison(raw: []const u8) ?Comparison {
+    const s = std.mem.trim(u8, raw, " \t");
+    const operators = [_]struct { token: []const u8, value: ComparisonOperator }{
+        .{ .token = ">=", .value = .gte },
+        .{ .token = "<=", .value = .lte },
+        .{ .token = "!=", .value = .ne },
+        .{ .token = "=", .value = .eq },
+        .{ .token = ">", .value = .gt },
+        .{ .token = "<", .value = .lt },
+    };
+    for (operators) |candidate| {
+        const pos = std.mem.indexOf(u8, s, candidate.token) orelse continue;
+        const field = std.mem.trim(u8, s[0..pos], " \t");
+        const value = std.mem.trim(u8, s[pos + candidate.token.len ..], " \t");
+        if (field.len == 0 or value.len == 0) return null;
+        if (!isComparisonField(field)) return null;
+        return .{ .field = field, .operator = candidate.value, .value = value };
+    }
+    return null;
+}
+
+fn isComparisonField(field: []const u8) bool {
+    return std.ascii.eqlIgnoreCase(field, "status") or
+        std.ascii.eqlIgnoreCase(field, "cpu") or
+        std.ascii.eqlIgnoreCase(field, "memory") or
+        std.ascii.eqlIgnoreCase(field, "mem") or
+        std.ascii.eqlIgnoreCase(field, "restarts") or
+        std.ascii.eqlIgnoreCase(field, "age");
+}
+
+pub const QuantityKind = enum { text, integer, cpu, memory, age };
+
+pub fn matchesComparison(cell: []const u8, comparison: Comparison, kind: QuantityKind) bool {
+    if (kind == .text) {
+        const equal = std.ascii.eqlIgnoreCase(cell, comparison.value);
+        return switch (comparison.operator) {
+            .eq => equal,
+            .ne => !equal,
+            else => false,
+        };
+    }
+    const left = parseQuantity(cell, kind) orelse return false;
+    const right = parseQuantity(comparison.value, kind) orelse return false;
+    return switch (comparison.operator) {
+        .eq => left == right,
+        .ne => left != right,
+        .gt => left > right,
+        .gte => left >= right,
+        .lt => left < right,
+        .lte => left <= right,
+    };
+}
+
+pub fn parseQuantity(value: []const u8, kind: QuantityKind) ?u64 {
+    return switch (kind) {
+        .text => null,
+        .integer => std.fmt.parseInt(u64, value, 10) catch null,
+        .cpu => parseCpu(value),
+        .memory => parseMemory(value),
+        .age => parseAge(value),
+    };
+}
+
+pub fn parseCpu(value: []const u8) ?u64 {
+    if (std.ascii.eqlIgnoreCase(value, "n/a")) return null;
+    if (std.mem.endsWith(u8, value, "m"))
+        return std.fmt.parseInt(u64, value[0 .. value.len - 1], 10) catch null;
+    return (std.fmt.parseInt(u64, value, 10) catch return null) *| 1000;
+}
+
+pub fn parseMemory(value: []const u8) ?u64 {
+    if (std.ascii.eqlIgnoreCase(value, "n/a")) return null;
+    const units = [_]struct { suffix: []const u8, multiplier: u64 }{
+        .{ .suffix = "Gi", .multiplier = 1024 * 1024 * 1024 },
+        .{ .suffix = "Mi", .multiplier = 1024 * 1024 },
+        .{ .suffix = "Ki", .multiplier = 1024 },
+    };
+    for (units) |unit| {
+        if (std.mem.endsWith(u8, value, unit.suffix)) {
+            return (std.fmt.parseInt(u64, value[0 .. value.len - unit.suffix.len], 10) catch return null) *| unit.multiplier;
+        }
+    }
+    return std.fmt.parseInt(u64, value, 10) catch null;
+}
+
+pub fn parseAge(value: []const u8) ?u64 {
+    if (value.len < 2 or std.ascii.eqlIgnoreCase(value, "n/a")) return null;
+    const multiplier: u64 = switch (value[value.len - 1]) {
+        's' => 1,
+        'm' => 60,
+        'h' => 60 * 60,
+        'd' => 24 * 60 * 60,
+        else => return null,
+    };
+    return (std.fmt.parseInt(u64, value[0 .. value.len - 1], 10) catch return null) *| multiplier;
 }
 
 pub const CommandExtras = struct {
     name: []const u8,
+    object_name: ?[]const u8 = null,
     namespace: ?[]const u8 = null,
     filter: ?[]const u8 = null,
     labels: ?[]const u8 = null,
     context: ?[]const u8 = null,
 };
 
-/// First token is the command/alias; remaining tokens are extras.
+/// First token is the command/alias. A bare token names an object; `in <ns>`
+/// or `ns=<ns>` scopes the destination. Existing `/`, label, and `@context`
+/// phrases remain composable.
 pub fn parseCommand(raw: []const u8) CommandExtras {
     const trimmed = std.mem.trim(u8, raw, " \t");
     if (trimmed.len == 0) return .{ .name = trimmed };
@@ -56,16 +167,24 @@ pub fn parseCommand(raw: []const u8) CommandExtras {
     var it = std.mem.tokenizeScalar(u8, trimmed, ' ');
     const name = it.next() orelse return .{ .name = trimmed };
     var extras = CommandExtras{ .name = name };
+    var namespace_next = false;
     while (it.next()) |tok| {
         if (tok.len == 0) continue;
-        if (tok[0] == '/') {
+        if (namespace_next) {
+            extras.namespace = tok;
+            namespace_next = false;
+        } else if (std.ascii.eqlIgnoreCase(tok, "in")) {
+            namespace_next = true;
+        } else if (std.mem.startsWith(u8, tok, "ns=")) {
+            extras.namespace = tok["ns=".len..];
+        } else if (tok[0] == '/') {
             extras.filter = tok[1..];
         } else if (tok[0] == '@') {
             extras.context = tok[1..];
         } else if (std.mem.indexOfScalar(u8, tok, '=')) |_| {
             extras.labels = tok;
         } else {
-            extras.namespace = tok;
+            if (extras.object_name == null) extras.object_name = tok;
         }
     }
     return extras;
@@ -129,6 +248,14 @@ pub fn matchSearchable(columns: []const []const u8, labels: []const u8, filter: 
         .substring, .inverse => columnsHit(columns, parsed.query, false),
         .fuzzy => columnsHit(columns, parsed.query, true),
         .label => labelsMatch(labels, parsed.query),
+        .comparison => blk: {
+            const comparison = parseComparison(parsed.query) orelse break :blk false;
+            if (!std.ascii.eqlIgnoreCase(comparison.field, "status")) break :blk false;
+            for (columns) |column| {
+                if (matchesComparison(column, comparison, .text)) break :blk true;
+            }
+            break :blk false;
+        },
     };
     return if (parsed.kind == .inverse) !hit else hit;
 }
@@ -267,13 +394,31 @@ test "parseFilter prefixes" {
     try std.testing.expectEqualStrings("", e.query);
 }
 
+test "typed comparisons parse and compare Kubernetes quantities" {
+    const comparison = parseComparison("cpu>=500m").?;
+    try std.testing.expectEqual(ComparisonOperator.gte, comparison.operator);
+    try std.testing.expect(matchesComparison("750m", comparison, .cpu));
+    try std.testing.expect(!matchesComparison("250m", comparison, .cpu));
+    try std.testing.expect(matchesComparison("1Gi", parseComparison("memory>900Mi").?, .memory));
+    try std.testing.expect(matchesComparison("6", parseComparison("restarts>=5").?, .integer));
+    try std.testing.expect(matchesComparison("90m", parseComparison("age<2h").?, .age));
+    try std.testing.expect(matchesComparison("CrashLoopBackOff", parseComparison("status=crashloopbackoff").?, .text));
+    try std.testing.expect(matchesComparison("Running", parseComparison("status!=failed").?, .text));
+    try std.testing.expect(!matchesComparison("Running", parseComparison("status>failed").?, .text));
+    try std.testing.expect(!matchesComparison("n/a", comparison, .cpu));
+    try std.testing.expect(parseComparison("cpu>=") == null);
+    try std.testing.expect(parseComparison(">=500m") == null);
+    try std.testing.expect(parseComparison("unknown=1") == null);
+}
+
 test "parseCommand extras" {
     const a = parseCommand("po");
     try std.testing.expectEqualStrings("po", a.name);
     try std.testing.expect(a.namespace == null);
 
-    const b = parseCommand("po kube-system");
+    const b = parseCommand("po nginx in kube-system");
     try std.testing.expectEqualStrings("po", b.name);
+    try std.testing.expectEqualStrings("nginx", b.object_name.?);
     try std.testing.expectEqualStrings("kube-system", b.namespace.?);
 
     const c = parseCommand("dp /fred");
@@ -284,10 +429,14 @@ test "parseCommand extras" {
     try std.testing.expectEqualStrings("po", d.name);
     try std.testing.expectEqualStrings("app=web", d.labels.?);
     try std.testing.expectEqualStrings("prod", d.context.?);
+
+    const e = parseCommand("deploy social ns=prod");
+    try std.testing.expectEqualStrings("social", e.object_name.?);
+    try std.testing.expectEqualStrings("prod", e.namespace.?);
 }
 
 test "matchSearchable substring inverse fuzzy labels" {
-    const cols = [_][]const u8{ "default", "nginx-abc" };
+    const cols = [_][]const u8{ "default", "nginx-abc", "Running" };
     try std.testing.expect(matchSearchable(&cols, "app=web", "nginx"));
     try std.testing.expect(!matchSearchable(&cols, "app=web", "redis"));
     try std.testing.expect(matchSearchable(&cols, "app=web", "!redis"));
@@ -297,6 +446,9 @@ test "matchSearchable substring inverse fuzzy labels" {
     try std.testing.expect(matchSearchable(&cols, "app=web,env=prod", "-l app=web"));
     try std.testing.expect(!matchSearchable(&cols, "app=web", "-l app=db"));
     try std.testing.expect(!matchSearchable(&cols, "myapp=web", "-l app=web"));
+    try std.testing.expect(matchSearchable(&cols, "app=web", "status=running"));
+    try std.testing.expect(!matchSearchable(&cols, "app=web", "status=failed"));
+    try std.testing.expect(!matchSearchable(&cols, "app=web", "cpu>500m"));
     try std.testing.expect(matchSearchable(&cols, "app=web", ""));
     try std.testing.expect(matchSearchable(&cols, "app=web", "!"));
 }

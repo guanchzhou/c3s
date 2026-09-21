@@ -382,6 +382,7 @@ pub const Terminal = struct {
             0x05 => return Key.ctrl_e,
             0x06 => return Key.ctrl_f,
             0x07 => return Key.ctrl_g,
+            0x09 => return Key.tab,
             0x0b => return Key.ctrl_k,
             0x0c => return Key.ctrl_l,
             0x10 => return Key.ctrl_p,
@@ -415,7 +416,7 @@ pub const Terminal = struct {
                     if (bytes_read >= 3 and buf[1] == '[') {
                         const code = buf[2];
                         // Simple sequences: ESC[A, ESC[B, ESC[C, ESC[D, ESC[H, ESC[F
-                        if (code == 'A' or code == 'B' or code == 'C' or code == 'D' or code == 'H' or code == 'F') {
+                        if (code == 'A' or code == 'B' or code == 'C' or code == 'D' or code == 'H' or code == 'F' or code == 'Z') {
                             break;
                         }
                         // Tilde sequences need one more character: ESC[5~, ESC[6~, etc.
@@ -482,6 +483,7 @@ pub const Terminal = struct {
                 'D' => return Key.left,
                 'H' => return Key.home,
                 'F' => return Key.end,
+                'Z' => return Key.shift_tab,
                 else => {},
             }
 
@@ -581,6 +583,8 @@ pub const Key = union(enum) {
     ctrl_backslash,
     /// k9s mark-range (ASCII NUL). Named so tests can send it; 0x00 is not a `.char`.
     ctrl_space,
+    tab,
+    shift_tab,
     shift_left,
     shift_right,
     question_mark,
@@ -863,6 +867,10 @@ test "shift+arrow left is shift_left" {
 test "shift+arrow right is shift_right" {
     const k = try Terminal.decodeCsi("\x1b[1;2C");
     try testing.expectEqual(Key.shift_right, k);
+}
+
+test "shift+tab is decoded from CSI Z" {
+    try testing.expectEqual(Key.shift_tab, try Terminal.decodeCsi("\x1b[Z"));
 }
 
 test "ctrl+arrow left stays left" {

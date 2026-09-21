@@ -89,6 +89,34 @@ pub const PortForwardRegistry = struct {
         return true;
     }
 
+    pub fn isValidTarget(target: []const u8) bool {
+        const slash = std.mem.indexOfScalar(u8, target, '/') orelse return false;
+        const kind = target[0..slash];
+        const name = target[slash + 1 ..];
+        if (name.len == 0) return false;
+        if (!std.mem.eql(u8, kind, "pod") and !std.mem.eql(u8, kind, "pods") and
+            !std.mem.eql(u8, kind, "service") and !std.mem.eql(u8, kind, "services") and
+            !std.mem.eql(u8, kind, "svc"))
+            return false;
+        for (name) |byte| {
+            if (!std.ascii.isAlphanumeric(byte) and byte != '.' and byte != '-') return false;
+        }
+        return true;
+    }
+
+    pub fn isValidNamespace(namespace: []const u8) bool {
+        if (namespace.len == 0 or namespace.len > 63) return false;
+        if (!std.ascii.isAlphanumeric(namespace[0]) or
+            !std.ascii.isAlphanumeric(namespace[namespace.len - 1]))
+            return false;
+        for (namespace) |byte| {
+            if (!(byte >= 'a' and byte <= 'z') and
+                !std.ascii.isDigit(byte) and byte != '-')
+                return false;
+        }
+        return true;
+    }
+
     /// Kill and reap everything still running, then free.
     pub fn deinit(self: *PortForwardRegistry) void {
         for (self.entries.items) |*e| {
@@ -353,4 +381,26 @@ test "isValidPortForwardSpec accepts digits and a named remote, rejects shell" {
     try std.testing.expect(!PortForwardRegistry.isValidPortForwardSpec("8080:80$"));
     try std.testing.expect(!PortForwardRegistry.isValidPortForwardSpec("8080 80"));
     try std.testing.expect(!PortForwardRegistry.isValidPortForwardSpec("http:80"));
+}
+
+test "port-forward targets are constrained to pods and services" {
+    try std.testing.expect(PortForwardRegistry.isValidTarget("pods/api-0"));
+    try std.testing.expect(PortForwardRegistry.isValidTarget("svc/api"));
+    try std.testing.expect(!PortForwardRegistry.isValidTarget("deployments/api"));
+    try std.testing.expect(!PortForwardRegistry.isValidTarget("pods/api;rm"));
+    try std.testing.expect(!PortForwardRegistry.isValidTarget(""));
+    try std.testing.expect(!PortForwardRegistry.isValidTarget("pods/"));
+    try std.testing.expect(!PortForwardRegistry.isValidTarget("pods"));
+    try std.testing.expect(!PortForwardRegistry.isValidTarget("PODS/api"));
+    try std.testing.expect(!PortForwardRegistry.isValidTarget("pods/api_0"));
+}
+
+test "port-forward namespaces are DNS labels" {
+    try std.testing.expect(PortForwardRegistry.isValidNamespace("default"));
+    try std.testing.expect(PortForwardRegistry.isValidNamespace("team-a"));
+    try std.testing.expect(!PortForwardRegistry.isValidNamespace(""));
+    try std.testing.expect(!PortForwardRegistry.isValidNamespace("-team"));
+    try std.testing.expect(!PortForwardRegistry.isValidNamespace("team-"));
+    try std.testing.expect(!PortForwardRegistry.isValidNamespace("Team"));
+    try std.testing.expect(!PortForwardRegistry.isValidNamespace("team;rm"));
 }

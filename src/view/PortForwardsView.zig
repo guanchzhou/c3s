@@ -50,8 +50,8 @@ pub const PortForwardsView = struct {
             self.allocator.free(self.target);
             self.allocator.free(self.ports);
             self.allocator.free(self.namespace);
+            self.allocator.free(self.status);
             self.allocator.free(self.pid);
-            // `status` is a static string from Entry.status(); not owned.
         }
 
         fn getTarget(self: *const Row) []const u8 {
@@ -100,12 +100,17 @@ pub const PortForwardsView = struct {
             errdefer a.free(ports);
             const namespace = try a.dupe(u8, entry.namespace);
             errdefer a.free(namespace);
+            const status = if (entry.exit_code) |code|
+                try std.fmt.allocPrint(a, "{s} ({d})", .{ entry.status(), code })
+            else
+                try a.dupe(u8, entry.status());
+            errdefer a.free(status);
 
             try self.table.appendItem(.{
                 .target = target,
                 .ports = ports,
                 .namespace = namespace,
-                .status = entry.status(),
+                .status = status,
                 .pid = pid_str,
                 .registry_index = i,
                 .allocator = a,
@@ -281,6 +286,7 @@ pub const PortForwardsView = struct {
                 return .handled;
             },
             .char => |c| switch (c) {
+                'F' => return .request_start_port_forward_manager,
                 'r' => {
                     self.refresh() catch |err| Logger.err("Failed to refresh port-forwards: {any}", .{err});
                     return .handled;
