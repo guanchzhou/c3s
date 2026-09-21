@@ -18,6 +18,8 @@ The release workflow extracts the section matching the git tag (`vX.Y.Z` →
   all-namespaces), matching k9s-style hopping.
 - Enter on a node opens that node's pods via a projection `node=` filter.
 - `--command` / `-c` runs after connect through the palette resolver.
+- Discovered cluster resources and their short names appear in the command
+  palette dropdown, so `nodepool` suggests `nodepools` while typing.
 
 ### Fixed
 

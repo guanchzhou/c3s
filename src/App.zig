@@ -323,6 +323,7 @@ const rc = @import("view/resource_configs.zig");
 const PodsView = rc.PodsView;
 const AliasesView = @import("view/AliasesView.zig").AliasesView;
 const DynamicResourceView = @import("view/DynamicResourceView.zig").DynamicResourceView;
+const dynamic_resource = @import("k8s/DynamicResource.zig");
 const DeploymentsView = rc.DeploymentsView;
 const ServicesView = rc.ServicesView;
 const NamespacesView = @import("view/NamespacesView.zig").NamespacesView;
@@ -874,6 +875,9 @@ pub const App = struct {
     /// All registered command names/aliases, kept alive for the fuzzy dropdown.
     /// Allocated after registerCommands(); freed in deinit().
     command_names: [][]const u8 = &.{},
+    /// Discovery-only resource names (`nodepools`, `ec2nodeclasses`, …) merged
+    /// into the dropdown once the cluster catalog is known. Owned strings.
+    discovered_command_names: std.ArrayListUnmanaged([]u8) = .empty,
 
     // Kubernetes service
     k8s_service: *K8sService,
@@ -1391,8 +1395,7 @@ pub const App = struct {
 
         // Build the candidate list for the fuzzy command palette dropdown.
         // Done once here; the slice lives for the entire app lifetime.
-        app.command_names = try app.command_registry.getCommandNames();
-        app.command_input.setCandidates(app.command_names);
+        try app.rebuildPaletteCandidates();
 
         // Push initial view (PodsView is the reference implementation with all features working)
         try app.view_manager.pushView(app.pods_view.createView());
@@ -1506,6 +1509,8 @@ pub const App = struct {
 
         // Clean up MVVM components
         self.allocator.free(self.command_names);
+        for (self.discovered_command_names.items) |name| self.allocator.free(name);
+        self.discovered_command_names.deinit(self.allocator);
         self.command_registry.deinit();
 
         self.k8s_service.detachSession();
@@ -1666,6 +1671,7 @@ pub const App = struct {
                 // Server version remains a deferred UI update. Header metrics
                 // are submitted as a supervised one-shot child.
                 self.header.updateK8sVersion(self.k8s_service.getServerVersion()) catch {};
+                self.loadDiscoveredPaletteNames();
                 self.startHeaderMetricsRequest() catch |err| {
                     Logger.warn("header metrics start failed: {any}", .{err});
                 };
@@ -4352,6 +4358,66 @@ pub const App = struct {
         self.executePaletteCommandWithService(startup_command, false, false) catch |err| {
             Logger.warn("startup command '{s}' failed: {any}", .{ startup_command, err });
         };
+    }
+
+    /// Rebuild the palette dropdown candidates from the static registry plus
+    /// whatever the cluster catalog contributed. The CommandInput borrows the
+    /// slice, so the new one is installed before the old one is released.
+    fn rebuildPaletteCandidates(self: *App) !void {
+        const registry_names = try self.command_registry.getCommandNames();
+        defer self.allocator.free(registry_names);
+
+        var candidates = try std.ArrayListUnmanaged([]const u8).initCapacity(
+            self.allocator,
+            registry_names.len + self.discovered_command_names.items.len,
+        );
+        errdefer candidates.deinit(self.allocator);
+        candidates.appendSliceAssumeCapacity(registry_names);
+        for (self.discovered_command_names.items) |name|
+            candidates.appendAssumeCapacity(name);
+
+        const owned = try candidates.toOwnedSlice(self.allocator);
+        const previous = self.command_names;
+        self.command_names = owned;
+        self.command_input.setCandidates(self.command_names);
+        if (previous.len > 0) self.allocator.free(previous);
+    }
+
+    /// Merge discovery-only resource names into the palette dropdown. Without
+    /// this, `nodepools` and other CRDs resolve on Enter but never appear as a
+    /// suggestion, so they read as unsupported while typing.
+    ///
+    /// Runs after the first data paint: the catalog costs a `kubectl
+    /// api-resources` round trip and must not delay the initial view.
+    fn loadDiscoveredPaletteNames(self: *App) void {
+        if (!self.k8s_service.isConnected()) return;
+        const catalog = self.k8s_service.listApiResources() catch |err| {
+            Logger.warn("palette discovery catalog unavailable: {any}", .{err});
+            return;
+        };
+        defer self.allocator.free(catalog);
+
+        const names = dynamic_resource.collectCompletionNames(self.allocator, catalog) catch |err| {
+            Logger.warn("palette discovery catalog parse failed: {any}", .{err});
+            return;
+        };
+        defer self.allocator.free(names);
+
+        var added = false;
+        for (names) |name| {
+            if (self.command_registry.contains(name)) {
+                self.allocator.free(name);
+                continue;
+            }
+            self.discovered_command_names.append(self.allocator, name) catch {
+                self.allocator.free(name);
+                continue;
+            };
+            added = true;
+        }
+        if (!added) return;
+        self.rebuildPaletteCandidates() catch |err|
+            Logger.warn("palette candidate rebuild failed: {any}", .{err});
     }
 
     fn openDynamicResource(self: *App, query: []const u8) !bool {
@@ -9577,6 +9643,47 @@ test "typed :nodes wins over any fuzzy suggestion from any depth" {
     try std.testing.expectEqualStrings("nodes", app.current_view_name);
     try std.testing.expect(app.view_manager.isViewActive("nodes"));
     try std.testing.expectEqual(@as(usize, 1), app.view_manager.getDepth());
+}
+
+test "discovered resources become palette suggestions" {
+    // Typing `nodepool` must surface `nodepools` in the dropdown. Enter already
+    // resolved discovery-only resources, but with no suggestion they read as
+    // unsupported while typing.
+    var app = try App.init(std.testing.allocator, .{});
+    defer app.deinit();
+
+    app.command_input.showWithPrompt(":");
+    try app.command_input.setText("nodepool");
+    if (app.command_input.currentSuggestion()) |suggestion|
+        try std.testing.expect(!std.mem.eql(u8, suggestion, "nodepools"));
+
+    const catalog =
+        \\NAME                   SHORTNAMES    APIVERSION                 NAMESPACED   KIND
+        \\nodepools                            karpenter.sh/v1            false        NodePool
+        \\pods                   po            v1                         true         Pod
+    ;
+    const names = try dynamic_resource.collectCompletionNames(std.testing.allocator, catalog);
+    defer std.testing.allocator.free(names);
+    for (names) |name| {
+        if (app.command_registry.contains(name)) {
+            std.testing.allocator.free(name);
+            continue;
+        }
+        try app.discovered_command_names.append(std.testing.allocator, name);
+    }
+    try app.rebuildPaletteCandidates();
+
+    // `pods` and `po` are static commands; discovery must not duplicate them.
+    try std.testing.expectEqual(@as(usize, 1), app.discovered_command_names.items.len);
+    try std.testing.expectEqualStrings("nodepools", app.discovered_command_names.items[0]);
+
+    app.command_input.showWithPrompt(":");
+    try app.command_input.setText("nodepool");
+    try std.testing.expectEqualStrings("nodepools", app.command_input.currentSuggestion().?);
+
+    // The dropdown may complete it, but a discovery name must still reach the
+    // resolver verbatim rather than being swapped for a static command.
+    try std.testing.expect(App.shouldCompletePaletteCommand("nodepool", "nodepools"));
 }
 
 test "--command opens the requested view and absence of it keeps the default" {

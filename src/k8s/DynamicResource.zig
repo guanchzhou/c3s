@@ -137,6 +137,52 @@ pub fn resolveApiResources(
     return suffix_match;
 }
 
+/// Collect every palette-typable name from the `kubectl api-resources` catalog:
+/// each plural plus its short names. Discovery-only resources are otherwise
+/// invisible in the command dropdown, so typing `nodepool` looks unsupported
+/// even though Enter resolves it. Caller owns the slice and each entry.
+pub fn collectCompletionNames(
+    allocator: std.mem.Allocator,
+    output: []const u8,
+) ![][]u8 {
+    var names = std.ArrayListUnmanaged([]u8).empty;
+    errdefer {
+        for (names.items) |name| allocator.free(name);
+        names.deinit(allocator);
+    }
+
+    var lines = std.mem.splitScalar(u8, output, '\n');
+    const header = lines.next() orelse return names.toOwnedSlice(allocator);
+    const offsets = apiResourceOffsets(header) orelse return error.InvalidDiscoveryOutput;
+
+    while (lines.next()) |line| {
+        if (std.mem.trim(u8, line, " \t\r").len == 0) continue;
+        const cells = apiResourceCells(line, offsets);
+        if (cells[0].len == 0) continue;
+        try appendUniqueName(allocator, &names, cells[0]);
+        var short_names = std.mem.splitScalar(u8, cells[1], ',');
+        while (short_names.next()) |short_name| {
+            const trimmed = std.mem.trim(u8, short_name, " \t\r");
+            if (trimmed.len == 0) continue;
+            try appendUniqueName(allocator, &names, trimmed);
+        }
+    }
+    return names.toOwnedSlice(allocator);
+}
+
+fn appendUniqueName(
+    allocator: std.mem.Allocator,
+    names: *std.ArrayListUnmanaged([]u8),
+    name: []const u8,
+) !void {
+    for (names.items) |existing| {
+        if (eqlIgnoreCase(existing, name)) return;
+    }
+    const owned = try allocator.dupe(u8, name);
+    errdefer allocator.free(owned);
+    try names.append(allocator, owned);
+}
+
 const ApiResourceOffsets = [5]usize;
 
 fn apiResourceOffsets(header: []const u8) ?ApiResourceOffsets {
@@ -555,6 +601,51 @@ test "api-resources catalog resolves every Karpenter palette entry" {
         }
         try std.testing.expect(!descriptor.namespaced);
     }
+}
+
+test "completion names cover discovery plurals and their short names" {
+    const catalog =
+        \\NAME                   SHORTNAMES    APIVERSION                 NAMESPACED   KIND
+        \\ec2nodeclasses         ec2nc,ec2ncs  karpenter.k8s.aws/v1       false        EC2NodeClass
+        \\nodepools                            karpenter.sh/v1            false        NodePool
+        \\nodeoverlays           overlays      karpenter.sh/v1alpha1      false        NodeOverlay
+        \\
+    ;
+    const names = try collectCompletionNames(std.testing.allocator, catalog);
+    defer {
+        for (names) |name| std.testing.allocator.free(name);
+        std.testing.allocator.free(names);
+    }
+
+    for ([_][]const u8{
+        "ec2nodeclasses",
+        "ec2nc",
+        "ec2ncs",
+        "nodepools",
+        "nodeoverlays",
+        "overlays",
+    }) |expected| {
+        var found = false;
+        for (names) |name| {
+            if (std.mem.eql(u8, name, expected)) found = true;
+        }
+        try std.testing.expect(found);
+    }
+    try std.testing.expectEqual(@as(usize, 6), names.len);
+}
+
+test "completion names deduplicate a short name shared with a plural" {
+    const catalog =
+        \\NAME                   SHORTNAMES    APIVERSION                 NAMESPACED   KIND
+        \\nodepools              nodepools     karpenter.sh/v1            false        NodePool
+    ;
+    const names = try collectCompletionNames(std.testing.allocator, catalog);
+    defer {
+        for (names) |name| std.testing.allocator.free(name);
+        std.testing.allocator.free(names);
+    }
+    try std.testing.expectEqual(@as(usize, 1), names.len);
+    try std.testing.expectEqualStrings("nodepools", names[0]);
 }
 
 test "ambiguous api-resources suffix releases its provisional descriptor once" {
