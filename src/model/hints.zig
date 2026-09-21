@@ -57,7 +57,7 @@ pub const HintConfig = struct {
 pub fn podsHints() HintConfig {
     const quick_cmds = comptime [_]QuickCommand{
         .{ .key = "0", .cmd = "all" },
-        .{ .key = "1", .cmd = "default" },
+        .{ .key = "1-9", .cmd = "recent namespaces" },
     };
 
     const hint_items = comptime [_]Hint{

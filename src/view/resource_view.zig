@@ -513,11 +513,22 @@ pub fn ResourceView(
         ) !void {
             const adapter = self.projection_adapter orelse return;
             var rollback = try adapter.captureViewFn(adapter.ptr, self.table.allocator);
-            adapter.setViewFn(adapter.ptr, "", column, ascending) catch |err| {
+            // Most slash filters operate on formatted/searchable table cells,
+            // so the projection stays unfiltered and syncProjectionFiltered
+            // applies them below. Node drill-down is different: `node=<exact>`
+            // is a projection predicate over PodRecord.node_name, not literal
+            // row text. Sending it through the generic row matcher looks for
+            // the `node=` prefix in a cell and removes every pod.
+            const projection_filter = if (isProjectionOnlyFilter(filter))
+                filter
+            else
+                "";
+            const row_filter = if (projection_filter.len > 0) "" else filter;
+            adapter.setViewFn(adapter.ptr, projection_filter, column, ascending) catch |err| {
                 rollback.deinit(self.table.allocator);
                 return err;
             };
-            self.syncProjectionFiltered(filter) catch |err| {
+            self.syncProjectionFiltered(row_filter) catch |err| {
                 rollback.restore(adapter.ptr, self.table.allocator);
                 return err;
             };
@@ -678,8 +689,16 @@ pub fn ResourceView(
             return k9s_query.matchSearchable(cols[0..n], item.labels, filter);
         }
 
+        fn isProjectionOnlyFilter(filter: []const u8) bool {
+            return is_pods and std.mem.startsWith(u8, filter, "node=");
+        }
+
         pub fn syncProjection(self: *Self) !void {
-            try self.syncProjectionFiltered(self.table.filter_text);
+            const row_filter = if (isProjectionOnlyFilter(self.table.filter_text))
+                ""
+            else
+                self.table.filter_text;
+            try self.syncProjectionFiltered(row_filter);
         }
 
         fn syncProjectionFiltered(self: *Self, filter: []const u8) !void {
@@ -1125,6 +1144,7 @@ pub fn ResourceView(
 
             if (is_nodes) {
                 switch (key) {
+                    .enter => return .request_view_node_pods,
                     .char => |c| switch (c) {
                         // k9s: `u` toggles cordon. STATUS carries kubectl's
                         // `,SchedulingDisabled` when spec.unschedulable is set.

@@ -7,6 +7,7 @@ pub const UiConfig = struct {
     footer: bool = true,
     theme: []const u8 = "tokyo-night",
     theme_allocated: ?[]u8 = null,
+    recent_namespaces: []const []const u8 = &.{},
 };
 
 pub const Config = struct {
@@ -18,6 +19,9 @@ pub const Config = struct {
         if (self.theme_owned) |theme| {
             self.allocator.free(theme);
         }
+        for (self.ui.recent_namespaces) |namespace| self.allocator.free(namespace);
+        if (self.ui.recent_namespaces.len > 0)
+            self.allocator.free(self.ui.recent_namespaces);
     }
 };
 
@@ -61,6 +65,12 @@ pub fn load(allocator: std.mem.Allocator) !Config {
 
 fn parseUiConfig(allocator: std.mem.Allocator, content: []const u8) !UiConfig {
     var ui_config = UiConfig{};
+    errdefer {
+        if (ui_config.theme_allocated) |theme| allocator.free(theme);
+        for (ui_config.recent_namespaces) |namespace| allocator.free(namespace);
+        if (ui_config.recent_namespaces.len > 0)
+            allocator.free(ui_config.recent_namespaces);
+    }
 
     // Simple line-by-line parser
     var lines = std.mem.splitScalar(u8, content, '\n');
@@ -112,9 +122,50 @@ fn parseUiConfig(allocator: std.mem.Allocator, content: []const u8) !UiConfig {
                 ui_config.theme_allocated = owned;
             }
         }
+
+        if (std.mem.startsWith(u8, trimmed, "recent_namespaces:")) {
+            const parsed = try parseRecentNamespaces(
+                allocator,
+                trimmed["recent_namespaces:".len..],
+            );
+            for (ui_config.recent_namespaces) |namespace| allocator.free(namespace);
+            if (ui_config.recent_namespaces.len > 0)
+                allocator.free(ui_config.recent_namespaces);
+            ui_config.recent_namespaces = parsed;
+        }
     }
 
     return ui_config;
+}
+
+fn parseRecentNamespaces(
+    allocator: std.mem.Allocator,
+    raw: []const u8,
+) ![]const []const u8 {
+    var value = std.mem.trim(u8, raw, " \t");
+    if (value.len >= 2 and value[0] == '[' and value[value.len - 1] == ']')
+        value = value[1 .. value.len - 1];
+    if (std.mem.trim(u8, value, " \t").len == 0) return &.{};
+
+    var entries: std.ArrayListUnmanaged([]const u8) = .empty;
+    errdefer {
+        for (entries.items) |entry| allocator.free(entry);
+        entries.deinit(allocator);
+    }
+    var values = std.mem.splitScalar(u8, value, ',');
+    while (values.next()) |candidate| {
+        const namespace = std.mem.trim(u8, candidate, " \t");
+        if (namespace.len == 0) continue;
+        var duplicate = false;
+        for (entries.items) |entry| {
+            if (std.mem.eql(u8, entry, namespace)) duplicate = true;
+        }
+        if (duplicate) continue;
+        try entries.ensureUnusedCapacity(allocator, 1);
+        entries.appendAssumeCapacity(try allocator.dupe(u8, namespace));
+        if (entries.items.len == 9) break;
+    }
+    return entries.toOwnedSlice(allocator);
 }
 
 // ============================================================================
@@ -218,6 +269,76 @@ pub fn withTheme(
 
     if (ends_with_newline and (out.items.len == 0 or out.items[out.items.len - 1] != '\n')) {
         try out.append(allocator, '\n');
+    }
+    return out.toOwnedSlice(allocator);
+}
+
+/// Rewrite `content` so the `ui:` section persists the MRU namespace shortcuts.
+pub fn withRecentNamespaces(
+    allocator: std.mem.Allocator,
+    content: []const u8,
+    namespaces: []const []const u8,
+) ![]u8 {
+    var value: std.ArrayListUnmanaged(u8) = .empty;
+    defer value.deinit(allocator);
+    try value.appendSlice(allocator, "recent_namespaces: [");
+    for (namespaces, 0..) |namespace, index| {
+        if (index > 0) try value.appendSlice(allocator, ", ");
+        try value.appendSlice(allocator, namespace);
+    }
+    try value.append(allocator, ']');
+
+    if (std.mem.trim(u8, content, " \t\r\n").len == 0) {
+        return std.fmt.allocPrint(allocator, "c3s:\n  ui:\n    {s}\n", .{value.items});
+    }
+
+    var out: std.ArrayListUnmanaged(u8) = .empty;
+    errdefer out.deinit(allocator);
+    var in_ui = false;
+    var ui_indent: usize = 0;
+    var saw_ui = false;
+    var wrote_recent = false;
+    var lines = std.mem.splitScalar(u8, content, '\n');
+    var first = true;
+    while (lines.next()) |raw| {
+        if (!first) try out.append(allocator, '\n');
+        first = false;
+        const line = std.mem.trimEnd(u8, raw, "\r");
+        const trimmed = std.mem.trim(u8, line, " \t");
+        const indent = line.len - std.mem.trimStart(u8, line, " \t").len;
+        if (std.mem.startsWith(u8, trimmed, "ui:")) {
+            in_ui = true;
+            saw_ui = true;
+            ui_indent = indent;
+            try out.appendSlice(allocator, raw);
+            continue;
+        }
+        if (in_ui) {
+            if (trimmed.len > 0 and indent <= ui_indent) {
+                if (!wrote_recent) {
+                    try out.appendNTimes(allocator, ' ', ui_indent + 2);
+                    try out.appendSlice(allocator, value.items);
+                    try out.append(allocator, '\n');
+                    wrote_recent = true;
+                }
+                in_ui = false;
+            } else if (std.mem.startsWith(u8, trimmed, "recent_namespaces:")) {
+                try out.appendNTimes(allocator, ' ', indent);
+                try out.appendSlice(allocator, value.items);
+                wrote_recent = true;
+                continue;
+            }
+        }
+        try out.appendSlice(allocator, raw);
+    }
+    if (!saw_ui) {
+        if (!first) try out.append(allocator, '\n');
+        try out.appendSlice(allocator, "  ui:\n    ");
+        try out.appendSlice(allocator, value.items);
+    } else if (!wrote_recent) {
+        if (!first) try out.append(allocator, '\n');
+        try out.appendNTimes(allocator, ' ', ui_indent + 2);
+        try out.appendSlice(allocator, value.items);
     }
     return out.toOwnedSlice(allocator);
 }
@@ -418,6 +539,42 @@ test "config: a second theme line does not leak the first" {
     const cfg = try parseUiConfig(a, "theme: first\ntheme: second\n");
     defer if (cfg.theme_allocated) |t| a.free(t);
     try std.testing.expectEqualStrings("second", cfg.theme);
+}
+
+test "config loads at most nine unique recent namespaces" {
+    const a = testing.allocator;
+    const cfg = try parseUiConfig(
+        a,
+        "recent_namespaces: [three, two, three, one]\n",
+    );
+    defer {
+        for (cfg.recent_namespaces) |namespace| a.free(namespace);
+        if (cfg.recent_namespaces.len > 0) a.free(cfg.recent_namespaces);
+        if (cfg.theme_allocated) |theme| a.free(theme);
+    }
+    try testing.expectEqual(@as(usize, 3), cfg.recent_namespaces.len);
+    try testing.expectEqualStrings("three", cfg.recent_namespaces[0]);
+    try testing.expectEqualStrings("one", cfg.recent_namespaces[2]);
+}
+
+test "withRecentNamespaces replaces one ui key and round-trips" {
+    const a = testing.allocator;
+    const output = try withRecentNamespaces(
+        a,
+        "c3s:\n  ui:\n    compact: false\n    recent_namespaces: [old]\n",
+        &.{ "team-a", "kube-system" },
+    );
+    defer a.free(output);
+    try testing.expectEqual(@as(usize, 1), countOccurrences(output, "recent_namespaces:"));
+
+    const cfg = try parseUiConfig(a, output);
+    defer {
+        for (cfg.recent_namespaces) |namespace| a.free(namespace);
+        if (cfg.recent_namespaces.len > 0) a.free(cfg.recent_namespaces);
+        if (cfg.theme_allocated) |theme| a.free(theme);
+    }
+    try testing.expectEqualStrings("team-a", cfg.recent_namespaces[0]);
+    try testing.expectEqualStrings("kube-system", cfg.recent_namespaces[1]);
 }
 
 // ---------------------------------------------------------------------------
