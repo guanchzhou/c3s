@@ -70,6 +70,7 @@ pub const sort = @import("viewmodel/sort.zig");
 pub const filter = @import("viewmodel/filter.zig");
 pub const k9s_query = @import("viewmodel/k9s_query.zig");
 pub const cedar_request = @import("viewmodel/cedar_request.zig");
+pub const cedar_workbench = @import("viewmodel/cedar_workbench.zig");
 pub const clipboard = @import("core/clipboard.zig");
 pub const App = @import("App.zig").App;
 pub const runTask14ComposedOrderingGate = @import("App.zig").runTask14ComposedOrderingGate;
