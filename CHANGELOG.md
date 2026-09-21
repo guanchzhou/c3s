@@ -20,6 +20,14 @@ The release workflow extracts the section matching the git tag (`vX.Y.Z` →
 - `--command` / `-c` runs after connect through the palette resolver.
 - Discovered cluster resources and their short names appear in the command
   palette dropdown, so `nodepool` suggests `nodepools` while typing.
+- The header lists the numbered namespaces between the cluster stats and the
+  key hints, k9s-style: `<0>` all-namespaces followed by each recent namespace
+  by name, with the active one highlighted.
+
+### Changed
+
+- The header's `<0> all` / `<1-9> recent namespaces` placeholders are gone; the
+  namespace column names the destination behind every digit instead.
 
 ### Fixed
 

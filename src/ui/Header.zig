@@ -8,6 +8,14 @@ const version = @import("../model/version.zig");
 const fixtures = @import("../fixtures/index.zig");
 const Logger = @import("../core/logger.zig");
 const hints_mod = @import("../model/hints.zig");
+const RecentNamespaces = @import("../model/RecentNamespaces.zig").RecentNamespaces;
+
+/// Width reserved for the k9s-style numbered namespace column, including the
+/// `<N> ` key prefix. Namespaces longer than the remainder are truncated.
+pub const namespace_col_width: u16 = 24;
+
+/// Below this the namespace column is dropped so the key hints keep their room.
+pub const min_width_for_namespace_col: u16 = 120;
 
 /// Stat labels down the left of the expanded header, in render order.
 pub const stat_labels = [_][]const u8{
@@ -46,6 +54,9 @@ pub const Header = struct {
     namespace_scope: []const u8,
     last_height: u16 = 0,
     debug: bool = false,
+    /// Numbered namespace shortcuts shown between the stats and the key hints,
+    /// the way k9s lists its favourites. Borrowed; owned by App.
+    recent_namespaces: ?*const RecentNamespaces = null,
 
     pub fn init(allocator: std.mem.Allocator, theme: *const theme_loader.ThemeColors, debug: bool) !Header {
         const app_version = try version.ownedString(allocator);
@@ -605,6 +616,54 @@ pub const Header = struct {
 
     const hints_model = @import("../model/hints.zig");
 
+    /// Draw the numbered namespace shortcuts and report how many rows were used.
+    /// Zero means the column was skipped, and the caller keeps the full width for
+    /// the key hints. Slot 0 is always all-namespaces, matching the `0` key.
+    fn renderNamespaceColumn(
+        self: *const Header,
+        terminal: *Terminal,
+        x: u16,
+        y: u16,
+        width: u16,
+        max_rows: u16,
+    ) !u16 {
+        if (width < min_width_for_namespace_col or max_rows == 0) return 0;
+        const recent = self.recent_namespaces orelse return 0;
+
+        const all_namespaces_scope = "all-namespaces";
+        const name_width = namespace_col_width - 4;
+        var row: u16 = 0;
+
+        var slot: u8 = 0;
+        while (slot <= 9 and row < max_rows) : (slot += 1) {
+            const name = if (slot == 0) all_namespaces_scope else recent.at(slot) orelse break;
+            const active = std.mem.eql(u8, self.namespace_scope, name);
+
+            var key_buf: [4]u8 = undefined;
+            const key_text = try std.fmt.bufPrint(&key_buf, "<{d}>", .{slot});
+            try Theme.writeStringWithTheme(
+                terminal,
+                x,
+                y + row,
+                key_text,
+                self.theme.key_highlight,
+                self.theme.main_bg,
+            );
+
+            const shown = name[0..@min(name.len, name_width)];
+            try Theme.writeStringWithTheme(
+                terminal,
+                x + 4,
+                y + row,
+                shown,
+                if (active) self.theme.hi_fg else self.theme.main_fg,
+                self.theme.main_bg,
+            );
+            row += 1;
+        }
+        return row;
+    }
+
     pub fn render(self: *Header, terminal: *Terminal, x: u16, y: u16, width: u16, box_height: u16, hint_config: hints_model.HintConfig) !void {
         Logger.debug("Header.render: compact={}, width={}, height={}", .{ self.compact, width, box_height });
 
@@ -680,71 +739,49 @@ pub const Header = struct {
             line += 1;
         }
 
-        // Keyboard shortcuts section (right side of header) with progressive hiding
-        const shortcuts_start_x = @as(u16, @intCast(width / 3)) + 1;
+        // Numbered namespace column, then keyboard shortcuts, both with
+        // progressive hiding. k9s puts its favourites between the cluster stats
+        // and the key hints; the digits here are the same ones `1`-`9` switch to.
+        const namespace_col_x = @as(u16, @intCast(width / 3)) + 1;
+        const rows_for_namespaces: u16 = if (box_height > 2) box_height - 2 else 0;
+        const namespace_rows = try self.renderNamespaceColumn(
+            terminal,
+            namespace_col_x,
+            y + 1,
+            width,
+            rows_for_namespaces,
+        );
+        const namespace_width: u16 = if (namespace_rows > 0) namespace_col_width else 0;
+
+        const shortcuts_start_x = namespace_col_x + namespace_width;
         const shortcuts_width: u16 = if (width > shortcuts_start_x) width - shortcuts_start_x else 0;
+        // The hint columns choose their count from the room actually left over.
+        const layout_width: u16 = if (width > namespace_width) width - namespace_width else 0;
 
         // Get hints from parameter
-        const quick_commands = hint_config.quick_commands;
         const hints = hint_config.hints;
 
-        // Progressive hiding strategy based on width
-        // Calculate minimum widths for each level:
-        // - Level 0 (full): 1 quick commands col + 3 hints cols (~140 chars needed)
-        // - Level 1: 1 quick commands col + 2 hints cols (~110 chars needed)
-        // - Level 2: 1 quick commands col + 1 hints col (~80 chars needed)
-        // - Level 3: 1 quick commands col + 0 hints (~50 chars needed)
-        // - Level 4: 0 quick commands cols + 0 hints (shortcuts hidden)
+        // Progressive hiding strategy based on the width left after the stats
+        // and the namespace column: 3 hint columns, then 2, then 1, then none.
 
         const min_width_for_3_hint_cols: u16 = 140;
         const min_width_for_2_hint_cols: u16 = 110;
         const min_width_for_1_hint_col: u16 = 80;
-        const min_width_for_1_quick_col: u16 = 40;
 
-        // Determine what to show based on width
-        var show_hints_cols: u16 = 0;
-        var show_quick_cols: u16 = 0;
-
-        // With only 2 quick commands, always use 1 column (they stack vertically)
-        if (width >= min_width_for_3_hint_cols) {
-            show_hints_cols = 3;
-            show_quick_cols = 1;
-        } else if (width >= min_width_for_2_hint_cols) {
-            show_hints_cols = 2;
-            show_quick_cols = 1;
-        } else if (width >= min_width_for_1_hint_col) {
-            show_hints_cols = 1;
-            show_quick_cols = 1;
-        } else if (width >= min_width_for_1_quick_col) {
-            show_hints_cols = 0;
-            show_quick_cols = 1;
-        } else {
-            show_hints_cols = 0;
-            show_quick_cols = 0;
-        }
-
-        // Render quick commands if visible
-        if (show_quick_cols > 0) {
-            const quick_width: u16 = if (shortcuts_width > 0) @as(u16, @intCast(shortcuts_width / 5)) else 15;
-
-            line = y + 1;
-            for (quick_commands, 0..) |item, idx| {
-                const row = @as(u16, @intCast(idx / show_quick_cols));
-                const col = @as(u16, @intCast(idx % show_quick_cols));
-                if (col >= show_quick_cols) continue; // Skip if column is hidden
-
-                const qx = shortcuts_start_x + (col * quick_width);
-                const qy = y + 1 + row;
-                try Theme.writeShortcut(terminal, qx, qy, item.key, item.cmd, self.theme.main_bg, self.theme.key_highlight);
-            }
-        }
+        const show_hints_cols: u16 = if (layout_width >= min_width_for_3_hint_cols)
+            3
+        else if (layout_width >= min_width_for_2_hint_cols)
+            2
+        else if (layout_width >= min_width_for_1_hint_col)
+            1
+        else
+            0;
 
         // Render hints if visible
         if (show_hints_cols > 0) {
-            const quick_width: u16 = if (shortcuts_width > 0) @as(u16, @intCast(shortcuts_width / 5)) else 15;
-            const hints_start_x = shortcuts_start_x + (quick_width * show_quick_cols);
-            const hints_width: u16 = if (shortcuts_width > (quick_width * show_quick_cols)) shortcuts_width - (quick_width * show_quick_cols) else 0;
-            const hint_col_width: u16 = if (hints_width > 0 and show_hints_cols > 0) @as(u16, @intCast(hints_width / show_hints_cols)) else 20;
+            const hints_start_x = shortcuts_start_x;
+            const hints_width: u16 = shortcuts_width;
+            const hint_col_width: u16 = if (hints_width > 0) @as(u16, @intCast(hints_width / show_hints_cols)) else 20;
 
             // Calculate right boundary (header border is at x + width - 1)
             // Ensure width is large enough to prevent underflow
@@ -960,7 +997,6 @@ test "header: render with empty hints should not crash" {
 
     // Empty hints config
     const empty_hints = hints_mod.HintConfig{
-        .quick_commands = &.{},
         .hints = &.{},
     };
 
@@ -988,7 +1024,6 @@ test "header: render with hints that have empty text fields" {
     };
 
     const hints_cfg = hints_mod.HintConfig{
-        .quick_commands = &.{},
         .hints = &hints_with_empty,
     };
 
@@ -1016,7 +1051,6 @@ test "header: render with very long hint text" {
     };
 
     const hints_cfg = hints_mod.HintConfig{
-        .quick_commands = &.{},
         .hints = &long_hints,
     };
 
@@ -1073,7 +1107,6 @@ test "header: render with many hints in narrow terminal" {
     };
 
     const hints_cfg = hints_mod.HintConfig{
-        .quick_commands = &.{},
         .hints = &many_hints,
     };
 
@@ -1186,7 +1219,6 @@ test "header: render with special characters in hints" {
     };
 
     const hints_cfg = hints_mod.HintConfig{
-        .quick_commands = &.{},
         .hints = &special_hints,
     };
 
@@ -1216,7 +1248,6 @@ test "header: all hint rendering modes" {
     };
 
     const hints_cfg = hints_mod.HintConfig{
-        .quick_commands = &.{},
         .hints = &mixed_hints,
     };
 
@@ -1261,21 +1292,64 @@ test "header: stress test with maximum hints" {
         hints_mod.Hint.plain("hint20", 20),
     };
 
-    const max_quick = [_]hints_mod.QuickCommand{
-        .{ .key = "0", .cmd = "all" },
-        .{ .key = "1", .cmd = "default" },
-        .{ .key = "2", .cmd = "kube-system" },
-        .{ .key = "3", .cmd = "kube-public" },
-        .{ .key = "4", .cmd = "custom" },
-    };
-
     const hints_cfg = hints_mod.HintConfig{
-        .quick_commands = &max_quick,
         .hints = &max_hints,
     };
 
     // Should handle maximum load
     try header.render(&terminal, 0, 0, 200, 5, hints_cfg);
+}
+
+test "header lists numbered namespace shortcuts like k9s" {
+    const allocator = testing.allocator;
+    const theme = try theme_loader.defaultTheme(allocator);
+    defer theme_loader.deinitTheme(@constCast(&theme));
+
+    var header = try Header.init(allocator, &theme, true);
+    defer header.deinit();
+
+    var terminal = try Terminal.init(allocator);
+    defer terminal.deinit();
+
+    var recent = try RecentNamespaces.init(allocator, &.{ "qa-platform", "openshell" });
+    defer recent.deinit();
+    header.recent_namespaces = &recent;
+    try header.setReadonlyScope(false, "openshell");
+
+    terminal.write_buffer.clearRetainingCapacity();
+    try header.render(&terminal, 0, 0, 200, Header.expanded_height, hints_mod.podsHints());
+    const frame = terminal.write_buffer.items;
+
+    // Slot 0 is all-namespaces; the recents follow in the order `1`-`9` switch.
+    try testing.expect(std.mem.indexOf(u8, frame, "<0>") != null);
+    try testing.expect(std.mem.indexOf(u8, frame, "all-namespaces") != null);
+    try testing.expect(std.mem.indexOf(u8, frame, "<1>") != null);
+    try testing.expect(std.mem.indexOf(u8, frame, "qa-platform") != null);
+    try testing.expect(std.mem.indexOf(u8, frame, "<2>") != null);
+    try testing.expect(std.mem.indexOf(u8, frame, "openshell") != null);
+    // Only two namespaces are known, so no third slot is drawn.
+    try testing.expect(std.mem.indexOf(u8, frame, "<3>") == null);
+
+    // A narrow terminal drops the column rather than squeezing the key hints.
+    terminal.write_buffer.clearRetainingCapacity();
+    try header.render(&terminal, 0, 0, 100, Header.expanded_height, hints_mod.podsHints());
+    try testing.expect(std.mem.indexOf(u8, terminal.write_buffer.items, "<0>") == null);
+}
+
+test "header namespace column is absent until recents are bound" {
+    const allocator = testing.allocator;
+    const theme = try theme_loader.defaultTheme(allocator);
+    defer theme_loader.deinitTheme(@constCast(&theme));
+
+    var header = try Header.init(allocator, &theme, true);
+    defer header.deinit();
+
+    var terminal = try Terminal.init(allocator);
+    defer terminal.deinit();
+
+    terminal.write_buffer.clearRetainingCapacity();
+    try header.render(&terminal, 0, 0, 200, Header.expanded_height, hints_mod.podsHints());
+    try testing.expect(std.mem.indexOf(u8, terminal.write_buffer.items, "<0>") == null);
 }
 
 // ===========================================================================
