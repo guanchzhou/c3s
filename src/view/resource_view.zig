@@ -23,6 +23,7 @@ const PodRecord = @import("../k8s/PodRecord.zig");
 const PodProjection = @import("../k8s/ResourceProjection.zig").ResourceProjection(PodRecord);
 const projection_mod = @import("../k8s/ResourceProjection.zig");
 const resource_key = @import("../k8s/ResourceKey.zig");
+const config_model = @import("../model/config.zig");
 
 /// Column definition for a resource view
 pub const ColumnDef = struct {
@@ -79,6 +80,11 @@ pub fn ResourceView(
     return struct {
         const Self = @This();
         const is_pods = std.mem.eql(u8, config.name, "pods");
+        const column_names = blk: {
+            var result: [col_count][]const u8 = undefined;
+            for (config.columns, 0..) |column, i| result[i] = column.name;
+            break :blk result;
+        };
 
         pub const SubscriptionRequest = enum { none, start, restart };
         pub const PodSubscriptionRequest = SubscriptionRequest;
@@ -119,6 +125,7 @@ pub fn ResourceView(
         /// k9s ctrl-z: keep only rows whose STATUS/READY look unhealthy.
         faults_only: bool = false,
         cached_show_wide: bool = true,
+        metric_thresholds: config_model.MetricThresholds = .{},
 
         /// Row data: uniform array of display strings
         pub const RowData = struct {
@@ -418,6 +425,10 @@ pub fn ResourceView(
             }
         }
 
+        pub fn setMetricThresholds(self: *Self, thresholds: config_model.MetricThresholds) void {
+            self.metric_thresholds = thresholds;
+        }
+
         pub fn markSubscriptionStarted(self: *Self) void {
             self.subscription_started = true;
             self.subscription_request = .none;
@@ -678,6 +689,26 @@ pub fn ResourceView(
         }
 
         fn matchFn(item: *const RowData, filter: []const u8) bool {
+            if (k9s_query.parseComparison(filter)) |comparison| {
+                inline for (config.columns, 0..) |col_def, idx| {
+                    const kind: ?k9s_query.QuantityKind =
+                        if (std.ascii.eqlIgnoreCase(comparison.field, "status") and std.mem.eql(u8, col_def.name, "STATUS"))
+                            .text
+                        else if (std.ascii.eqlIgnoreCase(comparison.field, "cpu") and std.mem.eql(u8, col_def.name, "CPU"))
+                            .cpu
+                        else if ((std.ascii.eqlIgnoreCase(comparison.field, "memory") or std.ascii.eqlIgnoreCase(comparison.field, "mem")) and std.mem.eql(u8, col_def.name, "MEM"))
+                            .memory
+                        else if (std.ascii.eqlIgnoreCase(comparison.field, "restarts") and std.mem.eql(u8, col_def.name, "RESTARTS"))
+                            .integer
+                        else if (std.ascii.eqlIgnoreCase(comparison.field, "age") and std.mem.eql(u8, col_def.name, "AGE"))
+                            .age
+                        else
+                            null;
+                    if (kind) |quantity_kind|
+                        return k9s_query.matchesComparison(item.columns[idx], comparison, quantity_kind);
+                }
+                return false;
+            }
             var cols: [col_count][]const u8 = undefined;
             var n: usize = 0;
             inline for (config.columns, 0..) |col_def, idx| {
@@ -691,6 +722,30 @@ pub fn ResourceView(
 
         fn isProjectionOnlyFilter(filter: []const u8) bool {
             return is_pods and std.mem.startsWith(u8, filter, "node=");
+        }
+
+        fn semanticCellColor(self: *const Self, column: u8, value: []const u8) ?[]const u8 {
+            const name = config.columns[column].name;
+            const parsed: ?u64 = if (std.mem.eql(u8, name, "CPU"))
+                k9s_query.parseCpu(value)
+            else if (std.mem.eql(u8, name, "MEM"))
+                k9s_query.parseMemory(value)
+            else if (std.mem.eql(u8, name, "RESTARTS"))
+                std.fmt.parseInt(u64, value, 10) catch null
+            else
+                null;
+            const number = parsed orelse return null;
+            if (std.mem.eql(u8, name, "CPU")) {
+                if (number >= self.metric_thresholds.cpu_error_milli) return self.theme.status_failed;
+                if (number >= self.metric_thresholds.cpu_warn_milli) return self.theme.status_pending;
+            } else if (std.mem.eql(u8, name, "MEM")) {
+                if (number >= self.metric_thresholds.memory_error_bytes) return self.theme.status_failed;
+                if (number >= self.metric_thresholds.memory_warn_bytes) return self.theme.status_pending;
+            } else {
+                if (number >= self.metric_thresholds.restarts_error) return self.theme.status_failed;
+                if (number >= self.metric_thresholds.restarts_warn) return self.theme.status_pending;
+            }
+            return null;
         }
 
         pub fn syncProjection(self: *Self) !void {
@@ -1074,7 +1129,11 @@ pub fn ResourceView(
                     if (rx >= max_x) break;
                     const avail = max_x - rx;
                     const col_w = @min(w, avail);
-                    try Theme.writeStringWithTheme(terminal, rx, row_y, table_layout.utf8TruncateCols(cell, col_w -| 1), fg, bg);
+                    const cell_fg = if (is_selected or is_marked)
+                        fg
+                    else
+                        self.semanticCellColor(ci, cell) orelse fg;
+                    try Theme.writeStringWithTheme(terminal, rx, row_y, table_layout.utf8TruncateCols(cell, col_w -| 1), cell_fg, bg);
                     rx += w;
                 }
 
@@ -1361,20 +1420,27 @@ pub fn ResourceView(
             const self: *Self = @ptrCast(@alignCast(ptr));
             const count = self.table.filtered_indices.items.len;
             const filt = self.table.filter_text;
+            const mode: []const u8 = if (self.faults_only) " [faults]" else "";
             if (!config.is_namespaced) {
                 return if (filt.len > 0)
-                    std.fmt.bufPrint(&self.title_buf, "{s}[{d}] </{s}>", .{ config.name, count, filt }) catch config.name
+                    std.fmt.bufPrint(&self.title_buf, "{s}[{d}] </{s}>{s}", .{ config.name, count, filt, mode }) catch config.name
                 else
-                    std.fmt.bufPrint(&self.title_buf, "{s}[{d}]", .{ config.name, count }) catch config.name;
+                    std.fmt.bufPrint(&self.title_buf, "{s}[{d}]{s}", .{ config.name, count, mode }) catch config.name;
             }
             const scope: []const u8 = if (self.table.show_all_namespaces)
                 "all"
             else
                 self.k8s_service.current_namespace;
             return if (filt.len > 0)
-                std.fmt.bufPrint(&self.title_buf, "{s}({s})[{d}] </{s}>", .{ config.name, scope, count, filt }) catch config.name
+                std.fmt.bufPrint(&self.title_buf, "{s}({s})[{d}] </{s}>{s}", .{ config.name, scope, count, filt, mode }) catch config.name
             else
-                std.fmt.bufPrint(&self.title_buf, "{s}({s})[{d}]", .{ config.name, scope, count }) catch config.name;
+                std.fmt.bufPrint(&self.title_buf, "{s}({s})[{d}]{s}", .{ config.name, scope, count, mode }) catch config.name;
+        }
+
+        fn vtableGetSelectedCells(ptr: *anyopaque) ?view_mod.SelectedCells {
+            const self: *Self = @ptrCast(@alignCast(ptr));
+            const item = self.table.getSelectedItem() orelse return null;
+            return .{ .names = &column_names, .values = &item.columns };
         }
 
         fn getHints(_: *anyopaque) hints_model.HintConfig {
@@ -1438,6 +1504,7 @@ pub fn ResourceView(
             .clearFilter = vtableClearFilter,
             .refresh = vtableRefresh,
             .getSelectedResource = vtableGetSelectedResource,
+            .getSelectedCells = vtableGetSelectedCells,
             .setShowAllNamespaces = vtableSetShowAllNamespaces,
             .showsAllNamespaces = vtableShowsAllNamespaces,
             .getStatusHint = vtableGetStatusHint,

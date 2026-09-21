@@ -7,6 +7,16 @@ const hints_model = @import("../model/hints.zig");
 pub const ResourceInfo = struct {
     name: []const u8,
     namespace: []const u8,
+    uid: []const u8 = "",
+    group: []const u8 = "",
+    resource: []const u8 = "",
+};
+
+/// Borrowed, full-fidelity values for the selected row. Values are never
+/// terminal-truncated; callers must consume them before the next refresh.
+pub const SelectedCells = struct {
+    names: []const []const u8,
+    values: []const []const u8,
 };
 
 /// View trait - all views must implement this interface
@@ -52,6 +62,9 @@ pub const View = struct {
 
         /// Get selected resource info for describe/delete/logs
         getSelectedResource: *const fn (ptr: *anyopaque) ?ResourceInfo = &noopGetSelectedResource,
+
+        /// Get all full cell values for copy/picker workflows.
+        getSelectedCells: *const fn (ptr: *anyopaque) ?SelectedCells = &noopGetSelectedCells,
 
         /// Warp / `:po ns-x` pin the view to one namespace. No-op on cluster-scoped views.
         setShowAllNamespaces: *const fn (ptr: *anyopaque, all: bool) void = &noopSetShowAllNamespaces,
@@ -175,6 +188,10 @@ pub const View = struct {
         return self.vtable.getSelectedResource(self.ptr);
     }
 
+    pub fn getSelectedCells(self: View) ?SelectedCells {
+        return self.vtable.getSelectedCells(self.ptr);
+    }
+
     pub fn setShowAllNamespaces(self: View, all: bool) void {
         return self.vtable.setShowAllNamespaces(self.ptr, all);
     }
@@ -206,6 +223,9 @@ pub const View = struct {
     }
     fn noopRefresh(_: *anyopaque) anyerror!void {}
     fn noopGetSelectedResource(_: *anyopaque) ?ResourceInfo {
+        return null;
+    }
+    fn noopGetSelectedCells(_: *anyopaque) ?SelectedCells {
         return null;
     }
     fn noopSetShowAllNamespaces(_: *anyopaque, _: bool) void {}

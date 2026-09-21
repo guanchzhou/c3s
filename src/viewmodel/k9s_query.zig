@@ -17,7 +17,15 @@
 
 const std = @import("std");
 
-pub const FilterKind = enum { substring, inverse, label, fuzzy };
+pub const FilterKind = enum { substring, inverse, label, fuzzy, comparison };
+
+pub const ComparisonOperator = enum { eq, ne, gt, gte, lt, lte };
+
+pub const Comparison = struct {
+    field: []const u8,
+    operator: ComparisonOperator,
+    value: []const u8,
+};
 
 pub const ParsedFilter = struct {
     kind: FilterKind,
@@ -37,7 +45,107 @@ pub fn parseFilter(raw: []const u8) ParsedFilter {
     if (std.mem.startsWith(u8, s, "-f")) {
         return .{ .kind = .fuzzy, .query = std.mem.trim(u8, s[2..], " \t") };
     }
+    if (parseComparison(s) != null) {
+        return .{ .kind = .comparison, .query = s };
+    }
     return .{ .kind = .substring, .query = s };
+}
+
+pub fn parseComparison(raw: []const u8) ?Comparison {
+    const s = std.mem.trim(u8, raw, " \t");
+    const operators = [_]struct { token: []const u8, value: ComparisonOperator }{
+        .{ .token = ">=", .value = .gte },
+        .{ .token = "<=", .value = .lte },
+        .{ .token = "!=", .value = .ne },
+        .{ .token = "=", .value = .eq },
+        .{ .token = ">", .value = .gt },
+        .{ .token = "<", .value = .lt },
+    };
+    for (operators) |candidate| {
+        const pos = std.mem.indexOf(u8, s, candidate.token) orelse continue;
+        const field = std.mem.trim(u8, s[0..pos], " \t");
+        const value = std.mem.trim(u8, s[pos + candidate.token.len ..], " \t");
+        if (field.len == 0 or value.len == 0) return null;
+        if (!isComparisonField(field)) return null;
+        return .{ .field = field, .operator = candidate.value, .value = value };
+    }
+    return null;
+}
+
+fn isComparisonField(field: []const u8) bool {
+    return std.ascii.eqlIgnoreCase(field, "status") or
+        std.ascii.eqlIgnoreCase(field, "cpu") or
+        std.ascii.eqlIgnoreCase(field, "memory") or
+        std.ascii.eqlIgnoreCase(field, "mem") or
+        std.ascii.eqlIgnoreCase(field, "restarts") or
+        std.ascii.eqlIgnoreCase(field, "age");
+}
+
+pub const QuantityKind = enum { text, integer, cpu, memory, age };
+
+pub fn matchesComparison(cell: []const u8, comparison: Comparison, kind: QuantityKind) bool {
+    if (kind == .text) {
+        const equal = std.ascii.eqlIgnoreCase(cell, comparison.value);
+        return switch (comparison.operator) {
+            .eq => equal,
+            .ne => !equal,
+            else => false,
+        };
+    }
+    const left = parseQuantity(cell, kind) orelse return false;
+    const right = parseQuantity(comparison.value, kind) orelse return false;
+    return switch (comparison.operator) {
+        .eq => left == right,
+        .ne => left != right,
+        .gt => left > right,
+        .gte => left >= right,
+        .lt => left < right,
+        .lte => left <= right,
+    };
+}
+
+pub fn parseQuantity(value: []const u8, kind: QuantityKind) ?u64 {
+    return switch (kind) {
+        .text => null,
+        .integer => std.fmt.parseInt(u64, value, 10) catch null,
+        .cpu => parseCpu(value),
+        .memory => parseMemory(value),
+        .age => parseAge(value),
+    };
+}
+
+pub fn parseCpu(value: []const u8) ?u64 {
+    if (std.ascii.eqlIgnoreCase(value, "n/a")) return null;
+    if (std.mem.endsWith(u8, value, "m"))
+        return std.fmt.parseInt(u64, value[0 .. value.len - 1], 10) catch null;
+    return (std.fmt.parseInt(u64, value, 10) catch return null) *| 1000;
+}
+
+pub fn parseMemory(value: []const u8) ?u64 {
+    if (std.ascii.eqlIgnoreCase(value, "n/a")) return null;
+    const units = [_]struct { suffix: []const u8, multiplier: u64 }{
+        .{ .suffix = "Gi", .multiplier = 1024 * 1024 * 1024 },
+        .{ .suffix = "Mi", .multiplier = 1024 * 1024 },
+        .{ .suffix = "Ki", .multiplier = 1024 },
+    };
+    for (units) |unit| {
+        if (std.mem.endsWith(u8, value, unit.suffix)) {
+            return (std.fmt.parseInt(u64, value[0 .. value.len - unit.suffix.len], 10) catch return null) *| unit.multiplier;
+        }
+    }
+    return std.fmt.parseInt(u64, value, 10) catch null;
+}
+
+pub fn parseAge(value: []const u8) ?u64 {
+    if (value.len < 2 or std.ascii.eqlIgnoreCase(value, "n/a")) return null;
+    const multiplier: u64 = switch (value[value.len - 1]) {
+        's' => 1,
+        'm' => 60,
+        'h' => 60 * 60,
+        'd' => 24 * 60 * 60,
+        else => return null,
+    };
+    return (std.fmt.parseInt(u64, value[0 .. value.len - 1], 10) catch return null) *| multiplier;
 }
 
 pub const CommandExtras = struct {
@@ -129,6 +237,7 @@ pub fn matchSearchable(columns: []const []const u8, labels: []const u8, filter: 
         .substring, .inverse => columnsHit(columns, parsed.query, false),
         .fuzzy => columnsHit(columns, parsed.query, true),
         .label => labelsMatch(labels, parsed.query),
+        .comparison => false,
     };
     return if (parsed.kind == .inverse) !hit else hit;
 }
@@ -265,6 +374,17 @@ test "parseFilter prefixes" {
     const e = parseFilter("!");
     try std.testing.expectEqual(FilterKind.inverse, e.kind);
     try std.testing.expectEqualStrings("", e.query);
+}
+
+test "typed comparisons parse and compare Kubernetes quantities" {
+    const comparison = parseComparison("cpu>=500m").?;
+    try std.testing.expectEqual(ComparisonOperator.gte, comparison.operator);
+    try std.testing.expect(matchesComparison("750m", comparison, .cpu));
+    try std.testing.expect(!matchesComparison("250m", comparison, .cpu));
+    try std.testing.expect(matchesComparison("1Gi", parseComparison("memory>900Mi").?, .memory));
+    try std.testing.expect(matchesComparison("6", parseComparison("restarts>=5").?, .integer));
+    try std.testing.expect(matchesComparison("90m", parseComparison("age<2h").?, .age));
+    try std.testing.expect(matchesComparison("CrashLoopBackOff", parseComparison("status=crashloopbackoff").?, .text));
 }
 
 test "parseCommand extras" {

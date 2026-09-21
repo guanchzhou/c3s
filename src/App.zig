@@ -1373,6 +1373,8 @@ pub const App = struct {
         dynamic_resource_view.* = DynamicResourceView.init(allocator, theme, app.k8s_service);
         inline for (k8s_view_types) |entry| {
             @field(app, entry[0]).* = try entry[1].init(allocator, theme, app.k8s_service);
+            if (@hasDecl(entry[1], "setMetricThresholds"))
+                @field(app, entry[0]).setMetricThresholds(ui_config.ui.metric_thresholds);
             if (config.all_namespaces and @hasDecl(entry[1], "view_config") and
                 entry[1].view_config.is_namespaced)
             {
