@@ -10,6 +10,8 @@ The release workflow extracts the section matching the git tag (`vX.Y.Z` →
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-09-21
+
 ### Added
 
 - Namespace Enter scopes the pods view to that namespace instead of
