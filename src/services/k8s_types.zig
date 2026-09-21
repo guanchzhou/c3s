@@ -273,6 +273,28 @@ pub const PolicyInfo = struct {
     }
 };
 
+/// A `cedar.k8s.aws` Policy object with its source text, for the Cedar workbench.
+///
+/// Distinct from `PolicyInfo`, which is a row in the aggregated RBAC + Cedar table
+/// and deliberately carries no policy source. Analysis needs the source; the summary
+/// table does not, and copying it into every row of that table would be waste.
+pub const CedarPolicy = struct {
+    name: []const u8,
+    /// `spec.content` -- the Cedar policy source, verbatim.
+    content: []const u8,
+    /// `spec.validation` summarised: "off", "on", or the declared validation mode.
+    validation: []const u8,
+    created_at: []const u8,
+    allocator: std.mem.Allocator,
+
+    pub fn deinit(self: *CedarPolicy) void {
+        self.allocator.free(self.name);
+        self.allocator.free(self.content);
+        self.allocator.free(self.validation);
+        self.allocator.free(self.created_at);
+    }
+};
+
 /// Condition info from AuthorizationConditionsReview
 pub const ConditionInfo = struct {
     effect: []const u8,

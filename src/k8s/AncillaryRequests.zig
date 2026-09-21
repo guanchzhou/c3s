@@ -248,6 +248,7 @@ pub fn purposeForClass(class: RequestClass) session.LeasePurpose {
         .yaml => .yaml,
         .logs => .logs,
         .authorization => .authorization,
+        .cedar => .cedar,
     };
 }
 
@@ -269,6 +270,7 @@ pub fn runTask14SourceAuditGate() !void {
         @embedFile("DetailRequest.zig"),
         @embedFile("LogsRequest.zig"),
         @embedFile("AuthorizationRequest.zig"),
+        @embedFile("CedarRequest.zig"),
     }) |source| try expectChildPublishesOnlyThroughQueue(source);
 
     const service_source = @embedFile("../services/K8sService.zig");
@@ -351,6 +353,7 @@ fn requestEnvelope(
         .yaml => .{ .yaml = key },
         .logs => .{ .logs = key },
         .authorization => .{ .authorization = key },
+        .cedar => .{ .cedar = key },
     };
     return keys.erasePayload(
         u8,
@@ -378,6 +381,7 @@ pub fn runTask14AncillaryIdentityGate() !void {
         .yaml,
         .logs,
         .authorization,
+        .cedar,
     };
     var keys_by_class: [classes.len]RequestKey = undefined;
     for (classes, 0..) |class, index| {

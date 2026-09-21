@@ -40,6 +40,7 @@ pub const ViewType = enum {
     contexts,
     portforwards,
     aliases,
+    cedar,
 };
 
 /// KeyBindingsViewModel - provides key bindings for any view type
@@ -108,6 +109,7 @@ fn loadBindingsForView(allocator: std.mem.Allocator, view_type: ViewType) ![]con
         .generic => try bindings_data.loadGenericResourceBindings(allocator),
         .portforwards => try bindings_data.loadPortForwardsBindings(allocator),
         .aliases => try bindings_data.loadAliasesBindings(allocator),
+        .cedar => try bindings_data.loadCedarBindings(allocator),
     };
 }
 
