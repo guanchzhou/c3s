@@ -684,14 +684,6 @@ pub fn writeStringWithBold(terminal: *Terminal, x: u16, y: u16, text: []const u8
     try terminal.writeAll(formatted);
 }
 
-/// Render shortcut: <key> command
-pub fn writeShortcut(terminal: *Terminal, x: u16, y: u16, key: []const u8, command: []const u8, bg_color: []const u8, hi_color: []const u8) !void {
-    var buffer: [512]u8 = undefined;
-    const formatted = try std.fmt.bufPrint(&buffer, "{s}{s}<{s}>{s} {s}{s}{s}", .{ hi_color, bg_color, key, reset, bold, command, reset });
-    try terminal.setCursor(x, y);
-    try terminal.writeAll(formatted);
-}
-
 /// Render command with highlighted letter in middle
 pub fn writeShortcutWithHighlight(terminal: *Terminal, x: u16, y: u16, before: []const u8, highlight_char: []const u8, after: []const u8, hi_color: []const u8) !void {
     try terminal.setCursor(x, y);

@@ -1387,6 +1387,7 @@ pub const App = struct {
         ));
         app.namespaces_view.bindProjection(app.namespace_projection);
         app.namespaces_view.bindRecentNamespaces(app.recent_namespaces);
+        app.header.recent_namespaces = app.recent_namespaces;
         try app.resource_families.bindViews(app);
 
         // Register commands

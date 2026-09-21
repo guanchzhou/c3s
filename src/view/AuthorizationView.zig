@@ -540,7 +540,6 @@ pub const AuthorizationView = struct {
         };
 
         return .{
-            .quick_commands = &.{},
             .hints = &hint_items,
         };
     }
@@ -1687,7 +1686,6 @@ test "authorization_view: hints are valid" {
     const hints = AuthorizationView.authorizationHints();
     try std.testing.expect(hints.hints.len > 0);
     try std.testing.expectEqual(@as(usize, 8), hints.hints.len);
-    try std.testing.expectEqual(@as(usize, 0), hints.quick_commands.len);
 
     for (hints.hints) |hint| {
         const rt = @intFromEnum(hint.render_fn);

@@ -164,7 +164,7 @@ const MockView = struct {
 
     fn getHints(ptr: *anyopaque) hints.HintConfig {
         _ = ptr;
-        return .{ .quick_commands = &[_]hints.QuickCommand{}, .hints = &[_]hints.Hint{} };
+        return .{ .hints = &[_]hints.Hint{} };
     }
 
     fn deinit(ptr: *anyopaque) void {

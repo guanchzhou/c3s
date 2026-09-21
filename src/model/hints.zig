@@ -41,25 +41,15 @@ pub const Hint = struct {
     }
 };
 
-/// Quick command (namespace shortcut)
-pub const QuickCommand = struct {
-    key: []const u8,
-    cmd: []const u8,
-};
-
 /// Hints configuration for a view
 pub const HintConfig = struct {
-    quick_commands: []const QuickCommand = &.{},
     hints: []const Hint = &.{},
 };
 
 /// Pods view hints (default)
 pub fn podsHints() HintConfig {
-    const quick_cmds = comptime [_]QuickCommand{
-        .{ .key = "0", .cmd = "all" },
-        .{ .key = "1-9", .cmd = "recent namespaces" },
-    };
-
+    // `0` and `1`-`9` are no longer advertised here: the header's namespace
+    // column names the namespace behind each digit instead of describing them.
     const hint_items = comptime [_]Hint{
         Hint.highlighted("a", "", "ttach", 1), // Priority 1: Most important
         Hint.plain("<ctrl-k> kill", 7), // Priority 7: Dangerous
@@ -80,7 +70,6 @@ pub fn podsHints() HintConfig {
     };
 
     return .{
-        .quick_commands = &quick_cmds,
         .hints = &hint_items,
     };
 }
@@ -97,7 +86,6 @@ pub fn themesHints() HintConfig {
     };
 
     return .{
-        .quick_commands = &.{},
         .hints = &hint_items,
     };
 }
@@ -113,7 +101,6 @@ pub fn helpHints() HintConfig {
     };
 
     return .{
-        .quick_commands = &.{},
         .hints = &hint_items,
     };
 }
@@ -135,7 +122,6 @@ pub fn detailHints() HintConfig {
     };
 
     return .{
-        .quick_commands = &.{},
         .hints = &hint_items,
     };
 }
@@ -150,7 +136,6 @@ pub fn logsHints() HintConfig {
     };
 
     return .{
-        .quick_commands = &.{},
         .hints = &hint_items,
     };
 }
@@ -167,7 +152,6 @@ pub fn resourceHints() HintConfig {
     };
 
     return .{
-        .quick_commands = &.{},
         .hints = &hint_items,
     };
 }
@@ -183,7 +167,6 @@ pub fn commonHints() HintConfig {
     };
 
     return .{
-        .quick_commands = &.{},
         .hints = &hint_items,
     };
 }
@@ -195,7 +178,6 @@ test "hints: pods hints are valid and accessible" {
 
     // Ensure we have hints
     try testing.expect(hints.hints.len > 0);
-    try testing.expect(hints.quick_commands.len > 0);
 
     // Ensure we can access each hint without crash
     for (hints.hints) |hint| {
@@ -210,12 +192,6 @@ test "hints: pods hints are valid and accessible" {
         // Validate enum
         const render_type = @intFromEnum(hint.render_fn);
         try testing.expect(render_type == 0 or render_type == 1);
-    }
-
-    // Ensure we can access quick commands
-    for (hints.quick_commands) |cmd| {
-        try testing.expect(cmd.key.len > 0);
-        try testing.expect(cmd.cmd.len > 0);
     }
 }
 
@@ -257,7 +233,6 @@ test "hints: can call hint functions multiple times without corruption" {
     const hints2 = podsHints();
 
     try testing.expectEqual(hints1.hints.len, hints2.hints.len);
-    try testing.expectEqual(hints1.quick_commands.len, hints2.quick_commands.len);
 }
 
 test "hints: plain hints have text, highlighted hints have empty text" {
@@ -288,11 +263,6 @@ test "hints: all hint strings are valid UTF-8" {
         try testing.expect(std.unicode.utf8ValidateSlice(hint.key));
         try testing.expect(std.unicode.utf8ValidateSlice(hint.before));
         try testing.expect(std.unicode.utf8ValidateSlice(hint.after));
-    }
-
-    for (hints.quick_commands) |cmd| {
-        try testing.expect(std.unicode.utf8ValidateSlice(cmd.key));
-        try testing.expect(std.unicode.utf8ValidateSlice(cmd.cmd));
     }
 }
 
@@ -332,7 +302,6 @@ test "hints: every builder returns storage that outlives its call frame" {
         const shallow = builder();
         const deep = hintsFromDeeperFrame(builder, 4);
         try testing.expectEqual(shallow.hints.ptr, deep.hints.ptr);
-        try testing.expectEqual(shallow.quick_commands.ptr, deep.quick_commands.ptr);
     }
 }
 
