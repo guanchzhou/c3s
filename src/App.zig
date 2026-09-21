@@ -12,6 +12,7 @@ const Theme = theme_loader;
 const BoxDrawing = @import("ui/box_drawing.zig");
 const Cli = @import("cli.zig");
 const Config = @import("model/config.zig");
+const RecentNamespaces = @import("model/RecentNamespaces.zig").RecentNamespaces;
 const Logger = @import("core/logger.zig");
 const PerfTelemetry = @import("core/perf_telemetry.zig").PerfTelemetry;
 const perf = @import("core/perf_telemetry.zig");
@@ -974,6 +975,8 @@ pub const App = struct {
     pre_contexts_view: []const u8 = "pods",
     command_history: std.ArrayListUnmanaged([]u8) = .empty,
     history_cursor: usize = 0,
+    recent_namespaces: *RecentNamespaces,
+    persist_recent_namespaces: bool = true,
     crumbs_visible: bool = true,
     view_fullscreen: bool = false,
     crumb_buf: [160]u8 = undefined,
@@ -1104,6 +1107,15 @@ pub const App = struct {
             .theme_owned = null,
         };
         defer ui_config.deinit();
+        const recent_namespaces = try allocator.create(RecentNamespaces);
+        recent_namespaces.* = try RecentNamespaces.init(
+            allocator,
+            ui_config.ui.recent_namespaces,
+        );
+        errdefer {
+            recent_namespaces.deinit();
+            allocator.destroy(recent_namespaces);
+        }
 
         // Load theme
         const theme = try allocator.create(theme_loader.ThemeColors);
@@ -1277,6 +1289,7 @@ pub const App = struct {
             .applied_theme_name = try allocator.dupe(u8, ui_config.ui.theme),
             .view_manager = view_manager,
             .command_registry = command_registry,
+            .recent_namespaces = recent_namespaces,
             .theme = theme,
             .k8s_service = k8s_service,
             .pods_view = app_views.pods_view,
@@ -1369,6 +1382,7 @@ pub const App = struct {
             nodeProjectionColumns,
         ));
         app.namespaces_view.bindProjection(app.namespace_projection);
+        app.namespaces_view.bindRecentNamespaces(app.recent_namespaces);
         try app.resource_families.bindViews(app);
 
         // Register commands
@@ -1450,6 +1464,8 @@ pub const App = struct {
 
         for (self.command_history.items) |cmd| self.allocator.free(cmd);
         self.command_history.deinit(self.allocator);
+        self.recent_namespaces.deinit();
+        self.allocator.destroy(self.recent_namespaces);
 
         // Tear down the view manager BEFORE destroying the view objects it
         // references. (ViewManager.deinit no longer touches the views, but
@@ -1630,6 +1646,10 @@ pub const App = struct {
                 // Update header with connection info (cheap, no network).
                 const cluster_info = self.k8s_service.getClusterInfo();
                 self.header.updateClusterInfo(cluster_info.context, cluster_info.cluster, cluster_info.user) catch {};
+
+                // Before the first data load, so the refresh below paints the
+                // requested view instead of the default one.
+                self.applyStartupCommand();
 
                 // Load + paint the resource data FIRST so the user sees pods
                 // immediately, before the slower header version/metrics calls.
@@ -3241,6 +3261,9 @@ pub const App = struct {
                     }
                     self.dirty = true;
                 },
+                '1'...'9' => {
+                    _ = try self.switchToRecentNamespace(c - '0');
+                },
                 else => {
                     // Pass to current view
                     if (self.view_manager.getCurrentView()) |current_view| {
@@ -3320,20 +3343,22 @@ pub const App = struct {
                     return;
                 }
 
-                // First, check if there's an active filter to clear
-                const filter_cleared = self.clearCurrentViewFilter() catch false;
-                if (filter_cleared) {
-                    self.dirty = true;
-                    return;
-                }
-
-                // Only pop if we're in a pushed sub-view (depth > 1, like help/detail/logs view)
+                // A pushed view is a navigation layer, so Esc returns to its parent
+                // even when that child has a structural filter (node -> pods).
                 if (self.view_manager.getDepth() > 1) {
+                    _ = self.clearCurrentViewFilter() catch false;
                     _ = self.view_manager.popView();
                     // Restore current view name based on what's now on top
                     if (self.view_manager.getCurrentView()) |v| {
                         self.current_view_name = v.getName();
                     }
+                    self.dirty = true;
+                    return;
+                }
+
+                // At root, Esc clears the active ad-hoc filter.
+                const filter_cleared = self.clearCurrentViewFilter() catch false;
+                if (filter_cleared) {
                     self.dirty = true;
                 }
             },
@@ -3467,6 +3492,9 @@ pub const App = struct {
             },
             .namespace_switched => {
                 // Keep namespaces under pods so Esc returns to the namespace picker.
+                self.pods_view.table.show_all_namespaces = false;
+                self.clearPodsForScopeChange();
+                self.rememberNamespace(self.k8s_service.current_namespace);
                 try self.view_manager.pushView(self.pods_view.createView());
                 self.current_view_name = "pods";
 
@@ -3544,6 +3572,11 @@ pub const App = struct {
             .request_show_node => {
                 self.showSelectedNode() catch |err| {
                     Logger.err("show-node failed: {any}", .{err});
+                };
+            },
+            .request_view_node_pods => {
+                self.showSelectedNodePods() catch |err| {
+                    Logger.err("node pods failed: {any}", .{err});
                 };
             },
             .request_aliases => {
@@ -3672,6 +3705,20 @@ pub const App = struct {
         try self.replaceRootView(self.nodes_view.createView(), "nodes");
     }
 
+    fn showSelectedNodePods(self: *App) !void {
+        if (!std.mem.eql(u8, self.current_view_name, "nodes")) return;
+        const node = self.getSelectedResourceFromCurrentView() orelse return;
+        const filter = try std.fmt.allocPrint(self.allocator, "node={s}", .{node.name});
+        defer self.allocator.free(filter);
+
+        self.pods_view.table.show_all_namespaces = true;
+        try self.pods_view.applyFilter(filter);
+        try self.view_manager.pushView(self.pods_view.createView());
+        self.current_view_name = "pods";
+        if (self.view_manager.getCurrentView()) |view| try view.refresh();
+        self.dirty = true;
+    }
+
     /// Make `view` the one and only entry on the view stack.
     ///
     /// A view switch is navigation, not a sub-view: it has to work from wherever
@@ -3681,6 +3728,21 @@ pub const App = struct {
     /// either. A namespace drill-down (`:ns`, Enter) pushes pods ON TOP of
     /// namespaces, which is exactly how `:nodes` became unreachable.
     fn replaceRootView(self: *App, view: View, name: []const u8) !void {
+        // Replacing the sole root with the same view retires its active
+        // subscription, then asks the identical lifecycle identity to start
+        // again. The supervisor correctly rejects that overlap, but the LIST
+        // result now belongs to the retired generation and never reaches the
+        // table. This is especially visible at startup with `-c pods`: the API
+        // returns rows while the UI stays at pods[0]. Keep the live root when
+        // navigation is already at its destination; query extras (namespace,
+        // labels, filter) are applied by executePaletteCommand afterwards.
+        if (self.view_manager.getDepth() == 1 and
+            std.mem.eql(u8, self.current_view_name, name))
+        {
+            self.dirty = true;
+            return;
+        }
+
         while (self.view_manager.getDepth() > 0) _ = self.view_manager.popView();
         try self.view_manager.pushView(view);
         self.current_view_name = name;
@@ -4213,6 +4275,15 @@ pub const App = struct {
     }
 
     fn executePaletteCommand(self: *App, cmd_text: []const u8, record: bool) !void {
+        try self.executePaletteCommandWithService(cmd_text, record, true);
+    }
+
+    fn executePaletteCommandWithService(
+        self: *App,
+        cmd_text: []const u8,
+        record: bool,
+        service_requests: bool,
+    ) !void {
         const extras = k9s_query.parseCommand(cmd_text);
         if (extras.context) |ctx_name| {
             if (ctx_name.len > 0) {
@@ -4263,7 +4334,24 @@ pub const App = struct {
         if (extras.filter) |f| {
             try self.applyFilterToCurrentView(f);
         }
-        try self.serviceResourceSubscriptionRequests();
+        if (service_requests) try self.serviceResourceSubscriptionRequests();
+    }
+
+    /// Navigate to the resource named by `--command`, if one was given.
+    ///
+    /// This runs the palette's resolver rather than a lookup of its own, so a
+    /// startup command reaches discovery-only resources (`-c nodepools`) on the
+    /// same terms as typing `:nodepools`. A bad name is not fatal: the footer
+    /// already carries the reason and the default view stays up.
+    fn applyStartupCommand(self: *App) void {
+        const startup_command = self.config.command orelse return;
+        // The deferred-connect block refreshes the selected view and services
+        // its requests immediately after this returns. Starting them here too
+        // creates two lifecycle generations during startup; the later refresh
+        // retires the first generation before its LIST reaches the table.
+        self.executePaletteCommandWithService(startup_command, false, false) catch |err| {
+            Logger.warn("startup command '{s}' failed: {any}", .{ startup_command, err });
+        };
     }
 
     fn openDynamicResource(self: *App, query: []const u8) !bool {
@@ -4553,13 +4641,14 @@ pub const App = struct {
         const xdg = @import("core/xdg.zig");
         const paths = try xdg.ensurePaths();
 
-        const existing = std.Io.Dir.cwd().readFileAlloc(
+        const existing_owned = std.Io.Dir.cwd().readFileAlloc(
             runtime.io(),
             paths.config_file,
             self.allocator,
             .limited(1024 * 1024),
-        ) catch "";
-        defer if (existing.len > 0) self.allocator.free(existing);
+        ) catch null;
+        defer if (existing_owned) |existing| self.allocator.free(existing);
+        const existing = existing_owned orelse "";
 
         const updated = try Config.withTheme(self.allocator, existing, theme_name);
         defer self.allocator.free(updated);
@@ -4573,6 +4662,72 @@ pub const App = struct {
         self.allocator.free(self.current_theme_name);
         self.current_theme_name = try self.allocator.dupe(u8, theme_name);
         Logger.info("Theme saved: {s}", .{theme_name});
+    }
+
+    fn rememberNamespace(self: *App, namespace: []const u8) void {
+        self.recent_namespaces.record(namespace) catch |err| {
+            Logger.err("Failed to remember namespace: {any}", .{err});
+            return;
+        };
+        if (self.persist_recent_namespaces) {
+            self.saveRecentNamespaces() catch |err|
+                Logger.err("Failed to persist recent namespaces: {any}", .{err});
+        }
+    }
+
+    fn clearPodsForScopeChange(self: *App) void {
+        // A namespace switch changes the meaning of every existing pod row.
+        // Keeping old rows until the asynchronous LIST arrives lets a new
+        // namespace title briefly label data from the previous namespace.
+        self.pods_view.table.clearItems();
+        self.pods_view.table.loading = true;
+        self.pods_view.table.loading_detail = "Loading pods...";
+        // Do not let a queued paint from the old projection repopulate those
+        // rows before the new subscription's list_started boundary clears it.
+        self.pod_projection_sync_pending = false;
+    }
+
+    fn saveRecentNamespaces(self: *App) !void {
+        const xdg = @import("core/xdg.zig");
+        const paths = try xdg.ensurePaths();
+        const existing_owned = std.Io.Dir.cwd().readFileAlloc(
+            runtime.io(),
+            paths.config_file,
+            self.allocator,
+            .limited(1024 * 1024),
+        ) catch null;
+        defer if (existing_owned) |existing| self.allocator.free(existing);
+        const existing = existing_owned orelse "";
+        const updated = try Config.withRecentNamespaces(
+            self.allocator,
+            existing,
+            self.recent_namespaces.entries.items,
+        );
+        defer self.allocator.free(updated);
+        try std.Io.Dir.cwd().writeFile(runtime.io(), .{
+            .sub_path = paths.config_file,
+            .data = updated,
+        });
+    }
+
+    fn switchToRecentNamespace(self: *App, slot: u8) !bool {
+        const namespace = self.recent_namespaces.at(slot) orelse return false;
+        const stable = try self.allocator.dupe(u8, namespace);
+        defer self.allocator.free(stable);
+        if (self.k8s_service.isConnected())
+            try self.k8s_service.setCurrentNamespace(stable)
+        else
+            try self.k8s_service.setConfiguredNamespace(stable);
+        self.rememberNamespace(stable);
+        self.pods_view.table.show_all_namespaces = false;
+        try self.pods_view.applyFilter("");
+        self.clearPodsForScopeChange();
+        // Numbered namespace selection is global navigation. Re-rooting avoids
+        // refreshing a pushed help/detail view while the hidden pods view keeps
+        // its old namespace subscription.
+        try self.replaceRootView(self.pods_view.createView(), "pods");
+        self.refreshCurrentView();
+        return true;
     }
 
     /// Load `theme_name` into the shared theme object every view, the header and
@@ -4866,6 +5021,8 @@ fn setupResizeHandler() !void {
 
 fn podProjectionMatch(record: *const PodRecord, filter: []const u8) bool {
     if (filter.len == 0) return true;
+    if (std.mem.startsWith(u8, filter, "node="))
+        return std.ascii.eqlIgnoreCase(record.node_name, filter["node=".len..]);
     return containsIgnoreCase(record.key.name, filter) or
         containsIgnoreCase(record.key.namespace, filter) or
         containsIgnoreCase(record.phase, filter) or
@@ -9353,6 +9510,14 @@ test "palette view switch survives a namespace drill-down" {
     _ = try app.active_session_slot.commit(active_session);
     app.k8s_service.connected = true;
     app.task14 = .{ .transport = lists.transport(), .hold_watch = true };
+    app.pods_view.table.show_all_namespaces = true;
+    var stale_columns: [PodsView.view_config.columns.len][]const u8 = undefined;
+    for (&stale_columns) |*column| column.* = try allocator.dupe(u8, "stale-pod");
+    try app.pods_view.table.appendItem(.{
+        .columns = stale_columns,
+        .allocator = allocator,
+    });
+    try app.pods_view.table.filtered_indices.append(allocator, 0);
 
     try app.executePaletteCommand("ns", false);
     try std.testing.expectEqualStrings("namespaces", app.current_view_name);
@@ -9369,6 +9534,10 @@ test "palette view switch survives a namespace drill-down" {
     try app.handleKey(.enter);
     try std.testing.expectEqualStrings("pods", app.current_view_name);
     try std.testing.expectEqual(@as(usize, 2), app.view_manager.getDepth());
+    try std.testing.expectEqualStrings("kube-system", app.k8s_service.current_namespace);
+    try std.testing.expect(!app.pods_view.table.show_all_namespaces);
+    try std.testing.expectEqual(@as(usize, 0), app.pods_view.table.items.items.len);
+    try std.testing.expect(app.pods_view.table.loading);
 
     try app.handleKey(.{ .char = '0' });
     try std.testing.expect(app.pods_view.table.show_all_namespaces);
@@ -9410,10 +9579,175 @@ test "typed :nodes wins over any fuzzy suggestion from any depth" {
     try std.testing.expectEqual(@as(usize, 1), app.view_manager.getDepth());
 }
 
+test "--command opens the requested view and absence of it keeps the default" {
+    var requested = try App.init(std.testing.allocator, .{ .command = "nodes" });
+    defer requested.deinit();
+
+    requested.applyStartupCommand();
+    try std.testing.expectEqualStrings("nodes", requested.current_view_name);
+    try std.testing.expectEqual(@as(usize, 1), requested.view_manager.getDepth());
+    // Startup's deferred-connect block owns the one and only subscription
+    // service pass. Command resolution must leave the request queued for it.
+    try std.testing.expectEqual(
+        NodesView.SubscriptionRequest.start,
+        requested.nodes_view.subscription_request,
+    );
+
+    var default_view = try App.init(std.testing.allocator, .{});
+    defer default_view.deinit();
+
+    default_view.applyStartupCommand();
+    try std.testing.expectEqualStrings("pods", default_view.current_view_name);
+}
+
+test "replaceRootView keeps an already active sole root alive" {
+    var app = try App.init(std.testing.allocator, .{});
+    defer app.deinit();
+
+    const active_ptr = app.view_manager.getCurrentView().?.ptr;
+    // Pass a deliberately different view under the current identity so the
+    // assertion detects a pop/push instead of comparing two equal pod pointers.
+    try app.replaceRootView(app.nodes_view.createView(), "pods");
+
+    try std.testing.expectEqual(@as(usize, 1), app.view_manager.getDepth());
+    try std.testing.expectEqual(active_ptr, app.view_manager.getCurrentView().?.ptr);
+}
+
+test "an unresolvable --command leaves the default view usable" {
+    // Disconnected discovery cannot resolve anything, which is the same shape as
+    // a typo. Startup must survive it rather than abort before the first paint.
+    var app = try App.init(std.testing.allocator, .{ .command = "definitely-not-a-resource" });
+    defer app.deinit();
+
+    app.applyStartupCommand();
+    try std.testing.expectEqualStrings("pods", app.current_view_name);
+    try std.testing.expectEqual(@as(usize, 1), app.view_manager.getDepth());
+}
+
 test "palette prefix completion does not steal dynamic resource names" {
     try std.testing.expect(App.shouldCompletePaletteCommand("node", "nodes"));
     try std.testing.expect(!App.shouldCompletePaletteCommand("nodeclaims", "nodes"));
     try std.testing.expect(!App.shouldCompletePaletteCommand("nodeclasses", "nodes"));
+}
+
+test "node Enter pushes exact all-namespace pods and Esc returns to nodes" {
+    const allocator = std.testing.allocator;
+    const io = runtime.io();
+    var lists = @import("k8s/FakeTransport.zig").PathListTransport.init(
+        allocator,
+        resource_subscription.task14ListBodyForPath,
+    );
+    defer lists.deinit();
+    var app = try App.init(allocator, .{});
+    defer app.deinit();
+    const active_session = try task14PrepareLocalSession(
+        undefined,
+        allocator,
+        io,
+        app.shared_event,
+        1,
+        .{
+            .context_name = "node-pods",
+            .kubeconfig_path = null,
+            .default_namespace = "default",
+            .force_proxy = false,
+            .readonly = true,
+        },
+    );
+    _ = try app.active_session_slot.commit(active_session);
+    app.k8s_service.connected = true;
+    app.task14 = .{ .transport = lists.transport(), .hold_watch = true };
+    try app.executePaletteCommand("nodes", false);
+
+    var columns: [6][]const u8 = undefined;
+    const values = [_][]const u8{
+        "ip-10-13-0-136.ec2.internal",
+        "Ready",
+        "<none>",
+        "v1.35.7",
+        "10.13.0.136",
+        "1d",
+    };
+    for (values, 0..) |value, index| columns[index] = try allocator.dupe(u8, value);
+    try app.nodes_view.table.appendItem(.{ .columns = columns, .allocator = allocator });
+    try app.nodes_view.table.filtered_indices.append(allocator, 0);
+
+    try app.handleKey(.enter);
+    try std.testing.expectEqualStrings("pods", app.current_view_name);
+    try std.testing.expectEqual(@as(usize, 2), app.view_manager.getDepth());
+    try std.testing.expect(app.pods_view.table.show_all_namespaces);
+    try std.testing.expectEqualStrings(
+        "node=ip-10-13-0-136.ec2.internal",
+        app.pods_view.table.filter_text,
+    );
+
+    var matching = PodRecord{
+        .key = .{ .uid = "pod-a", .namespace = "default", .name = "other-name" },
+        .phase = @constCast("Running"),
+        .status_reason = @constCast(""),
+        .pod_ip = @constCast("10.0.0.1"),
+        .node_name = @constCast("ip-10-13-0-136.ec2.internal"),
+    };
+    var false_positive = matching;
+    false_positive.key.uid = "pod-b";
+    false_positive.key.name = "ip-10-13-0-136.ec2.internal";
+    false_positive.node_name = @constCast("another-node");
+    try std.testing.expect(podProjectionMatch(&matching, app.pods_view.table.filter_text));
+    try std.testing.expect(!podProjectionMatch(&false_positive, app.pods_view.table.filter_text));
+
+    const changes = try allocator.alloc(resource_key.TypedChange(PodRecord), 2);
+    changes[0] = .{ .watch_upsert = try matching.clone(allocator) };
+    changes[1] = .{ .watch_upsert = try false_positive.clone(allocator) };
+    var batch = resource_key.TypedBatch(PodRecord){
+        .generation = 1,
+        .subscription_id = 1,
+        .revision = 1,
+        .changes = changes,
+        .sync = null,
+        .owned_bytes = 1,
+    };
+    defer batch.deinit(allocator);
+    var plan = try PodProjection.handler().preflight(
+        @ptrCast(app.pod_projection),
+        &batch,
+        allocator,
+    );
+    PodProjection.handler().commit(@ptrCast(app.pod_projection), &batch, &plan);
+    plan.deinit(allocator);
+    try app.pods_view.syncPodProjection();
+    try std.testing.expectEqual(@as(usize, 1), app.pods_view.table.filtered_indices.items.len);
+    try std.testing.expectEqualStrings(
+        "other-name",
+        app.pods_view.table.getSelectedItem().?.columns[1],
+    );
+
+    try app.handleKey(.escape);
+    try std.testing.expectEqualStrings("nodes", app.current_view_name);
+    try std.testing.expectEqual(@as(usize, 1), app.view_manager.getDepth());
+    try std.testing.expectEqualStrings("", app.pods_view.table.filter_text);
+
+    app.finishLifecycle();
+}
+
+test "numbered namespace shortcut keeps zero reserved for all namespaces" {
+    var app = try App.init(std.testing.allocator, .{});
+    defer app.deinit();
+    app.persist_recent_namespaces = false;
+    try app.recent_namespaces.record("team-a");
+    try app.recent_namespaces.record("kube-system");
+    app.pods_view.table.show_all_namespaces = true;
+    try app.view_manager.pushView(app.help_view.createView());
+    try std.testing.expectEqual(@as(usize, 2), app.view_manager.getDepth());
+
+    try app.handleKey(.{ .char = '2' });
+    try std.testing.expectEqualStrings("team-a", app.k8s_service.current_namespace);
+    try std.testing.expect(!app.pods_view.table.show_all_namespaces);
+    try std.testing.expectEqualStrings("team-a", app.recent_namespaces.at(1).?);
+    try std.testing.expectEqualStrings("pods", app.current_view_name);
+    try std.testing.expectEqual(@as(usize, 1), app.view_manager.getDepth());
+
+    try app.handleKey(.{ .char = '0' });
+    try std.testing.expect(app.pods_view.table.show_all_namespaces);
 }
 
 test "shouldLiveFilter refuses every prompt that is not a live filter" {

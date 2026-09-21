@@ -192,6 +192,7 @@ fn loadNodesBindings(allocator: std.mem.Allocator) ![]const KeyBinding {
     const bindings = [_]KeyBinding{
         // Node-specific commands. k9s keys: `r` drain, `u` cordon toggle.
         // `c` is copy (daily_driver), matching every other table.
+        .{ .key = "enter", .description = "View Pods", .category = .resource, .action = "view_pods" },
         .{ .key = "u", .description = "Cordon", .category = .resource, .action = "cordon" },
         .{ .key = "u", .description = "Uncordon", .category = .resource, .action = "uncordon" },
         .{ .key = "r", .description = "Drain", .category = .resource, .action = "drain" },

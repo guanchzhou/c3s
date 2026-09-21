@@ -130,7 +130,9 @@ test "real Enter switches namespace then pushes and refreshes pods" {
     try testing.expectEqualStrings("pods", app.view_manager.getCurrentView().?.getName());
     try testing.expectEqual(namespace_depth + 1, app.view_manager.getDepth());
     try testing.expectEqual(@as(usize, 1), namespaces.items.items.len);
-    try testing.expectEqual(@as(usize, 1), pods.items.items.len);
+    // Previous-namespace rows must not paint under the new title while LIST is in flight.
+    try testing.expectEqual(@as(usize, 0), pods.items.items.len);
+    try testing.expect(pods.loading);
 
     try app.handleKey(.escape);
     try testing.expectEqual(namespace_depth, app.view_manager.getDepth());

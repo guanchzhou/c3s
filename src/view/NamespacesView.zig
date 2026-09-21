@@ -22,6 +22,7 @@ const ActiveContextSession = @import("../k8s/ActiveContextSession.zig").ActiveCo
 const ActiveSessionSlot = @import("../k8s/ActiveSessionSlot.zig").ActiveSessionSlot;
 const NamespaceRecord = @import("../k8s/NamespaceRecord.zig");
 const NamespaceProjection = @import("../k8s/ResourceProjection.zig").ResourceProjection(NamespaceRecord);
+const RecentNamespaces = @import("../model/RecentNamespaces.zig").RecentNamespaces;
 
 pub const NamespacesView = struct {
     pub const SubscriptionRequest = enum { none, start, restart };
@@ -31,6 +32,7 @@ pub const NamespacesView = struct {
     table: TableState(NamespaceInfo),
     current_namespace: []const u8,
     projection: ?*NamespaceProjection = null,
+    recent_namespaces: ?*const RecentNamespaces = null,
     subscription_started: bool = false,
     subscription_request: SubscriptionRequest = .none,
 
@@ -88,6 +90,13 @@ pub const NamespacesView = struct {
 
     pub fn bindProjection(self: *NamespacesView, projection: *NamespaceProjection) void {
         self.projection = projection;
+    }
+
+    pub fn bindRecentNamespaces(
+        self: *NamespacesView,
+        recent_namespaces: *const RecentNamespaces,
+    ) void {
+        self.recent_namespaces = recent_namespaces;
     }
 
     pub fn markSubscriptionStarted(self: *NamespacesView) void {
@@ -404,7 +413,8 @@ pub const NamespacesView = struct {
         const name_hdr = std.fmt.bufPrint(&name_hdr_buf, "NAME{s}", .{name_ind}) catch "NAME";
         const age_hdr = std.fmt.bufPrint(&age_hdr_buf, "AGE{s}", .{age_ind}) catch "AGE";
         const status_hdr = std.fmt.bufPrint(&status_hdr_buf, "STATUS{s}", .{status_ind}) catch "STATUS";
-        try Theme.writeStringWithTheme(terminal, x, header_y, name_hdr, self.theme.title, self.theme.main_bg);
+        try Theme.writeStringWithTheme(terminal, x, header_y, "KEY", self.theme.title, self.theme.main_bg);
+        try Theme.writeStringWithTheme(terminal, x + 4, header_y, name_hdr, self.theme.title, self.theme.main_bg);
         try Theme.writeStringWithTheme(terminal, x + 39, header_y, status_hdr, self.theme.title, self.theme.main_bg);
         try Theme.writeStringWithTheme(terminal, x + 59, header_y, age_hdr, self.theme.title, self.theme.main_bg);
 
@@ -427,11 +437,16 @@ pub const NamespacesView = struct {
             }
 
             // Current namespace indicator
-            const indicator = if (is_current) "* " else "  ";
-            try Theme.writeStringWithTheme(terminal, x, row_y, indicator, colors.fg, colors.bg);
+            var key_buf: [4]u8 = .{ ' ', ' ', ' ', ' ' };
+            if (is_current) key_buf[0] = '*';
+            if (self.recent_namespaces) |recent| {
+                if (recent.shortcutFor(ns.name)) |shortcut|
+                    key_buf[1] = '0' + shortcut;
+            }
+            try Theme.writeStringWithTheme(terminal, x, row_y, &key_buf, colors.fg, colors.bg);
 
             // Name
-            try Theme.writeStringWithTheme(terminal, x + 2, row_y, ns.name[0..@min(36, ns.name.len)], colors.fg, colors.bg);
+            try Theme.writeStringWithTheme(terminal, x + 4, row_y, ns.name[0..@min(34, ns.name.len)], colors.fg, colors.bg);
 
             // Status
             try Theme.writeStringWithTheme(terminal, x + 39, row_y, ns.status, colors.fg, colors.bg);

@@ -10,6 +10,23 @@ The release workflow extracts the section matching the git tag (`vX.Y.Z` →
 
 ## [Unreleased]
 
+### Added
+
+- Namespace Enter scopes the pods view to that namespace instead of
+  `pods(all)`.
+- Recent namespaces persist as numbered `1`–`9` shortcuts (`0` remains
+  all-namespaces), matching k9s-style hopping.
+- Enter on a node opens that node's pods via a projection `node=` filter.
+- `--command` / `-c` runs after connect through the palette resolver.
+
+### Fixed
+
+- Replacing an already-active root view no longer retires the LIST before
+  paint, so startup commands such as `-c pods` show rows.
+- Node drill-down uses the pod projection predicate, not formatted-row text.
+- Namespace switches clear stale rows so the previous namespace cannot paint
+  under the new title.
+
 ## [0.3.1] - 2026-09-18
 
 ### Fixed

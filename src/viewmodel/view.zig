@@ -81,6 +81,8 @@ pub const View = struct {
         request_port_forward,
         request_aliases,
         request_show_node,
+        /// Open all-namespace pods filtered to the selected node.
+        request_view_node_pods,
         request_logs_previous,
         request_set_image,
         request_kill,

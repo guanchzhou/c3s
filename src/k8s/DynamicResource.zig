@@ -520,23 +520,35 @@ test "resource aliases include Karpenter-friendly unique suffixes" {
     try std.testing.expect(!matchesUniqueSuffix("classes", resource));
 }
 
-test "api-resources catalog resolves Karpenter plural, short name, and unique suffix" {
+test "api-resources catalog resolves every Karpenter palette entry" {
     const catalog =
         \\NAME                   SHORTNAMES    APIVERSION                 NAMESPACED   KIND
         \\ec2nodeclasses         ec2nc,ec2ncs  karpenter.k8s.aws/v1      false        EC2NodeClass
         \\nodeclaims                           karpenter.sh/v1            false        NodeClaim
         \\nodepools                            karpenter.sh/v1            false        NodePool
     ;
-    for ([_][]const u8{ "nodepools", "ec2nc", "nodeclasses" }) |query| {
+    for ([_][]const u8{
+        "nodepool",
+        "nodepools",
+        "nodeclaims",
+        "ec2nodeclasses",
+        "ec2nc",
+        "nodeclasses",
+    }) |query| {
         var descriptor = (try resolveApiResources(
             std.testing.allocator,
             catalog,
             query,
         )).?;
         defer descriptor.deinit(std.testing.allocator);
-        if (std.mem.eql(u8, query, "nodepools")) {
+        if (std.mem.eql(u8, query, "nodepool") or
+            std.mem.eql(u8, query, "nodepools"))
+        {
             try std.testing.expectEqualStrings("karpenter.sh", descriptor.group);
             try std.testing.expectEqualStrings("NodePool", descriptor.kind);
+        } else if (std.mem.eql(u8, query, "nodeclaims")) {
+            try std.testing.expectEqualStrings("karpenter.sh", descriptor.group);
+            try std.testing.expectEqualStrings("NodeClaim", descriptor.kind);
         } else {
             try std.testing.expectEqualStrings("karpenter.k8s.aws", descriptor.group);
             try std.testing.expectEqualStrings("ec2nodeclasses", descriptor.plural);

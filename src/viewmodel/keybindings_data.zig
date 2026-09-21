@@ -24,6 +24,7 @@ pub const daily_driver_bindings = [_]KeyBinding{
     .{ .key = "Ctrl-\\", .description = "Mark Clear", .category = .general, .action = "mark_clear" },
     .{ .key = "Shift-Left", .description = "Move Column Left", .category = .navigation, .action = "move_column_left" },
     .{ .key = "Shift-Right", .description = "Move Column Right", .category = .navigation, .action = "move_column_right" },
+    .{ .key = "1-9", .description = "Recent Namespace", .category = .navigation, .action = "recent_namespace" },
 };
 
 pub fn concatBindings(allocator: std.mem.Allocator, head: []const KeyBinding, tail: []const KeyBinding) ![]const KeyBinding {
@@ -49,6 +50,7 @@ pub fn loadNamespacesBindings(allocator: std.mem.Allocator) ![]const KeyBinding 
         .{ .key = "y", .description = "YAML", .category = .resource, .action = "yaml" },
         .{ .key = "Ctrl-d", .description = "Delete", .category = .resource, .action = "delete" },
         .{ .key = "Ctrl-r", .description = "Refresh", .category = .resource, .action = "refresh" },
+        .{ .key = "1-9", .description = "Recent Namespace", .category = .navigation, .action = "recent_namespace" },
     };
     return try allocator.dupe(KeyBinding, &bindings);
 }
@@ -467,8 +469,8 @@ pub fn loadGenericResourceBindings(allocator: std.mem.Allocator) ![]const KeyBin
 ///
 ///   - Workload mutations (`scale`, `restart`, `suspend`, `trigger`, `rollback`)
 ///     are implemented via `K8sService.runKubectl` and are NOT in this list.
-///   - `view_pods`, `view_rules`, `view_policies`, `view_instances`: Enter-to-drill-down.
-///     There is not even a KeyResult variant for these.
+///   - `view_rules`, `view_policies`, `view_instances`: Enter-to-drill-down.
+///     There is not even a KeyResult variant for these. `view_pods` is wired on nodes.
 ///   - `view`, `bench`: never existed as table keys. `bench` is an OUT subsystem.
 ///     `f` = show port-forwards is wired on pods/services.
 ///   - `field_next`, `field_previous`, `reload`, `command_clear`, `left`, `right`:
@@ -478,12 +480,14 @@ pub fn loadGenericResourceBindings(allocator: std.mem.Allocator) ![]const KeyBin
 ///   - `xray`, `pulses`, `popeye`, `charts`, `plugins`, `screendump`, `jsonpath`:
 ///     owner OUT list (not deferred). Do not advertise.
 pub const unimplemented_actions = [_][]const u8{
-    "view_pods",     "view_rules",        "view_policies", "view_instances",
-    "view",          "bench",             "field_next",    "field_previous",
-    "reload",        "command_clear",     "left",          "right",
-    "namespace_all", "namespace_default", "goto",          "start",
-    "xray",          "pulses",            "popeye",        "charts",
-    "plugins",       "screendump",        "jsonpath",
+    "view_rules",        "view_policies", "view_instances",
+    "view",              "bench",         "field_next",
+    "field_previous",    "reload",        "command_clear",
+    "left",              "right",         "namespace_all",
+    "namespace_default", "goto",          "start",
+    "xray",              "pulses",        "popeye",
+    "charts",            "plugins",       "screendump",
+    "jsonpath",
 };
 
 test "no view advertises an action that nothing implements" {
@@ -540,7 +544,7 @@ const view_scoped_actions = [_]OwnedActions{
     // resource_view.zig `is_pods` + `is_services` branches.
     .{ .views = &.{ "pods", "services" }, .actions = &.{ "port_forward", "show_portforward" } },
     // resource_view.zig `is_nodes` branch.
-    .{ .views = &.{"nodes"}, .actions = &.{ "cordon", "uncordon", "drain" } },
+    .{ .views = &.{"nodes"}, .actions = &.{ "cordon", "uncordon", "drain", "view_pods" } },
     // resource_view.zig `is_secrets` branch.
     .{ .views = &.{"secrets"}, .actions = &.{"decode"} },
     // resource_view.zig generic switch, gated on config.name == "deployments".
