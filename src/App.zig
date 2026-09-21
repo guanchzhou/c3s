@@ -4185,6 +4185,10 @@ pub const App = struct {
         // Endpoints, StorageClasses) have no ViewType, and falling back to pods meant
         // `?` on an Ingress listed Shell, Logs, Attach and Sanitize -- none of which do
         // anything there. .generic lists only what is true on any resource view.
+        if (std.mem.eql(u8, self.current_view_name, "applications")) {
+            const info = self.getSelectedResourceFromCurrentView() orelse return .generic;
+            if (std.mem.eql(u8, info.group, "argoproj.io")) return .applications;
+        }
         return std.meta.stringToEnum(ViewType, self.current_view_name) orelse .generic;
     }
 

@@ -375,6 +375,21 @@ test "keybindings_data: portforwards advertises implemented start and stop" {
     try std.testing.expect(has_stop);
 }
 
+test "keybindings_data: Argo applications advertise refresh and sync details" {
+    const bindings = try loadArgoApplicationBindings(std.testing.allocator);
+    defer std.testing.allocator.free(bindings);
+
+    var refresh = false;
+    var hard_refresh = false;
+    var sync_details = false;
+    for (bindings) |binding| {
+        if (std.mem.eql(u8, binding.action, "argo_refresh")) refresh = true;
+        if (std.mem.eql(u8, binding.action, "argo_hard_refresh")) hard_refresh = true;
+        if (std.mem.eql(u8, binding.action, "argo_sync_details")) sync_details = true;
+    }
+    try std.testing.expect(refresh and hard_refresh and sync_details);
+}
+
 test "keybindings_data: pvcs has capacity sorting" {
     var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
@@ -458,6 +473,17 @@ pub fn loadGenericResourceBindings(allocator: std.mem.Allocator) ![]const KeyBin
         .{ .key = ":q", .description = "Quit", .category = .general, .action = "quit" },
     };
     return withDailyDriver(allocator, &bindings);
+}
+
+pub fn loadArgoApplicationBindings(allocator: std.mem.Allocator) ![]const KeyBinding {
+    const argo = [_]KeyBinding{
+        .{ .key = "Shift-r", .description = "Argo Refresh", .category = .resource, .action = "argo_refresh" },
+        .{ .key = "Shift-h", .description = "Argo Hard Refresh", .category = .resource, .action = "argo_hard_refresh" },
+        .{ .key = "Shift-s", .description = "Argo Sync Details", .category = .resource, .action = "argo_sync_details" },
+    };
+    const generic = try loadGenericResourceBindings(allocator);
+    defer allocator.free(generic);
+    return concatBindings(allocator, generic, &argo);
 }
 
 /// Actions with no implementation anywhere in c3s.
@@ -562,6 +588,8 @@ const view_scoped_actions = [_]OwnedActions{
     .{ .views = &.{ "serviceaccounts", "secrets", "configmaps", "persistentvolumeclaims" }, .actions = &.{"used_by"} },
     // PortForwardsView's own handleKey.
     .{ .views = &.{"portforwards"}, .actions = &.{"stop"} },
+    // DynamicResourceView's applications.argoproj.io branch.
+    .{ .views = &.{"applications"}, .actions = &.{ "argo_refresh", "argo_hard_refresh", "argo_sync_details" } },
 };
 
 test "no view advertises an action implemented only for a different view" {

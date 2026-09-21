@@ -169,7 +169,7 @@ zig build
 | `Tab` / `Shift-Tab` | Next / previous common resource kind |
 | `Shift-Y` | Pick and copy a full, untruncated column value |
 | `Shift-T` | Session timeline for the selected object |
-| `Shift-X` | Explain unhealthy workload from status and Warning events |
+| `Shift-X` | Explain unhealthy workload (workload tables) |
 | `x` | Clear filter |
 | `0` | Toggle all namespaces |
 | `r` | Refresh |

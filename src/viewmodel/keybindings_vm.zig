@@ -35,6 +35,7 @@ pub const ViewType = enum {
     /// Fallback for any resource view with no ViewType of its own. Before this,
     /// currentViewType() fell back to `.pods`, so `?` on an Ingress showed PODS' help.
     generic,
+    applications,
 
     // Misc views
     contexts,
@@ -106,6 +107,7 @@ fn loadBindingsForView(allocator: std.mem.Allocator, view_type: ViewType) ![]con
         // Misc views (use generic or specific bindings)
         .contexts => try bindings_data.loadContextsBindings(allocator),
         .generic => try bindings_data.loadGenericResourceBindings(allocator),
+        .applications => try bindings_data.loadArgoApplicationBindings(allocator),
         .portforwards => try bindings_data.loadPortForwardsBindings(allocator),
         .aliases => try bindings_data.loadAliasesBindings(allocator),
     };

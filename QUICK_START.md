@@ -334,7 +334,9 @@ Coming soon! Currently uses vim-style defaults.
 
 ### Port Forwarding
 
-Coming soon! Will support interactive port forwarding.
+Press `Shift-F` on a pod or service to start a forward. Use `:pf` to start,
+inspect, and stop managed forwards; failed and exited processes remain visible
+with their status.
 
 ### Pod Logs
 
@@ -364,7 +366,7 @@ Interested in contributing? Check out:
 1. **Architecture:** Review MVVM pattern in code
 2. **Testing:** Add tests for new features
 3. **Documentation:** Improve guides
-4. **Features:** Implement advanced features (logs, port-forwarding, etc.)
+4. **Features:** Implement advanced features and resource workflows
 
 ---
 
