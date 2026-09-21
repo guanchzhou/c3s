@@ -10,6 +10,8 @@ The release workflow extracts the section matching the git tag (`vX.Y.Z` →
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-09-21
+
 ### Added
 
 - Cedar policy workbench at `:cedar`: lists `cedar.k8s.aws` Policy objects and
