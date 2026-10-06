@@ -212,6 +212,13 @@ test "Task 15 App wiring renders banner and counts exact resource identities" {
 
     try std.testing.expectEqual(@as(usize, 0), app.activeIdentityCount());
     app.active_pod_subscription = .{ .generation = 1, .subscription_id = 1 };
+    app.active_node_subscription = .{ .generation = 1, .subscription_id = 3 };
+    app.active_namespace_subscription = .{ .generation = 1, .subscription_id = 4 };
+    app.active_metrics_subscription = .{ .generation = 1, .subscription_id = 5 };
+    try std.testing.expectEqual(@as(usize, 4), app.activeIdentityCount());
+    app.active_node_subscription = null;
+    app.active_namespace_subscription = null;
+    app.active_metrics_subscription = null;
     const first = app.resource_families.registry.entryAt(0) orelse
         return error.MissingFamily;
     first.active = .{ .generation = 1, .subscription_id = 2 };

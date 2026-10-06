@@ -10,6 +10,13 @@ The release workflow extracts the section matching the git tag (`vX.Y.Z` →
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-10-06
+
+### Fixed
+
+- Startup abort (`panic: integer overflow` in `activeIdentityCount`) once a
+  second pod, node, namespace, or metrics subscription became active.
+
 ## [0.4.0] - 2026-09-21
 
 ### Added

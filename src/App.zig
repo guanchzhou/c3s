@@ -1523,10 +1523,12 @@ pub const App = struct {
     }
 
     pub fn activeIdentityCount(self: *const App) usize {
-        return @intFromBool(self.active_pod_subscription != null) +
-            @intFromBool(self.active_node_subscription != null) +
-            @intFromBool(self.active_namespace_subscription != null) +
-            @intFromBool(self.active_metrics_subscription != null) +
+        var count: usize = 0;
+        count += @intFromBool(self.active_pod_subscription != null);
+        count += @intFromBool(self.active_node_subscription != null);
+        count += @intFromBool(self.active_namespace_subscription != null);
+        count += @intFromBool(self.active_metrics_subscription != null);
+        return count +
             self.resource_families.registry.activeIdentityCount() +
             self.ancillary_requests.activeIdentityCount();
     }
