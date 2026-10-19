@@ -10,6 +10,8 @@ The release workflow extracts the section matching the git tag (`vX.Y.Z` →
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-10-19
+
 ### Changed
 
 - Zig 0.17.0 is now required to build from source. Zig 0.16 is no longer
