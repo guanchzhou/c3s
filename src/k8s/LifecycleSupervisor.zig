@@ -1383,7 +1383,7 @@ test "real supervisor start acquires the task selected metrics lease" {
         ) anyerror!void {
             const observed: *std.atomic.Value(u8) = @ptrCast(@alignCast(raw.?));
             const lease = control.lease orelse return error.MissingLease;
-            observed.store(@intFromEnum(lease.purpose), .release);
+            observed.store(@backingInt(lease.purpose), .release);
         }
     };
     const io = runtime.io();
@@ -1438,7 +1438,7 @@ test "real supervisor start acquires the task selected metrics lease" {
         if (!event.isSet()) event.waitUncancelable(io);
     }
     try testing.expectEqual(
-        @as(u8, @intFromEnum(session_mod.LeasePurpose.metrics)),
+        @as(u8, @backingInt(session_mod.LeasePurpose.metrics)),
         observed.load(.acquire),
     );
     try testing.expectEqual(@as(usize, 0), session.leaseCount());
@@ -1455,7 +1455,7 @@ test "task kind defaults and explicit command request purposes are preserved" {
         ) anyerror!void {
             const observed: *std.atomic.Value(u8) = @ptrCast(@alignCast(raw.?));
             const lease = control.lease orelse return error.MissingLease;
-            observed.store(@intFromEnum(lease.purpose), .release);
+            observed.store(@backingInt(lease.purpose), .release);
         }
     };
     const io = runtime.io();
@@ -1538,15 +1538,15 @@ test "task kind defaults and explicit command request purposes are preserved" {
         if (!event.isSet()) event.waitUncancelable(io);
     }
     try testing.expectEqual(
-        @as(u8, @intFromEnum(session_mod.LeasePurpose.list_watch)),
+        @as(u8, @backingInt(session_mod.LeasePurpose.list_watch)),
         resource_default.load(.acquire),
     );
     try testing.expectEqual(
-        @as(u8, @intFromEnum(session_mod.LeasePurpose.command)),
+        @as(u8, @backingInt(session_mod.LeasePurpose.command)),
         command_default.load(.acquire),
     );
     try testing.expectEqual(
-        @as(u8, @intFromEnum(session_mod.LeasePurpose.authorization)),
+        @as(u8, @backingInt(session_mod.LeasePurpose.authorization)),
         authorization_explicit.load(.acquire),
     );
     try testing.expectEqual(@as(usize, 0), session.leaseCount());

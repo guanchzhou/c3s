@@ -7,8 +7,8 @@ const sys = @import("sys.zig");
 const c = struct {
     const termios = std.c.termios;
     const winsize = std.c.winsize;
-    const VMIN = @intFromEnum(std.c.V.MIN);
-    const VTIME = @intFromEnum(std.c.V.TIME);
+    const VMIN = @backingInt(std.c.V.MIN);
+    const VTIME = @backingInt(std.c.V.TIME);
     const TCSANOW = std.c.TCSA.NOW;
     const TIOCGWINSZ = std.posix.T.IOCGWINSZ;
     const O_RDONLY: std.c.O = .{ .ACCMODE = .RDONLY };
@@ -285,8 +285,8 @@ pub const Terminal = struct {
 
     pub fn setColor(self: *Terminal, fg: Color, bg: Color) !void {
         var buf: [32]u8 = undefined;
-        const fg_code: u8 = @intFromEnum(fg);
-        const raw_bg: u8 = @intFromEnum(bg);
+        const fg_code: u8 = @backingInt(fg);
+        const raw_bg: u8 = @backingInt(bg);
         const bg_code: u8 = if (raw_bg == 39) 49 else (raw_bg - 30 + 40);
         const s = try std.fmt.bufPrint(&buf, "\x1b[{};{}m", .{ fg_code, bg_code });
         try self.bufferWrite(s);

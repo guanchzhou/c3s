@@ -187,7 +187,7 @@ pub const KlientTransport = struct {
                     .endpoint_class = adapter.sanitized.endpoint_class,
                     .identity_fingerprint = adapter.sanitized.identity_fingerprint,
                     .query_fingerprint = adapter.sanitized.query_fingerprint,
-                    .status = @intFromEnum(status),
+                    .status = @backingInt(status),
                     .retry_class = retry_class,
                 });
             }
@@ -465,7 +465,7 @@ pub const CurlTransport = struct {
                 self.context_name,
                 request.audit_method,
                 sanitized,
-                @intFromEnum(meta.status),
+                @backingInt(meta.status),
                 if (err == error.Canceled or isCanceled(self.cancel_requested))
                     "canceled"
                 else
@@ -480,7 +480,7 @@ pub const CurlTransport = struct {
                 self.context_name,
                 request.audit_method,
                 sanitized,
-                @intFromEnum(meta.status),
+                @backingInt(meta.status),
                 if (err == error.Canceled or isCanceled(self.cancel_requested))
                     "canceled"
                 else
@@ -494,7 +494,7 @@ pub const CurlTransport = struct {
                 self.context_name,
                 request.audit_method,
                 sanitized,
-                @intFromEnum(meta.status),
+                @backingInt(meta.status),
                 transportFailureClass(self),
             );
             return if (isCanceled(self.cancel_requested)) error.Canceled else error.CurlFailed;
@@ -504,7 +504,7 @@ pub const CurlTransport = struct {
             self.context_name,
             request.audit_method,
             sanitized,
-            @intFromEnum(meta.status),
+            @backingInt(meta.status),
             if (meta.status.class() == .success) "none" else "terminal-or-retry",
         );
     }
@@ -606,7 +606,7 @@ fn parseCurlResponseHeaders(
         }
         if (status_code >= 100 and status_code < 200) continue;
         return .{
-            .status = @enumFromInt(status_code),
+            .status = @fromBackingInt(@intCast(status_code)),
             .retry_after_seconds = retry_after_seconds,
             .content_type = if (content_type_len > 0)
                 content_type_buffer[0..content_type_len]

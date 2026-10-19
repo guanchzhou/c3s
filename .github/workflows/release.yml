@@ -19,24 +19,24 @@ jobs:
         include:
           - zig_target: x86_64-linux-musl
             artifact: linux-amd64
-            zig_url: https://ziglang.org/download/0.16.0/zig-x86_64-linux-0.16.0.tar.xz
-            zig_sha: 70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00
-            zig_dir: zig-x86_64-linux-0.16.0
+            zig_url: https://ziglang.org/download/0.17.0/zig-x86_64-linux-0.17.0.tar.xz
+            zig_sha: 1cbe9df9f27e6b78d14ccbca43b6703a404ef79ef1c463de901d7f088d4e2026
+            zig_dir: zig-x86_64-linux-0.17.0
           - zig_target: aarch64-linux-musl
             artifact: linux-arm64
-            zig_url: https://ziglang.org/download/0.16.0/zig-x86_64-linux-0.16.0.tar.xz
-            zig_sha: 70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00
-            zig_dir: zig-x86_64-linux-0.16.0
+            zig_url: https://ziglang.org/download/0.17.0/zig-x86_64-linux-0.17.0.tar.xz
+            zig_sha: 1cbe9df9f27e6b78d14ccbca43b6703a404ef79ef1c463de901d7f088d4e2026
+            zig_dir: zig-x86_64-linux-0.17.0
           - zig_target: x86_64-macos
             artifact: darwin-amd64
-            zig_url: https://ziglang.org/download/0.16.0/zig-x86_64-linux-0.16.0.tar.xz
-            zig_sha: 70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00
-            zig_dir: zig-x86_64-linux-0.16.0
+            zig_url: https://ziglang.org/download/0.17.0/zig-x86_64-linux-0.17.0.tar.xz
+            zig_sha: 1cbe9df9f27e6b78d14ccbca43b6703a404ef79ef1c463de901d7f088d4e2026
+            zig_dir: zig-x86_64-linux-0.17.0
           - zig_target: aarch64-macos
             artifact: darwin-arm64
-            zig_url: https://ziglang.org/download/0.16.0/zig-x86_64-linux-0.16.0.tar.xz
-            zig_sha: 70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00
-            zig_dir: zig-x86_64-linux-0.16.0
+            zig_url: https://ziglang.org/download/0.17.0/zig-x86_64-linux-0.17.0.tar.xz
+            zig_sha: 1cbe9df9f27e6b78d14ccbca43b6703a404ef79ef1c463de901d7f088d4e2026
+            zig_dir: zig-x86_64-linux-0.17.0
     steps:
       - uses: actions/checkout@v6
 
@@ -46,7 +46,7 @@ jobs:
           git clone --depth 1 https://github.com/guanchzhou/zig-klient zig-klient
           git clone --depth 1 https://github.com/guanchzhou/kubectl-traffic kubectl-traffic
 
-      - name: Install Zig 0.16.0
+      - name: Install Zig 0.17.0
         env:
           ZIG_URL: ${{ matrix.zig_url }}
           ZIG_SHA: ${{ matrix.zig_sha }}

@@ -394,7 +394,7 @@ const SourceState = struct {
                     .api_group = target.api_group,
                     .resource = target.resource,
                     .endpoint_class = target.endpoint_class,
-                    .status = @intFromEnum(meta.status),
+                    .status = @backingInt(meta.status),
                     .retry_class = "none",
                     .identity_fingerprint = target.identity_fingerprint,
                 });

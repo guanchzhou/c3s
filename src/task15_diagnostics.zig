@@ -45,11 +45,11 @@ pub const DiagnosticControl = union(enum) {
 var stale_rv_mask: std.atomic.Value(u32) = .init(0);
 
 pub fn armStaleRv(family: Family) void {
-    _ = stale_rv_mask.fetchOr(@as(u32, 1) << @intFromEnum(family), .acq_rel);
+    _ = stale_rv_mask.fetchOr(@as(u32, 1) << @backingInt(family), .acq_rel);
 }
 
 pub fn consumeStaleRv(family: Family) bool {
-    const bit = @as(u32, 1) << @intFromEnum(family);
+    const bit = @as(u32, 1) << @backingInt(family);
     const previous = stale_rv_mask.fetchAnd(~bit, .acq_rel);
     return previous & bit != 0;
 }
@@ -346,7 +346,7 @@ pub fn watchOutcomeStatus(outcome: klient.WatchOutcome) ?u16 {
         .http_forbidden => 403,
         .http_gone, .status_expired => 410,
         .http_throttled => 429,
-        .http_server_error, .http_error => |status| @intFromEnum(status),
+        .http_server_error, .http_error => |status| @backingInt(status),
         .status_error => |detail| detail.code,
         else => null,
     };

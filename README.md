@@ -4,7 +4,7 @@
 
 [![CI](https://github.com/guanchzhou/c3s/actions/workflows/ci.yml/badge.svg)](https://github.com/guanchzhou/c3s/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue)]()
-[![Zig](https://img.shields.io/badge/zig-0.16.0%20%7C%200.17--dev-orange)]()
+[![Zig](https://img.shields.io/badge/zig-0.17.0-orange)]()
 
 ---
 
@@ -123,7 +123,7 @@ brew install guanchzhou/tap/c3s
 Installs the current GitHub Release binary (linux/macOS, amd64/arm64).
 
 ### **Prerequisites**
-- Zig 0.16.0 (release baseline) or current Zig 0.17-dev
+- Zig 0.17.0
 - kubectl configured with a valid kubeconfig
 - Kubernetes cluster access (optional: use `--debug` for demo data)
 

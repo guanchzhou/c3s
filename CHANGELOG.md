@@ -10,6 +10,12 @@ The release workflow extracts the section matching the git tag (`vX.Y.Z` →
 
 ## [Unreleased]
 
+### Changed
+
+- Zig 0.17.0 is now required to build from source. Zig 0.16 is no longer
+  supported: 0.17 `zig fmt` rewrites `@intFromEnum` and `@enumFromInt` to
+  builtins that 0.16 rejects. CI and release binaries are built with Zig 0.17.0.
+
 ## [0.4.1] - 2026-10-06
 
 ### Fixed

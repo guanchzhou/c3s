@@ -6,7 +6,7 @@ Welcome to **c3s** - A blazing-fast Kubernetes TUI written in Zig! 🚀
 
 ## 📋 **Prerequisites**
 
-- **Zig 0.16.0** or current **Zig 0.17-dev** installed
+- **Zig 0.17.0** installed
 - **kubeconfig** configured (`~/.kube/config`)
 - **Kubernetes cluster** accessible (or use `--debug` for demo mode)
 

@@ -807,7 +807,7 @@ pub const Header = struct {
                 if (max_text_len < 3) continue; // Skip if not enough space for meaningful text
 
                 // Validate render_fn enum before switching
-                const render_type = @intFromEnum(item.render_fn);
+                const render_type = @backingInt(item.render_fn);
                 if (render_type != 0 and render_type != 1) {
                     // Corrupt enum value - skip this item
                     continue;

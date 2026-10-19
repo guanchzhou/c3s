@@ -115,10 +115,10 @@ test "panic_hook: signal numbers are valid" {
     // Zig 0.16: std.posix.SIG is the system enum, not a struct of c_int
     // constants, so compare numeric values via @intFromEnum.
     // SIGSEGV = 11 (segmentation fault)
-    try testing.expectEqual(@as(u32, 11), @intFromEnum(std.posix.SIG.SEGV));
+    try testing.expectEqual(@as(u32, 11), @backingInt(std.posix.SIG.SEGV));
 
     // SIGABRT = 6 (abort) on darwin/linux
-    try testing.expectEqual(@as(u32, 6), @intFromEnum(std.posix.SIG.ABRT));
+    try testing.expectEqual(@as(u32, 6), @backingInt(std.posix.SIG.ABRT));
 }
 
 test "panic_hook: can open log file for writing" {

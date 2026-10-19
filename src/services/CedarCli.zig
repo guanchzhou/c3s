@@ -98,12 +98,12 @@ pub const AuthorizeInput = struct {
 const private_file: std.Io.Dir.Permissions = if (builtin.os.tag == .windows)
     .default_file
 else
-    @enumFromInt(0o600);
+    @fromBackingInt(@intCast(0o600));
 
 const private_dir: std.Io.Dir.Permissions = if (builtin.os.tag == .windows)
     .default_dir
 else
-    @enumFromInt(0o700);
+    @fromBackingInt(@intCast(0o700));
 
 pub const CedarCli = struct {
     allocator: std.mem.Allocator,
@@ -482,14 +482,14 @@ fn fileMode(path: []const u8) !u32 {
     var file = try std.Io.Dir.cwd().openFile(runtime.io(), path, .{});
     defer file.close(runtime.io());
     const stat = try file.stat(runtime.io());
-    return @as(u32, @intFromEnum(stat.permissions)) & 0o777;
+    return @as(u32, @backingInt(stat.permissions)) & 0o777;
 }
 
 fn dirMode(path: []const u8) !u32 {
     var dir = try std.Io.Dir.cwd().openDir(runtime.io(), path, .{});
     defer dir.close(runtime.io());
     const stat = try dir.stat(runtime.io());
-    return @as(u32, @intFromEnum(stat.permissions)) & 0o777;
+    return @as(u32, @backingInt(stat.permissions)) & 0o777;
 }
 
 test "an oversized policy is refused before it reaches the filesystem" {
@@ -537,7 +537,7 @@ test "a stub binary drives the real invocation path" {
         \\exit 0
         \\
         ,
-        .flags = .{ .permissions = @enumFromInt(0o700) },
+        .flags = .{ .permissions = @fromBackingInt(@intCast(0o700)) },
     });
     cli.binary = try a.dupe(u8, stub_path);
 
@@ -569,7 +569,7 @@ test "a stub that denies produces DENY, and one that errors produces INDETERMINA
         try std.Io.Dir.cwd().writeFile(runtime.io(), .{
             .sub_path = stub,
             .data = "#!/bin/sh\necho DENY\nexit 2\n",
-            .flags = .{ .permissions = @enumFromInt(0o700) },
+            .flags = .{ .permissions = @fromBackingInt(@intCast(0o700)) },
         });
         cli.binary = try a.dupe(u8, stub);
         var result = try cli.authorize(input);
@@ -585,7 +585,7 @@ test "a stub that denies produces DENY, and one that errors produces INDETERMINA
         try std.Io.Dir.cwd().writeFile(runtime.io(), .{
             .sub_path = stub,
             .data = "#!/bin/sh\necho 'error while evaluating policy `p`: oops'\necho DENY\nexit 2\n",
-            .flags = .{ .permissions = @enumFromInt(0o700) },
+            .flags = .{ .permissions = @fromBackingInt(@intCast(0o700)) },
         });
         cli.binary = try a.dupe(u8, stub);
         var result = try cli.authorize(input);

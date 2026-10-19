@@ -503,7 +503,7 @@ pub const K8sService = struct {
             self.allocator.free(result.stdout);
             return error.InvalidHttpStatus;
         };
-        status_out.* = @enumFromInt(code);
+        status_out.* = @fromBackingInt(@intCast(code));
         const response = try self.allocator.dupe(u8, result.stdout[0..separator]);
         self.allocator.free(result.stdout);
         return response;
@@ -1457,7 +1457,7 @@ pub const K8sService = struct {
         else
             return error.NotConnected;
         defer self.allocator.free(response);
-        const response_status_code: u16 = @intFromEnum(response_status);
+        const response_status_code: u16 = @backingInt(response_status);
         self.auditTask15Request(
             .POST,
             audit_target,
