@@ -578,9 +578,9 @@ test "PolicyRow.PolicyType.label returns correct strings" {
 
 test "Tab enum values" {
     const testing = std.testing;
-    try testing.expectEqual(@as(u8, 1), @intFromEnum(AuthorizationView.Tab.access_review));
-    try testing.expectEqual(@as(u8, 2), @intFromEnum(AuthorizationView.Tab.policy_browser));
-    try testing.expectEqual(@as(u8, 3), @intFromEnum(AuthorizationView.Tab.condition_inspector));
+    try testing.expectEqual(@as(u8, 1), @backingInt(AuthorizationView.Tab.access_review));
+    try testing.expectEqual(@as(u8, 2), @backingInt(AuthorizationView.Tab.policy_browser));
+    try testing.expectEqual(@as(u8, 3), @backingInt(AuthorizationView.Tab.condition_inspector));
 }
 
 test "AuthorizationView init and deinit" {
@@ -656,7 +656,7 @@ test "AuthorizationView hints are valid" {
 
     // Check all hints are accessible without crash
     for (hints.hints) |hint| {
-        const rt = @intFromEnum(hint.render_fn);
+        const rt = @backingInt(hint.render_fn);
         try testing.expect(rt == 0 or rt == 1);
         try testing.expect(std.unicode.utf8ValidateSlice(hint.key));
         try testing.expect(std.unicode.utf8ValidateSlice(hint.before));
@@ -1688,7 +1688,7 @@ test "authorization_view: hints are valid" {
     try std.testing.expectEqual(@as(usize, 8), hints.hints.len);
 
     for (hints.hints) |hint| {
-        const rt = @intFromEnum(hint.render_fn);
+        const rt = @backingInt(hint.render_fn);
         try std.testing.expect(rt == 0 or rt == 1);
     }
 }

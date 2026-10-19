@@ -61,25 +61,25 @@ pub const Logger = struct {
     }
 
     pub fn debug(self: *Logger, comptime format: []const u8, args: anytype) void {
-        if (@intFromEnum(self.level) <= @intFromEnum(LogLevel.debug)) {
+        if (@backingInt(self.level) <= @backingInt(LogLevel.debug)) {
             self.log("DEBUG", format, args);
         }
     }
 
     pub fn info(self: *Logger, comptime format: []const u8, args: anytype) void {
-        if (@intFromEnum(self.level) <= @intFromEnum(LogLevel.info)) {
+        if (@backingInt(self.level) <= @backingInt(LogLevel.info)) {
             self.log("INFO", format, args);
         }
     }
 
     pub fn warn(self: *Logger, comptime format: []const u8, args: anytype) void {
-        if (@intFromEnum(self.level) <= @intFromEnum(LogLevel.warn)) {
+        if (@backingInt(self.level) <= @backingInt(LogLevel.warn)) {
             self.log("WARN", format, args);
         }
     }
 
     pub fn err(self: *Logger, comptime format: []const u8, args: anytype) void {
-        if (@intFromEnum(self.level) <= @intFromEnum(LogLevel.err)) {
+        if (@backingInt(self.level) <= @backingInt(LogLevel.err)) {
             self.log("ERROR", format, args);
         }
     }

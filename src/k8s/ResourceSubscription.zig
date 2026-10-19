@@ -671,7 +671,7 @@ pub fn ResourceSubscription(
                             .resource = target.resource,
                             .subresource = target.subresource,
                             .endpoint_class = target.endpoint_class,
-                            .status = @intFromEnum(meta.status),
+                            .status = @backingInt(meta.status),
                             .retry_class = "none",
                             .identity_fingerprint = target.identity_fingerprint,
                         });

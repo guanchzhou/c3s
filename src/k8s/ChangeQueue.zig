@@ -28,7 +28,7 @@ const Queued = struct {
 const Lane = enum { data, ordinary, critical };
 
 fn laneIndex(lane: Lane) usize {
-    return @intFromEnum(lane);
+    return @backingInt(lane);
 }
 
 pub const Popped = struct {

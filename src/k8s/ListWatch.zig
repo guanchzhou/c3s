@@ -540,7 +540,7 @@ pub fn failureFromKlient(outcome: klient.WatchOutcome) ?Failure {
         .transport_error => .transport,
         .malformed_event, .decode_error => |detail| .{ .malformed = detailFromKlient(detail) },
         .status_error => |detail| classifyStatusDetail(detail),
-        .http_error => |status| classifyStatusCode(@intFromEnum(status)),
+        .http_error => |status| classifyStatusCode(@backingInt(status)),
     };
 }
 

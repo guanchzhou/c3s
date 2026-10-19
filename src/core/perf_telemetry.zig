@@ -400,19 +400,19 @@ const RecordingWriter = struct {
         return switch (behavior) {
             .success => @intCast(len),
             .eagain => result: {
-                std.c._errno().* = @intFromEnum(std.c.E.AGAIN);
+                std.c._errno().* = @backingInt(std.c.E.AGAIN);
                 break :result -1;
             },
             .short => @intCast(len - 1),
             .interrupt_once => result: {
                 if (calls == 1) {
-                    std.c._errno().* = @intFromEnum(std.c.E.INTR);
+                    std.c._errno().* = @backingInt(std.c.E.INTR);
                     break :result -1;
                 }
                 break :result @intCast(len);
             },
             .fault => result: {
-                std.c._errno().* = @intFromEnum(std.c.E.PIPE);
+                std.c._errno().* = @backingInt(std.c.E.PIPE);
                 break :result -1;
             },
         };

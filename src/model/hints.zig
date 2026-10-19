@@ -190,7 +190,7 @@ test "hints: pods hints are valid and accessible" {
         _ = hint.priority;
 
         // Validate enum
-        const render_type = @intFromEnum(hint.render_fn);
+        const render_type = @backingInt(hint.render_fn);
         try testing.expect(render_type == 0 or render_type == 1);
     }
 }
@@ -202,7 +202,7 @@ test "hints: themes hints are valid and accessible" {
 
     for (hints.hints) |hint| {
         _ = hint.render_fn;
-        const render_type = @intFromEnum(hint.render_fn);
+        const render_type = @backingInt(hint.render_fn);
         try testing.expect(render_type == 0 or render_type == 1);
     }
 }
@@ -214,7 +214,7 @@ test "hints: help hints are valid and accessible" {
 
     for (hints.hints) |hint| {
         _ = hint.render_fn;
-        const render_type = @intFromEnum(hint.render_fn);
+        const render_type = @backingInt(hint.render_fn);
         try testing.expect(render_type == 0 or render_type == 1);
     }
 }

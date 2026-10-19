@@ -2449,7 +2449,7 @@ pub const App = struct {
                     .reconnecting => {},
                 };
                 if (self.task15FamilyForTarget(target)) |family| {
-                    const bit = @as(u32, 1) << @intFromEnum(family);
+                    const bit = @as(u32, 1) << @backingInt(family);
                     if (initial_changes) self.task15_first_paint_pending |= bit;
                     if (sync_kind == .list_complete) self.task15_complete_paint_pending |= bit;
                 }
@@ -3001,7 +3001,7 @@ pub const App = struct {
     fn emitTask15PaintsAfterFlush(self: *App) void {
         const view = self.view_manager.getCurrentView() orelse return;
         const family = task15.familyForResource(view.getName()) orelse return;
-        const bit = @as(u32, 1) << @intFromEnum(family);
+        const bit = @as(u32, 1) << @backingInt(family);
         const base: task15.Record = .{
             .event = .first_usable_paint,
             .context = self.config.context orelse self.k8s_service.context_name,

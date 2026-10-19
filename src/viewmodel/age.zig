@@ -37,7 +37,7 @@ pub fn parseTimestampToEpoch(timestamp: ?[]const u8) ?i64 {
     // Add days for complete months in the target year
     var m: u8 = 1;
     while (m < month_u8) : (m += 1) {
-        total_days += epoch.getDaysInMonth(year, @enumFromInt(m));
+        total_days += epoch.getDaysInMonth(year, @fromBackingInt(@intCast(m)));
     }
 
     // Add remaining days (day is 1-based, so subtract 1)
