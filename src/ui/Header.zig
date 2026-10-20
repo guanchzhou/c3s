@@ -565,8 +565,9 @@ pub const Header = struct {
     pub fn updateK8sVersion(self: *Header, k8s_version: []const u8) !void {
         // Only update if the value actually changed
         if (std.mem.eql(u8, self.k8s_version, k8s_version)) return;
+        const duped = try self.allocator.dupe(u8, k8s_version);
         self.allocator.free(self.k8s_version);
-        self.k8s_version = try self.allocator.dupe(u8, k8s_version);
+        self.k8s_version = duped;
     }
 
     pub fn updateCpuMem(

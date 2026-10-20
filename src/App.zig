@@ -1011,7 +1011,7 @@ pub const App = struct {
     command_history: std.ArrayListUnmanaged([]u8) = .empty,
     history_cursor: usize = 0,
     recent_namespaces: *RecentNamespaces,
-    persist_recent_namespaces: bool = true,
+    persist_recent_namespaces: bool = !@import("builtin").is_test,
     crumbs_visible: bool = true,
     view_fullscreen: bool = false,
     crumb_buf: [160]u8 = undefined,
@@ -3876,9 +3876,19 @@ pub const App = struct {
     }
 
     fn showSelectedNode(self: *App) !void {
-        // Switch to the nodes view (focusing the pod's node would need a node
-        // filter; for now just open nodes).
+        const maybe_node_name: ?[]const u8 = if (std.mem.eql(u8, self.current_view_name, "pods")) blk: {
+            const row = self.pods_view.table.getSelectedItem() orelse break :blk null;
+            const node = row.columns[10];
+            if (node.len == 0 or std.mem.eql(u8, node, "-") or std.mem.eql(u8, node, "<none>")) break :blk null;
+            break :blk node;
+        } else null;
+        const node_filter = if (maybe_node_name) |n| try self.allocator.dupe(u8, n) else null;
+        defer if (node_filter) |nf| self.allocator.free(nf);
+
         try self.replaceRootView(self.nodes_view.createView(), "nodes");
+        if (node_filter) |nf| {
+            try self.nodes_view.applyFilter(nf);
+        }
     }
 
     fn showSelectedNodePods(self: *App) !void {

@@ -166,6 +166,7 @@ extern "c" fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int
 // (Zig 0.16 has no std getcwd) and join the tmp dir's relative sub_path.
 fn setStateHome(dir: [:0]const u8) void {
     _ = setenv("XDG_STATE_HOME", dir.ptr, 1);
+    xdg.resetCachedPathsForTests();
 }
 
 // Builds an absolute path to the testing tmp dir: <cwd>/.zig-cache/tmp/<sub_path>.

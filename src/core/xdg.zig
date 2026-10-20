@@ -40,11 +40,28 @@ pub fn getPaths() ?*const Paths {
 /// XDG_CONFIG_HOME at a temp tree (e.g. config tests) call this to stay
 /// hermetic regardless of which test pinned the cache first.
 pub fn resetCachedPathsForTests() void {
+    if (cached) |p| {
+        path_allocator.free(p.config_dir);
+        path_allocator.free(p.config_file);
+        path_allocator.free(p.hotkeys_file);
+        path_allocator.free(p.aliases_file);
+        path_allocator.free(p.plugins_file);
+        path_allocator.free(p.views_file);
+        path_allocator.free(p.skins_dir);
+        path_allocator.free(p.data_dir);
+        path_allocator.free(p.contexts_dir);
+        path_allocator.free(p.state_dir);
+        path_allocator.free(p.dumps_dir);
+        path_allocator.free(p.benchmarks_dir);
+        // log_dir aliases state_dir, so do not free it twice.
+        path_allocator.free(p.log_file);
+    }
     cached = null;
 }
 
 fn computePaths() !Paths {
     const home_dir = try env.getOwned(path_allocator, "HOME");
+    defer path_allocator.free(home_dir);
     if (home_dir.len == 0) return error.MissingHomeDirectory;
 
     const config_dir = try resolveConfigDir(home_dir);
@@ -97,6 +114,7 @@ fn computePaths() !Paths {
 
 fn resolveConfigDir(home: []const u8) ![]const u8 {
     if (try getValidEnvPath("XDG_CONFIG_HOME")) |path| {
+        defer path_allocator.free(path);
         return try join(&[_][]const u8{ path, AppName });
     }
     return try join(&[_][]const u8{ home, ".config", AppName });
@@ -104,6 +122,7 @@ fn resolveConfigDir(home: []const u8) ![]const u8 {
 
 fn resolveDataDir(home: []const u8) ![]const u8 {
     if (try getValidEnvPath("XDG_DATA_HOME")) |path| {
+        defer path_allocator.free(path);
         return try join(&[_][]const u8{ path, AppName });
     }
     return try join(&[_][]const u8{ home, ".local", "share", AppName });
@@ -111,6 +130,7 @@ fn resolveDataDir(home: []const u8) ![]const u8 {
 
 fn resolveStateDir(home: []const u8) ![]const u8 {
     if (try getValidEnvPath("XDG_STATE_HOME")) |path| {
+        defer path_allocator.free(path);
         return try join(&[_][]const u8{ path, AppName });
     }
     return try join(&[_][]const u8{ home, ".local", "state", AppName });
@@ -121,19 +141,18 @@ fn getValidEnvPath(key: [:0]const u8) !?[]const u8 {
         error.EnvironmentVariableNotFound => null,
         else => return err,
     };
-    if (value == null) return null;
+    const owned = value orelse return null;
 
-    if (value.?.len == 0) {
+    if (owned.len == 0) {
+        path_allocator.free(owned);
         return null;
     }
-    if (!std.fs.path.isAbsolute(value.?)) {
-        return error.InvalidXdgDirectory;
-    }
-    if (containsTraversal(value.?)) {
+    if (!std.fs.path.isAbsolute(owned) or containsTraversal(owned)) {
+        path_allocator.free(owned);
         return error.InvalidXdgDirectory;
     }
 
-    return value;
+    return owned;
 }
 
 fn join(parts: []const []const u8) ![]const u8 {

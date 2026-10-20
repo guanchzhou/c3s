@@ -148,10 +148,9 @@ pub const ThemesView = struct {
     }
 
     pub fn setCurrentTheme(self: *ThemesView, theme_name: []const u8) !void {
-        // Free old current_theme_name
+        const duped = try self.table.allocator.dupe(u8, theme_name);
         self.table.allocator.free(self.current_theme_name);
-        // Allocate new one
-        self.current_theme_name = try self.table.allocator.dupe(u8, theme_name);
+        self.current_theme_name = duped;
     }
 
     // View trait implementation

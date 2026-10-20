@@ -72,8 +72,9 @@ jobs:
           ART="c3s-${VERSION}-${{ matrix.artifact }}"
           mkdir -p pkg
           cp zig-out/bin/c3s pkg/c3s
+          cp -r zig-out/bin/skins pkg/skins
           cp LICENSE CHANGELOG.md README.md pkg/
-          tar -C pkg -czf "${ART}.tar.gz" c3s LICENSE CHANGELOG.md README.md
+          tar -C pkg -czf "${ART}.tar.gz" c3s skins LICENSE CHANGELOG.md README.md
           shasum -a 256 "${ART}.tar.gz" > "${ART}.tar.gz.sha256"
 
       - name: Upload artifact
@@ -180,7 +181,8 @@ jobs:
             end
 
             def install
-              bin.install "c3s"
+              libexec.install "c3s", "skins"
+              bin.install_symlink libexec/"c3s"
             end
 
             test do

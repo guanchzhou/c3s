@@ -10,6 +10,19 @@ The release workflow extracts the section matching the git tag (`vX.Y.Z` →
 
 ## [Unreleased]
 
+## [0.4.3] - 2026-10-20
+
+### Added
+
+- Pressing `o` on a pod in `PodsView` jumps to `NodesView` filtered to the selected pod's node.
+- Packaged `skins/` alongside the `c3s` binary in release archives.
+
+### Fixed
+
+- Fixed free-before-alloc ordering in `Header.updateK8sVersion` and `ThemesView.setCurrentTheme`.
+- Rolled back `view_ptrs` push if `stack.append` fails in `ViewManager.pushView`.
+- Prevented `zig build test` from writing test namespaces to `~/.config/c3s/config.yaml` and cleaned up test-only memory leaks in `xdg` and `logger`.
+
 ## [0.4.2] - 2026-10-19
 
 ### Changed

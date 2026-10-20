@@ -41,6 +41,7 @@ pub const ViewManager = struct {
         Logger.info("ViewManager: Pushing view '{s}' onto stack (depth: {d})", .{ view.getName(), self.view_ptrs.items.len + 1 });
 
         try self.view_ptrs.append(self.allocator, @intFromPtr(view.ptr));
+        errdefer _ = self.view_ptrs.pop();
         try self.view_vtables.append(self.allocator, @intFromPtr(view.vtable));
         view.onShow();
     }
