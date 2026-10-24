@@ -64,14 +64,19 @@ jobs:
         run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
 
       - name: Build
+        env:
+          ZIG_TARGET: ${{ matrix.zig_target }}
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
           zig version
-          zig build -Doptimize=ReleaseSafe -Dtarget=${{ matrix.zig_target }} -Dversion=v${{ steps.version.outputs.version }}
+          zig build -Doptimize=ReleaseSafe -Dtarget="$ZIG_TARGET" -Dversion="v$VERSION"
 
       - name: Package
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          ARTIFACT: ${{ matrix.artifact }}
         run: |
-          VERSION="${{ steps.version.outputs.version }}"
-          ART="c3s-${VERSION}-${{ matrix.artifact }}"
+          ART="c3s-${VERSION}-${ARTIFACT}"
           mkdir -p pkg
           cp zig-out/bin/c3s pkg/c3s
           cp -r zig-out/bin/skins pkg/skins
@@ -147,10 +152,10 @@ jobs:
           set -euo pipefail
           VER="${VERSION#v}"
           sha() { shasum -a 256 "$1" | awk '{print $1}'; }
-          SHA_DARWIN_ARM=$(sha dist/c3s-${VER}-darwin-arm64.tar.gz)
-          SHA_DARWIN_AMD=$(sha dist/c3s-${VER}-darwin-amd64.tar.gz)
-          SHA_LINUX_ARM=$(sha dist/c3s-${VER}-linux-arm64.tar.gz)
-          SHA_LINUX_AMD=$(sha dist/c3s-${VER}-linux-amd64.tar.gz)
+          SHA_DARWIN_ARM=$(sha "dist/c3s-${VER}-darwin-arm64.tar.gz")
+          SHA_DARWIN_AMD=$(sha "dist/c3s-${VER}-darwin-amd64.tar.gz")
+          SHA_LINUX_ARM=$(sha "dist/c3s-${VER}-linux-arm64.tar.gz")
+          SHA_LINUX_AMD=$(sha "dist/c3s-${VER}-linux-amd64.tar.gz")
 
           git clone "https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/guanchzhou/homebrew-tap.git" /tmp/homebrew-tap
           mkdir -p /tmp/homebrew-tap/Formula
