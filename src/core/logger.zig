@@ -292,7 +292,6 @@ test "--logFile path is honored and the log is owner-only" {
     defer allocator.free(log_content);
     try testing.expect(std.mem.containsAtLeast(u8, log_content, 1, "custom-path message"));
 
-    var stat: std.c.Stat = undefined;
-    try testing.expectEqual(@as(c_int, 0), std.c.stat(log_path, &stat));
-    try testing.expectEqual(@as(std.c.mode_t, 0o600), stat.mode & 0o777);
+    const stat = try std.Io.Dir.cwd().statFile(testing.io, log_path, .{});
+    try testing.expectEqual(@as(std.posix.mode_t, 0o600), stat.permissions.toMode() & 0o777);
 }

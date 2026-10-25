@@ -10659,16 +10659,13 @@ test "saved resources are owner-only and never overwrite an existing path" {
     try App.writePrivateDump(dir, "db-secret", 42, "{\"data\":{}}");
 
     var path_buf: [256]u8 = undefined;
-    const path = try std.fmt.bufPrintSentinel(&path_buf, "{s}/db-secret-42.json", .{dir}, 0);
-    var file_stat: std.c.Stat = undefined;
-    try std.testing.expectEqual(@as(c_int, 0), std.c.stat(path, &file_stat));
-    try std.testing.expectEqual(@as(std.c.mode_t, 0o600), file_stat.mode & 0o777);
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/db-secret-42.json", .{dir});
+    const cwd = std.Io.Dir.cwd();
+    const file_stat = try cwd.statFile(std.testing.io, path, .{});
+    try std.testing.expectEqual(@as(std.posix.mode_t, 0o600), file_stat.permissions.toMode() & 0o777);
 
-    var dir_z_buf: [256]u8 = undefined;
-    const dir_z = try std.fmt.bufPrintSentinel(&dir_z_buf, "{s}", .{dir}, 0);
-    var dir_stat: std.c.Stat = undefined;
-    try std.testing.expectEqual(@as(c_int, 0), std.c.stat(dir_z, &dir_stat));
-    try std.testing.expectEqual(@as(std.c.mode_t, 0o700), dir_stat.mode & 0o777);
+    const dir_stat = try cwd.statFile(std.testing.io, dir, .{});
+    try std.testing.expectEqual(@as(std.posix.mode_t, 0o700), dir_stat.permissions.toMode() & 0o777);
 
     try std.testing.expectError(error.DumpCreateFailed, App.writePrivateDump(dir, "db-secret", 42, "{}"));
 }
