@@ -25,6 +25,7 @@ const projection_mod = @import("../k8s/ResourceProjection.zig");
 const resource_key = @import("../k8s/ResourceKey.zig");
 const config_model = @import("../model/config.zig");
 const clock = @import("../core/clock.zig");
+const display_text = @import("../core/display_text.zig");
 
 pub const TimelineSink = struct {
     ptr: *anyopaque,
@@ -834,9 +835,12 @@ pub fn ResourceView(
                         continue;
                     }
                 }
-                const columns = try adapter.columnsFn(adapter.ptr, uid, self.table.allocator) orelse continue;
+                var columns = try adapter.columnsFn(adapter.ptr, uid, self.table.allocator) orelse continue;
                 var columns_owned = true;
                 errdefer if (columns_owned) for (columns) |column| self.table.allocator.free(column);
+                for (&columns) |*column| {
+                    column.* = try display_text.sanitizeOwned(self.table.allocator, @constCast(column.*));
+                }
                 const owned_uid = try self.table.allocator.dupe(u8, uid);
                 var identity_owned = true;
                 errdefer if (identity_owned) self.table.allocator.free(owned_uid);

@@ -4,6 +4,7 @@ const posix = std.posix;
 const sys = @import("core/sys.zig");
 const clock = @import("core/clock.zig");
 const runtime = @import("core/runtime.zig");
+const child_registry = @import("core/child_registry.zig");
 
 var log_file_path: ?[]const u8 = null;
 
@@ -11,9 +12,12 @@ pub fn setup(path: []const u8) void {
     log_file_path = path;
 }
 
-pub fn panic(msg: []const u8, error_return_trace: ?*std.builtin.StackTrace, ret_addr: ?usize) noreturn {
-    // Restore terminal state before anything else — exit raw mode and alternate screen
-    // so the user's terminal is left clean even if we crash.
+/// Installed as the root panic handler in main.zig.
+pub fn panic(msg: []const u8, ret_addr: ?usize) noreturn {
+    child_registry.terminateAll();
+
+    // Restore terminal state — exit raw mode and alternate screen so the user's
+    // terminal is left clean even if we crash.
     restoreTerminal();
 
     // Redirect stderr to /dev/null so the default panic handler doesn't
@@ -26,7 +30,7 @@ pub fn panic(msg: []const u8, error_return_trace: ?*std.builtin.StackTrace, ret_
 
     // Log the panic message to our log file
     if (log_file_path) |path| {
-        logPanicToFile(path, msg, error_return_trace, ret_addr) catch {};
+        logPanicToFile(path, msg, ret_addr) catch {};
     }
 
     // Call the default panic handler (output goes to /dev/null).
@@ -56,7 +60,7 @@ fn restoreTerminal() void {
     posix.tcsetattr(stdin_handle, .FLUSH, termios) catch {};
 }
 
-fn logPanicToFile(path: []const u8, msg: []const u8, error_return_trace: ?*std.builtin.StackTrace, ret_addr: ?usize) !void {
+fn logPanicToFile(path: []const u8, msg: []const u8, ret_addr: ?usize) !void {
     // Open the log file in append mode via libc (std.fs / std.Io would route
     // through the io thread pool, which must not be touched on the crash path).
     // sys.openAppend needs a null-terminated path.
@@ -80,13 +84,6 @@ fn logPanicToFile(path: []const u8, msg: []const u8, error_return_trace: ?*std.b
         const addr_line = std.fmt.bufPrint(&addr_buf, "[{}] PANIC: at address 0x{x}\n", .{ timestamp, addr }) catch return;
         sys.writeAll(fd, addr_line) catch {};
     }
-
-    // Write stack trace if available
-    if (error_return_trace) |trace| {
-        var trace_buf: [256]u8 = undefined;
-        const trace_line = std.fmt.bufPrint(&trace_buf, "[{}] PANIC: error return trace has {} frames\n", .{ timestamp, trace.index }) catch return;
-        sys.writeAll(fd, trace_line) catch {};
-    }
 }
 
 const testing = std.testing;
@@ -99,7 +96,7 @@ test "panic_hook: module compiles and exposes its API" {
     // Referencing the decls forces semantic analysis of panic_hook.zig's bodies
     // (setup, panic, and the private helpers they call) under Zig 0.16.
     setup("c3s.log");
-    try testing.expect(@TypeOf(panic) == fn ([]const u8, ?*std.builtin.StackTrace, ?usize) noreturn);
+    try testing.expect(@TypeOf(panic) == fn ([]const u8, ?usize) noreturn);
 }
 
 test "panic_hook: log file path is valid" {

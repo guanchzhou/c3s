@@ -4,7 +4,9 @@ const klient = @import("klient");
 pub const schema_version: u8 = 2;
 pub const max_record_bytes: usize = 1024;
 pub const max_manifest_bytes: usize = 16 * 1024;
-pub const allowed_contexts = [_][]const u8{ "dev4.as", "rc.alpha-sense.org" };
+/// Comma-separated kubeconfig context names eligible for live diagnostics.
+/// Unset or empty means none are.
+pub const allowed_contexts_env = "C3S_DIAGNOSTIC_CONTEXTS";
 pub const ssar_path = "/apis/authorization.k8s.io/v1/selfsubjectaccessreviews";
 pub const diagnostic_fd_env = "C3S_DIAGNOSTIC_FD";
 pub const perf_fd_env = "C3S_PERF_FD";
@@ -85,8 +87,15 @@ pub fn familyForResource(resource: []const u8) ?Family {
 }
 
 pub fn contextAllowed(context: []const u8) bool {
-    for (allowed_contexts) |allowed| {
-        if (std.mem.eql(u8, context, allowed)) return true;
+    const raw = std.c.getenv(allowed_contexts_env) orelse return false;
+    return contextInList(context, std.mem.span(raw));
+}
+
+fn contextInList(context: []const u8, list: []const u8) bool {
+    if (context.len == 0) return false;
+    var entries = std.mem.splitScalar(u8, list, ',');
+    while (entries.next()) |entry| {
+        if (std.mem.eql(u8, std.mem.trim(u8, entry, " \t"), context)) return true;
     }
     return false;
 }
@@ -529,23 +538,42 @@ fn requireEvidenceFd(name: [:0]const u8) !void {
 
 pub fn printPreflight() void {
     std.debug.print(
-        "{{\"schema_version\":{d},\"network_access\":false,\"live_contact\":false,\"live_mode\":\"--task15-live\",\"manifest_required\":true,\"manifest_fields\":[\"context\",\"cluster\",\"server_host\",\"fingerprint\"],\"evidence_fds\":[\"{s}\",\"{s}\"],\"contexts\":[\"dev4.as\",\"rc.alpha-sense.org\"],\"families\":15,\"diagnostic_controls\":[\"reconnect\",\"stale_rv\"],\"methods\":[\"GET\",\"WATCH\",\"POST:{s}\"],\"audit_redaction\":\"identifiers-and-query-values-fingerprinted\",\"zero_state\":{{\"queue\":0,\"live_children\":0,\"active_identities\":0,\"active_leases\":0,\"retiring_leases\":0}}}}\n",
-        .{ schema_version, diagnostic_fd_env, perf_fd_env, ssar_path },
+        "{{\"schema_version\":{d},\"network_access\":false,\"live_contact\":false,\"live_mode\":\"--task15-live\",\"manifest_required\":true,\"manifest_fields\":[\"context\",\"cluster\",\"server_host\",\"fingerprint\"],\"evidence_fds\":[\"{s}\",\"{s}\"],\"contexts_env\":\"{s}\",\"families\":15,\"diagnostic_controls\":[\"reconnect\",\"stale_rv\"],\"methods\":[\"GET\",\"WATCH\",\"POST:{s}\"],\"audit_redaction\":\"identifiers-and-query-values-fingerprinted\",\"zero_state\":{{\"queue\":0,\"live_children\":0,\"active_identities\":0,\"active_leases\":0,\"retiring_leases\":0}}}}\n",
+        .{ schema_version, diagnostic_fd_env, perf_fd_env, allowed_contexts_env, ssar_path },
     );
 }
 
+extern "c" fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
+extern "c" fn unsetenv(name: [*:0]const u8) c_int;
+
+test "the diagnostic context allowlist comes from the environment and fails closed" {
+    try std.testing.expect(contextInList("diag.example.test", "diag.example.test"));
+    try std.testing.expect(contextInList("b", "a, b ,c"));
+    try std.testing.expect(!contextInList("diag.example", "diag.example.test"));
+    try std.testing.expect(!contextInList("", "a,,b"));
+    try std.testing.expect(!contextInList("a", ""));
+
+    _ = unsetenv(allowed_contexts_env);
+    try std.testing.expect(!contextAllowed("diag.example.test"));
+    try std.testing.expectEqual(@as(c_int, 0), setenv(allowed_contexts_env, "diag.example.test", 1));
+    defer _ = unsetenv(allowed_contexts_env);
+    try std.testing.expect(contextAllowed("diag.example.test"));
+}
+
 test "diagnostic launch requires readonly exact context and no identity override" {
+    try std.testing.expectEqual(@as(c_int, 0), setenv(allowed_contexts_env, "diag.example.test", 1));
+    defer _ = unsetenv(allowed_contexts_env);
     try std.testing.expectError(error.DiagnosticRequiresReadonly, validateDiagnosticLaunch(.{
         .readonly = false,
-        .context = "dev4.as",
+        .context = "diag.example.test",
     }));
     try std.testing.expectError(error.ContextNotAllowlisted, validateDiagnosticLaunch(.{
         .readonly = true,
-        .context = "dev4.as.example",
+        .context = "diag.example.test.other",
     }));
     try std.testing.expectError(error.UnsafeClusterOverride, validateDiagnosticLaunch(.{
         .readonly = true,
-        .context = "dev4.as",
+        .context = "diag.example.test",
         .manifest_path = "frozen.json",
         .token = "not-recorded",
     }));
@@ -570,7 +598,7 @@ test "sanitized audit target removes names namespaces and query values" {
     var output: [max_record_bytes]u8 = undefined;
     const encoded = try encodeRecord(.{
         .event = .request_audit,
-        .context = "dev4.as",
+        .context = "diag.example.test",
         .scope = target.scope,
         .method = .GET,
         .api_group = target.api_group,
@@ -601,14 +629,14 @@ test "manifest encoding is valid JSON without doubled quotes" {
     var buffer: [512]u8 = undefined;
     const encoded = try encodeManifest(.{
         .schema_version = schema_version,
-        .context = "dev4.as",
+        .context = "diag.example.test",
         .cluster = "k8s-dev",
         .server_host = "approved.example.test:6443",
         .fingerprint = 42,
     }, &buffer);
     var parsed = try std.json.parseFromSlice(Manifest, std.testing.allocator, encoded, .{});
     defer parsed.deinit();
-    try std.testing.expectEqualStrings("dev4.as", parsed.value.context);
+    try std.testing.expectEqualStrings("diag.example.test", parsed.value.context);
     try std.testing.expectEqualStrings("k8s-dev", parsed.value.cluster);
 }
 

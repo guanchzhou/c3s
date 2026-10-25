@@ -10,6 +10,29 @@ The release workflow extracts the section matching the git tag (`vX.Y.Z` →
 
 ## [Unreleased]
 
+## [0.4.4] - 2026-10-25
+
+### Security
+
+- Control characters and terminal escape sequences in cluster data (logs, YAML, describe output, table cells) are shown as `?` instead of reaching the terminal.
+- `kubectl proxy` now binds its own port instead of taking one c3s reserved, and is stopped if c3s panics.
+- Saved resources are written as new owner-only files in an owner-only directory; the log file is owner-only.
+- `--token` and `--insecure-skip-tls-verify` are refused at startup.
+
+### Fixed
+
+- `--cluster`, `--user`, `--as`, `--as-group` (repeatable), `--certificate-authority`, `--client-certificate`, `--client-key`, and `--request-timeout` are passed to every kubectl call; they were parsed and ignored. `--logFile` now sets the log path.
+- `--headless`, `--logoless`, `--splashless`, and `--write` fail with an "unsupported flag" error instead of being silently ignored.
+- Delete asks `Delete <kind>/<name>? (y/N)` in its own prompt, and its outcome is no longer overwritten by the connection status.
+- Sanitize only removes completed/failed pods visible under the current filter and shows how many in the confirmation.
+- A kubectl killed by a signal is reported as a failure.
+- A failed kubectl request no longer re-runs the exec credential plugin.
+- Triggered job names never end in `-` or `.` when shortened.
+- Theme colors such as `seashell` are no longer rejected.
+- Long log lines are truncated on a character boundary.
+- `--help` shows the log path for the current user.
+- Live diagnostics read eligible contexts from `C3S_DIAGNOSTIC_CONTEXTS`.
+
 ## [0.4.3] - 2026-10-20
 
 ### Added

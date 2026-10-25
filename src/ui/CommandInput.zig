@@ -4,13 +4,16 @@ const Logger = @import("../core/logger.zig");
 const theme_loader = @import("../model/theme_loader.zig");
 const fuzzy = @import("fuzzy.zig");
 const BoxDrawing = @import("box_drawing.zig");
+const display_text = @import("../core/display_text.zig");
 
 /// CommandInput - handles command line input with different prompts
 pub const CommandInput = struct {
     allocator: std.mem.Allocator,
     theme: *const theme_loader.ThemeColors,
     visible: bool = false,
-    prompt: []const u8 = "",
+    /// Owned copy of the prompt: callers build labels in stack buffers.
+    prompt_buf: [320]u8 = undefined,
+    prompt_len: usize = 0,
     buffer: std.ArrayList(u8),
     cursor_pos: usize = 0,
 
@@ -41,13 +44,19 @@ pub const CommandInput = struct {
 
     pub fn showWithPrompt(self: *CommandInput, prompt: []const u8) void {
         self.visible = true;
-        self.prompt = prompt;
+        const fitted = display_text.utf8Prefix(prompt, self.prompt_buf.len);
+        std.mem.copyForwards(u8, self.prompt_buf[0..fitted.len], fitted);
+        self.prompt_len = fitted.len;
         self.buffer.clearRetainingCapacity();
         self.cursor_pos = 0;
-        self.show_suggestions = std.mem.eql(u8, prompt, ":");
+        self.show_suggestions = std.mem.eql(u8, self.getPrompt(), ":");
         self.selected = 0;
         self.recompute();
-        Logger.debug("CommandInput: Opened with prompt '{s}'", .{prompt});
+        Logger.debug("CommandInput: Opened with prompt '{s}'", .{self.getPrompt()});
+    }
+
+    pub fn getPrompt(self: *const CommandInput) []const u8 {
+        return self.prompt_buf[0..self.prompt_len];
     }
 
     pub fn hide(self: *CommandInput) void {
@@ -145,7 +154,7 @@ pub const CommandInput = struct {
         try terminal.writeAll(self.theme.prompt_fg);
         try terminal.writeAll(self.theme.prompt_bg);
         var line_buf: [512]u8 = undefined;
-        const line_text = try std.fmt.bufPrint(&line_buf, " {s} {s}", .{ self.prompt, self.buffer.items });
+        const line_text = try std.fmt.bufPrint(&line_buf, " {s} {s}", .{ self.getPrompt(), self.buffer.items });
         try terminal.writeAll(line_text);
         try terminal.writeAll("\x1b[0m");
 
@@ -217,7 +226,7 @@ pub const CommandInput = struct {
 
         // Position cursor back on the INPUT line so typing still shows the caret
         // on the input row (must be set AFTER drawing suggestions).
-        try terminal.setCursor(x + @as(u16, @intCast(1 + self.prompt.len + 1 + self.cursor_pos)), y);
+        try terminal.setCursor(x + @as(u16, @intCast(1 + self.getPrompt().len + 1 + self.cursor_pos)), y);
     }
 };
 
@@ -248,10 +257,31 @@ test "CommandInput show and hide" {
 
     cmd_input.showWithPrompt(":");
     try testing.expect(cmd_input.visible);
-    try testing.expect(std.mem.eql(u8, cmd_input.prompt, ":"));
+    try testing.expect(std.mem.eql(u8, cmd_input.getPrompt(), ":"));
 
     cmd_input.hide();
     try testing.expect(!cmd_input.visible);
+}
+
+test "CommandInput keeps its own copy of a prompt built in a stack buffer" {
+    const allocator = testing.allocator;
+    const theme = try theme_loader.defaultTheme(allocator);
+    defer theme_loader.deinitTheme(@constCast(&theme));
+
+    var cmd_input = try CommandInput.init(allocator, &theme);
+    defer cmd_input.deinit();
+
+    var buf: [128]u8 = undefined;
+    const label = try std.fmt.bufPrint(&buf, "Drain {s}? [y/n]:", .{"node-a"});
+    cmd_input.showWithPrompt(label);
+    @memset(&buf, 'X');
+    try testing.expectEqualStrings("Drain node-a? [y/n]:", cmd_input.getPrompt());
+
+    const heap = try allocator.dupe(u8, "Delete pods/web-0? (y/N)");
+    cmd_input.showWithPrompt(heap);
+    allocator.free(heap);
+    try testing.expectEqualStrings("Delete pods/web-0? (y/N)", cmd_input.getPrompt());
+    try testing.expect(!cmd_input.show_suggestions);
 }
 
 test "CommandInput insertChar adds character" {
@@ -356,11 +386,11 @@ test "CommandInput prompt can be changed" {
     defer cmd_input.deinit();
 
     cmd_input.showWithPrompt(":");
-    try testing.expect(std.mem.eql(u8, cmd_input.prompt, ":"));
+    try testing.expect(std.mem.eql(u8, cmd_input.getPrompt(), ":"));
 
     cmd_input.hide();
     cmd_input.showWithPrompt("/");
-    try testing.expect(std.mem.eql(u8, cmd_input.prompt, "/"));
+    try testing.expect(std.mem.eql(u8, cmd_input.getPrompt(), "/"));
 }
 
 test "CommandInput cursor position tracks insertions" {

@@ -1,6 +1,11 @@
 const std = @import("std");
 const c3s = @import("c3s");
 
+const Env = struct {
+    extern "c" fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
+    extern "c" fn unsetenv(name: [*:0]const u8) c_int;
+};
+
 test "Task 15 dry preflight validates schema controls and request enforcement" {
     const diagnostics = c3s.task15_diagnostics;
     try std.testing.expectEqual(@as(u8, 2), diagnostics.schema_version);
@@ -10,7 +15,8 @@ test "Task 15 dry preflight validates schema controls and request enforcement" {
     else
         family_info.field_names.len;
     try std.testing.expectEqual(@as(usize, 15), family_count);
-    try std.testing.expectEqual(@as(usize, 2), diagnostics.allowed_contexts.len);
+    try std.testing.expectEqual(@as(c_int, 0), Env.setenv(diagnostics.allowed_contexts_env, "diag.example.test", 1));
+    defer _ = Env.unsetenv(diagnostics.allowed_contexts_env);
 
     if (comptime @hasField(@TypeOf(family_info), "fields")) {
         inline for (family_info.fields) |field| {
@@ -28,7 +34,7 @@ test "Task 15 dry preflight validates schema controls and request enforcement" {
         error.Task15ManifestRequired,
         diagnostics.validateDiagnosticLaunch(.{
             .readonly = true,
-            .context = "dev4.as",
+            .context = "diag.example.test",
         }),
     );
     try std.testing.expectError(
@@ -67,14 +73,11 @@ test "Task 15 live launch requires manifest and both evidence descriptors" {
     {
         return error.SkipZigTest;
     }
-    const Env = struct {
-        extern "c" fn setenv(
-            name: [*:0]const u8,
-            value: [*:0]const u8,
-            overwrite: c_int,
-        ) c_int;
-        extern "c" fn unsetenv(name: [*:0]const u8) c_int;
-    };
+    try std.testing.expectEqual(
+        @as(c_int, 0),
+        Env.setenv(c3s.task15_diagnostics.allowed_contexts_env, "diag.example.test", 1),
+    );
+    defer _ = Env.unsetenv(c3s.task15_diagnostics.allowed_contexts_env);
     try std.testing.expectEqual(
         @as(c_int, 0),
         Env.setenv("C3S_DIAGNOSTIC_FD", "2", 1),
@@ -88,14 +91,14 @@ test "Task 15 live launch requires manifest and both evidence descriptors" {
 
     try c3s.task15_diagnostics.validateDiagnosticLaunch(.{
         .readonly = true,
-        .context = "dev4.as",
+        .context = "diag.example.test",
         .manifest_path = "frozen.json",
     });
     try std.testing.expectError(
         error.UnsafeClusterOverride,
         c3s.task15_diagnostics.validateDiagnosticLaunch(.{
             .readonly = true,
-            .context = "dev4.as",
+            .context = "diag.example.test",
             .manifest_path = "frozen.json",
             .client_key = "unsafe",
         }),
@@ -104,18 +107,20 @@ test "Task 15 live launch requires manifest and both evidence descriptors" {
 
 test "Task 15 manifest binds allowlisted context cluster and server identity offline" {
     const diagnostics = c3s.task15_diagnostics;
+    try std.testing.expectEqual(@as(c_int, 0), Env.setenv(diagnostics.allowed_contexts_env, "diag.example.test", 1));
+    defer _ = Env.unsetenv(diagnostics.allowed_contexts_env);
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     const kubeconfig =
         \\apiVersion: v1
         \\kind: Config
-        \\current-context: dev4.as
+        \\current-context: diag.example.test
         \\clusters:
         \\  - name: k8s-dev
         \\    cluster:
         \\      server: https://approved.example.test:6443/private/path
         \\contexts:
-        \\  - name: dev4.as
+        \\  - name: diag.example.test
         \\    context:
         \\      cluster: k8s-dev
         \\      user: frozen-user
@@ -129,13 +134,13 @@ test "Task 15 manifest binds allowlisted context cluster and server identity off
         .data = kubeconfig,
     });
     const fingerprint = diagnostics.manifestFingerprint(
-        "dev4.as",
+        "diag.example.test",
         "k8s-dev",
         "approved.example.test:6443",
     );
     const manifest = try std.fmt.allocPrint(
         std.testing.allocator,
-        "{{\"schema_version\":2,\"context\":\"dev4.as\",\"cluster\":\"k8s-dev\",\"server_host\":\"approved.example.test:6443\",\"fingerprint\":{d}}}",
+        "{{\"schema_version\":2,\"context\":\"diag.example.test\",\"cluster\":\"k8s-dev\",\"server_host\":\"approved.example.test:6443\",\"fingerprint\":{d}}}",
         .{fingerprint},
     );
     defer std.testing.allocator.free(manifest);
@@ -157,7 +162,7 @@ test "Task 15 manifest binds allowlisted context cluster and server identity off
         std.testing.allocator,
         std.testing.io,
         manifest_path,
-        "dev4.as",
+        "diag.example.test",
         config_path,
     );
 
@@ -179,7 +184,7 @@ test "Task 15 manifest binds allowlisted context cluster and server identity off
             std.testing.allocator,
             std.testing.io,
             manifest_path,
-            "dev4.as",
+            "diag.example.test",
             config_path,
         ),
     );
@@ -190,7 +195,7 @@ test "Task 15 App wiring renders banner and counts exact resource identities" {
     // This test verifies banner rendering and identity counting without source manipulation.
     var app = try c3s.App.init(std.testing.allocator, .{
         .readonly = true,
-        .context = "dev4.as",
+        .context = "diag.example.test",
         .namespace = "frozen-scope",
     });
     defer app.deinit();
@@ -202,11 +207,11 @@ test "Task 15 App wiring renders banner and counts exact resource identities" {
         app.k8s_service.listCedarPolicies(),
     );
 
-    try app.header.updateClusterInfo("dev4.as", "frozen", "redacted");
+    try app.header.updateClusterInfo("diag.example.test", "frozen", "redacted");
     try app.header.setReadonlyScope(true, "frozen-scope");
     var banner: [128]u8 = undefined;
     try std.testing.expectEqualStrings(
-        "READONLY | context: dev4.as | namespace: frozen-scope",
+        "READONLY | context: diag.example.test | namespace: frozen-scope",
         try app.header.safetyText(&banner),
     );
 

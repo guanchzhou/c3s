@@ -10,6 +10,7 @@ const Key = @import("../core/Terminal.zig").Key;
 const Logger = @import("../core/logger.zig");
 const theme_loader = @import("../model/theme_loader.zig");
 const hints_model = @import("../model/hints.zig");
+const display_text = @import("../core/display_text.zig");
 
 pub const DetailView = struct {
     allocator: std.mem.Allocator,
@@ -167,6 +168,7 @@ pub const DetailView = struct {
             try self.flushLine(&line_buf);
         }
 
+        try self.sanitizeLines();
         try self.computeFolds();
         try self.rebuildVisible();
     }
@@ -225,6 +227,7 @@ pub const DetailView = struct {
         while (it.next()) |line| {
             try self.lines.append(self.allocator, try self.allocator.dupe(u8, line));
         }
+        try self.sanitizeLines();
         try self.computeFolds();
         try self.rebuildVisible();
     }
@@ -257,6 +260,7 @@ pub const DetailView = struct {
             while (line_iter.next()) |line| {
                 try self.lines.append(self.allocator, try self.allocator.dupe(u8, line));
             }
+            try self.sanitizeLines();
             try self.computeFolds();
             try self.rebuildVisible();
             return;
@@ -264,6 +268,7 @@ pub const DetailView = struct {
         defer parsed.deinit();
 
         try self.formatDescribeValue(parsed.value, 0);
+        try self.sanitizeLines();
         try self.computeFolds();
         try self.rebuildVisible();
     }
@@ -345,6 +350,12 @@ pub const DetailView = struct {
         if (line_buf.items.len > 0) {
             try self.lines.append(self.allocator, try self.allocator.dupe(u8, line_buf.items));
             line_buf.clearRetainingCapacity();
+        }
+    }
+
+    fn sanitizeLines(self: *DetailView) !void {
+        for (self.lines.items) |*line| {
+            line.* = try display_text.sanitizeOwned(self.allocator, @constCast(line.*));
         }
     }
 
@@ -1104,4 +1115,24 @@ test "DetailView: column-aligned content yields column stops for h/l nav" {
     // h/l jumps a whole column, not one character.
     dv.horizontal_scroll = 0;
     try testing.expect(dv.nextColStop() > 1);
+}
+
+test "DetailView: control sequences in describe and text content are defused" {
+    const testing = std.testing;
+    var theme = try theme_loader.defaultTheme(testing.allocator);
+    defer theme_loader.deinitTheme(&theme);
+
+    var dv = try DetailView.init(testing.allocator, &theme);
+    defer dv.deinit();
+
+    // A JSON string escape decodes to a raw ESC; describe must not pass it through.
+    try dv.setContentDescribe("{\"message\":\"\\u001b]52;c;aGVsbG8=\\u0007\"}", "Describe");
+    for (dv.lines.items) |line| try testing.expect(!display_text.needsSanitizing(line));
+
+    try dv.setContentText("ok\na\rb\n\xc2\x9b2J", "Text");
+    try testing.expectEqualStrings("a?b", dv.lines.items[1]);
+    try testing.expectEqualStrings("?2J", dv.lines.items[2]);
+
+    try dv.setContentJson("{\"k\":\"\xc2\x9b2J\"}", "Json");
+    for (dv.lines.items) |line| try testing.expect(!display_text.needsSanitizing(line));
 }

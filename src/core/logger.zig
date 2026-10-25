@@ -28,9 +28,13 @@ pub const Logger = struct {
     log_file_path: []const u8,
 
     pub fn init(level: LogLevel) !Logger {
-        const paths = try xdg.ensurePaths();
-        const log_dir = paths.log_dir;
-        const log_file_path = paths.log_file;
+        return initAt(level, null);
+    }
+
+    /// `path` overrides the XDG log file (--logFile).
+    pub fn initAt(level: LogLevel, path: ?[]const u8) !Logger {
+        const log_file_path = path orelse (try xdg.ensurePaths()).log_file;
+        const log_dir = std.fs.path.dirname(log_file_path) orelse ".";
 
         std.Io.Dir.cwd().createDirPath(runtime.io(), log_dir) catch |path_err| switch (path_err) {
             error.PathAlreadyExists => {},
@@ -112,6 +116,10 @@ var global_logger: ?Logger = null;
 
 pub fn initGlobalLogger(level: LogLevel) !void {
     global_logger = try Logger.init(level);
+}
+
+pub fn initGlobalLoggerAt(level: LogLevel, path: ?[]const u8) !void {
+    global_logger = try Logger.initAt(level, path);
 }
 
 pub fn deinitGlobalLogger() void {
@@ -262,4 +270,29 @@ test "logger appends to existing file" {
 
     try testing.expect(std.mem.containsAtLeast(u8, log_content, 1, "append-test first message"));
     try testing.expect(std.mem.containsAtLeast(u8, log_content, 1, "append-test second message"));
+}
+
+test "--logFile path is honored and the log is owner-only" {
+    const allocator = testing.allocator;
+
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const tmp_path_z = try absTmpPath(allocator, &tmp_dir);
+    defer allocator.free(tmp_path_z);
+    const log_path = try std.fs.path.joinZ(allocator, &.{ tmp_path_z, "nested", "custom.log" });
+    defer allocator.free(log_path);
+
+    try initGlobalLoggerAt(.info, log_path);
+    defer deinitGlobalLogger();
+    info("custom-path message", .{});
+
+    try testing.expectEqualStrings(log_path, getLogFilePath().?);
+    const log_content = try readLog(allocator);
+    defer allocator.free(log_content);
+    try testing.expect(std.mem.containsAtLeast(u8, log_content, 1, "custom-path message"));
+
+    var stat: std.c.Stat = undefined;
+    try testing.expectEqual(@as(c_int, 0), std.c.stat(log_path, &stat));
+    try testing.expectEqual(@as(std.c.mode_t, 0o600), stat.mode & 0o777);
 }

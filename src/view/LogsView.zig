@@ -6,6 +6,7 @@ const Key = @import("../core/Terminal.zig").Key;
 const Logger = @import("../core/logger.zig");
 const theme_loader = @import("../model/theme_loader.zig");
 const hints_model = @import("../model/hints.zig");
+const display_text = @import("../core/display_text.zig");
 
 const log_text_util = @import("log_text.zig");
 
@@ -143,8 +144,10 @@ pub const LogsView = struct {
 
         // Split text into lines
         var line_iter = std.mem.splitScalar(u8, log_text, '\n');
-        while (line_iter.next()) |line| {
-            try self.lines.append(self.allocator, try self.allocator.dupe(u8, line));
+        while (line_iter.next()) |raw_line| {
+            const line = std.mem.trimEnd(u8, raw_line, "\r");
+            try self.lines.ensureUnusedCapacity(self.allocator, 1);
+            self.lines.appendAssumeCapacity(try display_text.sanitizeAlloc(self.allocator, line));
         }
 
         // Build initial unfiltered indices
@@ -289,7 +292,7 @@ pub const LogsView = struct {
 
             try terminal.setCursor(x, row_y);
 
-            const display_line = line[0..@min(line.len, content_width)];
+            const display_line = display_text.utf8Prefix(line, content_width);
 
             if (self.filter_text.len > 0) {
                 // Render with highlighted matches
@@ -737,6 +740,40 @@ test "toggling wrap clamps the cursor instead of leaving it past the end" {
     try std.testing.expectEqual(@as(usize, 1), view.displayRowCount());
     try std.testing.expectEqual(@as(u32, 0), view.selected_row);
     try std.testing.expectEqual(@as(u32, 0), view.scroll_offset);
+}
+
+test "log lines are stripped of terminal control sequences on ingestion" {
+    const a = std.testing.allocator;
+    var theme = try theme_loader.defaultTheme(a);
+    defer theme_loader.deinitTheme(&theme);
+    var view = try LogsView.init(a, &theme);
+    defer view.deinit();
+
+    try view.setContent("steal \x1b]52;c;aGVsbG8=\x07 clipboard\na\rb\ncrlf\r\n\xc2\x9b2J", "pod-a");
+    try std.testing.expectEqualStrings("steal ?]52;c;aGVsbG8=? clipboard", view.lines.items[0]);
+    try std.testing.expectEqualStrings("a?b", view.lines.items[1]);
+    try std.testing.expectEqualStrings("crlf", view.lines.items[2]);
+    try std.testing.expectEqualStrings("?2J", view.lines.items[3]);
+}
+
+test "truncating to the pane width never splits a multi-byte character" {
+    const a = std.testing.allocator;
+    var theme = try theme_loader.defaultTheme(a);
+    defer theme_loader.deinitTheme(&theme);
+    var view = try LogsView.init(a, &theme);
+    defer view.deinit();
+    var terminal = try Terminal.init(a);
+    defer terminal.deinit();
+
+    try view.setContent("日本語", "pod-a");
+    terminal.write_buffer.clearRetainingCapacity();
+    // Width 6 leaves 4 content bytes: one whole 3-byte character fits, the second
+    // would be cut after its first byte.
+    try LogsView.render(&view, &terminal, 0, 0, 6, 3);
+    const frame = terminal.write_buffer.items;
+    try std.testing.expect(std.unicode.utf8ValidateSlice(frame));
+    try std.testing.expect(std.mem.indexOf(u8, frame, "日") != null);
+    try std.testing.expect(std.mem.indexOf(u8, frame, "本") == null);
 }
 
 test "following a wrapped log lands on the last row, not the last line" {

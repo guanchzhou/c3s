@@ -11,6 +11,7 @@ const env = @import("../core/env.zig");
 const xdg = @import("../core/xdg.zig");
 const clock = @import("../core/clock.zig");
 const active_context = @import("../k8s/ActiveContextSession.zig");
+const kubectl_flags = @import("../k8s/kubectl_flags.zig");
 const active_slot = @import("../k8s/ActiveSessionSlot.zig");
 const read_transport = @import("../k8s/ReadTransport.zig");
 const dynamic_resource = @import("../k8s/DynamicResource.zig");
@@ -104,6 +105,7 @@ pub const K8sService = struct {
     /// `c3s --readonly` permitted deletion. Guarding at the service boundary means
     /// a new caller cannot forget it, and Phase 4's mutations inherit it for free.
     readonly: bool = false,
+    kubectl_overrides: kubectl_flags.Overrides = .{},
 
     /// Initialize the K8s service
     pub fn init(allocator: std.mem.Allocator) !K8sService {
@@ -222,29 +224,6 @@ pub const K8sService = struct {
         if (self.cached_k8s_version) |v| self.allocator.free(v);
     }
 
-    fn refreshCredentialProvider(
-        self: *K8sService,
-        provider: *active_context.CredentialProvider,
-    ) void {
-        const cmd = provider.exec_command orelse return;
-        const cfg = klient.exec_credential.ExecConfig{
-            .command = cmd,
-            .args = provider.exec_args,
-            .apiVersion = provider.exec_api_version orelse "client.authentication.k8s.io/v1beta1",
-        };
-        const cred = klient.exec_credential.executeCredentialPlugin(self.allocator, runtime.io(), cfg) catch return;
-        // The Parsed arena owns all credential strings — without this deinit the
-        // token-bearing buffer leaked on every refresh.
-        defer cred.deinit();
-        if (cred.value.status) |s| {
-            if (s.token) |tok| {
-                provider.replaceToken(tok) catch return;
-                std.crypto.secureZero(u8, @constCast(tok));
-                Logger.info("Refreshed exec-auth token", .{});
-            }
-        }
-    }
-
     /// Connect to Kubernetes cluster using kubeconfig
     pub fn hasAttemptedConnect(self: *const K8sService) bool {
         return self.connect_attempted;
@@ -258,7 +237,8 @@ pub const K8sService = struct {
             break :blk std.ascii.eqlIgnoreCase(value, "1") or
                 std.ascii.eqlIgnoreCase(value, "true");
         } else |_| false;
-        const force_proxy = task15.isLiveMode() or environment_forces_proxy;
+        const force_proxy = task15.isLiveMode() or environment_forces_proxy or
+            self.kubectl_overrides.changesIdentity();
         const generation = try slot.reserveGeneration();
         const session = try self.session_factory.prepare(
             self.allocator,
@@ -271,6 +251,7 @@ pub const K8sService = struct {
                 .default_namespace = self.current_namespace,
                 .force_proxy = force_proxy,
                 .readonly = self.readonly,
+                .kubectl_overrides = self.kubectl_overrides,
             },
         );
         var session_owned = true;
@@ -408,18 +389,7 @@ pub const K8sService = struct {
                 // Proxy died — fall through.
             }
         }
-        const body = self.kubectlRequestOnceAlloc(a, request, path) catch |err| retry: {
-            if (request.credentials) |provider| {
-                if (provider.exec_command == null) {
-                    self.auditTask15Request(.GET, audit_target, null, "terminal");
-                    return err;
-                }
-                self.refreshCredentialProvider(provider);
-                break :retry self.kubectlRequestOnceAlloc(a, request, path) catch |retry_err| {
-                    self.auditTask15Request(.GET, audit_target, null, "terminal");
-                    return retry_err;
-                };
-            }
+        const body = self.kubectlRequestOnceAlloc(a, request, path) catch |err| {
             self.auditTask15Request(.GET, audit_target, null, "terminal");
             return err;
         };
@@ -441,7 +411,7 @@ pub const K8sService = struct {
             .stdout_limit = .limited(128 * 1024 * 1024),
         }) catch return error.KubectlFailed;
         defer a.free(result.stderr);
-        if (result.term.exited != 0) {
+        if (!result.term.success()) {
             a.free(result.stdout);
             return error.KubectlFailed;
         }
@@ -491,7 +461,7 @@ pub const K8sService = struct {
         }) catch return error.KubectlFailed;
         defer self.allocator.free(result.stderr);
 
-        if (result.term != .exited or result.term.exited != 0) {
+        if (!result.term.success()) {
             self.allocator.free(result.stdout);
             return error.KubectlFailed;
         }
@@ -526,11 +496,11 @@ pub const K8sService = struct {
             return error.KubectlFailed;
         };
         defer a.free(output.stderr);
-        if (output.term.exited != 0) {
+        if (!output.term.success()) {
             defer a.free(output.stdout);
             const reason = std.mem.trim(u8, output.stderr, " \r\n\t");
-            Logger.warn("kubectl exited with code {} for path '{s}': {s}", .{
-                output.term.exited, path, reason[0..@min(reason.len, 300)],
+            Logger.warn("kubectl {f} for path '{s}': {s}", .{
+                output.term, path, reason[0..@min(reason.len, 300)],
             });
             if (std.mem.indexOf(u8, reason, "Forbidden") != null) return error.Forbidden;
             return error.KubectlFailed;
@@ -573,20 +543,7 @@ pub const K8sService = struct {
                 // Proxy died/unreachable — fall through to per-call kubectl.
             }
         }
-        const body = self.kubectlRequestOnce(request, path) catch |err| retry: {
-            // A failure may be an expired token. If we have an exec plugin,
-            // refresh once and retry.
-            if (request.credentials) |provider| {
-                if (provider.exec_command == null) {
-                    self.auditTask15Request(.GET, audit_target, null, "terminal");
-                    return err;
-                }
-                self.refreshCredentialProvider(provider);
-                break :retry self.kubectlRequestOnce(request, path) catch |retry_err| {
-                    self.auditTask15Request(.GET, audit_target, null, "terminal");
-                    return retry_err;
-                };
-            }
+        const body = self.kubectlRequestOnce(request, path) catch |err| {
             self.auditTask15Request(.GET, audit_target, null, "terminal");
             return err;
         };
@@ -649,14 +606,14 @@ pub const K8sService = struct {
         };
         defer self.allocator.free(output.stderr);
 
-        if (output.term.exited != 0) {
+        if (!output.term.success()) {
             defer self.allocator.free(output.stdout);
             // Surface kubectl's own reason (RBAC denials, expired creds, …) —
             // a bare exit code hides e.g. `pods is forbidden: User "x" cannot
             // list …` and sends debugging down the wrong path entirely.
             const reason = std.mem.trim(u8, output.stderr, " \r\n\t");
-            Logger.warn("kubectl exited with code {} for path '{s}': {s}", .{
-                output.term.exited, path, reason[0..@min(reason.len, 300)],
+            Logger.warn("kubectl {f} for path '{s}': {s}", .{
+                output.term, path, reason[0..@min(reason.len, 300)],
             });
             if (std.mem.indexOf(u8, reason, "Forbidden") != null) return error.Forbidden;
             return error.KubectlFailed;
@@ -691,7 +648,7 @@ pub const K8sService = struct {
             8 * 1024 * 1024,
         ) catch |err| return if (err == error.Canceled) err else error.KubectlFailed;
         defer self.allocator.free(output.stderr);
-        if (output.term.exited != 0) {
+        if (!output.term.success()) {
             defer self.allocator.free(output.stdout);
             return error.KubectlFailed;
         }
@@ -727,7 +684,16 @@ pub const K8sService = struct {
         ) catch |err| return if (err == error.Canceled) err else error.KubectlFailed;
         defer self.allocator.free(output.stdout);
         defer self.allocator.free(output.stderr);
-        return output.term.exited == 0;
+        return canIAnswer(output.term);
+    }
+
+    /// `kubectl auth can-i --quiet` answers through its exit code. Only a normal
+    /// exit is an answer; a kubectl killed by a signal said nothing.
+    fn canIAnswer(term: std.process.Child.Term) error{KubectlFailed}!bool {
+        return switch (term) {
+            .exited => |code| code == 0,
+            else => error.KubectlFailed,
+        };
     }
 
     /// Resolve an otherwise unknown palette command against the API server's
@@ -808,6 +774,17 @@ pub const K8sService = struct {
         request: *const ResolvedRequest,
         args: []const []const u8,
     ) ![]const []const u8 {
+        return self.buildKubectlArgvFor(request, args, .request);
+    }
+
+    /// `.stream` is for kubectl processes that stay attached (exec, edit,
+    /// port-forward): `--request-timeout` would cut them off mid-session.
+    fn buildKubectlArgvFor(
+        self: *K8sService,
+        request: *const ResolvedRequest,
+        args: []const []const u8,
+        lifetime: enum { request, stream },
+    ) ![]const []const u8 {
         var argv = std.ArrayListUnmanaged([]const u8).empty;
         errdefer argv.deinit(self.allocator);
         try argv.append(self.allocator, "kubectl");
@@ -818,6 +795,10 @@ pub const K8sService = struct {
         if (!std.mem.eql(u8, request.context_name, "unknown")) {
             try argv.append(self.allocator, "--context");
             try argv.append(self.allocator, request.context_name);
+        }
+        switch (lifetime) {
+            .request => try self.kubectl_overrides.appendRequest(self.allocator, &argv),
+            .stream => try self.kubectl_overrides.appendIdentity(self.allocator, &argv),
         }
         for (args) |a| try argv.append(self.allocator, a);
         return argv.toOwnedSlice(self.allocator);
@@ -835,7 +816,7 @@ pub const K8sService = struct {
         try self.assertMutable();
         var request = try self.resolveRequest(.command);
         defer request.deinit();
-        return self.buildKubectlArgvResolved(&request, args);
+        return self.buildKubectlArgvFor(&request, args, .stream);
     }
 
     /// Start the active session's OS-port-selected proxy. The facade never owns it.
@@ -864,7 +845,7 @@ pub const K8sService = struct {
             .stdout_limit = .limited(128 * 1024 * 1024),
         }) catch return error.KubectlFailed;
         defer self.allocator.free(result.stderr);
-        if (result.term.exited != 0) {
+        if (!result.term.success()) {
             self.allocator.free(result.stdout);
             return error.KubectlFailed;
         }
@@ -899,7 +880,7 @@ pub const K8sService = struct {
         }) catch return error.KubectlFailed;
         defer self.allocator.free(result.stdout);
         defer self.allocator.free(result.stderr);
-        if (result.term.exited != 0) return error.KubectlFailed;
+        if (!result.term.success()) return error.KubectlFailed;
     }
 
     pub fn refreshArgoApplication(
@@ -941,7 +922,7 @@ pub const K8sService = struct {
         try self.assertMutable();
         var request = try self.resolveRequest(.command);
         defer request.deinit();
-        const argv = try self.buildKubectlArgvResolved(&request, args);
+        const argv = try self.buildKubectlArgvFor(&request, args, .stream);
         defer self.allocator.free(argv);
         return std.process.spawn(runtime.io(), .{
             .argv = argv,
@@ -1162,7 +1143,7 @@ pub const K8sService = struct {
         defer self.allocator.free(result.stdout);
         defer self.allocator.free(result.stderr);
 
-        if (result.term != .exited or result.term.exited != 0) {
+        if (!result.term.success()) {
             Logger.warn("kubectl {s} {s} failed: {s}", .{ verb, node_name, result.stderr });
             return error.KubectlFailed;
         }
@@ -1272,7 +1253,7 @@ pub const K8sService = struct {
             }) catch return error.KubectlFailed;
             self.allocator.free(result.stdout);
             self.allocator.free(result.stderr);
-            if (result.term.exited != 0) return error.KubectlFailed;
+            if (!result.term.success()) return error.KubectlFailed;
             return;
         }
 
@@ -2181,4 +2162,91 @@ test "authorization POST paths are fixed and read data plane remains GET only" {
         "/apis/authorization.k8s.io/v1alpha1/subjectaccessreviews",
         K8sService.authorization_conditions_review_path,
     );
+}
+
+test "a child killed by a signal is a failure, not an exit code" {
+    var never_cancel = std.atomic.Value(bool).init(false);
+    const result = try runProcessCancelable(
+        std.testing.allocator,
+        &.{ "/bin/sh", "-c", "kill -KILL $$" },
+        &never_cancel,
+        1024,
+    );
+    defer std.testing.allocator.free(result.stdout);
+    defer std.testing.allocator.free(result.stderr);
+
+    try std.testing.expect(result.term == .signal);
+    try std.testing.expect(!result.term.success());
+    try std.testing.expectError(error.KubectlFailed, K8sService.canIAnswer(result.term));
+}
+
+test "can-i reads only a normal exit as an answer" {
+    try std.testing.expect(try K8sService.canIAnswer(.{ .exited = 0 }));
+    try std.testing.expect(!try K8sService.canIAnswer(.{ .exited = 1 }));
+    try std.testing.expectError(error.KubectlFailed, K8sService.canIAnswer(.{ .signal = .TERM }));
+    try std.testing.expectError(error.KubectlFailed, K8sService.canIAnswer(.{ .unknown = 0 }));
+}
+
+test "command-line kubectl flags reach one-shot and attached kubectl processes" {
+    const allocator = std.testing.allocator;
+    var svc = try K8sService.init(allocator);
+    defer svc.deinit();
+    svc.kubectl_overrides = .{ .as = "jane", .as_groups = &.{"devs"}, .request_timeout = "9s" };
+
+    const request = K8sService.ResolvedRequest{
+        .lease = null,
+        .client = null,
+        .use_kubectl = true,
+        .proxy_port = null,
+        .transport_mode = .klient,
+        .context_name = "ctx",
+        .kubeconfig_path = null,
+        .credentials = null,
+    };
+    const one_shot = try svc.buildKubectlArgvFor(&request, &.{ "delete", "pod", "x" }, .request);
+    defer allocator.free(one_shot);
+    const expected_one_shot = [_][]const u8{
+        "kubectl",           "--context", "ctx",    "--as", "jane", "--as-group", "devs",
+        "--request-timeout", "9s",        "delete", "pod",  "x",
+    };
+    try std.testing.expectEqual(expected_one_shot.len, one_shot.len);
+    for (expected_one_shot, one_shot) |want, got| try std.testing.expectEqualStrings(want, got);
+
+    const attached = try svc.buildKubectlArgvFor(&request, &.{ "exec", "-it", "x" }, .stream);
+    defer allocator.free(attached);
+    for (attached) |arg| try std.testing.expect(!std.mem.eql(u8, arg, "--request-timeout"));
+    try std.testing.expectEqualStrings("--as", attached[3]);
+}
+
+test "identity overrides reach the session spec and force kubectl transport" {
+    const Capture = struct {
+        spec: ?active_context.ContextSpec = null,
+
+        fn prepare(
+            context: *anyopaque,
+            _: std.mem.Allocator,
+            _: std.Io,
+            _: *std.Io.Event,
+            _: active_context.Generation,
+            spec: active_context.ContextSpec,
+        ) anyerror!*ActiveContextSession {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.spec = spec;
+            return error.Canceled;
+        }
+    };
+    var capture = Capture{};
+    var shared_event: std.Io.Event = .unset;
+    var slot = ActiveSessionSlot.init(runtime.io(), &shared_event);
+    var svc = try K8sService.init(std.testing.allocator);
+    defer svc.deinit();
+    svc.bindSessionSlot(&slot);
+    svc.session_factory = active_context.SessionFactory.init(&capture, Capture.prepare);
+    svc.kubectl_overrides = .{ .cluster = "staging", .user = "admin" };
+
+    try std.testing.expectError(error.Canceled, svc.connect("ctx"));
+    const spec = capture.spec.?;
+    try std.testing.expect(spec.force_proxy);
+    try std.testing.expectEqualStrings("staging", spec.kubectl_overrides.cluster.?);
+    try std.testing.expectEqualStrings("admin", spec.kubectl_overrides.user.?);
 }

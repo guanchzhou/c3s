@@ -125,7 +125,7 @@ Installs the current GitHub Release binary (linux/macOS, amd64/arm64).
 ### **Prerequisites**
 - Zig 0.17.0
 - kubectl configured with a valid kubeconfig
-- Kubernetes cluster access (optional: use `--debug` for demo data)
+- Kubernetes cluster access
 
 ### **Build from Source**
 
@@ -147,9 +147,6 @@ zig build
 
 # Use a specific context
 ./zig-out/bin/c3s --context my-cluster
-
-# Debug mode (no cluster required)
-./zig-out/bin/c3s --debug
 ```
 
 ---
@@ -418,7 +415,7 @@ View logs at: `~/.local/state/c3s/c3s.log`
 # Check kubectl context
 kubectl config current-context
 
-# Run in debug mode (no cluster required)
+# Log at debug level, then read ~/.local/state/c3s/c3s.log
 ./zig-out/bin/c3s --debug
 ```
 

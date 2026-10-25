@@ -3,9 +3,11 @@ const xdg = @import("core/xdg.zig");
 const build = @import("c3s_build");
 const version = @import("model/version.zig");
 const task15 = @import("task15_diagnostics.zig");
+const kubectl_flags = @import("k8s/kubectl_flags.zig");
 
 var version_storage: [128]u8 = undefined;
 var version_len: usize = 0;
+var as_group_storage: [kubectl_flags.max_as_groups][]const u8 = undefined;
 
 pub const Config = struct {
     all_namespaces: bool = false,
@@ -17,30 +19,55 @@ pub const Config = struct {
     log_file: ?[]const u8 = null,
     debug: bool = false,
     readonly: bool = false,
-    headless: bool = false,
     crumbsless: bool = false,
-    logoless: bool = false,
-    splashless: bool = false,
     kubeconfig: ?[]const u8 = null,
     cluster: ?[]const u8 = null,
     user: ?[]const u8 = null,
-    token: ?[]const u8 = null,
     as: ?[]const u8 = null,
-    as_group: ?[]const u8 = null,
+    as_groups: []const []const u8 = &.{},
     certificate_authority: ?[]const u8 = null,
     client_certificate: ?[]const u8 = null,
     client_key: ?[]const u8 = null,
-    insecure_skip_tls_verify: bool = false,
     request_timeout: ?[]const u8 = null,
     screen_dump_dir: ?[]const u8 = null,
-    write: bool = false,
     diagnostic_control: ?task15.DiagnosticControl = null,
     task15_preflight: bool = false,
     task15_live: bool = false,
     task15_manifest_path: ?[]const u8 = null,
     task15_generate_manifest: bool = false,
     unknown_argument_seen: bool = false,
+
+    pub fn kubectlOverrides(self: *const Config) kubectl_flags.Overrides {
+        return .{
+            .cluster = self.cluster,
+            .user = self.user,
+            .as = self.as,
+            .as_groups = self.as_groups,
+            .certificate_authority = self.certificate_authority,
+            .client_certificate = self.client_certificate,
+            .client_key = self.client_key,
+            .request_timeout = self.request_timeout,
+        };
+    }
 };
+
+/// Flags c3s recognizes but does not implement. Accepting them silently would
+/// let a user believe the behavior took effect.
+fn unsupportedFlagReason(arg: []const u8) ?[]const u8 {
+    const name = arg[0 .. std.mem.indexOfScalar(u8, arg, '=') orelse arg.len];
+    const unsupported = [_]struct { []const u8, []const u8 }{
+        .{ "--headless", "hiding the header is not implemented" },
+        .{ "--logoless", "hiding the logo is not implemented" },
+        .{ "--splashless", "c3s has no splash screen" },
+        .{ "--write", "c3s is writable unless --readonly is given; there is no read-only setting to override" },
+        .{ "--token", "a token on kubectl's command line is visible in the process list; set it in the kubeconfig" },
+        .{ "--insecure-skip-tls-verify", "TLS verification cannot be disabled" },
+    };
+    for (unsupported) |entry| {
+        if (std.mem.eql(u8, name, entry[0])) return entry[1];
+    }
+    return null;
+}
 
 pub fn parseArgs(args_src: std.process.Args, allocator: std.mem.Allocator) !Config {
     var config = Config{};
@@ -51,7 +78,12 @@ pub fn parseArgs(args_src: std.process.Args, allocator: std.mem.Allocator) !Conf
     // Skip the program name
     _ = args.skip();
 
+    var as_group_count: usize = 0;
     while (args.next()) |arg| {
+        if (unsupportedFlagReason(arg)) |reason| {
+            std.debug.print("c3s: unsupported flag {s}: {s}\n", .{ arg, reason });
+            return error.UnsupportedFlag;
+        }
         if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
             printHelp();
             std.process.exit(0);
@@ -85,42 +117,31 @@ pub fn parseArgs(args_src: std.process.Args, allocator: std.mem.Allocator) !Conf
             config.log_level = "debug";
         } else if (std.mem.eql(u8, arg, "--readonly")) {
             config.readonly = true;
-        } else if (std.mem.eql(u8, arg, "--headless")) {
-            config.headless = true;
         } else if (std.mem.eql(u8, arg, "--crumbsless")) {
             config.crumbsless = true;
-        } else if (std.mem.eql(u8, arg, "--logoless")) {
-            config.logoless = true;
-        } else if (std.mem.eql(u8, arg, "--splashless")) {
-            config.splashless = true;
         } else if (std.mem.eql(u8, arg, "--kubeconfig")) {
             config.kubeconfig = args.next() orelse return error.MissingValue;
         } else if (std.mem.eql(u8, arg, "--cluster")) {
             config.cluster = args.next() orelse return error.MissingValue;
         } else if (std.mem.eql(u8, arg, "--user")) {
             config.user = args.next() orelse return error.MissingValue;
-        } else if (std.mem.eql(u8, arg, "--token")) {
-            config.token = args.next() orelse return error.MissingValue;
         } else if (std.mem.eql(u8, arg, "--as")) {
             config.as = args.next() orelse return error.MissingValue;
         } else if (std.mem.eql(u8, arg, "--as-group")) {
-            config.as_group = args.next() orelse return error.MissingValue;
+            if (as_group_count == as_group_storage.len) return error.TooManyAsGroups;
+            as_group_storage[as_group_count] = args.next() orelse return error.MissingValue;
+            as_group_count += 1;
+            config.as_groups = as_group_storage[0..as_group_count];
         } else if (std.mem.eql(u8, arg, "--certificate-authority")) {
             config.certificate_authority = args.next() orelse return error.MissingValue;
         } else if (std.mem.eql(u8, arg, "--client-certificate")) {
             config.client_certificate = args.next() orelse return error.MissingValue;
         } else if (std.mem.eql(u8, arg, "--client-key")) {
             config.client_key = args.next() orelse return error.MissingValue;
-        } else if (std.mem.eql(u8, arg, "--insecure-skip-tls-verify")) {
-            config.insecure_skip_tls_verify = true;
         } else if (std.mem.eql(u8, arg, "--request-timeout")) {
             config.request_timeout = args.next() orelse return error.MissingValue;
         } else if (std.mem.eql(u8, arg, "--screen-dump-dir")) {
             config.screen_dump_dir = args.next() orelse return error.MissingValue;
-        } else if (std.mem.eql(u8, arg, "--logFile")) {
-            config.log_file = args.next() orelse return error.MissingValue;
-        } else if (std.mem.eql(u8, arg, "--write")) {
-            config.write = true;
         } else if (std.mem.eql(u8, arg, "--task15-live")) {
             config.task15_live = true;
         } else if (std.mem.eql(u8, arg, "--task15-manifest")) {
@@ -150,17 +171,13 @@ pub fn parseArgs(args_src: std.process.Args, allocator: std.mem.Allocator) !Conf
             .readonly = config.readonly,
             .context = config.context,
             .manifest_path = config.task15_manifest_path,
-            .headless = config.headless,
-            .write = config.write,
             .cluster = config.cluster,
             .user = config.user,
-            .token = config.token,
             .impersonate = config.as,
-            .impersonate_group = config.as_group,
+            .impersonate_group = if (config.as_groups.len > 0) config.as_groups[0] else null,
             .certificate_authority = config.certificate_authority,
             .client_certificate = config.client_certificate,
             .client_key = config.client_key,
-            .insecure_skip_tls_verify = config.insecure_skip_tls_verify,
         });
     }
     if (config.task15_generate_manifest) {
@@ -168,11 +185,7 @@ pub fn parseArgs(args_src: std.process.Args, allocator: std.mem.Allocator) !Conf
         const context = config.context orelse return error.DiagnosticRequiresExplicitContext;
         if (!task15.contextAllowed(context)) return error.ContextNotAllowlisted;
         if (config.task15_live or config.task15_manifest_path != null or
-            config.diagnostic_control != null or
-            config.write or config.cluster != null or config.user != null or
-            config.token != null or config.as != null or config.as_group != null or
-            config.certificate_authority != null or config.client_certificate != null or
-            config.client_key != null or config.insecure_skip_tls_verify)
+            config.diagnostic_control != null or config.kubectlOverrides().changesIdentity())
         {
             return error.InvalidManifestGenerationArguments;
         }
@@ -181,7 +194,7 @@ pub fn parseArgs(args_src: std.process.Args, allocator: std.mem.Allocator) !Conf
 }
 
 fn printHelp() void {
-    const help_text =
+    const help_head =
         \\C3S is a CLI to view and manage your Kubernetes clusters.
         \\
         \\Usage:
@@ -189,15 +202,13 @@ fn printHelp() void {
         \\  c3s [command]
         \\
         \\Available Commands:
-        \\  completion  Generate the autocompletion script for the specified shell
-        \\  help        Help about any command
         \\  info        List C3S configurations info
         \\  version     Print version/build info
         \\
         \\Flags:
         \\  -A, --all-namespaces                 Launch C3S in all namespaces
         \\      --as string                      Username to impersonate for the operation
-        \\      --as-group stringArray           Group to impersonate for the operation
+        \\      --as-group string                Group to impersonate for the operation (repeatable)
         \\      --certificate-authority string   Path to a cert file for the certificate authority
         \\      --client-certificate string      Path to a client certificate file for TLS
         \\      --client-key string              Path to a client key file for TLS
@@ -205,33 +216,53 @@ fn printHelp() void {
         \\  -c, --command string                 Overrides the default resource to load when the application launches
         \\      --context string                 The name of the kubeconfig context to use
         \\      --crumbsless                     Turn C3S crumbs off
-        \\      --headless                       Turn C3S header off
         \\  -h, --help                           help for c3s
-        \\      --insecure-skip-tls-verify       If true, the server's caCertFile will not be checked for validity
         \\      --kubeconfig string              Path to the kubeconfig file to use for CLI requests
-        \\      --logFile string                 Specify the log file (default "/Users/andreymaltsev/Library/Application Support/c3s/c3s.log")
+        \\
+    ;
+    const help_tail =
         \\  -l, --logLevel string                Specify a log level (error, warn, info, debug) (default "info")
         \\      --debug                          Enable debug mode (sets log level to debug)
-        \\      --logoless                       Turn C3S logo off
         \\  -n, --namespace string               If present, the namespace scope for this CLI request
-        \\      --readonly                       Sets readOnly mode by overriding readOnly configuration setting
+        \\      --readonly                       Refuse every action that changes the cluster
         \\  -r, --refresh float32                Specify the default refresh rate as a float (sec) (default 2)
-        \\      --request-timeout string         The length of time to wait before giving up on a single server request
+        \\      --request-timeout string         Time to wait for a single kubectl request (not watches or interactive sessions)
         \\      --screen-dump-dir string         Sets a path to a dir for a screen dumps
-        \\      --splashless                     Turn C3S splash screen off
-        \\      --token string                   Bearer token for authentication to the API server
         \\      --user string                    The name of the kubeconfig user to use
         \\      --version                        Print version/build info
-        \\      --write                          Sets write mode by overriding the readOnly configuration setting
         \\      --task15-live                    Enable manifest-pinned Task 15 live diagnostics
         \\      --task15-manifest string         Frozen local Task 15 run manifest
         \\      --diagnostic-reconnect family    Restart one local read-only subscription family
         \\      --diagnostic-stale-rv family     Exercise one local stale-RV relist path
         \\
-        \\Use "c3s [command] --help" for more information about a command.
-        \\
     ;
-    std.debug.print("{s}", .{help_text});
+    var log_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const log_path = defaultLogFile(&log_path_buf, getenv("XDG_STATE_HOME"), getenv("HOME"));
+    std.debug.print("{s}      --logFile string                 Specify the log file (default \"{s}\")\n{s}", .{
+        help_head,
+        log_path,
+        help_tail,
+    });
+}
+
+fn getenv(name: [*:0]const u8) ?[]const u8 {
+    return if (std.c.getenv(name)) |value| std.mem.sliceTo(value, 0) else null;
+}
+
+/// The log path xdg.zig would resolve, computed without creating directories so
+/// `--help` has no side effects.
+fn defaultLogFile(buf: []u8, xdg_state_home: ?[]const u8, home: ?[]const u8) []const u8 {
+    if (xdg_state_home) |state| {
+        if (state.len > 0 and std.fs.path.isAbsolute(state)) {
+            return std.fmt.bufPrint(buf, "{s}/c3s/c3s.log", .{state}) catch "$XDG_STATE_HOME/c3s/c3s.log";
+        }
+    }
+    if (home) |dir| {
+        if (dir.len > 0) {
+            return std.fmt.bufPrint(buf, "{s}/.local/state/c3s/c3s.log", .{dir}) catch "~/.local/state/c3s/c3s.log";
+        }
+    }
+    return "~/.local/state/c3s/c3s.log";
 }
 
 fn formatVersion() []const u8 {
@@ -356,11 +387,8 @@ test "CLI Config default values" {
     try testing.expect(default_config.log_file == null);
     try testing.expect(default_config.debug == false);
     try testing.expect(default_config.readonly == false);
-    try testing.expect(default_config.headless == false);
     try testing.expect(default_config.crumbsless == false);
-    try testing.expect(default_config.logoless == false);
-    try testing.expect(default_config.splashless == false);
-    try testing.expect(default_config.write == false);
+    try testing.expect(default_config.as_groups.len == 0);
     try testing.expect(default_config.diagnostic_control == null);
 }
 
@@ -369,13 +397,11 @@ test "CLI Config flag toggles" {
         .all_namespaces = true,
         .debug = true,
         .readonly = true,
-        .write = true,
     };
 
     try testing.expect(config.all_namespaces == true);
     try testing.expect(config.debug == true);
     try testing.expect(config.readonly == true);
-    try testing.expect(config.write == true);
 }
 
 test "CLI Config with custom values" {
@@ -428,4 +454,62 @@ test "cli: the splash advertises only config paths c3s actually reads" {
     try std.testing.expect(has_logs);
     // Custom Views is real now: views_config reads it.
     try std.testing.expect(has_views);
+}
+
+test "flags c3s does not implement are refused, including --flag=value forms" {
+    for ([_][]const u8{
+        "--headless",
+        "--logoless",
+        "--splashless",
+        "--write",
+        "--token",
+        "--token=abc",
+        "--insecure-skip-tls-verify",
+        "--insecure-skip-tls-verify=true",
+    }) |flag| {
+        try testing.expect(unsupportedFlagReason(flag) != null);
+    }
+    for ([_][]const u8{ "--as", "--as-group", "--cluster", "--user", "--request-timeout", "--logFile", "--readonly" }) |flag| {
+        try testing.expect(unsupportedFlagReason(flag) == null);
+    }
+}
+
+test "every identity flag reaches the kubectl overrides" {
+    const groups = [_][]const u8{ "devs", "oncall" };
+    const config = Config{
+        .cluster = "c",
+        .user = "u",
+        .as = "jane",
+        .as_groups = &groups,
+        .certificate_authority = "/ca.pem",
+        .client_certificate = "/crt.pem",
+        .client_key = "/key.pem",
+        .request_timeout = "7s",
+    };
+    const overrides = config.kubectlOverrides();
+    try testing.expectEqualStrings("c", overrides.cluster.?);
+    try testing.expectEqualStrings("u", overrides.user.?);
+    try testing.expectEqualStrings("jane", overrides.as.?);
+    try testing.expectEqual(@as(usize, 2), overrides.as_groups.len);
+    try testing.expectEqualStrings("/ca.pem", overrides.certificate_authority.?);
+    try testing.expectEqualStrings("/crt.pem", overrides.client_certificate.?);
+    try testing.expectEqualStrings("/key.pem", overrides.client_key.?);
+    try testing.expectEqualStrings("7s", overrides.request_timeout.?);
+}
+
+test "help shows the log path for this user, not a fixed one" {
+    var buf: [256]u8 = undefined;
+    try testing.expectEqualStrings(
+        "/state/c3s/c3s.log",
+        defaultLogFile(&buf, "/state", "/home/someone"),
+    );
+    try testing.expectEqualStrings(
+        "/home/someone/.local/state/c3s/c3s.log",
+        defaultLogFile(&buf, null, "/home/someone"),
+    );
+    try testing.expectEqualStrings(
+        "/home/someone/.local/state/c3s/c3s.log",
+        defaultLogFile(&buf, "relative", "/home/someone"),
+    );
+    try testing.expectEqualStrings("~/.local/state/c3s/c3s.log", defaultLogFile(&buf, null, null));
 }

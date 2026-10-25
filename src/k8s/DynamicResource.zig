@@ -1,5 +1,6 @@
 const std = @import("std");
 const klient = @import("klient");
+const display_text = @import("../core/display_text.zig");
 
 pub const table_accept = "application/json;as=Table;v=v1;g=meta.k8s.io";
 
@@ -479,7 +480,7 @@ pub fn parseTable(allocator: std.mem.Allocator, body: []const u8) !TableData {
         allocator.free(columns);
     }
     for (parsed.value.columnDefinitions, 0..) |definition, index| {
-        columns[index] = try allocator.dupe(u8, definition.name);
+        columns[index] = try display_text.sanitizeAlloc(allocator, definition.name);
         columns_done += 1;
     }
 
@@ -537,8 +538,12 @@ fn formatCell(allocator: std.mem.Allocator, value: std.json.Value) ![]u8 {
         .integer => |integer| std.fmt.allocPrint(allocator, "{d}", .{integer}),
         .float => |float| std.fmt.allocPrint(allocator, "{d}", .{float}),
         .number_string => |number| allocator.dupe(u8, number),
-        .string => |string| allocator.dupe(u8, string),
-        .array, .object => std.json.Stringify.valueAlloc(allocator, value, .{}),
+        .string => |string| display_text.sanitizeAlloc(allocator, string),
+        .array, .object => {
+            const raw = try std.json.Stringify.valueAlloc(allocator, value, .{});
+            defer allocator.free(raw);
+            return display_text.sanitizeAlloc(allocator, raw);
+        },
     };
 }
 
@@ -577,6 +582,19 @@ test "Table response preserves runtime columns, scalar cells, and identity" {
     try std.testing.expectEqualStrings("4", table.rows[0].cells[2]);
     try std.testing.expectEqualStrings("general", table.rows[0].name);
     try std.testing.expectEqualStrings("ops", table.rows[1].namespace);
+}
+
+test "Table cells and column names cannot carry terminal control sequences" {
+    const body =
+        \\{"kind":"Table","columnDefinitions":[{"name":"Na\u001bme"},{"name":"Spec"}],
+        \\"rows":[{"cells":["\u001b]52;c;aGVsbG8=\u0007",{"m":"\u009b2J"}],"object":{"metadata":{"name":"x"}}}]}
+    ;
+    var table = try parseTable(std.testing.allocator, body);
+    defer table.deinit();
+
+    try std.testing.expectEqualStrings("Na?me", table.columns[0]);
+    try std.testing.expectEqualStrings("?]52;c;aGVsbG8=?", table.rows[0].cells[0]);
+    try std.testing.expect(!display_text.needsSanitizing(table.rows[0].cells[1]));
 }
 
 test "Descriptor builds all-namespace and scoped CR paths" {

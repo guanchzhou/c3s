@@ -2,6 +2,8 @@ const std = @import("std");
 const klient = @import("klient");
 const task15 = @import("../task15_diagnostics.zig");
 const read_transport = @import("ReadTransport.zig");
+const kubectl_flags = @import("kubectl_flags.zig");
+const child_registry = @import("../core/child_registry.zig");
 
 pub const Generation = u64;
 
@@ -11,6 +13,8 @@ pub const ContextSpec = struct {
     default_namespace: []const u8,
     force_proxy: bool,
     readonly: bool,
+    /// Borrowed from the command line; not copied by OwnedContextSpec.
+    kubectl_overrides: kubectl_flags.Overrides = .{},
 };
 
 pub const OwnedContextSpec = struct {
@@ -32,6 +36,7 @@ pub const OwnedContextSpec = struct {
             .default_namespace = default_namespace,
             .force_proxy = source.force_proxy,
             .readonly = source.readonly,
+            .kubectl_overrides = source.kubectl_overrides,
         } };
     }
 
@@ -275,6 +280,7 @@ pub const ProxyOwner = struct {
 
     fn killChild(context: *anyopaque, io: std.Io) void {
         const state: *ChildState = @ptrCast(@alignCast(context));
+        if (state.child.id) |pid| child_registry.unregister(pid);
         state.child.kill(io);
     }
 
@@ -542,9 +548,10 @@ pub const ActiveContextSession = struct {
         if (selected_name.len == 0) return error.NoContext;
         const context = kubeconfig.getContextByName(selected_name) orelse
             return error.ContextNotFound;
-        const cluster = kubeconfig.getClusterByName(context.cluster) orelse
+        const overrides = requested_spec.kubectl_overrides;
+        const cluster = kubeconfig.getClusterByName(overrides.cluster orelse context.cluster) orelse
             return error.ClusterNotFound;
-        const user = kubeconfig.getUserByName(context.user) orelse
+        const user = kubeconfig.getUserByName(overrides.user orelse context.user) orelse
             return error.UserNotFound;
         const namespace = if (context.namespace) |value|
             if (value.len > 0) value else requested_spec.default_namespace
@@ -592,7 +599,7 @@ pub const ActiveContextSession = struct {
             token = credentials.auth_token;
         }
 
-        var force_proxy = requested_spec.force_proxy or
+        var force_proxy = requested_spec.force_proxy or overrides.changesIdentity() or
             user.client_certificate_data != null or user.client_certificate != null;
         const direct_curl_allowed = task15.isLiveMode();
         if (user.exec) |exec_config| {
@@ -652,6 +659,7 @@ pub const ActiveContextSession = struct {
             .default_namespace = namespace,
             .force_proxy = force_proxy,
             .readonly = requested_spec.readonly,
+            .kubectl_overrides = overrides,
         }, .{
             .shared_event = shared_event,
             .client = client,
@@ -1048,13 +1056,6 @@ pub const ActiveContextSession = struct {
 
     fn startProxyOwned(self: *ActiveContextSession) !ProxyOwner {
         const target = try task15.enforceRequest(.GET, "/version");
-        var address: std.Io.net.IpAddress = .{ .ip4 = .loopback(0) };
-        var reservation = try address.listen(self.io, .{});
-        const port = reservation.socket.address.getPort();
-        reservation.deinit(self.io);
-
-        const port_arg = try std.fmt.allocPrint(self.allocator, "--port={d}", .{port});
-        defer self.allocator.free(port_arg);
         var argv: std.ArrayListUnmanaged([]const u8) = .empty;
         defer argv.deinit(self.allocator);
         try argv.append(self.allocator, "kubectl");
@@ -1064,18 +1065,29 @@ pub const ActiveContextSession = struct {
         }
         try argv.append(self.allocator, "--context");
         try argv.append(self.allocator, self.spec.context_name);
-        try argv.append(self.allocator, "proxy");
-        try argv.append(self.allocator, port_arg);
-        try argv.append(self.allocator, "--address=127.0.0.1");
+        try self.spec.kubectl_overrides.appendIdentity(self.allocator, &argv);
+        // Port 0 lets kubectl bind the port itself; reserving one here and
+        // handing it over left a window for another local process to take it.
+        try argv.appendSlice(self.allocator, &.{ "proxy", "--port=0", "--address=127.0.0.1" });
 
         var child = try std.process.spawn(self.io, .{
             .argv = argv.items,
             .stdin = .ignore,
-            .stdout = .ignore,
+            .stdout = .pipe,
             .stderr = .ignore,
         });
+        if (child.id) |pid| _ = child_registry.register(pid);
         var child_owned = true;
-        errdefer if (child_owned) child.kill(self.io);
+        errdefer if (child_owned) {
+            if (child.id) |pid| child_registry.unregister(pid);
+            child.kill(self.io);
+        };
+
+        emitRequestAudit(self.spec.context_name, target, null, "start");
+        const port = readServingPort(child.stdout.?.handle, 80, 50) catch |err| {
+            emitRequestAudit(self.spec.context_name, target, null, "terminal");
+            return err;
+        };
 
         const url = try std.fmt.allocPrint(
             self.allocator,
@@ -1083,7 +1095,6 @@ pub const ActiveContextSession = struct {
             .{port},
         );
         defer self.allocator.free(url);
-        emitRequestAudit(self.spec.context_name, target, null, "start");
         var proxy_ready = false;
         for (0..80) |_| {
             const probe = std.process.run(self.allocator, self.io, .{
@@ -1093,7 +1104,7 @@ pub const ActiveContextSession = struct {
                 emitRequestAudit(self.spec.context_name, target, null, "terminal");
                 return err;
             };
-            const succeeded = probe.term == .exited and probe.term.exited == 0;
+            const succeeded = probe.term.success();
             self.allocator.free(probe.stdout);
             self.allocator.free(probe.stderr);
             if (succeeded) {
@@ -1120,6 +1131,71 @@ pub const ActiveContextSession = struct {
         if (self.observer) |observer| observer.emit(event);
     }
 };
+
+/// Wait for `kubectl proxy` to announce the port it bound on `fd` (its stdout),
+/// polling up to `attempts` times for `interval_ms` each.
+fn readServingPort(fd: std.posix.fd_t, attempts: usize, interval_ms: i32) !u16 {
+    var buf: [512]u8 = undefined;
+    var len: usize = 0;
+    var waited: usize = 0;
+    while (true) {
+        if (parseServingPort(buf[0..len])) |port| return port;
+        if (len == buf.len or waited == attempts) return error.ProxyNotReady;
+        var fds = [_]std.posix.pollfd{.{ .fd = fd, .events = std.posix.POLL.IN, .revents = 0 }};
+        if (try std.posix.poll(&fds, interval_ms) == 0) {
+            waited += 1;
+            continue;
+        }
+        const n = std.c.read(fd, buf[len..].ptr, buf.len - len);
+        if (n <= 0) return error.ProxyNotReady;
+        len += @intCast(n);
+    }
+}
+
+/// The port from kubectl's "Starting to serve on 127.0.0.1:PORT" line, once the
+/// whole line has arrived.
+fn parseServingPort(output: []const u8) ?u16 {
+    const marker = "Starting to serve on ";
+    const start = std.mem.indexOf(u8, output, marker) orelse return null;
+    const rest = output[start + marker.len ..];
+    const line_end = std.mem.indexOfScalar(u8, rest, '\n') orelse return null;
+    const address = std.mem.trimEnd(u8, rest[0..line_end], "\r");
+    const colon = std.mem.lastIndexOfScalar(u8, address, ':') orelse return null;
+    const port = std.fmt.parseInt(u16, address[colon + 1 ..], 10) catch return null;
+    return if (port == 0) null else port;
+}
+
+test "the proxy port is read from kubectl's own announcement" {
+    try std.testing.expectEqual(@as(?u16, 40123), parseServingPort("Starting to serve on 127.0.0.1:40123\n"));
+    try std.testing.expectEqual(@as(?u16, 40123), parseServingPort("W1025 warning\nStarting to serve on 127.0.0.1:40123\r\n"));
+    try std.testing.expectEqual(@as(?u16, null), parseServingPort("Starting to serve on 127.0.0.1:401"));
+    try std.testing.expectEqual(@as(?u16, null), parseServingPort("Starting to serve on 127.0.0.1:0\n"));
+    try std.testing.expectEqual(@as(?u16, null), parseServingPort("Starting to serve on 127.0.0.1:http\n"));
+    try std.testing.expectEqual(@as(?u16, null), parseServingPort(""));
+}
+
+test "waiting for the proxy port handles silence, the announcement, and early exit" {
+    var silent: [2]std.c.fd_t = undefined;
+    try std.testing.expectEqual(@as(c_int, 0), std.c.pipe(&silent));
+    defer _ = std.c.close(silent[0]);
+    defer _ = std.c.close(silent[1]);
+    _ = std.c.write(silent[1], "Starting to serve on 127.0", 26);
+    try std.testing.expectError(error.ProxyNotReady, readServingPort(silent[0], 2, 1));
+
+    var announced: [2]std.c.fd_t = undefined;
+    try std.testing.expectEqual(@as(c_int, 0), std.c.pipe(&announced));
+    defer _ = std.c.close(announced[0]);
+    defer _ = std.c.close(announced[1]);
+    _ = std.c.write(announced[1], "Starting to serve on 127.0.0.1:5001\n", 36);
+    try std.testing.expectEqual(@as(u16, 5001), try readServingPort(announced[0], 2, 1));
+
+    var exited: [2]std.c.fd_t = undefined;
+    try std.testing.expectEqual(@as(c_int, 0), std.c.pipe(&exited));
+    defer _ = std.c.close(exited[0]);
+    _ = std.c.write(exited[1], "error: no context\n", 18);
+    _ = std.c.close(exited[1]);
+    try std.testing.expectError(error.ProxyNotReady, readServingPort(exited[0], 80, 50));
+}
 
 test "request leases route streaming clients through an owned proxy" {
     const ProxyHarness = struct {
@@ -1221,7 +1297,7 @@ test "Task 15 readiness selects direct curl before proxy" {
         io,
         7,
         .{
-            .context_name = "dev4.as",
+            .context_name = "diag.example.test",
             .kubeconfig_path = null,
             .default_namespace = "default",
             .force_proxy = true,
@@ -1253,4 +1329,18 @@ test "Task 15 readiness selects direct curl before proxy" {
     lease.release();
     session.invalidate();
     session.deinit();
+}
+
+test "a cloned spec keeps the command-line kubectl overrides" {
+    var owned = try OwnedContextSpec.clone(std.testing.allocator, .{
+        .context_name = "ctx",
+        .kubeconfig_path = null,
+        .default_namespace = "default",
+        .force_proxy = true,
+        .readonly = false,
+        .kubectl_overrides = .{ .as = "jane", .request_timeout = "5s" },
+    });
+    defer owned.deinit(std.testing.allocator);
+    try std.testing.expectEqualStrings("jane", owned.value.kubectl_overrides.as.?);
+    try std.testing.expectEqualStrings("5s", owned.value.kubectl_overrides.request_timeout.?);
 }

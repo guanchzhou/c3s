@@ -1384,12 +1384,12 @@ test "readonly context and namespace safety text never compresses" {
     defer theme_loader.deinitTheme(@constCast(&theme));
     var header = makeHeader(&theme);
     header.readonly = true;
-    header.context = "dev4.as";
+    header.context = "diag.example.test";
     header.namespace_scope = "all-namespaces";
     for ([_]u16{ 200, 80, 20, 1 }) |_| {
         var buffer: [128]u8 = undefined;
         try testing.expectEqualStrings(
-            "READONLY | context: dev4.as | namespace: all-namespaces",
+            "READONLY | context: diag.example.test | namespace: all-namespaces",
             try header.safetyText(&buffer),
         );
     }

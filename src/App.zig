@@ -1167,6 +1167,7 @@ pub const App = struct {
         k8s_service.readonly = config.readonly;
         if (config.namespace) |namespace| try k8s_service.setConfiguredNamespace(namespace);
         k8s_service.setKubeconfigPath(config.kubeconfig);
+        k8s_service.kubectl_overrides = config.kubectlOverrides();
         k8s_service.bindSessionSlot(active_session_slot);
         errdefer k8s_service.deinit();
 
@@ -2949,13 +2950,13 @@ pub const App = struct {
                 self.footer.setPreviewStatus(previewing);
                 const view_hint = if (self.view_manager.getCurrentView()) |v| v.getStatusHint() else null;
                 if (view_hint) |hint| {
-                    self.footer.setStatus(hint);
+                    self.footer.setAmbientStatus(hint);
                 } else if (self.k8s_service.isConnected()) {
-                    self.footer.setStatus(null);
+                    self.footer.setAmbientStatus(null);
                 } else if (!self.k8s_service.hasAttemptedConnect()) {
-                    self.footer.setStatus("Connecting...");
+                    self.footer.setAmbientStatus("Connecting...");
                 } else {
-                    self.footer.setStatus("Not connected to Kubernetes cluster");
+                    self.footer.setAmbientStatus("Not connected to Kubernetes cluster");
                 }
                 if (self.crumbs_visible and self.view_manager.getDepth() >= 2) {
                     self.footer.setCrumbs(self.view_manager.writeCrumbs(&self.crumb_buf));
@@ -3232,7 +3233,7 @@ pub const App = struct {
                         self.dirty = true;
                         return;
                     }
-                    if (std.mem.eql(u8, self.command_input.prompt, ":") and (c == '[' or c == ']')) {
+                    if (std.mem.eql(u8, self.command_input.getPrompt(), ":") and (c == '[' or c == ']')) {
                         try self.historyStep(if (c == '[') -1 else 1);
                         return;
                     }
@@ -3272,7 +3273,7 @@ pub const App = struct {
                     // raw buffer — but only when the first token is not already a
                     // registered command. `:po kube-system` and `:dp /fred` must
                     // keep extras; replacing the whole line with "pods" dropped them.
-                    const prompt = self.command_input.prompt;
+                    const prompt = self.command_input.getPrompt();
                     const typed = self.command_input.getCommand();
                     const cmd_text = if (std.mem.eql(u8, prompt, ":")) blk: {
                         const extras = k9s_query.parseCommand(typed);
@@ -3287,6 +3288,20 @@ pub const App = struct {
                         break :blk typed;
                     } else typed;
 
+                    if (self.delete_pending) {
+                        if (isConfirmation(cmd_text)) {
+                            self.executeDelete() catch |err| {
+                                Logger.err("Delete failed: {any}", .{err});
+                            };
+                        } else {
+                            self.footer.setStatus("Delete cancelled");
+                        }
+                        self.clearDeleteState();
+                        self.command_input.hide();
+                        self.dirty = true;
+                        return;
+                    }
+
                     if (self.pending_input != .none) {
                         self.dispatchPendingInput(cmd_text);
                         self.command_input.hide();
@@ -3295,18 +3310,7 @@ pub const App = struct {
                     }
 
                     if (std.mem.eql(u8, prompt, "/")) {
-                        // Apply filter to current view
-                        if (self.delete_pending) {
-                            // During delete confirmation, "y" confirms
-                            if (std.mem.eql(u8, cmd_text, "y") or std.mem.eql(u8, cmd_text, "yes")) {
-                                self.executeDelete() catch |err| {
-                                    Logger.err("Delete failed: {any}", .{err});
-                                };
-                            }
-                            self.clearDeleteState();
-                        } else {
-                            try self.applyFilterToCurrentView(cmd_text);
-                        }
+                        try self.applyFilterToCurrentView(cmd_text);
                     } else if (std.mem.eql(u8, prompt, ":")) {
                         try self.executePaletteCommand(cmd_text, true);
                     }
@@ -4084,9 +4088,43 @@ pub const App = struct {
         if (!std.mem.eql(u8, self.current_view_name, "pods")) return;
         if (self.refuseIfReadonly("sanitize")) return;
         self.clearPendingInput();
+        const count = self.visibleSanitizeTargetCount();
+        if (count == 0) {
+            self.footer.setStatus("No completed/failed pods in view");
+            self.dirty = true;
+            return;
+        }
         self.pending_input = .sanitize;
-        self.command_input.showWithPrompt("Sanitize completed/failed pods? [y/n]:");
+        var buf: [96]u8 = undefined;
+        const label = std.fmt.bufPrint(&buf, "Sanitize {d} completed/failed pods? [y/n]:", .{count}) catch
+            "Sanitize completed/failed pods? [y/n]:";
+        self.command_input.showWithPrompt(label);
         self.dirty = true;
+    }
+
+    /// Completed/failed pods among the rows the user can see. Sanitize must never
+    /// reach past the filter: the confirmation only describes what is on screen.
+    fn visibleSanitizeTargetCount(self: *App) usize {
+        var count: usize = 0;
+        for (self.pods_view.table.filtered_indices.items) |index| {
+            if (isSanitizeTarget(self.pods_view.table.items.items[index].columns[pods_status_column])) count += 1;
+        }
+        return count;
+    }
+
+    const pods_namespace_column = rc.PodsView.view_config.namespace_column.?;
+    const pods_name_column = rc.PodsView.view_config.name_column;
+    const pods_status_column = 3;
+    comptime {
+        std.debug.assert(std.mem.eql(u8, rc.PodsView.view_config.columns[pods_status_column].name, "STATUS"));
+    }
+
+    fn isSanitizeTarget(status: []const u8) bool {
+        const terminal_states = [_][]const u8{ "Succeeded", "Failed", "Completed", "Error", "Evicted" };
+        for (terminal_states) |state| {
+            if (std.mem.eql(u8, status, state)) return true;
+        }
+        return false;
     }
 
     /// Apply the value typed at a pending input prompt.
@@ -4119,12 +4157,12 @@ pub const App = struct {
             },
             .transfer => self.doTransfer(value) catch |e| Logger.err("transfer failed: {any}", .{e}),
             .drain => {
-                if (std.mem.eql(u8, value, "y") or std.mem.eql(u8, value, "yes")) {
+                if (isConfirmation(value)) {
                     self.doDrain() catch |e| Logger.err("drain failed: {any}", .{e});
                 }
             },
             .sanitize => {
-                if (std.mem.eql(u8, value, "y") or std.mem.eql(u8, value, "yes")) {
+                if (isConfirmation(value)) {
                     self.doSanitize() catch |e| Logger.err("sanitize failed: {any}", .{e});
                 }
             },
@@ -4235,20 +4273,14 @@ pub const App = struct {
     fn doSanitize(self: *App) !void {
         const rt = self.currentResourceType() orelse return;
         var killed: usize = 0;
-        // pods_view rows are generic RowData: columns are namespace(0), name(1),
-        // ready(2), status(3), cpu(4), mem(5), ip(6), node(7), age(8).
-        for (self.pods_view.table.items.items) |pod| {
-            const s = pod.columns[3];
-            const is_terminal = std.mem.eql(u8, s, "Succeeded") or std.mem.eql(u8, s, "Failed") or
-                std.mem.eql(u8, s, "Completed") or std.mem.eql(u8, s, "Error") or
-                std.mem.eql(u8, s, "Evicted");
-            if (!is_terminal) continue;
-            self.k8s_service.deleteResource(rt, pod.columns[1], pod.columns[0], false) catch continue;
+        for (self.pods_view.table.filtered_indices.items) |index| {
+            const pod = self.pods_view.table.items.items[index];
+            if (!isSanitizeTarget(pod.columns[pods_status_column])) continue;
+            self.k8s_service.deleteResource(rt, pod.columns[pods_name_column], pod.columns[pods_namespace_column], false) catch continue;
             killed += 1;
         }
-        const msg = std.fmt.allocPrint(self.allocator, "Sanitized {d} pods", .{killed}) catch "Sanitized pods";
-        defer if (!std.mem.eql(u8, msg, "Sanitized pods")) self.allocator.free(msg);
-        self.footer.setStatus(msg);
+        var buf: [64]u8 = undefined;
+        self.footer.setStatus(std.fmt.bufPrint(&buf, "Sanitized {d} pods", .{killed}) catch "Sanitized pods");
         self.refreshCurrentView();
     }
 
@@ -4578,13 +4610,19 @@ pub const App = struct {
         self.delete_resource_namespace = try self.allocator.dupe(u8, info.namespace);
         self.delete_resource_type = resource_type;
 
-        // Show confirmation prompt
-        const verb = if (force) "Kill" else "Delete";
-        const prompt_text = try std.fmt.allocPrint(self.allocator, "{s} {s}/{s}? [y/n]: ", .{ verb, resource_type.resourceName(), info.name });
-        defer self.allocator.free(prompt_text);
-        self.command_input.showWithPrompt("/");
-        self.footer.setStatus(prompt_text);
+        var prompt_buf: [320]u8 = undefined;
+        self.command_input.showWithPrompt(deletePrompt(&prompt_buf, force, resource_type.resourceName(), info.name));
         self.dirty = true;
+    }
+
+    fn deletePrompt(buf: []u8, force: bool, kind: []const u8, name: []const u8) []const u8 {
+        const verb = if (force) "Kill" else "Delete";
+        return std.fmt.bufPrint(buf, "{s} {s}/{s}? (y/N)", .{ verb, kind, name }) catch
+            if (force) "Kill selected resource? (y/N)" else "Delete selected resource? (y/N)";
+    }
+
+    fn isConfirmation(value: []const u8) bool {
+        return std.mem.eql(u8, value, "y") or std.mem.eql(u8, value, "yes");
     }
 
     /// Execute pending delete
@@ -4632,15 +4670,14 @@ pub const App = struct {
     /// Three guards, and they are not optional:
     /// - only for the `/` prompt, since `:` is the command palette and filtering on
     ///   each keystroke of a command name is meaningless;
-    /// - NOT while a delete confirmation is pending -- that reuses the same `/` prompt
-    ///   for its y/n, so live-filtering there would rewrite the row list underneath a
-    ///   destructive confirmation;
+    /// - NOT while a delete confirmation is pending -- live-filtering there would
+    ///   rewrite the row list underneath a destructive confirmation;
     /// - NOT while pending_input is set (set-image, port-forward, transfer,
     ///   sanitize), which also borrows the prompt for a value.
     fn liveFilterIfActive(self: *App) void {
         if (!shouldLiveFilter(
             self.command_input.visible,
-            self.command_input.prompt,
+            self.command_input.getPrompt(),
             self.delete_pending,
             self.pending_input == .none,
         )) return;
@@ -4653,10 +4690,9 @@ pub const App = struct {
 
     /// Whether an in-progress prompt keystroke should re-filter the current view.
     ///
-    /// Pure so the guards are testable. The delete case is the one that matters: a
-    /// pending confirmation borrows the SAME "/" prompt for its y/n, so getting this
-    /// wrong would rewrite the row list under a destructive confirmation. That is not
-    /// something to leave to an untested inline condition.
+    /// Pure so the guards are testable. The delete case is the one that matters:
+    /// getting it wrong would rewrite the row list under a destructive confirmation.
+    /// That is not something to leave to an untested inline condition.
     fn shouldLiveFilter(
         visible: bool,
         prompt: []const u8,
@@ -4902,7 +4938,7 @@ pub const App = struct {
         if (idx < 0) idx = 0;
         if (idx > max) idx = max;
         self.history_cursor = @intCast(idx);
-        if (!self.command_input.visible or !std.mem.eql(u8, self.command_input.prompt, ":")) {
+        if (!self.command_input.visible or !std.mem.eql(u8, self.command_input.getPrompt(), ":")) {
             self.command_input.showWithPrompt(":");
         }
         try self.command_input.setText(self.command_history.items[self.history_cursor]);
@@ -5107,11 +5143,21 @@ pub const App = struct {
         const from = std.fmt.bufPrint(&from_buf, "--from=cronjob/{s}", .{info.name}) catch return;
         var job_buf: [80]u8 = undefined;
         const ts: u64 = @intCast(@max(clock.timestamp(), 0));
-        const job_name = std.fmt.bufPrint(&job_buf, "{s}-{d}", .{ info.name, ts }) catch return;
-        const clipped = if (job_name.len > 63) job_name[0..63] else job_name;
-        try self.k8s_service.runKubectl(&.{ "create", "job", clipped, from, "-n", info.namespace });
+        const job_name = triggeredJobName(&job_buf, info.name, ts) catch return;
+        try self.k8s_service.runKubectl(&.{ "create", "job", job_name, from, "-n", info.namespace });
         self.footer.setStatus("job created");
         self.refreshCurrentView();
+    }
+
+    /// `<cronjob>-<unix seconds>`, within the 63-character label limit. The cronjob
+    /// part is shortened rather than the timestamp, so two triggers stay distinct.
+    /// Trailing '-' and '.' are trimmed from the cut: ".-" is not a valid DNS name.
+    fn triggeredJobName(buf: *[80]u8, cronjob: []const u8, ts: u64) ![]const u8 {
+        var suffix_buf: [24]u8 = undefined;
+        const suffix = try std.fmt.bufPrint(&suffix_buf, "-{d}", .{ts});
+        const max_base = 63 - suffix.len;
+        const base = std.mem.trimEnd(u8, cronjob[0..@min(cronjob.len, max_base)], "-.");
+        return std.fmt.bufPrint(buf, "{s}{s}", .{ base, suffix });
     }
 
     fn saveSelectedResource(self: *App) !void {
@@ -5125,19 +5171,35 @@ pub const App = struct {
         defer self.allocator.free(json_data);
         const xdg = @import("core/xdg.zig");
         const dir = self.config.screen_dump_dir orelse (try xdg.ensurePaths()).dumps_dir;
-        var path_buf: [512]u8 = undefined;
-        const path = std.fmt.bufPrint(&path_buf, "{s}/{s}-{d}.json", .{ dir, info.name, clock.timestamp() }) catch {
-            self.footer.setStatus("save path too long");
-            self.dirty = true;
-            return;
-        };
-        std.Io.Dir.cwd().writeFile(runtime.io(), .{ .sub_path = path, .data = json_data }) catch {
-            self.footer.setStatus("save failed");
-            self.dirty = true;
-            return;
-        };
-        self.footer.setStatus("saved");
+        self.footer.setStatus(if (writePrivateDump(dir, info.name, clock.timestamp(), json_data))
+            "saved"
+        else |err| switch (err) {
+            error.NameTooLong => "save path too long",
+            else => "save failed",
+        });
         self.dirty = true;
+    }
+
+    /// Saved resources include Secrets, so the dump directory is created
+    /// owner-only and each file is a new 0600 file that is never written through
+    /// an existing path.
+    fn writePrivateDump(dir: []const u8, name: []const u8, timestamp: i64, data: []const u8) !void {
+        var dir_buf: [512]u8 = undefined;
+        const dir_z = std.fmt.bufPrintSentinel(&dir_buf, "{s}", .{dir}, 0) catch return error.NameTooLong;
+        if (!sys.ensurePrivateDir(dir_z)) return error.DumpDirUnavailable;
+        const xdg = @import("core/xdg.zig");
+        if (xdg.getPaths()) |paths| {
+            if (std.mem.eql(u8, dir, paths.dumps_dir)) sys.restrictDirToOwner(dir_z);
+        }
+
+        var path_buf: [512]u8 = undefined;
+        const path_z = std.fmt.bufPrintSentinel(&path_buf, "{s}/{s}-{d}.json", .{ dir, name, timestamp }, 0) catch return error.NameTooLong;
+        const fd = sys.createPrivateExclusive(path_z) orelse return error.DumpCreateFailed;
+        defer sys.close(fd);
+        sys.writeAll(fd, data) catch |err| {
+            _ = std.c.unlink(path_z);
+            return err;
+        };
     }
 
     fn refreshCurrentView(self: *App) void {
@@ -10507,4 +10569,106 @@ test "App owns inherited telemetry without emitting paint markers" {
     try std.testing.expectEqual(@as(c_int, -1), std.c.fcntl(fds[1], std.c.F.GETFD));
     try std.testing.expectEqual(std.c.E.BADF, std.c.errno(-1));
     try std.testing.expectEqual(@as(isize, 0), std.c.read(fds[0], &byte, byte.len));
+}
+
+fn appendTestPodRows(app: *App, rows: []const [2][]const u8) !void {
+    const Row = std.meta.Elem(@TypeOf(app.pods_view.table.items.items));
+    const allocator = app.allocator;
+    for (rows) |row| {
+        var columns: @FieldType(Row, "columns") = undefined;
+        for (&columns, 0..) |*column, index| {
+            column.* = try allocator.dupe(u8, switch (index) {
+                App.pods_namespace_column => "default",
+                App.pods_name_column => row[0],
+                App.pods_status_column => row[1],
+                else => "",
+            });
+        }
+        try app.pods_view.table.appendItem(.{ .columns = columns, .allocator = allocator });
+    }
+}
+
+test "delete confirmation names the resource and a stale frame status cannot hide the outcome" {
+    var app = try App.init(std.testing.allocator, .{});
+    defer app.deinit();
+    try app.switchToView("pods");
+    try appendTestPodRows(&app, &.{.{ "web-1", "Running" }});
+    try app.pods_view.table.filtered_indices.append(std.testing.allocator, 0);
+
+    try app.handleKey(.{ .ctrl_d = {} });
+    try std.testing.expect(app.delete_pending);
+    try std.testing.expect(app.command_input.visible);
+    try std.testing.expect(std.mem.startsWith(u8, app.command_input.getPrompt(), "Delete "));
+    try std.testing.expect(std.mem.endsWith(u8, app.command_input.getPrompt(), "/web-1? (y/N)"));
+
+    try app.handleKey(.{ .char = 'n' });
+    try std.testing.expectEqualStrings("", app.pods_view.table.filter_text);
+    try app.handleKey(.enter);
+    try std.testing.expect(!app.delete_pending);
+    try std.testing.expect(!app.command_input.visible);
+
+    app.footer.setAmbientStatus("Not connected");
+    try std.testing.expectEqualStrings("Delete cancelled", app.footer.statusTextAt(Footer.monotonicMs()).?);
+}
+
+test "sanitize counts and targets only the completed/failed pods left by the filter" {
+    var app = try App.init(std.testing.allocator, .{});
+    defer app.deinit();
+    try app.switchToView("pods");
+    try appendTestPodRows(&app, &.{
+        .{ "job-a", "Failed" },
+        .{ "job-b", "Completed" },
+        .{ "web-1", "Running" },
+        .{ "job-c", "Succeeded" },
+    });
+    try app.pods_view.table.filtered_indices.appendSlice(std.testing.allocator, &.{ 0, 2 });
+
+    try std.testing.expectEqual(@as(usize, 1), app.visibleSanitizeTargetCount());
+    app.promptSanitize();
+    try std.testing.expectEqualStrings("Sanitize 1 completed/failed pods? [y/n]:", app.command_input.getPrompt());
+
+    app.clearPendingInput();
+    app.command_input.hide();
+    app.pods_view.table.filtered_indices.clearRetainingCapacity();
+    try app.pods_view.table.filtered_indices.append(std.testing.allocator, 2);
+    app.promptSanitize();
+    try std.testing.expect(!app.command_input.visible);
+    try std.testing.expectEqualStrings("No completed/failed pods in view", app.footer.statusTextAt(Footer.monotonicMs()).?);
+}
+
+test "triggered job names keep the timestamp and never end the cut on '-' or '.'" {
+    var buf: [80]u8 = undefined;
+    try std.testing.expectEqualStrings("nightly-1761350400", try App.triggeredJobName(&buf, "nightly", 1761350400));
+
+    const a51: [51]u8 = @splat('a');
+    const name = try App.triggeredJobName(&buf, &a51 ++ "-x", 1761350400);
+    try std.testing.expect(name.len <= 63);
+    try std.testing.expectEqualStrings(&a51 ++ "-1761350400", name);
+
+    const a50: [50]u8 = @splat('a');
+    const dotted = try App.triggeredJobName(&buf, &a50 ++ ".-.b", 1761350400);
+    try std.testing.expectEqualStrings(&a50 ++ "-1761350400", dotted);
+}
+
+test "saved resources are owner-only and never overwrite an existing path" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var dir_buf: [256]u8 = undefined;
+    const dir = try std.fmt.bufPrint(&dir_buf, ".zig-cache/tmp/{s}/dumps", .{tmp.sub_path});
+
+    try App.writePrivateDump(dir, "db-secret", 42, "{\"data\":{}}");
+
+    var path_buf: [256]u8 = undefined;
+    const path = try std.fmt.bufPrintSentinel(&path_buf, "{s}/db-secret-42.json", .{dir}, 0);
+    var file_stat: std.c.Stat = undefined;
+    try std.testing.expectEqual(@as(c_int, 0), std.c.stat(path, &file_stat));
+    try std.testing.expectEqual(@as(std.c.mode_t, 0o600), file_stat.mode & 0o777);
+
+    var dir_z_buf: [256]u8 = undefined;
+    const dir_z = try std.fmt.bufPrintSentinel(&dir_z_buf, "{s}", .{dir}, 0);
+    var dir_stat: std.c.Stat = undefined;
+    try std.testing.expectEqual(@as(c_int, 0), std.c.stat(dir_z, &dir_stat));
+    try std.testing.expectEqual(@as(std.c.mode_t, 0o700), dir_stat.mode & 0o777);
+
+    try std.testing.expectError(error.DumpCreateFailed, App.writePrivateDump(dir, "db-secret", 42, "{}"));
 }

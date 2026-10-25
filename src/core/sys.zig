@@ -104,11 +104,34 @@ pub fn isatty(fd: fd_t) bool {
     return std.c.isatty(fd) != 0;
 }
 
-/// Open `path` write-only, creating it if absent, in append mode.
+/// Open `path` write-only, creating it if absent, in append mode. The file is
+/// made owner-only, including one left world-readable by an older version:
+/// logs carry resource names and error bodies.
 /// Returns the fd, or null on failure.
 pub fn openAppend(path: [*:0]const u8) ?fd_t {
-    const rc = std.c.open(path, .{ .ACCMODE = .WRONLY, .CREAT = true, .APPEND = true }, @as(std.c.mode_t, 0o644));
+    const rc = std.c.open(path, .{ .ACCMODE = .WRONLY, .CREAT = true, .APPEND = true, .CLOEXEC = true }, @as(std.c.mode_t, 0o600));
+    if (rc < 0) return null;
+    _ = std.c.fchmod(rc, 0o600);
+    return rc;
+}
+
+/// Create `path` as a new owner-only file. Fails if anything already exists
+/// there, so a planted file or symlink is never written through.
+pub fn createPrivateExclusive(path: [*:0]const u8) ?fd_t {
+    const rc = std.c.open(path, .{ .ACCMODE = .WRONLY, .CREAT = true, .EXCL = true, .CLOEXEC = true }, @as(std.c.mode_t, 0o600));
     return if (rc < 0) null else rc;
+}
+
+/// Ensure `path` is a directory, creating it owner-only if absent. An existing
+/// directory keeps its mode.
+pub fn ensurePrivateDir(path: [*:0]const u8) bool {
+    const rc = std.c.mkdir(path, 0o700);
+    return rc == 0 or std.c.errno(rc) == .EXIST;
+}
+
+/// Restrict an existing directory to its owner.
+pub fn restrictDirToOwner(path: [*:0]const u8) void {
+    _ = std.c.chmod(path, 0o700);
 }
 
 /// Open an existing `path` write-only (e.g. /dev/null for redirects).

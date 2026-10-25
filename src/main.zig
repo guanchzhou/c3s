@@ -14,6 +14,8 @@ pub const std_options: std.Options = .{
     .log_level = .err,
 };
 
+pub const panic = std.debug.FullPanic(panic_hook.panic);
+
 // Zig 0.16: the runtime provides a std.process.Init with a managed allocator,
 // a std.Io (thread pool + leak checking in debug), and command-line args.
 // We publish the io globally via runtime.io so leaf modules can reach it.
@@ -34,8 +36,9 @@ pub fn main(init: std.process.Init) !void {
 
     // Parse command line arguments
     const config = Cli.parseArgs(init.minimal.args, allocator) catch |err| {
+        // parseArgs already explained an unsupported flag.
         // Use std.log.err here because Logger might not be fully initialized or might be corrupted.
-        std.log.err("Failed to parse arguments: {}", .{err});
+        if (err != error.UnsupportedFlag) std.log.err("Failed to parse arguments: {}", .{err});
         std.process.exit(1);
     };
     if (config.task15_preflight) {
@@ -72,7 +75,7 @@ pub fn main(init: std.process.Init) !void {
     // Initialize logging
     const log_level = if (std.mem.eql(u8, config.log_level, "debug")) Logger.LogLevel.debug else if (std.mem.eql(u8, config.log_level, "warn")) Logger.LogLevel.warn else if (std.mem.eql(u8, config.log_level, "error")) Logger.LogLevel.err else Logger.LogLevel.info;
 
-    try Logger.initGlobalLogger(log_level);
+    try Logger.initGlobalLoggerAt(log_level, config.log_file);
     defer Logger.deinitGlobalLogger();
 
     // Setup panic hook to log panics to file
