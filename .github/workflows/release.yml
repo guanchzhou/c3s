@@ -163,7 +163,6 @@ jobs:
           class C3s < Formula
             desc "Kubernetes TUI client"
             homepage "https://github.com/guanchzhou/c3s"
-            version "${VER}"
             license "Apache-2.0"
 
             livecheck do
@@ -173,22 +172,22 @@ jobs:
 
             on_macos do
               on_arm do
-                url "https://github.com/guanchzhou/c3s/releases/download/v#{version}/c3s-#{version}-darwin-arm64.tar.gz"
+                url "https://github.com/guanchzhou/c3s/releases/download/v${VER}/c3s-${VER}-darwin-arm64.tar.gz"
                 sha256 "${SHA_DARWIN_ARM}"
               end
               on_intel do
-                url "https://github.com/guanchzhou/c3s/releases/download/v#{version}/c3s-#{version}-darwin-amd64.tar.gz"
+                url "https://github.com/guanchzhou/c3s/releases/download/v${VER}/c3s-${VER}-darwin-amd64.tar.gz"
                 sha256 "${SHA_DARWIN_AMD}"
               end
             end
 
             on_linux do
               on_arm do
-                url "https://github.com/guanchzhou/c3s/releases/download/v#{version}/c3s-#{version}-linux-arm64.tar.gz"
+                url "https://github.com/guanchzhou/c3s/releases/download/v${VER}/c3s-${VER}-linux-arm64.tar.gz"
                 sha256 "${SHA_LINUX_ARM}"
               end
               on_intel do
-                url "https://github.com/guanchzhou/c3s/releases/download/v#{version}/c3s-#{version}-linux-amd64.tar.gz"
+                url "https://github.com/guanchzhou/c3s/releases/download/v${VER}/c3s-${VER}-linux-amd64.tar.gz"
                 sha256 "${SHA_LINUX_AMD}"
               end
             end
