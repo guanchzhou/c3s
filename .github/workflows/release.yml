@@ -166,6 +166,11 @@ jobs:
             version "${VER}"
             license "Apache-2.0"
 
+            livecheck do
+              url :stable
+              strategy :github_latest
+            end
+
             on_macos do
               on_arm do
                 url "https://github.com/guanchzhou/c3s/releases/download/v#{version}/c3s-#{version}-darwin-arm64.tar.gz"
@@ -194,7 +199,7 @@ jobs:
             end
 
             test do
-              assert_match "c3s", shell_output("#{bin}/c3s --help")
+              assert_match version.to_s, shell_output("#{bin}/c3s --version 2>&1")
             end
           end
           FORMULA
