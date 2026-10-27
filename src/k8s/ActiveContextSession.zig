@@ -2,6 +2,7 @@ const std = @import("std");
 const klient = @import("klient");
 const task15 = @import("../task15_diagnostics.zig");
 const read_transport = @import("ReadTransport.zig");
+const list_transport = @import("ListClientTransport.zig");
 const kubectl_flags = @import("kubectl_flags.zig");
 const child_registry = @import("../core/child_registry.zig");
 
@@ -486,6 +487,10 @@ pub const ActiveContextSession = struct {
     proxy_state: ProxyState,
     mutex: std.Io.Mutex = .init,
     proxy_condition: std.Io.Condition = .init,
+    list_client: ?*list_transport.ListClient = null,
+    list_client_unavailable: bool = false,
+    /// Kept until teardown: a driver may still be copying an older one.
+    refreshed_tokens: std.ArrayListUnmanaged([]u8) = .empty,
 
     pub fn adopt(
         allocator: std.mem.Allocator,
@@ -824,11 +829,11 @@ pub const ActiveContextSession = struct {
         self.mutex.lockUncancelable(self.io);
         defer self.mutex.unlock(self.io);
         return switch (self.transport_mode) {
-            .klient => .{ .klient = .{
-                .client = self.client,
+            .klient => .{ .fallback = .{
+                .context = self,
                 .io = io,
-                .context_name = self.spec.context_name,
                 .cancel_requested = cancel_requested,
+                .get_fn = klientGet,
             } },
             .proxy => .{ .klient = .{
                 .client = self.proxy_client.?,
@@ -855,7 +860,16 @@ pub const ActiveContextSession = struct {
     ) anyerror!void {
         const self: *ActiveContextSession = @ptrCast(@alignCast(raw));
         var final_curl_error: ?anyerror = null;
-        for (0..2) |attempt| {
+        if (request.streamed_list) {
+            if (self.streamList(io, cancel_requested, request, callback_context, callback)) |handled| {
+                if (handled) return;
+            } else |err| {
+                if (!list_transport.isTransportFailure(err)) return err;
+                final_curl_error = err;
+            }
+        }
+        if (final_curl_error == null) for (0..2) |attempt| {
+            if (cancel_requested.load(.acquire)) return error.Canceled;
             var callback_error: ?anyerror = null;
             var curl = read_transport.CurlTransport{
                 .allocator = self.allocator,
@@ -881,9 +895,10 @@ pub const ActiveContextSession = struct {
                 break;
             };
             return;
-        }
+        };
 
         const curl_error = final_curl_error orelse return error.CurlFailed;
+        if (cancel_requested.load(.acquire)) return error.Canceled;
         self.startProxy() catch return curl_error;
         var proxy = read_transport.KlientTransport{
             .client = self.requestClient(),
@@ -892,6 +907,109 @@ pub const ActiveContextSession = struct {
             .cancel_requested = cancel_requested,
         };
         return proxy.transport().get(request, callback_context, callback);
+    }
+
+    fn klientGet(
+        raw: *anyopaque,
+        io: std.Io,
+        cancel_requested: *const std.atomic.Value(bool),
+        request: read_transport.ReadRequest,
+        callback_context: *anyopaque,
+        callback: read_transport.ReadCallback,
+    ) anyerror!void {
+        const self: *ActiveContextSession = @ptrCast(@alignCast(raw));
+        if (request.streamed_list) {
+            if (self.streamList(io, cancel_requested, request, callback_context, callback)) |handled| {
+                if (handled) return;
+            } else |err| {
+                if (!list_transport.isTransportFailure(err)) return err;
+                if (cancel_requested.load(.acquire)) return error.Canceled;
+            }
+        }
+        var direct = read_transport.KlientTransport{
+            .client = self.client,
+            .io = io,
+            .context_name = self.spec.context_name,
+            .cancel_requested = cancel_requested,
+        };
+        return direct.transport().get(request, callback_context, callback);
+    }
+
+    /// Returns false when no list client can be built for this context.
+    fn streamList(
+        self: *ActiveContextSession,
+        io: std.Io,
+        cancel_requested: *const std.atomic.Value(bool),
+        request: read_transport.ReadRequest,
+        callback_context: *anyopaque,
+        callback: read_transport.ReadCallback,
+    ) !bool {
+        const client = self.listClient() orelse return false;
+        var adapter = list_transport.ListClientTransport{
+            .client = client,
+            .allocator = self.allocator,
+            .io = io,
+            .context_name = self.spec.context_name,
+            .cancel_requested = cancel_requested,
+            .refresh = .{ .context = self, .refresh_fn = refreshListCredentials },
+        };
+        try adapter.transport().get(request, callback_context, callback);
+        return true;
+    }
+
+    fn listClient(self: *ActiveContextSession) ?*list_transport.ListClient {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        if (self.list_client) |client| return client;
+        if (self.list_client_unavailable) return null;
+        self.list_client = list_transport.ListClient.init(
+            self.allocator,
+            self.io,
+            self.listCredentialsLocked(),
+            .{},
+        ) catch {
+            self.list_client_unavailable = true;
+            return null;
+        };
+        return self.list_client;
+    }
+
+    fn listCredentialsLocked(self: *ActiveContextSession) list_transport.Credentials {
+        const refreshed = self.refreshed_tokens.items;
+        return .{
+            .server = self.client.api_server,
+            .token = if (refreshed.len != 0) refreshed[refreshed.len - 1] else self.credential_provider.auth_token,
+            .ca_pem = self.credential_provider.tls_ca_data,
+            .client_cert_pem = self.credential_provider.tls_cert_data,
+            .client_key_pem = self.credential_provider.tls_key_data,
+        };
+    }
+
+    fn refreshListCredentials(raw: *anyopaque) anyerror!list_transport.Credentials {
+        const self: *ActiveContextSession = @ptrCast(@alignCast(raw));
+        const provider = &self.credential_provider;
+        const command = provider.exec_command orelse return error.HttpUnauthorized;
+        const parsed = try klient.exec_credential.executeCredentialPlugin(self.allocator, self.io, .{
+            .command = command,
+            .args = provider.exec_args,
+            .apiVersion = provider.exec_api_version orelse "client.authentication.k8s.io/v1beta1",
+        });
+        defer parsed.deinit();
+        const status = parsed.value.status orelse return error.HttpUnauthorized;
+        const token = status.token orelse return error.HttpUnauthorized;
+        defer std.crypto.secureZero(u8, @constCast(token));
+        const owned = try self.allocator.dupe(u8, token);
+        errdefer self.freeSecret(owned);
+
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        try self.refreshed_tokens.append(self.allocator, owned);
+        return self.listCredentialsLocked();
+    }
+
+    fn freeSecret(self: *ActiveContextSession, bytes: []u8) void {
+        std.crypto.secureZero(u8, bytes);
+        self.allocator.free(bytes);
     }
 
     pub fn acquireLocked(
@@ -977,6 +1095,10 @@ pub const ActiveContextSession = struct {
             owned_proxy.kill(self.io);
             owned_proxy.deinit(self.allocator);
         }
+
+        if (self.list_client) |list_client| list_client.deinit();
+        for (self.refreshed_tokens.items) |token| self.freeSecret(token);
+        self.refreshed_tokens.deinit(self.allocator);
 
         self.emit(.client_deinit);
         self.client.deinit();

@@ -55,11 +55,15 @@ pub fn build(b: *std.Build) void {
     const klient = b.dependency("klient", .{
         .target = target,
         .optimize = optimize,
+        .h2 = true,
     });
+    // Absent until the build runner fetches klient's lazy C dependencies and re-runs.
+    const klient_list = klient.builder.modules.get("klient-list") orelse return;
     exe.root_module.addImport("klient", klient.module("klient"));
+    exe.root_module.addImport("klient-list", klient_list);
 
     // Add kubectl-traffic library dependency (local path)
-    const kt = b.dependency("kubectl_traffic", .{ .target = target, .optimize = optimize });
+    const kt = b.dependency("kubectl_traffic", .{ .target = target, .optimize = optimize, .klient_h2 = true });
     exe.root_module.addImport("kubectl_traffic", kt.module("kubectl_traffic"));
 
     // Shared module exposing the c3s source tree (src/index.zig) to tests with
@@ -71,6 +75,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     c3s_module.addImport("klient", klient.module("klient"));
+    c3s_module.addImport("klient-list", klient_list);
     c3s_module.addImport("kubectl_traffic", kt.module("kubectl_traffic"));
     c3s_module.addOptions("c3s_build", build_opts);
 
@@ -186,6 +191,7 @@ pub fn build(b: *std.Build) void {
         t.root_module.addImport("src", c3s_module);
         t.root_module.addImport("c3s", c3s_module);
         t.root_module.addImport("klient", klient.module("klient"));
+        t.root_module.addImport("klient-list", klient_list);
         t.root_module.addOptions("c3s_build", build_opts);
         const run = b.addRunArtifact(t);
         const step = b.step(spec.step, b.fmt("Run {s}", .{spec.path}));

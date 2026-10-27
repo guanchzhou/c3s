@@ -2379,6 +2379,7 @@ pub const App = struct {
             const target = envelope.target;
             const revision = envelope.revision;
             const sync_kind = envelope.sync_kind;
+            const busy_seconds = envelope.busy_seconds;
             const initial_changes = envelope.has_initial_changes;
             const effects = decideResourceDrainEffects(
                 target,
@@ -2436,8 +2437,20 @@ pub const App = struct {
                         continue;
                     };
                 }
+                if (sync_kind == .server_busy or sync_kind == .list_started or sync_kind == .list_complete) {
+                    const seconds = if (sync_kind == .server_busy) busy_seconds else 0;
+                    if (is_pod_subscription) {
+                        self.pods_view.table.busy_retry_seconds = seconds;
+                    } else if (is_node_subscription) {
+                        self.nodes_view.table.busy_retry_seconds = seconds;
+                    } else if (is_namespace_subscription) {
+                        self.namespaces_view.table.busy_retry_seconds = seconds;
+                    } else if (service_identity) |identity| {
+                        self.resource_families.registry.setBusy(identity, seconds);
+                    }
+                }
                 if (sync_kind) |kind| switch (kind) {
-                    .list_started => {},
+                    .list_started, .server_busy => {},
                     .list_complete => if (effects.emit_pod_list_complete) {
                         self.pod_list_complete_revision = revision;
                         self.emitPodTelemetry(.list_complete_received, revision);
@@ -7067,6 +7080,7 @@ fn Task14ComposedWatch(comptime Record: type) type {
             _: *anyopaque,
             _: *const fn (*anyopaque, Record) anyerror!void,
             _: *const fn (*anyopaque) anyerror!void,
+            _: list_watch.ListHooks,
         ) anyerror!list_watch.ListOutcome {
             return error.Unused;
         }
@@ -7116,6 +7130,7 @@ fn Task14IdentitySource(comptime Record: type) type {
             receiver_context: *anyopaque,
             receiver: *const fn (*anyopaque, Record) anyerror!void,
             chunk_end: *const fn (*anyopaque) anyerror!void,
+            _: list_watch.ListHooks,
         ) anyerror!list_watch.ListOutcome {
             const self: *@This() = @ptrCast(@alignCast(raw));
             try receiver(receiver_context, try task14ComposedRecord(

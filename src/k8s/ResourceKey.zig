@@ -168,6 +168,8 @@ pub const SyncBoundary = union(enum) {
     watch_connected,
     metrics_ready: MetricsStatus,
     reconnecting,
+    /// The list waits before retrying: seconds left, 0 when the wait ends.
+    server_busy: u32,
 
     pub fn deinit(self: *SyncBoundary, allocator: std.mem.Allocator) void {
         switch (self.*) {
@@ -183,6 +185,7 @@ pub const SyncKind = enum {
     watch_connected,
     metrics_ready,
     reconnecting,
+    server_busy,
 };
 
 pub fn TypedChange(comptime Record: type) type {
@@ -358,6 +361,7 @@ pub const Envelope = struct {
     owned_bytes: usize = 0,
     after_revision: ?Revision = null,
     sync_kind: ?SyncKind = null,
+    busy_seconds: u32 = 0,
     change_count: usize = 0,
     has_initial_changes: bool = false,
     target: EnvelopeTarget = .lifecycle,
@@ -462,6 +466,7 @@ pub fn eraseBatch(
         .watch_connected => .watch_connected,
         .metrics_ready => .metrics_ready,
         .reconnecting => .reconnecting,
+        .server_busy => .server_busy,
     } else null;
     const has_initial_changes = for (batch.changes) |change| {
         if (change == .initial_upsert) break true;
@@ -473,6 +478,10 @@ pub fn eraseBatch(
         .owned_bytes = batch.owned_bytes,
         .after_revision = after_revision,
         .sync_kind = sync_kind,
+        .busy_seconds = if (batch.sync) |sync| switch (sync) {
+            .server_busy => |seconds| seconds,
+            else => 0,
+        } else 0,
         .change_count = batch.changes.len,
         .has_initial_changes = has_initial_changes,
         .target = .{ .resource = .{

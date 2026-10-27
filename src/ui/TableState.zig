@@ -30,6 +30,8 @@ pub fn TableState(comptime ItemType: type) type {
         loading: bool = false,
         /// Optional detail shown instead of plain "Loading..." (static literal).
         loading_detail: []const u8 = "",
+        /// Seconds until a throttled list retries; 0 when not waiting.
+        busy_retry_seconds: u32 = 0,
         error_message: ?[]u8 = null,
         /// k9s-style multi-select: set of marked row identity keys.
         /// Keys are owned (duped) by the TableState; values are unit (void).
@@ -406,7 +408,13 @@ pub fn TableState(comptime ItemType: type) type {
         /// Render loading/error states. Returns true if a state was rendered (caller should return).
         pub fn renderStatus(self: *const Self, terminal_inst: *Terminal, x: u16, y: u16, colors: *const theme_loader.ThemeColors) !bool {
             if (self.loading and self.items.items.len == 0) {
-                const msg = if (self.loading_detail.len > 0) self.loading_detail else "Loading...";
+                var busy_buf: [64]u8 = undefined;
+                const msg = if (self.busy_retry_seconds > 0)
+                    std.fmt.bufPrint(&busy_buf, "API server busy, retrying in {d} s", .{self.busy_retry_seconds}) catch "API server busy"
+                else if (self.loading_detail.len > 0)
+                    self.loading_detail
+                else
+                    "Loading...";
                 try Theme.writeStringWithTheme(terminal_inst, x, y, msg, colors.main_fg, colors.main_bg);
                 return true;
             }

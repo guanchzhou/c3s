@@ -42,10 +42,21 @@ pub const ReadRequest = struct {
     path: []const u8,
     pagination_fallback: PaginationFallback = .disabled,
     audit_method: task15.Method = .GET,
+    /// A whole-collection list that a list transport may stream, retry and page itself.
+    streamed_list: bool = false,
+    /// Whether the caller decodes Protobuf bodies; false asks for JSON only.
+    accepts_protobuf: bool = true,
+    /// Told the seconds left while the transport waits out a 429, then 0.
+    busy: ?BusyNotice = null,
 
     pub fn init(path: []const u8) PathError!ReadRequest {
         try validateReadPath(path);
         return .{ .path = path };
+    }
+
+    pub fn list(path: []const u8) PathError!ReadRequest {
+        try validateReadPath(path);
+        return .{ .path = path, .streamed_list = true };
     }
 
     pub fn watch(path: []const u8) PathError!ReadRequest {
@@ -55,6 +66,15 @@ pub const ReadRequest = struct {
 
     pub fn mayPaginateAfter(self: ReadRequest, err: anyerror) bool {
         return self.pagination_fallback == .response_size_only and err == error.ResponseTooLarge;
+    }
+};
+
+pub const BusyNotice = struct {
+    context: *anyopaque,
+    notify_fn: *const fn (*anyopaque, seconds: u32) anyerror!void,
+
+    pub fn notify(self: BusyNotice, seconds: u32) !void {
+        try self.notify_fn(self.context, seconds);
     }
 };
 
@@ -238,6 +258,46 @@ pub const KlientTransport = struct {
     }
 };
 
+pub const ReadOptions = struct {
+    https_only: bool,
+    max_redirects: u8,
+    connect_timeout_ms: u32,
+    accept_compressed: bool,
+    use_proxy: bool,
+};
+
+/// Every direct list transport must apply these; the contract tests check each one.
+pub const list_read_options: ReadOptions = .{
+    .https_only = true,
+    .max_redirects = 0,
+    .connect_timeout_ms = 400,
+    .accept_compressed = true,
+    .use_proxy = false,
+};
+
+fn curlOptionArgs(comptime options: ReadOptions) []const []const u8 {
+    comptime {
+        var args: []const []const u8 = &.{ "curl", "-q", "--silent", "--show-error", "--no-buffer" };
+        if (options.accept_compressed) args = args ++ &[_][]const u8{"--compressed"};
+        args = args ++ &[_][]const u8{ "--http2", "--include", "--globoff" };
+        if (options.https_only)
+            args = args ++ &[_][]const u8{ "--proto", "=https", "--proto-redir", "=https" };
+        args = args ++ &[_][]const u8{
+            "--max-redirs",
+            std.fmt.comptimePrint("{d}", .{options.max_redirects}),
+            "--connect-timeout",
+            std.fmt.comptimePrint("{d}.{d:0>3}", .{
+                options.connect_timeout_ms / 1000,
+                options.connect_timeout_ms % 1000,
+            }),
+        };
+        if (!options.use_proxy) args = args ++ &[_][]const u8{ "--noproxy", "*" };
+        return args ++ &[_][]const u8{ "--config", "-" };
+    }
+}
+
+const curl_option_args = curlOptionArgs(list_read_options);
+
 pub const CurlConfig = struct {
     server: []const u8,
     token: ?[]const u8 = null,
@@ -375,29 +435,7 @@ pub const CurlTransport = struct {
 
         var argv: std.ArrayListUnmanaged([]const u8) = .empty;
         defer argv.deinit(self.allocator);
-        try argv.appendSlice(self.allocator, &.{
-            "curl",
-            "-q",
-            "--silent",
-            "--show-error",
-            "--no-buffer",
-            "--compressed",
-            "--http1.1",
-            "--include",
-            "--globoff",
-            "--proto",
-            "=https",
-            "--proto-redir",
-            "=https",
-            "--max-redirs",
-            "0",
-            "--connect-timeout",
-            "0.4",
-            "--noproxy",
-            "*",
-            "--config",
-            "-",
-        });
+        try argv.appendSlice(self.allocator, curl_option_args);
         if (material.ca_path) |path| {
             try argv.append(self.allocator, "--cacert");
             try argv.append(self.allocator, path);
@@ -1216,25 +1254,173 @@ test "listPath rejects namespaces that are not a single path segment" {
     }
 }
 
-test "Task 15 rejects klient transports without an audit context" {
-    const Callback = struct {
-        fn receive(_: *anyopaque, _: ResponseMeta, _: *std.Io.Reader) anyerror!void {}
+/// Each row is one ReadTransport implementation. `options()` is null only for
+/// transports exempt from `list_read_options` (klient also serves the
+/// `kubectl proxy` fallback over plain HTTP).
+const contract_subjects = .{
+    struct {
+        const Adapter = KlientTransport;
+        fn options() ?ReadOptions {
+            return null;
+        }
+        fn make(context_name: []const u8) KlientTransport {
+            return .{ .client = undefined, .io = std.testing.io, .context_name = context_name };
+        }
+    },
+    struct {
+        const Adapter = CurlTransport;
+        fn options() ?ReadOptions {
+            return curlArgsOptions(curl_option_args);
+        }
+        fn make(context_name: []const u8) CurlTransport {
+            return .{
+                .allocator = std.testing.allocator,
+                .io = std.testing.io,
+                .config = .{ .server = "https://127.0.0.1:1" },
+                .context_name = context_name,
+            };
+        }
+    },
+    struct {
+        const list_transport = @import("ListClientTransport.zig");
+        const klient_list = @import("klient-list");
+        const Adapter = list_transport.ListClientTransport;
+        fn options() ?ReadOptions {
+            const defaults: klient_list.Options = .{};
+            return .{
+                .https_only = std.mem.eql(u8, klient_list.fixed.protocols, "https"),
+                .max_redirects = klient_list.fixed.max_redirects,
+                .connect_timeout_ms = defaults.connect_timeout_ms,
+                .accept_compressed = defaults.accept_compressed,
+                .use_proxy = !std.mem.eql(u8, klient_list.fixed.no_proxy, "*"),
+            };
+        }
+        fn make(context_name: []const u8) Adapter {
+            return .{
+                .client = undefined,
+                .allocator = std.testing.allocator,
+                .io = std.testing.io,
+                .context_name = context_name,
+            };
+        }
+    },
+};
+
+fn curlArgsOptions(args: []const []const u8) ReadOptions {
+    var options: ReadOptions = .{
+        .https_only = false,
+        .max_redirects = std.math.maxInt(u8),
+        .connect_timeout_ms = 0,
+        .accept_compressed = false,
+        .use_proxy = true,
     };
+    var proto_https = false;
+    var redir_https = false;
+    for (args, 0..) |arg, index| {
+        const value = if (index + 1 < args.len) args[index + 1] else "";
+        if (std.mem.eql(u8, arg, "--compressed")) options.accept_compressed = true;
+        if (std.mem.eql(u8, arg, "--proto")) proto_https = std.mem.eql(u8, value, "=https");
+        if (std.mem.eql(u8, arg, "--proto-redir")) redir_https = std.mem.eql(u8, value, "=https");
+        if (std.mem.eql(u8, arg, "--max-redirs"))
+            options.max_redirects = std.fmt.parseInt(u8, value, 10) catch std.math.maxInt(u8);
+        if (std.mem.eql(u8, arg, "--connect-timeout")) {
+            const seconds = std.fmt.parseFloat(f64, value) catch 0;
+            options.connect_timeout_ms = @intFromFloat(@round(seconds * 1000));
+        }
+        if (std.mem.eql(u8, arg, "--noproxy") and std.mem.eql(u8, value, "*"))
+            options.use_proxy = false;
+    }
+    options.https_only = proto_https and redir_https;
+    return options;
+}
+
+const NoopCallback = struct {
+    fn receive(_: *anyopaque, _: ResponseMeta, _: *std.Io.Reader) anyerror!void {
+        return error.CallbackReached;
+    }
+};
+
+test "contract: Task 15 live mode requires an audit context on every transport" {
     task15.setLiveMode(true);
     defer task15.setLiveMode(false);
-    var adapter = KlientTransport{
-        .client = undefined,
-        .io = std.testing.io,
+    inline for (contract_subjects) |Subject| {
+        var adapter = Subject.make("");
+        var callback_context: u8 = 0;
+        try std.testing.expectError(
+            error.Task15ContextRequired,
+            adapter.transport().get(
+                try ReadRequest.init("/api/v1/pods"),
+                &callback_context,
+                NoopCallback.receive,
+            ),
+        );
+    }
+}
+
+test "contract: every transport revalidates paths that bypass ReadRequest.init" {
+    const invalid = [_][]const u8{
+        "",
+        "//evil.example.com/api/v1/pods",
+        "/api/v1/../../healthz",
+        "/api/v1/pods\r\nGET /api/v1/secrets HTTP/1.1",
+        "/api/v1/namespaces/default/pods%2flog",
     };
-    var callback_context: u8 = 0;
-    try std.testing.expectError(
-        error.Task15ContextRequired,
-        adapter.transport().get(
-            try ReadRequest.init("/api/v1/pods"),
-            &callback_context,
-            Callback.receive,
-        ),
-    );
+    inline for (contract_subjects) |Subject| {
+        var adapter = Subject.make("contract");
+        var callback_context: u8 = 0;
+        for (invalid) |path| {
+            try std.testing.expectError(
+                error.InvalidReadPath,
+                adapter.transport().get(.{ .path = path }, &callback_context, NoopCallback.receive),
+            );
+        }
+    }
+}
+
+test "contract: every transport is GET-only" {
+    inline for (contract_subjects) |Subject| {
+        inline for (.{ "post", "put", "patch", "delete", "write", "send", "request", "mutate" }) |name| {
+            try std.testing.expect(!@hasDecl(Subject.Adapter, name));
+        }
+        const transport_fn: fn (*Subject.Adapter) ReadTransport = Subject.Adapter.transport;
+        _ = transport_fn;
+    }
+}
+
+test "contract: direct list transports apply the shared read options" {
+    var checked: usize = 0;
+    inline for (contract_subjects) |Subject| {
+        if (Subject.options()) |options| {
+            try std.testing.expectEqualDeep(list_read_options, options);
+            checked += 1;
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 2), checked);
+}
+
+test "curl argv keeps HTTP/2 and the exact pre-redesign option spellings" {
+    const args = curl_option_args;
+    try std.testing.expectEqualStrings("curl", args[0]);
+    try std.testing.expectEqualStrings("-", args[args.len - 1]);
+    for ([_][]const u8{ "--http2", "--include", "--globoff", "--no-buffer" }) |flag| {
+        var found = false;
+        for (args) |arg| found = found or std.mem.eql(u8, arg, flag);
+        try std.testing.expect(found);
+    }
+    const timeout = for (args, 0..) |arg, index| {
+        if (std.mem.eql(u8, arg, "--connect-timeout")) break args[index + 1];
+    } else unreachable;
+    try std.testing.expectEqualStrings("0.400", timeout);
+}
+
+test "read option parsing notices a dropped curl flag" {
+    const weakened = [_][]const u8{ "curl", "--proto", "=https", "--max-redirs", "3", "--connect-timeout", "5" };
+    const options = curlArgsOptions(&weakened);
+    try std.testing.expect(!options.https_only);
+    try std.testing.expect(!options.accept_compressed);
+    try std.testing.expect(options.use_proxy);
+    try std.testing.expectEqual(@as(u8, 3), options.max_redirects);
+    try std.testing.expectEqual(@as(u32, 5000), options.connect_timeout_ms);
 }
 
 test "watch requests retain GET-only transport with WATCH audit semantics" {
@@ -1277,6 +1463,20 @@ test "curl response headers preserve metadata and leave body streaming" {
     try std.testing.expectEqual(@as(?u32, 7), meta.retry_after_seconds);
     try std.testing.expectEqualStrings("application/json", meta.content_type.?);
     try std.testing.expectEqualStrings("{\"items\":[]}", reader.buffered());
+}
+
+test "curl response parser accepts an HTTP/2 status line" {
+    var reader = std.Io.Reader.fixed(
+        "HTTP/2 200 \r\n" ++
+            "content-type: application/json\r\n" ++
+            "\r\n" ++
+            "{\"gitVersion\":\"v0\"}",
+    );
+    var content_type: [256]u8 = undefined;
+    const meta = try parseCurlResponseHeaders(&reader, &content_type);
+    try std.testing.expectEqual(std.http.Status.ok, meta.status);
+    try std.testing.expectEqualStrings("application/json", meta.content_type.?);
+    try std.testing.expectEqualStrings("{\"gitVersion\":\"v0\"}", reader.buffered());
 }
 
 test "curl response parser skips informational headers" {
