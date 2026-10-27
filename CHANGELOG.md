@@ -10,6 +10,8 @@ The release workflow extracts the section matching the git tag (`vX.Y.Z` →
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-10-27
+
 ### Changed
 
 - Resource lists stream over one reused HTTP/2 connection per context, through zig-klient's list client. The 47 built-in resource types are read as Protobuf; custom resources and Gateway API types are read as JSON. When the client can't connect, c3s falls back to the previous transports.
