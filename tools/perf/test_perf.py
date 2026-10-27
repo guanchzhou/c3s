@@ -654,7 +654,7 @@ class TelemetryFork(unittest.TestCase):
 class LiveContextSafety(unittest.TestCase):
     def test_exact_live_context_allowlist(self) -> None:
         assert_live_context = require_harness_attr(self, "assert_live_context")
-        for context in ("dev4.as", "rc.alpha-sense.org"):
+        for context in ("dev4.as", "rc.as"):
             assert_live_context(context)
 
     def test_other_and_admin_contexts_are_rejected(self) -> None:
@@ -664,7 +664,7 @@ class LiveContextSafety(unittest.TestCase):
             "dev4.as-admin",
             "dev4.as/admin",
             "admin@dev4.as",
-            "rc.alpha-sense.org-admin",
+            "rc.as-admin",
         ):
             with self.subTest(context=context), self.assertRaises(SafetyError):
                 assert_live_context(context)

@@ -41,7 +41,7 @@ U64_MAX = (1 << 64) - 1
 # c3s currently targets 64-bit platforms. Keep usize deterministic on the wire
 # instead of deriving acceptance from the Python host running the report.
 TELEMETRY_USIZE_MAX = U64_MAX
-ALLOWED_LIVE_CONTEXTS = frozenset({"dev4.as", "rc.alpha-sense.org"})
+ALLOWED_LIVE_CONTEXTS = frozenset({"dev4.as", "rc.as"})
 SCREEN_HINT_MARKERS = (
     b"kube-system",
     b"crossplane",
