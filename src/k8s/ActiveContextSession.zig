@@ -865,10 +865,9 @@ pub const ActiveContextSession = struct {
                 if (handled) return;
             } else |err| {
                 if (!list_transport.isTransportFailure(err)) return err;
-                final_curl_error = err;
             }
         }
-        if (final_curl_error == null) for (0..2) |attempt| {
+        for (0..2) |attempt| {
             if (cancel_requested.load(.acquire)) return error.Canceled;
             var callback_error: ?anyerror = null;
             var curl = read_transport.CurlTransport{
@@ -895,7 +894,7 @@ pub const ActiveContextSession = struct {
                 break;
             };
             return;
-        };
+        }
 
         const curl_error = final_curl_error orelse return error.CurlFailed;
         if (cancel_requested.load(.acquire)) return error.Canceled;
