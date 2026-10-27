@@ -2145,10 +2145,7 @@ test "readonly is a promise about the cluster, not about which API verbs we call
 test "authorization POST paths are fixed and read data plane remains GET only" {
     const data_plane = @import("../k8s/DataPlane.zig");
     const vtable_info = @typeInfo(read_transport.ReadTransport.VTable).@"struct";
-    const field_count = if (comptime @hasField(@TypeOf(vtable_info), "fields"))
-        vtable_info.fields.len
-    else
-        vtable_info.field_names.len;
+    const field_count = vtable_info.field_names.len;
     try std.testing.expectEqual(@as(usize, 1), field_count);
     try std.testing.expect(@hasField(read_transport.ReadTransport.VTable, "get"));
     try std.testing.expect(!@hasDecl(read_transport.ReadTransport, "post"));

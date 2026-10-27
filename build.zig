@@ -112,7 +112,7 @@ pub fn build(b: *std.Build) void {
 
     // This allows the user to pass arguments to the application in the build
     // command itself, like this: `zig build run -- arg1 arg2 etc`
-    addPassthruArgs(b, run_cmd);
+    run_cmd.addPassthruArgs();
 
     const task15_preflight_cmd = b.addRunArtifact(exe);
     task15_preflight_cmd.addArg("task15-preflight");
@@ -124,7 +124,7 @@ pub fn build(b: *std.Build) void {
 
     const task15_manifest_cmd = b.addRunArtifact(exe);
     task15_manifest_cmd.addArg("task15-manifest");
-    addPassthruArgs(b, task15_manifest_cmd);
+    task15_manifest_cmd.addPassthruArgs();
     const task15_manifest_step = b.step(
         "task15-manifest",
         "Print a network-free sanitized Task 15 kubeconfig manifest",
@@ -222,7 +222,7 @@ pub fn build(b: *std.Build) void {
     const perf_cmd = b.addSystemCommand(&.{"python3"});
     perf_cmd.addFileArg(b.path("tools/perf/compare.py"));
     perf_cmd.step.dependOn(b.getInstallStep());
-    addPassthruArgs(b, perf_cmd);
+    perf_cmd.addPassthruArgs();
     const perf_step = b.step("perf", "Measure c3s vs k9s (read-only PTY; pass --context)");
     perf_step.dependOn(&perf_cmd.step);
 
@@ -236,7 +236,7 @@ pub fn build(b: *std.Build) void {
     });
     projection_bench_exe.root_module.addImport("c3s", c3s_module);
     const projection_bench_run = b.addRunArtifact(projection_bench_exe);
-    addPassthruArgs(b, projection_bench_run);
+    projection_bench_run.addPassthruArgs();
     const projection_bench_step = b.step(
         "bench-projection",
         "Benchmark synthetic large-resource projection (args: count batch-size)",
@@ -245,23 +245,9 @@ pub fn build(b: *std.Build) void {
 
     // Formatting gate (ghostty/Zig convention: zig fmt is enforced).
     const fmt_step = b.step("fmt", "Check formatting with zig fmt --check");
-    const fmt_check = if (comptime @hasField(std.Build, "build_root"))
-        b.addFmt(.{
-            .paths = &.{ "src", "tests", "tools", "build.zig" },
-            .check = true,
-        })
-    else
-        b.addFmt(.{
-            .paths = &.{ b.path("src"), b.path("tests"), b.path("tools"), b.path("build.zig") },
-            .check = true,
-        });
+    const fmt_check = b.addFmt(.{
+        .paths = &.{ b.path("src"), b.path("tests"), b.path("tools"), b.path("build.zig") },
+        .check = true,
+    });
     fmt_step.dependOn(&fmt_check.step);
-}
-
-fn addPassthruArgs(b: *std.Build, run: *std.Build.Step.Run) void {
-    if (comptime @hasDecl(std.Build.Step.Run, "addPassthruArgs")) {
-        run.addPassthruArgs();
-    } else if (@field(b, "args")) |args| {
-        run.addArgs(args);
-    }
 }
