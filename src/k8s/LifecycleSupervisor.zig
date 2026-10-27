@@ -2,6 +2,7 @@ const std = @import("std");
 const testing = std.testing;
 
 const runtime = @import("../core/runtime.zig");
+const Logger = @import("../core/logger.zig");
 const inbox_mod = @import("LifecycleInbox.zig");
 const queue_mod = @import("ChangeQueue.zig");
 const keys = @import("ResourceKey.zig");
@@ -506,6 +507,11 @@ pub const LifecycleSupervisor = struct {
                     return;
                 },
                 error.Closed => {
+                    envelope.deinit(self.allocator);
+                    outcome = .abandoned;
+                },
+                error.TooLarge => {
+                    Logger.err("dropped a {d}-byte delivery that can never fit the change queue", .{envelope.owned_bytes});
                     envelope.deinit(self.allocator);
                     outcome = .abandoned;
                 },

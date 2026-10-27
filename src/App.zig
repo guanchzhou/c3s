@@ -7949,7 +7949,7 @@ pub fn runTask14ContextSwitchGate() !void {
                 try io.sleep(.{ .nanoseconds = std.time.ns_per_ms }, .awake);
                 continue;
             },
-            error.Closed => return err,
+            error.Closed, error.TooLarge => return err,
         };
         queued_gen1_owned = false;
         break;

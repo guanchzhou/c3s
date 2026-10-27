@@ -15,6 +15,10 @@ The release workflow extracts the section matching the git tag (`vX.Y.Z` →
 
 ## [Unreleased]
 
+### Fixed
+
+- On large clusters, the all-namespaces pod list no longer stops after a few hundred rows. List batches are now also capped by size, so every batch fits the UI queue, and a delivery that can never fit is dropped with a logged error instead of waiting forever. This applies to every resource list, not only pods.
+
 ## [0.5.0] - 2026-10-27
 
 ### Changed

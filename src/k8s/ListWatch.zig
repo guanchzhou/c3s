@@ -232,6 +232,7 @@ pub fn Driver(comptime Record: type) type {
         generation: Generation,
         subscription_id: SubscriptionId,
         max_batch_items: usize = 128,
+        max_batch_bytes: usize = resource_key.Limits.default.max_child_delivery_bytes,
         backoff: BackoffPolicy = .{},
         revision: Revision = 0,
         resource_version: OwnedBytes = .{},
@@ -408,17 +409,27 @@ pub fn Driver(comptime Record: type) type {
 
         fn appendChange(self: *Self, change: TypedChange(Record)) !void {
             var owned = change;
+            const bytes = estimateChangeBytes(Record, &owned);
+            // The change queue refuses a multi-change batch above its delivery
+            // limit, so a batch is cut before it would cross it.
+            if (self.pending.items.len != 0 and self.pending_bytes +| bytes > self.max_batch_bytes) {
+                self.flush() catch |err| {
+                    owned.deinit(self.allocator);
+                    return err;
+                };
+            }
             // Once appended, `pending` owns the change: a later flush failure must
             // leave it for clearPending rather than free it here.
             self.pending.append(self.allocator, owned) catch |err| {
                 owned.deinit(self.allocator);
                 return err;
             };
-            self.pending_bytes +|= estimateChangeBytes(Record, &owned);
+            self.pending_bytes +|= bytes;
             // A watch stream can stay open for hours, so a change cannot wait for
             // the batch limit or for the session to end before it becomes visible.
             const deliver_now = self.change_kind == .watch or
-                self.pending.items.len >= self.max_batch_items;
+                self.pending.items.len >= self.max_batch_items or
+                self.pending_bytes >= self.max_batch_bytes;
             if (deliver_now) try self.flush();
         }
 
@@ -806,6 +817,7 @@ const Sink = struct {
     allocator: std.mem.Allocator,
     batches: usize = 0,
     max_changes: usize = 0,
+    max_bytes: usize = 0,
     initial_upserts: usize = 0,
     watch_upserts: usize = 0,
     deletes: usize = 0,
@@ -826,6 +838,7 @@ const Sink = struct {
         const self: *Sink = @ptrCast(@alignCast(raw));
         self.batches += 1;
         self.max_changes = @max(self.max_changes, batch.changes.len);
+        self.max_bytes = @max(self.max_bytes, batch.owned_bytes);
         for (batch.changes) |change| switch (change) {
             .initial_upsert => {
                 self.initial_upserts += 1;
@@ -1067,6 +1080,31 @@ test "source chunk boundary flushes fewer than 128 initial objects before list c
     try std.testing.expect(outcome == .canceled);
     try std.testing.expectEqual(@as(usize, 5), script.mid_list_upserts);
     try std.testing.expectEqual(@as(usize, 5), sink.initial_upserts);
+}
+
+test "LIST batches are cut by bytes as well as by item count" {
+    const allocator = std.testing.allocator;
+    var script = Script{ .allocator = allocator, .scenario = .normal };
+    var sink = Sink{ .allocator = allocator };
+    var waiter = Waiter{};
+    script.sink = &sink;
+    const change_bytes = @sizeOf(TypedChange(TestRecord)) + @sizeOf(TestRecord);
+    var driver = Driver(TestRecord){
+        .allocator = allocator,
+        .source = script.source(),
+        .sink = sink.batchSink(),
+        .retry_hooks = waiter.hooks(),
+        .cancel = CancelToken.never(),
+        .generation = 3,
+        .subscription_id = 4,
+        .max_batch_bytes = 2 * change_bytes,
+    };
+    defer driver.deinit();
+    _ = try driver.run();
+
+    try std.testing.expectEqual(@as(usize, 5), sink.initial_upserts);
+    try std.testing.expect(sink.max_changes <= 2);
+    try std.testing.expect(sink.max_bytes <= 2 * change_bytes);
 }
 
 test "each WATCH change reaches the sink before the session ends" {
