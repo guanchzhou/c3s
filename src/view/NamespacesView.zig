@@ -139,12 +139,12 @@ pub const NamespacesView = struct {
             if (selected.uid.len > 0) _ = projection.selectUid(selected.uid);
         }
 
-        var next_items: std.ArrayListUnmanaged(NamespaceInfo) = .empty;
+        var next_items: std.ArrayList(NamespaceInfo) = .empty;
         errdefer {
             for (next_items.items) |*item| item.deinit();
             next_items.deinit(self.table.allocator);
         }
-        var next_indices: std.ArrayListUnmanaged(usize) = .empty;
+        var next_indices: std.ArrayList(usize) = .empty;
         errdefer next_indices.deinit(self.table.allocator);
         try next_items.ensureTotalCapacity(self.table.allocator, projection.visibleCount());
         try next_indices.ensureTotalCapacity(self.table.allocator, projection.visibleCount());

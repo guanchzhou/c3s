@@ -12,7 +12,7 @@ pub const ObjectTimeline = struct {
     allocator: std.mem.Allocator,
     source: []u8 = &.{},
     uid: []u8 = &.{},
-    entries: std.ArrayListUnmanaged(Entry) = .empty,
+    entries: std.ArrayList(Entry) = .empty,
 
     pub fn init(allocator: std.mem.Allocator) ObjectTimeline {
         return .{ .allocator = allocator };

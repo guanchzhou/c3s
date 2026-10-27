@@ -433,7 +433,7 @@ pub const CurlTransport = struct {
         const url = try std.fmt.allocPrint(self.allocator, "{s}{s}", .{ server, request.path });
         defer self.allocator.free(url);
 
-        var argv: std.ArrayListUnmanaged([]const u8) = .empty;
+        var argv: std.ArrayList([]const u8) = .empty;
         defer argv.deinit(self.allocator);
         try argv.appendSlice(self.allocator, curl_option_args);
         if (material.ca_path) |path| {

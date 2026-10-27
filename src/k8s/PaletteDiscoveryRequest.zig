@@ -46,7 +46,7 @@ const Spec = struct {
             while (iterator.next()) |key| control.allocator.free(key.*);
             decisions.deinit(control.allocator);
         }
-        var names: std.ArrayListUnmanaged([]u8) = .empty;
+        var names: std.ArrayList([]u8) = .empty;
         errdefer {
             for (names.items) |name| control.allocator.free(name);
             names.deinit(control.allocator);

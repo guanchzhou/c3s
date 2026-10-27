@@ -785,7 +785,7 @@ pub const K8sService = struct {
         args: []const []const u8,
         lifetime: enum { request, stream },
     ) ![]const []const u8 {
-        var argv = std.ArrayListUnmanaged([]const u8).empty;
+        var argv = std.ArrayList([]const u8).empty;
         errdefer argv.deinit(self.allocator);
         try argv.append(self.allocator, "kubectl");
         if (request.kubeconfig_path) |path| {
@@ -1310,7 +1310,7 @@ pub const K8sService = struct {
         if (container) |value| {
             if (!read_transport.validQueryValue(value)) return error.InvalidReadPath;
         }
-        var query: std.ArrayListUnmanaged(u8) = .empty;
+        var query: std.ArrayList(u8) = .empty;
         errdefer query.deinit(allocator);
         try query.appendSlice(allocator, "tailLines=1000");
         // Always ask for timestamps, and let the view strip them for display.
@@ -1549,7 +1549,7 @@ pub const K8sService = struct {
 
         if (chain != .array) return &.{};
 
-        var results = std.ArrayListUnmanaged(ConditionInfo).empty;
+        var results = std.ArrayList(ConditionInfo).empty;
         errdefer {
             for (results.items) |*c| c.deinit();
             results.deinit(self.allocator);
@@ -1669,7 +1669,7 @@ pub const K8sService = struct {
         const items = root.object.get("items") orelse return &.{};
         if (items != .array) return &.{};
 
-        var results = std.ArrayListUnmanaged(k8s_types.CedarPolicy).empty;
+        var results = std.ArrayList(k8s_types.CedarPolicy).empty;
         errdefer {
             for (results.items) |*p| p.deinit();
             results.deinit(self.allocator);
@@ -1747,7 +1747,7 @@ pub const K8sService = struct {
         const items = root.object.get("items") orelse return &.{};
         if (items != .array) return &.{};
 
-        var results = std.ArrayListUnmanaged(PolicyInfo).empty;
+        var results = std.ArrayList(PolicyInfo).empty;
         errdefer {
             for (results.items) |*p| p.deinit();
             results.deinit(self.allocator);
@@ -1819,7 +1819,7 @@ pub const K8sService = struct {
         defer request.deinit();
         const active_client = request.client orelse return error.NotConnected;
 
-        var results = std.ArrayListUnmanaged(PolicyInfo).empty;
+        var results = std.ArrayList(PolicyInfo).empty;
         errdefer {
             for (results.items) |*p| p.deinit();
             results.deinit(self.allocator);
@@ -1878,7 +1878,7 @@ pub const K8sService = struct {
                     const subjects_arr = binding.object.get("subjects") orelse continue;
                     if (subjects_arr != .array) continue;
 
-                    var subj_list = std.ArrayListUnmanaged(u8).empty;
+                    var subj_list = std.ArrayList(u8).empty;
                     defer subj_list.deinit(self.allocator);
 
                     for (subjects_arr.array.items, 0..) |subj, si| {

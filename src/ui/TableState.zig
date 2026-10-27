@@ -14,8 +14,8 @@ pub fn TableState(comptime ItemType: type) type {
     return struct {
         const Self = @This();
 
-        items: std.ArrayListUnmanaged(ItemType),
-        filtered_indices: std.ArrayListUnmanaged(usize),
+        items: std.ArrayList(ItemType),
+        filtered_indices: std.ArrayList(usize),
         selected_row: u32 = 0,
         scroll_offset: u32 = 0,
         visible_rows: u32 = 0,

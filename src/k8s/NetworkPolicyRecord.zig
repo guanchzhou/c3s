@@ -62,7 +62,7 @@ fn formatMatchLabels(allocator: std.mem.Allocator, selector: ?std.json.Value) ![
     if (value != .object) return allocator.dupe(u8, "<none>");
     const labels = value.object.get("matchLabels") orelse return allocator.dupe(u8, "<none>");
     if (labels != .object or labels.object.count() == 0) return allocator.dupe(u8, "<none>");
-    var result: std.ArrayListUnmanaged(u8) = .empty;
+    var result: std.ArrayList(u8) = .empty;
     defer result.deinit(allocator);
     var entries = labels.object.iterator();
     var first = true;

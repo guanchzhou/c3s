@@ -25,7 +25,7 @@ pub fn needsSanitizing(text: []const u8) bool {
 /// Copy `text`, replacing C0 controls, DEL, C1 controls and invalid UTF-8 bytes
 /// with '?'. Tabs expand to spaces up to the next tab stop. Caller owns the result.
 pub fn sanitizeAlloc(allocator: std.mem.Allocator, text: []const u8) ![]u8 {
-    var out: std.ArrayListUnmanaged(u8) = .empty;
+    var out: std.ArrayList(u8) = .empty;
     errdefer out.deinit(allocator);
     try out.ensureTotalCapacity(allocator, text.len);
 

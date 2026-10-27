@@ -80,25 +80,25 @@ pub const AuthorizationView = struct {
     // without changing their field access patterns.
 
     /// Proxy for access_tab.table.items
-    pub fn getAccessRows(self: *AuthorizationView) *std.ArrayListUnmanaged(AccessRow) {
+    pub fn getAccessRows(self: *AuthorizationView) *std.ArrayList(AccessRow) {
         return &self.access_tab.table.items;
     }
     /// Proxy for access_tab.table.filtered_indices
-    pub fn getAccessFiltered(self: *AuthorizationView) *std.ArrayListUnmanaged(usize) {
+    pub fn getAccessFiltered(self: *AuthorizationView) *std.ArrayList(usize) {
         return &self.access_tab.table.filtered_indices;
     }
 
     /// Proxy for policy_tab.table.items
-    pub fn getPolicyRows(self: *AuthorizationView) *std.ArrayListUnmanaged(PolicyRow) {
+    pub fn getPolicyRows(self: *AuthorizationView) *std.ArrayList(PolicyRow) {
         return &self.policy_tab.table.items;
     }
     /// Proxy for policy_tab.table.filtered_indices
-    pub fn getPolicyFiltered(self: *AuthorizationView) *std.ArrayListUnmanaged(usize) {
+    pub fn getPolicyFiltered(self: *AuthorizationView) *std.ArrayList(usize) {
         return &self.policy_tab.table.filtered_indices;
     }
 
     /// Proxy for condition_tab.table.items
-    pub fn getConditionRows(self: *AuthorizationView) *std.ArrayListUnmanaged(ConditionRow) {
+    pub fn getConditionRows(self: *AuthorizationView) *std.ArrayList(ConditionRow) {
         return &self.condition_tab.table.items;
     }
 

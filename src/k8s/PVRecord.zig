@@ -108,7 +108,7 @@ pub fn columns(self: *const PVRecord, allocator: std.mem.Allocator) ![8][]const 
 pub fn accessModes(allocator: std.mem.Allocator, modes: ?[][]const u8) ![]u8 {
     const values = modes orelse return allocator.dupe(u8, "<none>");
     if (values.len == 0) return allocator.dupe(u8, "<none>");
-    var result: std.ArrayListUnmanaged(u8) = .empty;
+    var result: std.ArrayList(u8) = .empty;
     defer result.deinit(allocator);
     for (values, 0..) |mode, index| {
         if (index > 0) try result.append(allocator, ',');

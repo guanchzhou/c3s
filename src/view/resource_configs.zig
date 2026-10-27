@@ -85,7 +85,7 @@ fn joinStrings(
     comptime xform: fn ([]const u8) []const u8,
 ) ![]const u8 {
     if (items.len == 0) return alloc.dupe(u8, "<none>");
-    var buf = std.ArrayListUnmanaged(u8).empty;
+    var buf = std.ArrayList(u8).empty;
     defer buf.deinit(alloc);
     for (items, 0..) |it, i| {
         if (i > 0) try buf.append(alloc, ',');
@@ -107,7 +107,7 @@ fn formatMatchLabels(alloc: std.mem.Allocator, selector: ?std.json.Value) ![]con
     const ml = sel.object.get("matchLabels") orelse return alloc.dupe(u8, "<none>");
     if (ml != .object or ml.object.count() == 0) return alloc.dupe(u8, "<none>");
 
-    var buf = std.ArrayListUnmanaged(u8).empty;
+    var buf = std.ArrayList(u8).empty;
     defer buf.deinit(alloc);
     var it = ml.object.iterator();
     var first = true;
@@ -251,7 +251,7 @@ fn transformService(svc: klient.types.Service, alloc: std.mem.Allocator) ![7][]c
     const ports_str = if (svc.spec) |spec| blk: {
         if (spec.ports) |ports| {
             if (ports.len > 0) {
-                var buf = std.ArrayListUnmanaged(u8).empty;
+                var buf = std.ArrayList(u8).empty;
                 defer buf.deinit(alloc);
                 for (ports, 0..) |p, i| {
                     if (i > 0) try buf.append(alloc, ',');
@@ -585,7 +585,7 @@ fn transformIngress(ing: klient.types.Ingress, alloc: std.mem.Allocator) ![7][]c
     const hosts = blk: {
         if (ing.spec) |spec| {
             if (spec.rules) |rules| {
-                var buf = std.ArrayListUnmanaged(u8).empty;
+                var buf = std.ArrayList(u8).empty;
                 defer buf.deinit(alloc);
                 var wrote = false;
                 for (rules) |rule| {

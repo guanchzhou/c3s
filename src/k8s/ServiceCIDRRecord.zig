@@ -58,7 +58,7 @@ fn formatCIDRs(allocator: std.mem.Allocator, value: klient.ServiceCIDR) ![]u8 {
     const spec = value.spec orelse return allocator.dupe(u8, "<none>");
     const cidrs = spec.cidrs orelse return allocator.dupe(u8, "<none>");
     if (cidrs.len == 0) return allocator.dupe(u8, "<none>");
-    var result: std.ArrayListUnmanaged(u8) = .empty;
+    var result: std.ArrayList(u8) = .empty;
     defer result.deinit(allocator);
     for (cidrs, 0..) |cidr, index| {
         if (index > 0) try result.append(allocator, ',');

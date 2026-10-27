@@ -25,7 +25,7 @@ pub const Error = error{
 /// Zig 0.16, and the alternative -- threading `allocator` through every append -- made
 /// the formatting code harder to read than the thing it formats.
 const Out = struct {
-    list: *std.ArrayListUnmanaged(u8),
+    list: *std.ArrayList(u8),
     alloc: std.mem.Allocator,
 
     fn writeAll(self: Out, bytes: []const u8) Error!void {
@@ -60,7 +60,7 @@ pub fn decodeSecretData(allocator: std.mem.Allocator, json_str: []const u8) Erro
     if (parsed.value != .object) return Error.NotAnObject;
     const root = parsed.value.object;
 
-    var out: std.ArrayListUnmanaged(u8) = .empty;
+    var out: std.ArrayList(u8) = .empty;
     errdefer out.deinit(allocator);
     const w = Out{ .list = &out, .alloc = allocator };
 
@@ -121,7 +121,7 @@ pub fn redactSecretJson(allocator: std.mem.Allocator, json_str: []const u8) Erro
     defer parsed.deinit();
     if (parsed.value != .object) return Error.NotAnObject;
 
-    var replacements: std.ArrayListUnmanaged([]u8) = .empty;
+    var replacements: std.ArrayList([]u8) = .empty;
     defer {
         for (replacements.items) |s| allocator.free(s);
         replacements.deinit(allocator);
@@ -136,7 +136,7 @@ pub fn redactSecretJson(allocator: std.mem.Allocator, json_str: []const u8) Erro
 fn redactSecretMap(
     allocator: std.mem.Allocator,
     maybe: ?*std.json.Value,
-    replacements: *std.ArrayListUnmanaged([]u8),
+    replacements: *std.ArrayList([]u8),
 ) Error!void {
     const v = maybe orelse return;
     if (v.* != .object) return Error.NotAnObject;
@@ -152,8 +152,8 @@ fn redactSecretMap(
 fn sortedKeys(
     allocator: std.mem.Allocator,
     obj: std.json.ObjectMap,
-) Error!std.ArrayListUnmanaged([]const u8) {
-    var keys: std.ArrayListUnmanaged([]const u8) = .empty;
+) Error!std.ArrayList([]const u8) {
+    var keys: std.ArrayList([]const u8) = .empty;
     errdefer keys.deinit(allocator);
     var it = obj.iterator();
     while (it.next()) |entry| try keys.append(allocator, entry.key_ptr.*);

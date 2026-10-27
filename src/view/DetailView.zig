@@ -15,14 +15,14 @@ const display_text = @import("../core/display_text.zig");
 pub const DetailView = struct {
     allocator: std.mem.Allocator,
     theme: *const theme_loader.ThemeColors,
-    lines: std.ArrayListUnmanaged([]const u8),
+    lines: std.ArrayList([]const u8),
     /// Per-line: index of the matching close line if this line opens a foldable
     /// block (ends with `{` or `[`), else null. Parallel to `lines`.
-    fold_end: std.ArrayListUnmanaged(?u32),
+    fold_end: std.ArrayList(?u32),
     /// Per-line collapse state (only meaningful where fold_end != null). Parallel to `lines`.
-    folded: std.ArrayListUnmanaged(bool),
+    folded: std.ArrayList(bool),
     /// Indices into `lines` that are currently visible (rebuilt when folds change).
-    visible: std.ArrayListUnmanaged(u32),
+    visible: std.ArrayList(u32),
     title: []const u8,
     /// Cursor position as an index into `visible`.
     selected_row: u32 = 0,
@@ -34,7 +34,7 @@ pub const DetailView = struct {
     render_y: u16 = 0,
     /// Detected column-start offsets (for column-wise h/l horizontal nav over
     /// space-aligned content like the aliases / api-resources table).
-    col_stops: std.ArrayListUnmanaged(u16) = .empty,
+    col_stops: std.ArrayList(u16) = .empty,
     /// Cell-picker mode: Enter copies the selected value instead of folding.
     copy_on_enter: bool = false,
     mode: enum { detail, explain } = .detail,
@@ -111,7 +111,7 @@ pub const DetailView = struct {
         var indent: usize = 0;
         var in_string = false;
         var escape_next = false;
-        var line_buf = std.ArrayListUnmanaged(u8).empty;
+        var line_buf = std.ArrayList(u8).empty;
         defer line_buf.deinit(self.allocator);
 
         for (json_str) |c| {
@@ -274,11 +274,11 @@ pub const DetailView = struct {
     }
 
     fn swapContent(self: *DetailView, other: *DetailView) void {
-        std.mem.swap(std.ArrayListUnmanaged([]const u8), &self.lines, &other.lines);
-        std.mem.swap(std.ArrayListUnmanaged(?u32), &self.fold_end, &other.fold_end);
-        std.mem.swap(std.ArrayListUnmanaged(bool), &self.folded, &other.folded);
-        std.mem.swap(std.ArrayListUnmanaged(u32), &self.visible, &other.visible);
-        std.mem.swap(std.ArrayListUnmanaged(u16), &self.col_stops, &other.col_stops);
+        std.mem.swap(std.ArrayList([]const u8), &self.lines, &other.lines);
+        std.mem.swap(std.ArrayList(?u32), &self.fold_end, &other.fold_end);
+        std.mem.swap(std.ArrayList(bool), &self.folded, &other.folded);
+        std.mem.swap(std.ArrayList(u32), &self.visible, &other.visible);
+        std.mem.swap(std.ArrayList(u16), &self.col_stops, &other.col_stops);
         std.mem.swap([]const u8, &self.title, &other.title);
         self.selected_row = other.selected_row;
         self.scroll_offset = other.scroll_offset;
@@ -346,7 +346,7 @@ pub const DetailView = struct {
         };
     }
 
-    fn flushLine(self: *DetailView, line_buf: *std.ArrayListUnmanaged(u8)) !void {
+    fn flushLine(self: *DetailView, line_buf: *std.ArrayList(u8)) !void {
         if (line_buf.items.len > 0) {
             try self.lines.append(self.allocator, try self.allocator.dupe(u8, line_buf.items));
             line_buf.clearRetainingCapacity();
@@ -359,7 +359,7 @@ pub const DetailView = struct {
         }
     }
 
-    fn writeIndent(self: *DetailView, line_buf: *std.ArrayListUnmanaged(u8), indent: usize) !void {
+    fn writeIndent(self: *DetailView, line_buf: *std.ArrayList(u8), indent: usize) !void {
         for (0..indent) |_| {
             try line_buf.append(self.allocator, ' ');
         }

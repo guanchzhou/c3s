@@ -19,7 +19,7 @@ pub fn applyFilter(
     comptime T: type,
     allocator: std.mem.Allocator,
     items: []const T,
-    filtered_indices: *std.ArrayListUnmanaged(usize),
+    filtered_indices: *std.ArrayList(usize),
     filter_text: []const u8,
     current_selected_row: *u32,
     current_scroll_offset: *u32,
@@ -154,7 +154,7 @@ test "filter with empty filter text shows all items" {
         .{ .name = "cherry", .value = 3 },
     };
 
-    var filtered_indices = std.ArrayListUnmanaged(usize).empty;
+    var filtered_indices = std.ArrayList(usize).empty;
     defer filtered_indices.deinit(allocator);
 
     var selected_row: u32 = 0;
@@ -188,7 +188,7 @@ test "filter with matching text returns subset" {
         .{ .name = "cherry", .value = 4 },
     };
 
-    var filtered_indices = std.ArrayListUnmanaged(usize).empty;
+    var filtered_indices = std.ArrayList(usize).empty;
     defer filtered_indices.deinit(allocator);
 
     var selected_row: u32 = 0;
@@ -220,7 +220,7 @@ test "filter with no matches returns empty list" {
         .{ .name = "cherry", .value = 3 },
     };
 
-    var filtered_indices = std.ArrayListUnmanaged(usize).empty;
+    var filtered_indices = std.ArrayList(usize).empty;
     defer filtered_indices.deinit(allocator);
 
     var selected_row: u32 = 0;
@@ -251,7 +251,7 @@ test "filter preserves selection when item still visible" {
         .{ .name = "cherry", .value = 4 },
     };
 
-    var filtered_indices = std.ArrayListUnmanaged(usize).empty;
+    var filtered_indices = std.ArrayList(usize).empty;
     defer filtered_indices.deinit(allocator);
 
     // First, populate with all items
@@ -291,7 +291,7 @@ test "filter resets selection when item not in filtered list" {
         .{ .name = "cherry", .value = 3 },
     };
 
-    var filtered_indices = std.ArrayListUnmanaged(usize).empty;
+    var filtered_indices = std.ArrayList(usize).empty;
     defer filtered_indices.deinit(allocator);
 
     // First, populate with all items
@@ -337,7 +337,7 @@ test "filter adjusts scroll offset when selection moves" {
         .{ .name = "item9", .value = 9 },
     };
 
-    var filtered_indices = std.ArrayListUnmanaged(usize).empty;
+    var filtered_indices = std.ArrayList(usize).empty;
     defer filtered_indices.deinit(allocator);
 
     // Populate with all items
@@ -378,7 +378,7 @@ test "filter clears and repopulates filtered indices" {
         .{ .name = "apricot", .value = 3 },
     };
 
-    var filtered_indices = std.ArrayListUnmanaged(usize).empty;
+    var filtered_indices = std.ArrayList(usize).empty;
     defer filtered_indices.deinit(allocator);
 
     var selected_row: u32 = 0;

@@ -312,11 +312,11 @@ pub const LifecycleSupervisor = struct {
             .command_request => .command,
             else => unreachable,
         };
-        const lease = self.active_slot.acquire(expected_generation, lease_purpose) catch {
+        const lease = (self.active_slot.acquire(expected_generation, lease_purpose) catch {
             spec.deinit(self.allocator);
             self.rejectStart(key, request_key, .stale_generation);
             return;
-        } orelse {
+        }) orelse {
             spec.deinit(self.allocator);
             self.rejectStart(key, request_key, .stale_generation);
             return;
@@ -693,7 +693,7 @@ pub const LifecycleSupervisor = struct {
     }
 
     fn retireGeneration(self: *LifecycleSupervisor, generation: Generation) void {
-        const session = self.active_slot.invalidate(generation) catch return orelse return;
+        const session = (self.active_slot.invalidate(generation) catch return) orelse return;
         self.active_session = null;
         self.beginRetirement(session) catch self.failRuntime(error.RetirementCapacity);
     }

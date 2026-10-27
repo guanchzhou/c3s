@@ -101,7 +101,7 @@ pub fn formatLabels(
     const labels = value orelse return &.{};
     if (labels != .object or labels.object.count() == 0) return &.{};
 
-    var result: std.ArrayListUnmanaged(u8) = .empty;
+    var result: std.ArrayList(u8) = .empty;
     errdefer result.deinit(allocator);
     var iterator = labels.object.iterator();
     while (iterator.next()) |entry| {
@@ -932,7 +932,7 @@ const ScratchPayload = struct {
 fn scratchPreflight(payload: *ScratchPayload, _: *UiRouter, _: std.mem.Allocator) anyerror!ApplyPlan {
     const allocator = payload.scratch_allocator;
     var i: usize = 0;
-    var held: std.ArrayListUnmanaged([]u8) = .empty;
+    var held: std.ArrayList([]u8) = .empty;
     errdefer {
         for (held.items) |item| allocator.free(item);
         held.deinit(allocator);
@@ -945,18 +945,18 @@ fn scratchPreflight(payload: *ScratchPayload, _: *UiRouter, _: std.mem.Allocator
         };
         payload.seen += 1;
     }
-    const scratch = try allocator.create(std.ArrayListUnmanaged([]u8));
+    const scratch = try allocator.create(std.ArrayList([]u8));
     scratch.* = held;
     return .{
         .scratch = scratch,
-        .scratch_alignment = .of(std.ArrayListUnmanaged([]u8)),
+        .scratch_alignment = .of(std.ArrayList([]u8)),
         .revision = 1,
         .deinitFn = scratchPlanDeinit,
     };
 }
 
 fn scratchPlanDeinit(raw: ?*anyopaque, _: std.mem.Alignment, allocator: std.mem.Allocator) void {
-    const scratch: *std.ArrayListUnmanaged([]u8) = @ptrCast(@alignCast(raw orelse return));
+    const scratch: *std.ArrayList([]u8) = @ptrCast(@alignCast(raw orelse return));
     for (scratch.items) |item| allocator.free(item);
     scratch.deinit(allocator);
     allocator.destroy(scratch);

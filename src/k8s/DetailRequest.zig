@@ -308,7 +308,7 @@ fn relatedPodsPath(
     const spec = objectAt(parsed.value.object, "spec") orelse return null;
     const selector = objectAt(spec, "selector") orelse return null;
 
-    var raw: std.ArrayListUnmanaged(u8) = .empty;
+    var raw: std.ArrayList(u8) = .empty;
     defer raw.deinit(allocator);
     if (objectAt(selector, "matchLabels")) |labels| {
         var iterator = labels.iterator();
@@ -345,7 +345,7 @@ fn relatedPodsPath(
         }
     }
     if (raw.items.len == 0) return null;
-    var query: std.ArrayListUnmanaged(u8) = .empty;
+    var query: std.ArrayList(u8) = .empty;
     defer query.deinit(allocator);
     try appendPercentEncoded(allocator, &query, raw.items);
     return try std.fmt.allocPrint(
@@ -357,7 +357,7 @@ fn relatedPodsPath(
 
 fn appendPercentEncoded(
     allocator: std.mem.Allocator,
-    out: *std.ArrayListUnmanaged(u8),
+    out: *std.ArrayList(u8),
     value: []const u8,
 ) !void {
     const hex = "0123456789ABCDEF";

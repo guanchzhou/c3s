@@ -235,7 +235,7 @@ pub fn Driver(comptime Record: type) type {
         backoff: BackoffPolicy = .{},
         revision: Revision = 0,
         resource_version: OwnedBytes = .{},
-        pending: std.ArrayListUnmanaged(TypedChange(Record)) = .empty,
+        pending: std.ArrayList(TypedChange(Record)) = .empty,
         pending_bytes: usize = 0,
         list_object_count: usize = 0,
         change_kind: enum { initial, watch } = .initial,

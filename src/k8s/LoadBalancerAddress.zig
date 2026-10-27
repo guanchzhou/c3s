@@ -10,7 +10,7 @@ pub fn format(allocator: std.mem.Allocator, status: ?std.json.Value) !?[]u8 {
     if (ingress != .array) return null;
     if (ingress.array.items.len == 0) return try allocator.dupe(u8, "<pending>");
 
-    var result: std.ArrayListUnmanaged(u8) = .empty;
+    var result: std.ArrayList(u8) = .empty;
     defer result.deinit(allocator);
     for (ingress.array.items) |entry| {
         if (entry != .object) continue;

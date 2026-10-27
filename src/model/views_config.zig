@@ -71,7 +71,7 @@ pub fn parse(allocator: std.mem.Allocator, content: []const u8) !ViewsConfig {
     var in_views = false;
     var current_view: ?[]const u8 = null; // borrowed from content
     var collecting = false; // inside a `columns:` block list
-    var names: std.ArrayListUnmanaged([]const u8) = .empty;
+    var names: std.ArrayList([]const u8) = .empty;
     defer {
         for (names.items) |n| allocator.free(n);
         names.deinit(allocator);
@@ -139,7 +139,7 @@ pub fn parse(allocator: std.mem.Allocator, content: []const u8) !ViewsConfig {
 fn commit(
     cfg: *ViewsConfig,
     current_view: *?[]const u8,
-    names: *std.ArrayListUnmanaged([]const u8),
+    names: *std.ArrayList([]const u8),
 ) !void {
     defer names.clearRetainingCapacity();
     const view = current_view.* orelse return;

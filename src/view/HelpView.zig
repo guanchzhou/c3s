@@ -13,7 +13,7 @@ const ViewType = @import("../viewmodel/keybindings_vm.zig").ViewType;
 pub const HelpView = struct {
     allocator: std.mem.Allocator,
     theme: *const theme_loader.ThemeColors,
-    help_lines: std.ArrayListUnmanaged([]const u8),
+    help_lines: std.ArrayList([]const u8),
     selected_row: u32 = 0,
     scroll_offset: u32 = 0,
     visible_rows: u32 = 0,

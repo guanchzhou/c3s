@@ -45,8 +45,8 @@ pub const DynamicResourceView = struct {
     name_bufs: [2][256]u8 = undefined,
     name_lens: [2]usize = .{ 0, 0 },
     active_name: u1 = 0,
-    selected_cell_names: std.ArrayListUnmanaged([]const u8) = .empty,
-    selected_cell_values: std.ArrayListUnmanaged([]const u8) = .empty,
+    selected_cell_names: std.ArrayList([]const u8) = .empty,
+    selected_cell_values: std.ArrayList([]const u8) = .empty,
 
     pub fn init(
         allocator: std.mem.Allocator,

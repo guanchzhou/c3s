@@ -2,7 +2,7 @@ const std = @import("std");
 
 const ReportWriter = struct {
     allocator: std.mem.Allocator,
-    out: *std.ArrayListUnmanaged(u8),
+    out: *std.ArrayList(u8),
 
     fn print(self: ReportWriter, comptime format: []const u8, args: anytype) !void {
         const text = try std.fmt.allocPrint(self.allocator, format, args);
@@ -20,7 +20,7 @@ pub fn build(allocator: std.mem.Allocator, raw: []const u8) ![]u8 {
     defer parsed.deinit();
     if (parsed.value != .object) return error.InvalidApplication;
     const root = parsed.value.object;
-    var out: std.ArrayListUnmanaged(u8) = .empty;
+    var out: std.ArrayList(u8) = .empty;
     errdefer out.deinit(allocator);
     const writer: ReportWriter = .{ .allocator = allocator, .out = &out };
 

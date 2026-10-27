@@ -38,8 +38,8 @@ fn calculateMaxWidths(bindings: []const KeyBinding) struct { key: usize, desc: u
 }
 
 /// Generate help content dynamically from key bindings
-pub fn generateHelpContent(allocator: std.mem.Allocator, bindings: []const KeyBinding) !std.ArrayListUnmanaged([]const u8) {
-    var lines = std.ArrayListUnmanaged([]const u8).empty;
+pub fn generateHelpContent(allocator: std.mem.Allocator, bindings: []const KeyBinding) !std.ArrayList([]const u8) {
+    var lines = std.ArrayList([]const u8).empty;
     try lines.ensureTotalCapacity(allocator, 50);
 
     try lines.append(allocator, try allocator.dupe(u8, "C3S - Kubernetes TUI Client"));
@@ -180,7 +180,7 @@ pub fn generateHelpContent(allocator: std.mem.Allocator, bindings: []const KeyBi
 }
 
 /// Free help content lines
-pub fn freeHelpContent(allocator: std.mem.Allocator, lines: *std.ArrayListUnmanaged([]const u8)) void {
+pub fn freeHelpContent(allocator: std.mem.Allocator, lines: *std.ArrayList([]const u8)) void {
     for (lines.items) |line| {
         allocator.free(line);
     }

@@ -28,7 +28,7 @@ pub const Overrides = struct {
     pub fn appendIdentity(
         self: Overrides,
         allocator: std.mem.Allocator,
-        argv: *std.ArrayListUnmanaged([]const u8),
+        argv: *std.ArrayList([]const u8),
     ) !void {
         const pairs = [_]struct { []const u8, ?[]const u8 }{
             .{ "--cluster", self.cluster },
@@ -48,7 +48,7 @@ pub const Overrides = struct {
     pub fn appendRequest(
         self: Overrides,
         allocator: std.mem.Allocator,
-        argv: *std.ArrayListUnmanaged([]const u8),
+        argv: *std.ArrayList([]const u8),
     ) !void {
         try self.appendIdentity(allocator, argv);
         if (self.request_timeout) |value| try argv.appendSlice(allocator, &.{ "--request-timeout", value });
@@ -65,7 +65,7 @@ test "identity flags omit the request timeout, request flags keep it" {
     };
     try std.testing.expect(overrides.changesIdentity());
 
-    var identity: std.ArrayListUnmanaged([]const u8) = .empty;
+    var identity: std.ArrayList([]const u8) = .empty;
     defer identity.deinit(allocator);
     try overrides.appendIdentity(allocator, &identity);
     const expected_identity = [_][]const u8{
@@ -74,7 +74,7 @@ test "identity flags omit the request timeout, request flags keep it" {
     try std.testing.expectEqual(expected_identity.len, identity.items.len);
     for (expected_identity, identity.items) |want, got| try std.testing.expectEqualStrings(want, got);
 
-    var request: std.ArrayListUnmanaged([]const u8) = .empty;
+    var request: std.ArrayList([]const u8) = .empty;
     defer request.deinit(allocator);
     try overrides.appendRequest(allocator, &request);
     try std.testing.expectEqualStrings("--request-timeout", request.items[request.items.len - 2]);

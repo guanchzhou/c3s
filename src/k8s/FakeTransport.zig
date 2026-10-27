@@ -162,7 +162,7 @@ const ScriptReader = struct {
         }
         if (self.position >= self.body.len) return error.EndOfStream;
 
-        const requested = limit.toInt() orelse self.body.len - self.position;
+        const requested = limit.toInt() orelse (self.body.len - self.position);
         const scripted_chunk = if (self.chunk_index < self.chunk_sizes.len)
             self.chunk_sizes[self.chunk_index]
         else

@@ -259,7 +259,7 @@ fn buildAccess(
 ) !AuthorizationPayload.AccessResult {
     const conditional_available = known_conditional orelse
         (backend.detectConditionalFn(backend.context) catch false);
-    var rows = std.ArrayListUnmanaged(access.AccessRow).empty;
+    var rows = std.ArrayList(access.AccessRow).empty;
     errdefer {
         for (rows.items) |*row| row.deinit();
         rows.deinit(allocator);
@@ -324,7 +324,7 @@ fn buildPolicies(
         service.allocator.free(cedar);
     };
 
-    var rows = std.ArrayListUnmanaged(policy.PolicyRow).empty;
+    var rows = std.ArrayList(policy.PolicyRow).empty;
     errdefer {
         for (rows.items) |*row| row.deinit();
         rows.deinit(allocator);
@@ -340,7 +340,7 @@ fn buildPolicies(
 
 fn appendPolicy(
     allocator: std.mem.Allocator,
-    rows: *std.ArrayListUnmanaged(policy.PolicyRow),
+    rows: *std.ArrayList(policy.PolicyRow),
     item: K8sService.PolicyInfo,
     kind: policy.PolicyRow.PolicyType,
 ) !void {
@@ -377,7 +377,7 @@ fn buildConditions(
         for (source) |*item| item.deinit();
         service.allocator.free(source);
     }
-    var rows = std.ArrayListUnmanaged(condition.ConditionRow).empty;
+    var rows = std.ArrayList(condition.ConditionRow).empty;
     errdefer {
         for (rows.items) |*row| row.deinit();
         rows.deinit(allocator);

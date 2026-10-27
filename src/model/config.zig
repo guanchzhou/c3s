@@ -171,7 +171,7 @@ fn parseRecentNamespaces(
         value = value[1 .. value.len - 1];
     if (std.mem.trim(u8, value, " \t").len == 0) return &.{};
 
-    var entries: std.ArrayListUnmanaged([]const u8) = .empty;
+    var entries: std.ArrayList([]const u8) = .empty;
     errdefer {
         for (entries.items) |entry| allocator.free(entry);
         entries.deinit(allocator);
@@ -216,7 +216,7 @@ pub fn withTheme(
         );
     }
 
-    var out: std.ArrayListUnmanaged(u8) = .empty;
+    var out: std.ArrayList(u8) = .empty;
     errdefer out.deinit(allocator);
 
     var in_ui = false;
@@ -303,7 +303,7 @@ pub fn withRecentNamespaces(
     content: []const u8,
     namespaces: []const []const u8,
 ) ![]u8 {
-    var value: std.ArrayListUnmanaged(u8) = .empty;
+    var value: std.ArrayList(u8) = .empty;
     defer value.deinit(allocator);
     try value.appendSlice(allocator, "recent_namespaces: [");
     for (namespaces, 0..) |namespace, index| {
@@ -316,7 +316,7 @@ pub fn withRecentNamespaces(
         return std.fmt.allocPrint(allocator, "c3s:\n  ui:\n    {s}\n", .{value.items});
     }
 
-    var out: std.ArrayListUnmanaged(u8) = .empty;
+    var out: std.ArrayList(u8) = .empty;
     errdefer out.deinit(allocator);
     var in_ui = false;
     var ui_indent: usize = 0;
@@ -369,7 +369,7 @@ pub fn withRecentNamespaces(
 
 fn writeThemeLine(
     allocator: std.mem.Allocator,
-    out: *std.ArrayListUnmanaged(u8),
+    out: *std.ArrayList(u8),
     indent: usize,
     theme_name: []const u8,
 ) !void {

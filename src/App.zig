@@ -474,7 +474,7 @@ const ResourceFamilies = struct {
     csr_projection: CSRProjection,
     storage_version_migration_projection: StorageVersionMigrationProjection,
     event_projection: EventProjection,
-    entries: std.ArrayListUnmanaged(family_registry.Entry) = .empty,
+    entries: std.ArrayList(family_registry.Entry) = .empty,
     registry: family_registry.Registry = undefined,
 
     fn init(allocator: std.mem.Allocator) ResourceFamilies {
@@ -890,7 +890,7 @@ pub const App = struct {
     command_names: [][]const u8 = &.{},
     /// Discovery-only resource names (`nodepools`, `ec2nodeclasses`, …) merged
     /// into the dropdown once the cluster catalog is known. Owned strings.
-    discovered_command_names: std.ArrayListUnmanaged([]u8) = .empty,
+    discovered_command_names: std.ArrayList([]u8) = .empty,
 
     // Kubernetes service
     k8s_service: *K8sService,
@@ -1008,7 +1008,7 @@ pub const App = struct {
     pre_contexts_view: []const u8 = "pods",
     /// Resource kind restored after selecting a namespace.
     pre_namespace_view: []const u8 = "pods",
-    command_history: std.ArrayListUnmanaged([]u8) = .empty,
+    command_history: std.ArrayList([]u8) = .empty,
     history_cursor: usize = 0,
     recent_namespaces: *RecentNamespaces,
     persist_recent_namespaces: bool = !@import("builtin").is_test,
@@ -4857,7 +4857,7 @@ pub const App = struct {
         const registry_names = try self.command_registry.getCommandNames();
         defer self.allocator.free(registry_names);
 
-        var candidates = try std.ArrayListUnmanaged([]const u8).initCapacity(
+        var candidates = try std.ArrayList([]const u8).initCapacity(
             self.allocator,
             registry_names.len + self.discovered_command_names.items.len,
         );
@@ -4977,7 +4977,7 @@ pub const App = struct {
         const cells = source.getSelectedCells() orelse return;
         const count = @min(cells.names.len, cells.values.len);
         if (count == 0) return;
-        var text: std.ArrayListUnmanaged(u8) = .empty;
+        var text: std.ArrayList(u8) = .empty;
         defer text.deinit(self.allocator);
         for (cells.names[0..count], cells.values[0..count], 0..) |name, value, index| {
             if (index > 0) try text.append(self.allocator, '\n');

@@ -781,7 +781,7 @@ pub fn ResourceView(
                 reused: usize,
                 owned: RowData,
             };
-            var planned_rows: std.ArrayListUnmanaged(PlannedRow) = .empty;
+            var planned_rows: std.ArrayList(PlannedRow) = .empty;
             var planned_rows_own_data = true;
             defer planned_rows.deinit(self.table.allocator);
             errdefer if (planned_rows_own_data) {
@@ -791,12 +791,12 @@ pub fn ResourceView(
                 };
             };
 
-            var next_items: std.ArrayListUnmanaged(RowData) = .empty;
+            var next_items: std.ArrayList(RowData) = .empty;
             errdefer {
                 for (next_items.items) |*row| row.deinit();
                 next_items.deinit(self.table.allocator);
             }
-            var next_indices: std.ArrayListUnmanaged(usize) = .empty;
+            var next_indices: std.ArrayList(usize) = .empty;
             errdefer next_indices.deinit(self.table.allocator);
             const visible_count = adapter.visibleCountFn(adapter.ptr);
             try planned_rows.ensureTotalCapacity(self.table.allocator, visible_count);

@@ -59,7 +59,7 @@ pub const Segment = struct {
 /// produces invalid UTF-8.
 pub fn wrapLine(
     allocator: std.mem.Allocator,
-    out: *std.ArrayListUnmanaged(Segment),
+    out: *std.ArrayList(Segment),
     line_index: usize,
     line: []const u8,
     width: usize,
@@ -147,7 +147,7 @@ test "a near-miss shape is not stripped" {
 
 test "wrapping a short line yields exactly one row" {
     const a = testing.allocator;
-    var segs: std.ArrayListUnmanaged(Segment) = .empty;
+    var segs: std.ArrayList(Segment) = .empty;
     defer segs.deinit(a);
 
     try wrapLine(a, &segs, 7, "hello", 20);
@@ -160,7 +160,7 @@ test "wrapping a short line yields exactly one row" {
 test "a line exactly the pane width is one row, not two" {
     // Off-by-one here would put a phantom blank row after every full-width line.
     const a = testing.allocator;
-    var segs: std.ArrayListUnmanaged(Segment) = .empty;
+    var segs: std.ArrayList(Segment) = .empty;
     defer segs.deinit(a);
 
     try wrapLine(a, &segs, 0, "abcde", 5);
@@ -169,7 +169,7 @@ test "a line exactly the pane width is one row, not two" {
 
 test "a long line splits into covering, non-overlapping rows" {
     const a = testing.allocator;
-    var segs: std.ArrayListUnmanaged(Segment) = .empty;
+    var segs: std.ArrayList(Segment) = .empty;
     defer segs.deinit(a);
 
     const line = "abcdefghij";
@@ -179,7 +179,7 @@ test "a long line splits into covering, non-overlapping rows" {
     try testing.expect(!segs.items[1].first);
 
     // The rows must reconstruct the line exactly -- no gap, no duplication.
-    var rebuilt: std.ArrayListUnmanaged(u8) = .empty;
+    var rebuilt: std.ArrayList(u8) = .empty;
     defer rebuilt.deinit(a);
     var expect_start: usize = 0;
     for (segs.items) |s| {
@@ -194,7 +194,7 @@ test "wrapping never splits a multi-byte codepoint" {
     // Cutting a UTF-8 sequence in half writes an invalid byte straight to the
     // terminal. Every row must validate on its own.
     const a = testing.allocator;
-    var segs: std.ArrayListUnmanaged(Segment) = .empty;
+    var segs: std.ArrayList(Segment) = .empty;
     defer segs.deinit(a);
 
     // Three-byte codepoints, so most width values land mid-sequence.
@@ -204,7 +204,7 @@ test "wrapping never splits a multi-byte codepoint" {
         segs.clearRetainingCapacity();
         try wrapLine(a, &segs, 0, line, width);
 
-        var rebuilt: std.ArrayListUnmanaged(u8) = .empty;
+        var rebuilt: std.ArrayList(u8) = .empty;
         defer rebuilt.deinit(a);
         for (segs.items) |s| {
             const piece = line[s.start..s.end];
@@ -222,7 +222,7 @@ test "wrapping never splits a multi-byte codepoint" {
 
 test "an empty line still occupies one row" {
     const a = testing.allocator;
-    var segs: std.ArrayListUnmanaged(Segment) = .empty;
+    var segs: std.ArrayList(Segment) = .empty;
     defer segs.deinit(a);
 
     try wrapLine(a, &segs, 3, "", 10);
@@ -233,7 +233,7 @@ test "an empty line still occupies one row" {
 
 test "zero width produces no rows instead of looping forever" {
     const a = testing.allocator;
-    var segs: std.ArrayListUnmanaged(Segment) = .empty;
+    var segs: std.ArrayList(Segment) = .empty;
     defer segs.deinit(a);
 
     try wrapLine(a, &segs, 0, "anything", 0);

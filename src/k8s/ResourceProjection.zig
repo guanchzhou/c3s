@@ -30,7 +30,7 @@ pub const CellCache = struct {
 
     allocator: std.mem.Allocator,
     capacity: usize,
-    entries: std.ArrayListUnmanaged(Entry) = .empty,
+    entries: std.ArrayList(Entry) = .empty,
 
     pub fn init(allocator: std.mem.Allocator, capacity: usize) CellCache {
         return .{ .allocator = allocator, .capacity = capacity };
@@ -144,7 +144,7 @@ pub fn ResourceProjection(comptime Record: type) type {
         pub const ViewSnapshot = struct {
             allocator: std.mem.Allocator,
             filter_text: []u8,
-            visible: std.ArrayListUnmanaged(usize),
+            visible: std.ArrayList(usize),
             selected_uid: ?[]const u8,
             sort_column: u8,
             sort_ascending: bool,
@@ -185,10 +185,10 @@ pub fn ResourceProjection(comptime Record: type) type {
 
         const State = struct {
             allocator: std.mem.Allocator,
-            entries: std.ArrayListUnmanaged(Entry) = .empty,
+            entries: std.ArrayList(Entry) = .empty,
             uid_index: std.StringHashMapUnmanaged(usize) = .empty,
-            fqn_index: std.ArrayListUnmanaged(usize) = .empty,
-            visible: std.ArrayListUnmanaged(usize) = .empty,
+            fqn_index: std.ArrayList(usize) = .empty,
+            visible: std.ArrayList(usize) = .empty,
             selected_uid: ?[]const u8 = null,
             selection_hint: ?[]u8 = null,
             generation: keys.Generation = 0,
@@ -330,7 +330,7 @@ pub fn ResourceProjection(comptime Record: type) type {
             else
                 @constCast(&.{});
             errdefer if (filter_text.len > 0) self.allocator.free(filter_text);
-            var visible: std.ArrayListUnmanaged(usize) = .empty;
+            var visible: std.ArrayList(usize) = .empty;
             errdefer visible.deinit(self.allocator);
             try visible.appendSlice(self.allocator, self.state.visible.items);
             return .{
@@ -364,7 +364,7 @@ pub fn ResourceProjection(comptime Record: type) type {
                 try self.allocator.dupe(u8, filter);
             errdefer if (new_filter.len > 0) self.allocator.free(new_filter);
 
-            var visible: std.ArrayListUnmanaged(usize) = .empty;
+            var visible: std.ArrayList(usize) = .empty;
             errdefer visible.deinit(self.allocator);
             try buildVisible(
                 self.config,
@@ -837,10 +837,10 @@ pub fn ResourceProjection(comptime Record: type) type {
             column: u8,
             ascending: bool,
             allocator: std.mem.Allocator,
-            visible: *std.ArrayListUnmanaged(usize),
+            visible: *std.ArrayList(usize),
         ) !void {
             if (start >= entries.len) return;
-            var incoming: std.ArrayListUnmanaged(usize) = .empty;
+            var incoming: std.ArrayList(usize) = .empty;
             defer incoming.deinit(allocator);
             try incoming.ensureTotalCapacity(allocator, entries.len - start);
             for (entries[start..], start..) |entry, index| {
@@ -850,7 +850,7 @@ pub fn ResourceProjection(comptime Record: type) type {
             }
             sortVisible(config, entries, column, ascending, incoming.items);
 
-            var merged: std.ArrayListUnmanaged(usize) = .empty;
+            var merged: std.ArrayList(usize) = .empty;
             errdefer merged.deinit(allocator);
             try merged.ensureTotalCapacity(allocator, visible.items.len + incoming.items.len);
             var old_index: usize = 0;
@@ -934,7 +934,7 @@ pub fn ResourceProjection(comptime Record: type) type {
             column: u8,
             ascending: bool,
             allocator: std.mem.Allocator,
-            visible: *std.ArrayListUnmanaged(usize),
+            visible: *std.ArrayList(usize),
         ) !void {
             try visible.ensureTotalCapacity(allocator, entries.len);
             for (entries, 0..) |entry, index| {

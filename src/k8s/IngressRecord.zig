@@ -100,7 +100,7 @@ pub fn columns(self: *const IngressRecord, allocator: std.mem.Allocator) ![7][]c
 fn formatHosts(allocator: std.mem.Allocator, value: klient.types.Ingress) ![]u8 {
     if (value.spec) |spec| {
         if (spec.rules) |rules| {
-            var result: std.ArrayListUnmanaged(u8) = .empty;
+            var result: std.ArrayList(u8) = .empty;
             defer result.deinit(allocator);
             for (rules) |rule| {
                 if (rule != .object) continue;

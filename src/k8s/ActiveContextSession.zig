@@ -490,7 +490,7 @@ pub const ActiveContextSession = struct {
     list_client: ?*list_transport.ListClient = null,
     list_client_unavailable: bool = false,
     /// Kept until teardown: a driver may still be copying an older one.
-    refreshed_tokens: std.ArrayListUnmanaged([]u8) = .empty,
+    refreshed_tokens: std.ArrayList([]u8) = .empty,
 
     pub fn adopt(
         allocator: std.mem.Allocator,
@@ -1177,7 +1177,7 @@ pub const ActiveContextSession = struct {
 
     fn startProxyOwned(self: *ActiveContextSession) !ProxyOwner {
         const target = try task15.enforceRequest(.GET, "/version");
-        var argv: std.ArrayListUnmanaged([]const u8) = .empty;
+        var argv: std.ArrayList([]const u8) = .empty;
         defer argv.deinit(self.allocator);
         try argv.append(self.allocator, "kubectl");
         if (self.spec.kubeconfig_path) |path| {

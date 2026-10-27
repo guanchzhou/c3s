@@ -178,9 +178,9 @@ pub const Entry = struct {
 
 pub const Registry = struct {
     entries: []Entry,
-    entries_source: ?*std.ArrayListUnmanaged(Entry) = null,
+    entries_source: ?*std.ArrayList(Entry) = null,
 
-    pub fn initDynamic(source: *std.ArrayListUnmanaged(Entry)) Registry {
+    pub fn initDynamic(source: *std.ArrayList(Entry)) Registry {
         return .{
             .entries = source.items,
             .entries_source = source,
@@ -308,7 +308,7 @@ test "dynamic registry rebind survives entry buffer reallocation" {
         .taskSpecFn = undefined,
         .task14InjectedSpecFn = undefined,
     };
-    var storage: std.ArrayListUnmanaged(Entry) = .empty;
+    var storage: std.ArrayList(Entry) = .empty;
     defer storage.deinit(std.testing.allocator);
     try storage.ensureTotalCapacity(std.testing.allocator, 1);
     try storage.append(std.testing.allocator, template);

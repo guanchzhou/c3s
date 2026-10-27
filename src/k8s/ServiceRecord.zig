@@ -102,7 +102,7 @@ fn externalIp(allocator: std.mem.Allocator, service: klient.Service, service_typ
     if (service.spec) |spec| {
         if (spec.externalIPs) |addresses| {
             if (addresses.len > 0) {
-                var result: std.ArrayListUnmanaged(u8) = .empty;
+                var result: std.ArrayList(u8) = .empty;
                 defer result.deinit(allocator);
                 for (addresses, 0..) |address, index| {
                     if (index > 0) try result.append(allocator, ',');
@@ -119,7 +119,7 @@ fn formatPorts(allocator: std.mem.Allocator, service: klient.Service) ![]u8 {
     const spec = service.spec orelse return allocator.dupe(u8, "<none>");
     const ports = spec.ports orelse return allocator.dupe(u8, "<none>");
     if (ports.len == 0) return allocator.dupe(u8, "<none>");
-    var result: std.ArrayListUnmanaged(u8) = .empty;
+    var result: std.ArrayList(u8) = .empty;
     defer result.deinit(allocator);
     for (ports, 0..) |port, index| {
         if (index > 0) try result.append(allocator, ',');

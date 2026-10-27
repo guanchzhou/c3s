@@ -149,7 +149,7 @@ pub fn collectCompletionNames(
     allocator: std.mem.Allocator,
     output: []const u8,
 ) ![][]u8 {
-    var names = std.ArrayListUnmanaged([]u8).empty;
+    var names = std.ArrayList([]u8).empty;
     errdefer {
         for (names.items) |name| allocator.free(name);
         names.deinit(allocator);
@@ -191,7 +191,7 @@ pub fn collectCompletionResources(
     allocator: std.mem.Allocator,
     output: []const u8,
 ) ![]CompletionResource {
-    var result: std.ArrayListUnmanaged(CompletionResource) = .empty;
+    var result: std.ArrayList(CompletionResource) = .empty;
     errdefer {
         for (result.items) |*item| item.deinit(allocator);
         result.deinit(allocator);
@@ -220,7 +220,7 @@ pub fn collectCompletionResources(
 
 fn appendCompletionResource(
     allocator: std.mem.Allocator,
-    result: *std.ArrayListUnmanaged(CompletionResource),
+    result: *std.ArrayList(CompletionResource),
     name: []const u8,
     group: []const u8,
     resource: []const u8,
@@ -243,7 +243,7 @@ fn appendCompletionResource(
 
 fn appendUniqueName(
     allocator: std.mem.Allocator,
-    names: *std.ArrayListUnmanaged([]u8),
+    names: *std.ArrayList([]u8),
     name: []const u8,
 ) !void {
     for (names.items) |existing| {

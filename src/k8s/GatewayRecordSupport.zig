@@ -33,7 +33,7 @@ pub fn objectString(
 pub fn joinStrings(allocator: std.mem.Allocator, values: ?[][]const u8) ![]u8 {
     const items = values orelse return dupeOrNone(allocator, null);
     if (items.len == 0) return dupeOrNone(allocator, null);
-    var result: std.ArrayListUnmanaged(u8) = .empty;
+    var result: std.ArrayList(u8) = .empty;
     defer result.deinit(allocator);
     for (items, 0..) |item, index| {
         if (index > 0) try result.append(allocator, ',');
@@ -52,7 +52,7 @@ pub fn joinObjectStrings(
     if (object != .object) return dupeOrNone(allocator, null);
     const array = object.object.get(array_field) orelse return dupeOrNone(allocator, null);
     if (array != .array) return dupeOrNone(allocator, null);
-    var result: std.ArrayListUnmanaged(u8) = .empty;
+    var result: std.ArrayList(u8) = .empty;
     defer result.deinit(allocator);
     for (array.array.items) |entry| {
         if (entry != .object) continue;

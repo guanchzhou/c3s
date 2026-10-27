@@ -7,7 +7,7 @@ const std = @import("std");
 pub fn sortFilteredIndices(
     comptime T: type,
     items: []const T,
-    filtered_indices: *std.ArrayListUnmanaged(usize),
+    filtered_indices: *std.ArrayList(usize),
     comptime getField: fn (*const T) []const u8,
     ascending: bool,
 ) void {
@@ -38,7 +38,7 @@ pub fn sortFilteredIndices(
 pub fn sortFilteredIndicesAtColumn(
     comptime T: type,
     items: []const T,
-    filtered_indices: *std.ArrayListUnmanaged(usize),
+    filtered_indices: *std.ArrayList(usize),
     getField: *const fn (*const T, usize) []const u8,
     column: usize,
     ascending: bool,
@@ -174,7 +174,7 @@ test "sortFilteredIndices sorts items by name ascending" {
         .{ .name = "banana", .value = 2 },
     };
 
-    var filtered_indices = std.ArrayListUnmanaged(usize).empty;
+    var filtered_indices = std.ArrayList(usize).empty;
     defer filtered_indices.deinit(allocator);
 
     try filtered_indices.append(allocator, 0);
@@ -198,7 +198,7 @@ test "sortFilteredIndices sorts items by name descending" {
         .{ .name = "banana", .value = 2 },
     };
 
-    var filtered_indices = std.ArrayListUnmanaged(usize).empty;
+    var filtered_indices = std.ArrayList(usize).empty;
     defer filtered_indices.deinit(allocator);
 
     try filtered_indices.append(allocator, 0);
@@ -220,7 +220,7 @@ test "sortFilteredIndices handles empty list" {
         .{ .name = "apple", .value = 1 },
     };
 
-    var filtered_indices = std.ArrayListUnmanaged(usize).empty;
+    var filtered_indices = std.ArrayList(usize).empty;
     defer filtered_indices.deinit(allocator);
 
     // Empty filtered_indices -- should not crash
@@ -254,9 +254,9 @@ test "runtime-column sort matches the comptime-getter sort exactly" {
     const a = std.testing.allocator;
 
     inline for (.{ true, false }) |asc| {
-        var comptime_order: std.ArrayListUnmanaged(usize) = .empty;
+        var comptime_order: std.ArrayList(usize) = .empty;
         defer comptime_order.deinit(a);
-        var runtime_order: std.ArrayListUnmanaged(usize) = .empty;
+        var runtime_order: std.ArrayList(usize) = .empty;
         defer runtime_order.deinit(a);
         for (0..rows.len) |i| {
             try comptime_order.append(a, i);
@@ -270,7 +270,7 @@ test "runtime-column sort matches the comptime-getter sort exactly" {
     }
 
     // And it actually sorts, rather than both agreeing on a no-op.
-    var order: std.ArrayListUnmanaged(usize) = .empty;
+    var order: std.ArrayList(usize) = .empty;
     defer order.deinit(a);
     for (0..rows.len) |i| try order.append(a, i);
     sortFilteredIndicesAtColumn(Row, &rows, &order, &Row.getAt, 0, true);
@@ -278,7 +278,7 @@ test "runtime-column sort matches the comptime-getter sort exactly" {
     try std.testing.expectEqualStrings("delta", rows[order.items[3]].columns[0]);
 
     // A different column must produce a different key, proving `column` is honoured.
-    var order2: std.ArrayListUnmanaged(usize) = .empty;
+    var order2: std.ArrayList(usize) = .empty;
     defer order2.deinit(a);
     for (0..rows.len) |i| try order2.append(a, i);
     sortFilteredIndicesAtColumn(Row, &rows, &order2, &Row.getAt, 1, true);

@@ -31,7 +31,7 @@ pub const EntityUid = struct {
     /// because Cedar string literals use JSON escaping, and an id can legitimately
     /// contain a quote (`system:serviceaccount:ns:odd"name`).
     pub fn render(self: EntityUid, allocator: std.mem.Allocator) ![]u8 {
-        var out = std.ArrayListUnmanaged(u8).empty;
+        var out = std.ArrayList(u8).empty;
         errdefer out.deinit(allocator);
         try out.appendSlice(allocator, self.type);
         try out.appendSlice(allocator, "::");
@@ -208,7 +208,7 @@ pub fn canonicalPath(
     namespace: []const u8,
     parts: ResourceParts,
 ) ![]u8 {
-    var out = std.ArrayListUnmanaged(u8).empty;
+    var out = std.ArrayList(u8).empty;
     errdefer out.deinit(allocator);
 
     if (api_group.len > 0) {
@@ -485,7 +485,7 @@ pub fn writeEntities(
     request: Request,
     base: ?[]const u8,
 ) (Error || std.mem.Allocator.Error || std.json.ParseError(std.json.Scanner))![]u8 {
-    var entities = std.ArrayListUnmanaged(Entity).empty;
+    var entities = std.ArrayList(Entity).empty;
     defer {
         for (entities.items) |*entity| entity.deinit(allocator);
         entities.deinit(allocator);
@@ -516,7 +516,7 @@ pub fn writeEntities(
 
     try mergeGenerated(allocator, &entities, request);
 
-    var out = std.ArrayListUnmanaged(u8).empty;
+    var out = std.ArrayList(u8).empty;
     errdefer out.deinit(allocator);
     try out.append(allocator, '[');
     for (entities.items, 0..) |entity, i| {
@@ -540,8 +540,8 @@ const Entity = struct {
     id: []const u8,
     /// Attribute names and their raw JSON values, in insertion order so the output is
     /// deterministic and diffable.
-    attr_names: std.ArrayListUnmanaged([]const u8) = .empty,
-    attr_values: std.ArrayListUnmanaged([]const u8) = .empty,
+    attr_names: std.ArrayList([]const u8) = .empty,
+    attr_values: std.ArrayList([]const u8) = .empty,
     parents_json: ?[]const u8 = null,
 
     fn fromJson(
@@ -572,7 +572,7 @@ const Entity = struct {
     }
 
     fn setAttr(self: *Entity, allocator: std.mem.Allocator, name: []const u8, value: []const u8) !void {
-        var encoded = std.ArrayListUnmanaged(u8).empty;
+        var encoded = std.ArrayList(u8).empty;
         defer encoded.deinit(allocator);
         try appendJsonString(allocator, &encoded, value);
         try self.setRawAttr(allocator, name, encoded.items);
@@ -603,7 +603,7 @@ const Entity = struct {
         self.attr_values.appendAssumeCapacity(owned_value);
     }
 
-    fn write(self: Entity, allocator: std.mem.Allocator, out: *std.ArrayListUnmanaged(u8)) !void {
+    fn write(self: Entity, allocator: std.mem.Allocator, out: *std.ArrayList(u8)) !void {
         try out.appendSlice(allocator, "{\"uid\":{\"type\":");
         try appendJsonString(allocator, out, self.type);
         try out.appendSlice(allocator, ",\"id\":");
@@ -640,7 +640,7 @@ fn findEntity(entities: []Entity, type_name: []const u8, id: []const u8) ?usize 
 
 fn mergeGenerated(
     allocator: std.mem.Allocator,
-    entities: *std.ArrayListUnmanaged(Entity),
+    entities: *std.ArrayList(Entity),
     request: Request,
 ) !void {
     // Indices, not pointers: every upsert can append and move the backing array, and
@@ -674,7 +674,7 @@ fn mergeGenerated(
 
 fn upsert(
     allocator: std.mem.Allocator,
-    entities: *std.ArrayListUnmanaged(Entity),
+    entities: *std.ArrayList(Entity),
     uid: EntityUid,
 ) !usize {
     if (findEntity(entities.items, uid.type, uid.id)) |existing| return existing;
@@ -693,7 +693,7 @@ fn stringifyValue(allocator: std.mem.Allocator, value: std.json.Value) ![]u8 {
 
 pub fn appendJsonString(
     allocator: std.mem.Allocator,
-    out: *std.ArrayListUnmanaged(u8),
+    out: *std.ArrayList(u8),
     text: []const u8,
 ) !void {
     try out.append(allocator, '"');

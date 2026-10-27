@@ -13,8 +13,8 @@ const log_text_util = @import("log_text.zig");
 pub const LogsView = struct {
     allocator: std.mem.Allocator,
     theme: *const theme_loader.ThemeColors,
-    lines: std.ArrayListUnmanaged([]const u8),
-    filtered_indices: std.ArrayListUnmanaged(usize),
+    lines: std.ArrayList([]const u8),
+    filtered_indices: std.ArrayList(usize),
     title: []const u8,
     filter_text: []const u8 = "",
     selected_row: u32 = 0,
@@ -28,7 +28,7 @@ pub const LogsView = struct {
     wrap: bool = false,
     /// Cached wrap layout, plus the width and generation it was built for. Rebuilt
     /// lazily in render, because the pane width is not known until then.
-    wrap_segments: std.ArrayListUnmanaged(log_text_util.Segment) = .empty,
+    wrap_segments: std.ArrayList(log_text_util.Segment) = .empty,
     wrap_built_width: usize = 0,
     /// Bumped whenever the lines or the filter change, so a stale layout is never
     /// reused for a different log.
@@ -167,9 +167,9 @@ pub const LogsView = struct {
     }
 
     fn swapContent(self: *LogsView, other: *LogsView) void {
-        std.mem.swap(std.ArrayListUnmanaged([]const u8), &self.lines, &other.lines);
-        std.mem.swap(std.ArrayListUnmanaged(usize), &self.filtered_indices, &other.filtered_indices);
-        std.mem.swap(std.ArrayListUnmanaged(log_text_util.Segment), &self.wrap_segments, &other.wrap_segments);
+        std.mem.swap(std.ArrayList([]const u8), &self.lines, &other.lines);
+        std.mem.swap(std.ArrayList(usize), &self.filtered_indices, &other.filtered_indices);
+        std.mem.swap(std.ArrayList(log_text_util.Segment), &self.wrap_segments, &other.wrap_segments);
         std.mem.swap([]const u8, &self.title, &other.title);
         std.mem.swap([]const u8, &self.filter_text, &other.filter_text);
         self.selected_row = other.selected_row;

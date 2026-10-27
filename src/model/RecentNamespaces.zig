@@ -4,7 +4,7 @@ pub const max_entries = 9;
 
 pub const RecentNamespaces = struct {
     allocator: std.mem.Allocator,
-    entries: std.ArrayListUnmanaged([]u8) = .empty,
+    entries: std.ArrayList([]u8) = .empty,
 
     pub fn init(
         allocator: std.mem.Allocator,

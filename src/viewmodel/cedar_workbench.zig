@@ -54,7 +54,7 @@ pub const PolicyResult = struct {
 /// rejects.
 pub fn appendToPolicySet(
     allocator: std.mem.Allocator,
-    out: *std.ArrayListUnmanaged(u8),
+    out: *std.ArrayList(u8),
     name: []const u8,
     content: []const u8,
 ) !void {
@@ -98,7 +98,7 @@ pub const ScanSummary = struct {
 
 /// Render the `Shift-A` scan pane: one line per policy, then a tally.
 pub fn formatScanReport(allocator: std.mem.Allocator, summary: ScanSummary) ![]u8 {
-    var out = std.ArrayListUnmanaged(u8).empty;
+    var out = std.ArrayList(u8).empty;
     errdefer out.deinit(allocator);
 
     var ok: usize = 0;
@@ -167,7 +167,7 @@ pub const CanIReport = struct {
 /// Render the `Shift-I` result pane: the question, the answer, the evidence it rests
 /// on, and the other verbs for the same principal and resource.
 pub fn formatCanIReport(allocator: std.mem.Allocator, report: CanIReport) ![]u8 {
-    var out = std.ArrayListUnmanaged(u8).empty;
+    var out = std.ArrayList(u8).empty;
     errdefer out.deinit(allocator);
 
     const request = report.request;
@@ -237,7 +237,7 @@ pub fn formatCanIReport(allocator: std.mem.Allocator, report: CanIReport) ![]u8 
 
 fn appendIndented(
     allocator: std.mem.Allocator,
-    out: *std.ArrayListUnmanaged(u8),
+    out: *std.ArrayList(u8),
     text: []const u8,
     indent: []const u8,
 ) !void {
@@ -255,7 +255,7 @@ const testing = std.testing;
 
 test "a policy without an id annotation gets one named after the object" {
     const a = testing.allocator;
-    var set = std.ArrayListUnmanaged(u8).empty;
+    var set = std.ArrayList(u8).empty;
     defer set.deinit(a);
 
     try appendToPolicySet(a, &set, "permit-all", "permit(principal, action, resource);");
@@ -267,7 +267,7 @@ test "a policy without an id annotation gets one named after the object" {
 
 test "an existing id annotation is not duplicated" {
     const a = testing.allocator;
-    var set = std.ArrayListUnmanaged(u8).empty;
+    var set = std.ArrayList(u8).empty;
     defer set.deinit(a);
 
     const content = "@id(\"already-named\")\npermit(principal, action, resource);\n";
@@ -290,7 +290,7 @@ test "an id inside the policy body does not count as an annotation" {
 
 test "a policy name with a quote is escaped into the annotation" {
     const a = testing.allocator;
-    var set = std.ArrayListUnmanaged(u8).empty;
+    var set = std.ArrayList(u8).empty;
     defer set.deinit(a);
 
     try appendToPolicySet(a, &set, "odd\"name", "permit(principal, action, resource);");

@@ -2,7 +2,7 @@ const std = @import("std");
 
 const ReportWriter = struct {
     allocator: std.mem.Allocator,
-    out: *std.ArrayListUnmanaged(u8),
+    out: *std.ArrayList(u8),
 
     fn print(self: ReportWriter, comptime format: []const u8, args: anytype) !void {
         const text = try std.fmt.allocPrint(self.allocator, format, args);
@@ -65,7 +65,7 @@ pub fn buildWithPodsStatus(
     defer object.deinit();
     if (object.value != .object) return error.InvalidObject;
 
-    var out: std.ArrayListUnmanaged(u8) = .empty;
+    var out: std.ArrayList(u8) = .empty;
     errdefer out.deinit(allocator);
     const writer: ReportWriter = .{ .allocator = allocator, .out = &out };
     const root = object.value.object;

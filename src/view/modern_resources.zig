@@ -31,7 +31,7 @@ fn ageOf(alloc: std.mem.Allocator, ts: ?[]const u8) ![]const u8 {
 fn joinStrs(alloc: std.mem.Allocator, items: anytype) ![]const u8 {
     const arr = items orelse return none(alloc);
     if (arr.len == 0) return none(alloc);
-    var buf = std.ArrayListUnmanaged(u8).empty;
+    var buf = std.ArrayList(u8).empty;
     defer buf.deinit(alloc);
     for (arr, 0..) |s, i| {
         if (i > 0) try buf.append(alloc, ',');
@@ -69,7 +69,7 @@ fn joinObjField(alloc: std.mem.Allocator, status: ?std.json.Value, array_key: []
     if (s != .object) return none(alloc);
     const arr_v = s.object.get(array_key) orelse return none(alloc);
     if (arr_v != .array or arr_v.array.items.len == 0) return none(alloc);
-    var buf = std.ArrayListUnmanaged(u8).empty;
+    var buf = std.ArrayList(u8).empty;
     defer buf.deinit(alloc);
     var wrote = false;
     for (arr_v.array.items) |entry| {

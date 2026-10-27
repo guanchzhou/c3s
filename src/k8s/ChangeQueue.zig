@@ -76,7 +76,7 @@ pub const ChangeQueue = struct {
     shared_event: *std.Io.Event,
     wakeup: ?*Wakeup,
     mutex: std.Io.Mutex = .init,
-    items: std.ArrayListUnmanaged(Queued) = .empty,
+    items: std.ArrayList(Queued) = .empty,
     next_sequence: u64 = 1,
     data_count: usize = 0,
     data_bytes: usize = 0,

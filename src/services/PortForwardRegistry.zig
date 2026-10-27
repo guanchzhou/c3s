@@ -56,7 +56,7 @@ pub const Entry = struct {
 
 pub const PortForwardRegistry = struct {
     allocator: std.mem.Allocator,
-    entries: std.ArrayListUnmanaged(Entry) = .empty,
+    entries: std.ArrayList(Entry) = .empty,
 
     pub fn init(allocator: std.mem.Allocator) PortForwardRegistry {
         return .{ .allocator = allocator };

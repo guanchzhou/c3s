@@ -177,7 +177,7 @@ pub const CedarCli = struct {
         const context_file = try self.writeTemp("context", ".json", input.context_json);
         defer self.removeTemp(context_file);
 
-        var argv = std.ArrayListUnmanaged([]const u8).empty;
+        var argv = std.ArrayList([]const u8).empty;
         defer argv.deinit(self.allocator);
         try argv.appendSlice(self.allocator, &.{
             "authorize",   "-v",
@@ -230,7 +230,7 @@ pub const CedarCli = struct {
     fn run(self: *CedarCli, args: []const []const u8) !RunOutput {
         const binary = self.binary orelse return Error.CedarNotFound;
 
-        var argv = std.ArrayListUnmanaged([]const u8).empty;
+        var argv = std.ArrayList([]const u8).empty;
         defer argv.deinit(self.allocator);
         try argv.append(self.allocator, binary);
         try argv.appendSlice(self.allocator, args);
@@ -356,7 +356,7 @@ fn parseDetermining(allocator: std.mem.Allocator, output: []const u8) ![]u8 {
     var rest = output[start + marker.len ..];
     if (std.mem.indexOfScalar(u8, rest, '\n')) |nl| rest = rest[nl + 1 ..] else return allocator.dupe(u8, "");
 
-    var names = std.ArrayListUnmanaged(u8).empty;
+    var names = std.ArrayList(u8).empty;
     errdefer names.deinit(allocator);
 
     var lines = std.mem.splitScalar(u8, rest, '\n');

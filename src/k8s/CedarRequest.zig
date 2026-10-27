@@ -230,7 +230,7 @@ const Spec = struct {
         // same -- so ask discovery directly rather than inferring from the count.
         const crd_present = if (policies.len > 0) true else self.service.detectCedarAuth() catch false;
 
-        var rows = std.ArrayListUnmanaged(CedarView.Row).empty;
+        var rows = std.ArrayList(CedarView.Row).empty;
         errdefer {
             for (rows.items) |*row| row.deinit();
             rows.deinit(allocator);
@@ -271,7 +271,7 @@ const Spec = struct {
         var outcome = try cli.checkParse(self.content);
         defer outcome.deinit(allocator);
 
-        var body = std.ArrayListUnmanaged(u8).empty;
+        var body = std.ArrayList(u8).empty;
         errdefer body.deinit(allocator);
         try body.print(allocator, "{s}: {s}\n", .{ self.name, if (outcome.ok) "parsed" else "PARSE_FAIL" });
         if (outcome.diagnostics.len > 0) {
@@ -312,7 +312,7 @@ const Spec = struct {
         var outcome = try cli.validate(self.content, self.schema_path);
         defer outcome.deinit(allocator);
 
-        var body = std.ArrayListUnmanaged(u8).empty;
+        var body = std.ArrayList(u8).empty;
         errdefer body.deinit(allocator);
         try body.print(allocator, "Policy: {s}\nSchema: {s}\n\n", .{ self.name, self.schema_path });
         try body.print(allocator, "{s}\n", .{if (outcome.ok) "valid" else "INVALID"});
@@ -404,7 +404,7 @@ const Spec = struct {
         var determining: []u8 = try allocator.dupe(u8, "");
         defer allocator.free(determining);
 
-        var matrix = std.ArrayListUnmanaged(workbench.MatrixEntry).empty;
+        var matrix = std.ArrayList(workbench.MatrixEntry).empty;
         defer matrix.deinit(allocator);
 
         if (collected.results.items.len == 0 and collected.included.items.len == 0) {
@@ -457,13 +457,13 @@ const Spec = struct {
     /// Fetch every Policy object and check-parse it, building both the per-policy
     /// verdicts and the combined policy set.
     const Collected = struct {
-        results: std.ArrayListUnmanaged(workbench.PolicyResult) = .empty,
+        results: std.ArrayList(workbench.PolicyResult) = .empty,
         /// Names that parsed, borrowed from `owned_names`.
-        included: std.ArrayListUnmanaged([]const u8) = .empty,
-        gaps: std.ArrayListUnmanaged(workbench.PolicyResult) = .empty,
-        policy_set: std.ArrayListUnmanaged(u8) = .empty,
-        owned_names: std.ArrayListUnmanaged([]u8) = .empty,
-        owned_details: std.ArrayListUnmanaged([]u8) = .empty,
+        included: std.ArrayList([]const u8) = .empty,
+        gaps: std.ArrayList(workbench.PolicyResult) = .empty,
+        policy_set: std.ArrayList(u8) = .empty,
+        owned_names: std.ArrayList([]u8) = .empty,
+        owned_details: std.ArrayList([]u8) = .empty,
         truncated: bool = false,
 
         fn record(
