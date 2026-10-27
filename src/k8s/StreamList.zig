@@ -1,4 +1,5 @@
 const std = @import("std");
+const klient = @import("klient");
 const transport_mod = @import("ReadTransport.zig");
 
 pub const max_object_bytes: usize = 4 << 20;
@@ -46,10 +47,13 @@ pub fn stream(
         return error.InvalidStreamOptions;
 
     const Parser = struct {
+        const Self = @This();
+
         allocator: std.mem.Allocator,
         options: Options,
         batch_context: @TypeOf(batch_context),
         result: ?Result = null,
+        responses: usize = 0,
 
         fn receive(
             erased: *anyopaque,
@@ -57,6 +61,26 @@ pub fn stream(
             body_reader: *std.Io.Reader,
         ) anyerror!void {
             const self: *@This() = @ptrCast(@alignCast(erased));
+            self.responses += 1;
+            if (self.responses > 1 and meta.page == .first) try restartBatches(self.batch_context);
+            if (self.result) |*previous| {
+                previous.deinit();
+                self.result = null;
+            }
+            try self.parseResponse(meta, body_reader);
+            if (meta.continue_sink) |sink| sink.* = self.result.?.continue_token;
+        }
+
+        fn notifyBusy(erased: *anyopaque, seconds: u32) anyerror!void {
+            const self: *@This() = @ptrCast(@alignCast(erased));
+            try self.batch_context.busy(seconds);
+        }
+
+        fn parseResponse(
+            self: *@This(),
+            meta: transport_mod.ResponseMeta,
+            body_reader: *std.Io.Reader,
+        ) anyerror!void {
             if (meta.status == .payload_too_large) return error.ResponseTooLarge;
             if (meta.status.class() != .success) return switch (meta.status) {
                 .unauthorized => error.HttpUnauthorized,
@@ -66,7 +90,81 @@ pub fn stream(
                 .too_many_requests => error.HttpThrottled,
                 else => error.HttpStatus,
             };
+            if (meta.content_type) |value| {
+                if (klient.protobuf.isContentType(value)) {
+                    if (comptime !klient.protobuf.supports(T)) return error.UnsupportedContentType;
+                    self.result = try self.parseProtobuf(body_reader);
+                    return;
+                }
+            }
             self.result = try self.parse(body_reader);
+        }
+
+        /// Collects decoded objects and hands them to `on_batch` every
+        /// `batch_size` objects or `batch_interval`, whichever comes first.
+        /// Objects are allocated from `objects`, which is reset after each batch.
+        const Batcher = struct {
+            parser: *Self,
+            items: std.ArrayList(T) = .empty,
+            objects: std.heap.ArenaAllocator,
+            started: u64,
+
+            fn init(parser: *Self) Batcher {
+                return .{
+                    .parser = parser,
+                    .objects = .init(parser.allocator),
+                    .started = parser.options.clock.nowNs(),
+                };
+            }
+
+            fn deinit(self: *Batcher) void {
+                self.items.deinit(self.parser.allocator);
+                self.objects.deinit();
+            }
+
+            fn add(self: *Batcher, item: T) !void {
+                try self.items.append(self.parser.allocator, item);
+                const now = self.parser.options.clock.nowNs();
+                if (self.items.items.len >= self.parser.options.batch_size or
+                    now -| self.started >= self.parser.options.batch_interval)
+                {
+                    try on_batch(self.parser.batch_context, self.items.items);
+                    self.items.clearRetainingCapacity();
+                    _ = self.objects.reset(.{ .retain_with_limit = self.parser.options.max_object_size });
+                    self.started = now;
+                }
+            }
+
+            fn finish(self: *Batcher) !void {
+                if (self.items.items.len != 0) try on_batch(self.parser.batch_context, self.items.items);
+            }
+        };
+
+        fn parseProtobuf(self: *@This(), body_reader: *std.Io.Reader) !Result {
+            var batcher: Batcher = .init(self);
+            defer batcher.deinit();
+            var decoder = klient.protobuf.ListDecoder(T).init(
+                self.allocator,
+                body_reader,
+                .{ .max_object_size = self.options.max_object_size },
+            ) catch |err| return mapProtobufError(err);
+            defer decoder.deinit();
+            while (decoder.next(batcher.objects.allocator()) catch |err| return mapProtobufError(err)) |item| {
+                try batcher.add(item);
+            }
+            try batcher.finish();
+
+            const list_meta = decoder.listMeta();
+            const resource_version = try self.allocator.dupe(
+                u8,
+                list_meta.resource_version orelse return error.MissingResourceVersion,
+            );
+            errdefer self.allocator.free(resource_version);
+            return .{
+                .allocator = self.allocator,
+                .resource_version = resource_version,
+                .continue_token = try self.allocator.dupe(u8, list_meta.continue_token orelse ""),
+            };
         }
 
         fn parse(self: *@This(), body_reader: *std.Io.Reader) !Result {
@@ -77,17 +175,14 @@ pub fn stream(
 
             var outer_arena = std.heap.ArenaAllocator.init(self.allocator);
             defer outer_arena.deinit();
-            var object_arena = std.heap.ArenaAllocator.init(self.allocator);
-            defer object_arena.deinit();
-            var batch: std.ArrayList(T) = .empty;
-            defer batch.deinit(self.allocator);
+            var batcher: Batcher = .init(self);
+            defer batcher.deinit();
 
             var resource_version: ?[]u8 = null;
             errdefer if (resource_version) |rv| self.allocator.free(rv);
             var continue_token: ?[]u8 = null;
             errdefer if (continue_token) |token| self.allocator.free(token);
             var saw_items = false;
-            var batch_started = self.options.clock.nowNs();
 
             const first = nextOuter(&json_reader) catch |err| return mapOuterError(err);
             if (first != .object_begin) return error.MalformedOuterJson;
@@ -122,7 +217,7 @@ pub fn stream(
                         const object_start = diagnostics.getByteOffset();
                         const item = std.json.innerParse(
                             T,
-                            object_arena.allocator(),
+                            batcher.objects.allocator(),
                             &json_reader,
                             .{
                                 .ignore_unknown_fields = true,
@@ -133,17 +228,7 @@ pub fn stream(
                         const object_end = diagnostics.getByteOffset();
                         if (object_end - object_start > self.options.max_object_size)
                             return error.ObjectTooLarge;
-                        try batch.append(self.allocator, item);
-
-                        const now = self.options.clock.nowNs();
-                        if (batch.items.len >= self.options.batch_size or
-                            now -| batch_started >= self.options.batch_interval)
-                        {
-                            try on_batch(self.batch_context, batch.items);
-                            batch.clearRetainingCapacity();
-                            _ = object_arena.reset(.{ .retain_with_limit = self.options.max_object_size });
-                            batch_started = now;
-                        }
+                        try batcher.add(item);
                     }
                 } else if (std.mem.eql(u8, key, "metadata")) {
                     if (resource_version != null) return error.MalformedOuterJson;
@@ -178,7 +263,7 @@ pub fn stream(
             if (!saw_items) return error.MissingItems;
             const final = json_reader.next() catch |err| return mapOuterError(err);
             if (final != .end_of_document) return error.MalformedOuterJson;
-            if (batch.items.len != 0) try on_batch(self.batch_context, batch.items);
+            try batcher.finish();
 
             return .{
                 .allocator = self.allocator,
@@ -193,8 +278,40 @@ pub fn stream(
         .options = options,
         .batch_context = batch_context,
     };
-    try transport.get(request, &parser, Parser.receive);
+    var routed = request;
+    routed.accepts_protobuf = comptime klient.protobuf.supports(T);
+    if (comptime batchHas(@TypeOf(batch_context), "busy"))
+        routed.busy = .{ .context = &parser, .notify_fn = Parser.notifyBusy };
+    transport.get(routed, &parser, Parser.receive) catch |err| {
+        if (parser.result) |*result| result.deinit();
+        return err;
+    };
     return parser.result orelse error.CallbackNotInvoked;
+}
+
+/// Lists that a transport may retry from the start after delivering rows need
+/// a batch context with `restart`, which discards the rows delivered so far.
+fn restartBatches(batch_context: anytype) !void {
+    if (comptime batchHas(@TypeOf(batch_context), "restart")) {
+        try batch_context.restart();
+    } else {
+        return error.ListRestartUnsupported;
+    }
+}
+
+fn batchHas(comptime Context: type, comptime name: []const u8) bool {
+    const Base = switch (@typeInfo(Context)) {
+        .pointer => |pointer| pointer.child,
+        else => Context,
+    };
+    return @typeInfo(Base) == .@"struct" and @hasDecl(Base, name);
+}
+
+pub fn isHttp1Retryable(err: anyerror) bool {
+    return switch (err) {
+        error.ProtobufMagicMismatch, error.MalformedProtobuf, error.UnsupportedContentType => true,
+        else => false,
+    };
 }
 
 fn nextOuter(reader: *std.json.Reader) !std.json.Token {
@@ -207,6 +324,16 @@ fn mapOuterError(err: anyerror) anyerror {
         error.ReadFailed => error.ReadFailed,
         error.ValueTooLong => error.ObjectTooLarge,
         else => error.MalformedOuterJson,
+    };
+}
+
+fn mapProtobufError(err: klient.protobuf.ListError) anyerror {
+    return switch (err) {
+        error.OutOfMemory => error.OutOfMemory,
+        error.ReadFailed => error.ReadFailed,
+        error.ObjectTooLarge => error.ObjectTooLarge,
+        error.BadMagic => error.ProtobufMagicMismatch,
+        else => error.MalformedProtobuf,
     };
 }
 
@@ -558,4 +685,312 @@ test "truncated reads propagate and allocation failures clean up" {
         AllocationTest.run,
         .{body},
     );
+}
+
+const PodCapture = struct {
+    allocator: std.mem.Allocator,
+    names: std.ArrayList([]u8) = .empty,
+    batch_sizes: std.ArrayList(usize) = .empty,
+
+    fn deinit(self: *PodCapture) void {
+        for (self.names.items) |name| self.allocator.free(name);
+        self.names.deinit(self.allocator);
+        self.batch_sizes.deinit(self.allocator);
+    }
+
+    fn receive(self: *PodCapture, pods: []const klient.Pod) !void {
+        try self.batch_sizes.append(self.allocator, pods.len);
+        for (pods) |pod| {
+            const name = try self.allocator.dupe(u8, pod.metadata.name);
+            errdefer self.allocator.free(name);
+            try self.names.append(self.allocator, name);
+        }
+    }
+};
+
+fn appendVarint(out: *std.ArrayList(u8), allocator: std.mem.Allocator, value: u64) !void {
+    var v = value;
+    while (v >= 0x80) : (v >>= 7) try out.append(allocator, @as(u8, @truncate(v)) | 0x80);
+    try out.append(allocator, @truncate(v));
+}
+
+fn appendBytesField(out: *std.ArrayList(u8), allocator: std.mem.Allocator, number: u32, bytes: []const u8) !void {
+    try appendVarint(out, allocator, (@as(u64, number) << 3) | 2);
+    try appendVarint(out, allocator, bytes.len);
+    try out.appendSlice(allocator, bytes);
+}
+
+/// `k8s\x00` + runtime.Unknown{raw: PodList{metadata, items}}, each Pod
+/// carrying only metadata.name.
+fn protobufPodList(allocator: std.mem.Allocator, names: []const []const u8, resource_version: []const u8, continue_token: []const u8) ![]u8 {
+    var list: std.ArrayList(u8) = .empty;
+    defer list.deinit(allocator);
+    var scratch: std.ArrayList(u8) = .empty;
+    defer scratch.deinit(allocator);
+    try appendBytesField(&scratch, allocator, 2, resource_version);
+    if (continue_token.len != 0) try appendBytesField(&scratch, allocator, 3, continue_token);
+    try appendBytesField(&list, allocator, 1, scratch.items);
+    for (names) |name| {
+        scratch.clearRetainingCapacity();
+        var meta: std.ArrayList(u8) = .empty;
+        defer meta.deinit(allocator);
+        try appendBytesField(&meta, allocator, 1, name);
+        try appendBytesField(&scratch, allocator, 1, meta.items);
+        try appendBytesField(&list, allocator, 2, scratch.items);
+    }
+    var body: std.ArrayList(u8) = .empty;
+    errdefer body.deinit(allocator);
+    try body.appendSlice(allocator, klient.protobuf.magic);
+    try appendBytesField(&body, allocator, 2, list.items);
+    return body.toOwnedSlice(allocator);
+}
+
+const protobuf_content_type = "application/vnd.kubernetes.protobuf";
+
+fn runPodBody(allocator: std.mem.Allocator, script: @import("FakeTransport.zig").ResponseScript, capture: *PodCapture) !Result {
+    const FakeTransport = @import("FakeTransport.zig").FakeTransport;
+    const scripts = [_]@import("FakeTransport.zig").ResponseScript{script};
+    var fake = FakeTransport.init(allocator, &scripts);
+    defer fake.deinit();
+    var clock: ManualClock = .{};
+    return stream(
+        klient.Pod,
+        allocator,
+        fake.transport(),
+        try transport_mod.ReadRequest.init("/api/v1/pods"),
+        .{ .clock = clock.clock() },
+        capture,
+        PodCapture.receive,
+    );
+}
+
+test "Protobuf list bodies stream into the same batches as JSON" {
+    const allocator = std.testing.allocator;
+    var names: [129][]const u8 = undefined;
+    var name_buffers: [129][8]u8 = undefined;
+    for (&names, &name_buffers, 0..) |*name, *buffer, index| name.* = try std.fmt.bufPrint(buffer, "p{d}", .{index});
+    const body = try protobufPodList(allocator, &names, "77", "next-page");
+    defer allocator.free(body);
+
+    var capture: PodCapture = .{ .allocator = allocator };
+    defer capture.deinit();
+    var result = try runPodBody(allocator, .{
+        .body = body,
+        .content_type = protobuf_content_type,
+        .chunk_sizes = &.{ 1, 3, 5, 64, 7 },
+    }, &capture);
+    defer result.deinit();
+    try std.testing.expectEqualSlices(usize, &.{ 128, 1 }, capture.batch_sizes.items);
+    try std.testing.expectEqualStrings("p0", capture.names.items[0]);
+    try std.testing.expectEqualStrings("p128", capture.names.items[128]);
+    try std.testing.expectEqualStrings("77", result.resource_version);
+    try std.testing.expectEqualStrings("next-page", result.continue_token);
+}
+
+test "Protobuf decode failures are distinct from JSON ones" {
+    const allocator = std.testing.allocator;
+    const body = try protobufPodList(allocator, &.{ "a", "b" }, "5", "");
+    defer allocator.free(body);
+    const no_version = try protobufPodList(allocator, &.{"a"}, "", "");
+    defer allocator.free(no_version);
+
+    const Case = struct { script: @import("FakeTransport.zig").ResponseScript, expected: anyerror };
+    const cases = [_]Case{
+        .{ .script = .{ .body = "{\"items\":[]}", .content_type = protobuf_content_type }, .expected = error.ProtobufMagicMismatch },
+        .{ .script = .{ .body = body[0 .. body.len - 2], .content_type = protobuf_content_type }, .expected = error.MalformedProtobuf },
+        .{ .script = .{ .body = no_version, .content_type = protobuf_content_type }, .expected = error.MissingResourceVersion },
+    };
+    for (cases) |case| {
+        var capture: PodCapture = .{ .allocator = allocator };
+        defer capture.deinit();
+        try std.testing.expectError(case.expected, runPodBody(allocator, case.script, &capture));
+    }
+
+    var clock: ManualClock = .{};
+    var capture: BatchCapture = .{ .allocator = allocator };
+    defer capture.deinit();
+    const FakeTransport = @import("FakeTransport.zig").FakeTransport;
+    const scripts = [_]@import("FakeTransport.zig").ResponseScript{.{ .body = body, .content_type = protobuf_content_type }};
+    var fake = FakeTransport.init(allocator, &scripts);
+    defer fake.deinit();
+    try std.testing.expectError(error.UnsupportedContentType, stream(
+        TestItem,
+        allocator,
+        fake.transport(),
+        try transport_mod.ReadRequest.init("/api/v1/pods"),
+        .{ .clock = clock.clock() },
+        &capture,
+        BatchCapture.receive,
+    ));
+}
+
+test "Protobuf path cleans up on every allocation failure" {
+    const body = try protobufPodList(std.testing.allocator, &.{ "a", "b", "c" }, "9", "tok");
+    defer std.testing.allocator.free(body);
+    const AllocationTest = struct {
+        fn run(allocator: std.mem.Allocator, bytes: []const u8) !void {
+            var capture: PodCapture = .{ .allocator = allocator };
+            defer capture.deinit();
+            var result = try runPodBody(allocator, .{ .body = bytes, .content_type = protobuf_content_type, .chunk_sizes = &.{ 2, 5 } }, &capture);
+            result.deinit();
+        }
+    };
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, AllocationTest.run, .{body});
+}
+
+const ScriptedPage = struct {
+    page: @FieldType(transport_mod.ResponseMeta, "page"),
+    body: []const u8,
+    fail: bool = false,
+};
+
+/// Replays several responses into one `get`, the way a paging or retrying
+/// list transport does, and records the continue token each page reported.
+const PagedTransport = struct {
+    pages: []const ScriptedPage,
+    token_bytes: [4][16]u8 = undefined,
+    tokens: [4][]const u8 = undefined,
+    token_count: usize = 0,
+    busy_seconds: ?u32 = null,
+    accepts_protobuf: ?bool = null,
+
+    fn transport(self: *PagedTransport) transport_mod.ReadTransport {
+        return .{ .ptr = self, .vtable = &.{ .get = get } };
+    }
+
+    fn get(
+        erased: *anyopaque,
+        request: transport_mod.ReadRequest,
+        context: *anyopaque,
+        callback: transport_mod.ReadCallback,
+    ) anyerror!void {
+        const self: *PagedTransport = @ptrCast(@alignCast(erased));
+        self.accepts_protobuf = request.accepts_protobuf;
+        if (self.busy_seconds) |seconds| if (request.busy) |busy| try busy.notify(seconds);
+        for (self.pages) |scripted| {
+            var token: []const u8 = "";
+            var reader: std.Io.Reader = .fixed(scripted.body);
+            callback(context, .{
+                .status = .ok,
+                .content_type = "application/json",
+                .page = scripted.page,
+                .continue_sink = &token,
+            }, &reader) catch |err| {
+                if (!scripted.fail) return err;
+                continue;
+            };
+            const copy = self.token_bytes[self.token_count][0..token.len];
+            @memcpy(copy, token);
+            self.tokens[self.token_count] = copy;
+            self.token_count += 1;
+        }
+    }
+};
+
+const RestartCapture = struct {
+    inner: BatchCapture,
+    restarts: usize = 0,
+    busy_seconds: ?u32 = null,
+
+    fn receive(self: *RestartCapture, items: []const TestItem) !void {
+        try self.inner.receive(items);
+    }
+
+    pub fn restart(self: *RestartCapture) !void {
+        self.restarts += 1;
+        for (self.inner.names.items) |name| self.inner.allocator.free(name);
+        self.inner.names.clearRetainingCapacity();
+    }
+
+    pub fn busy(self: *RestartCapture, seconds: u32) !void {
+        self.busy_seconds = seconds;
+    }
+};
+
+test "continued pages append rows and report each page's continue token" {
+    const allocator = std.testing.allocator;
+    var paged: PagedTransport = .{ .pages = &.{
+        .{ .page = .first, .body = "{\"metadata\":{\"resourceVersion\":\"1\",\"continue\":\"t1\"},\"items\":[{\"metadata\":{\"name\":\"a\"}}]}" },
+        .{ .page = .next, .body = "{\"metadata\":{\"resourceVersion\":\"2\"},\"items\":[{\"metadata\":{\"name\":\"b\"}}]}" },
+    } };
+    var clock: ManualClock = .{};
+    var capture: RestartCapture = .{ .inner = .{ .allocator = allocator } };
+    defer capture.inner.deinit();
+    var result = try stream(TestItem, allocator, paged.transport(), try transport_mod.ReadRequest.list("/api/v1/pods"), .{ .clock = clock.clock() }, &capture, RestartCapture.receive);
+    defer result.deinit();
+
+    try std.testing.expectEqual(@as(usize, 0), capture.restarts);
+    try std.testing.expectEqual(@as(usize, 2), capture.inner.names.items.len);
+    try std.testing.expectEqualStrings("2", result.resource_version);
+    try std.testing.expectEqual(@as(usize, 2), paged.token_count);
+    try std.testing.expectEqualStrings("t1", paged.tokens[0]);
+    try std.testing.expectEqualStrings("", paged.tokens[1]);
+}
+
+test "a new first page after delivered rows restarts the row set" {
+    const allocator = std.testing.allocator;
+    var paged: PagedTransport = .{ .pages = &.{
+        .{ .page = .first, .body = "{\"items\":[{\"metadata\":{\"name\":\"stale\"}},", .fail = true },
+        .{ .page = .first, .body = "{\"metadata\":{\"resourceVersion\":\"7\"},\"items\":[{\"metadata\":{\"name\":\"fresh\"}}]}" },
+    } };
+    var clock: ManualClock = .{};
+    var capture: RestartCapture = .{ .inner = .{ .allocator = allocator } };
+    defer capture.inner.deinit();
+    var result = try stream(TestItem, allocator, paged.transport(), try transport_mod.ReadRequest.list("/api/v1/pods"), .{ .clock = clock.clock() }, &capture, RestartCapture.receive);
+    defer result.deinit();
+
+    try std.testing.expectEqual(@as(usize, 1), capture.restarts);
+    try std.testing.expectEqual(@as(usize, 1), capture.inner.names.items.len);
+    try std.testing.expectEqualStrings("fresh", capture.inner.names.items[0]);
+    try std.testing.expectEqualStrings("7", result.resource_version);
+}
+
+test "a restart without a restart hook fails instead of mixing row sets" {
+    const allocator = std.testing.allocator;
+    var paged: PagedTransport = .{ .pages = &.{
+        .{ .page = .first, .body = "{\"items\":[", .fail = true },
+        .{ .page = .first, .body = "{\"metadata\":{\"resourceVersion\":\"7\"},\"items\":[]}" },
+    } };
+    var clock: ManualClock = .{};
+    var capture: BatchCapture = .{ .allocator = allocator };
+    defer capture.deinit();
+    try std.testing.expectError(error.ListRestartUnsupported, stream(TestItem, allocator, paged.transport(), try transport_mod.ReadRequest.list("/api/v1/pods"), .{ .clock = clock.clock() }, &capture, BatchCapture.receive));
+}
+
+test "a throttled wait reaches the batch context" {
+    const allocator = std.testing.allocator;
+    var paged: PagedTransport = .{ .busy_seconds = 3, .pages = &.{
+        .{ .page = .first, .body = "{\"metadata\":{\"resourceVersion\":\"1\"},\"items\":[]}" },
+    } };
+    var clock: ManualClock = .{};
+    var capture: RestartCapture = .{ .inner = .{ .allocator = allocator } };
+    defer capture.inner.deinit();
+    var result = try stream(TestItem, allocator, paged.transport(), try transport_mod.ReadRequest.list("/api/v1/pods"), .{ .clock = clock.clock() }, &capture, RestartCapture.receive);
+    defer result.deinit();
+
+    try std.testing.expectEqual(@as(?u32, 3), capture.busy_seconds);
+}
+
+test "only types with a Protobuf schema offer Protobuf" {
+    const Discard = struct {
+        fn run(comptime T: type) !?bool {
+            var paged: PagedTransport = .{ .pages = &.{
+                .{ .page = .first, .body = "{\"metadata\":{\"resourceVersion\":\"1\"},\"items\":[]}" },
+            } };
+            var clock: ManualClock = .{};
+            var sink: u8 = 0;
+            var result = try stream(T, std.testing.allocator, paged.transport(), try transport_mod.ReadRequest.list("/apis/x"), .{ .clock = clock.clock() }, &sink, receive(T));
+            result.deinit();
+            return paged.accepts_protobuf;
+        }
+
+        fn receive(comptime T: type) fn (*u8, []const T) anyerror!void {
+            return struct {
+                fn f(_: *u8, _: []const T) anyerror!void {}
+            }.f;
+        }
+    };
+    try std.testing.expectEqual(@as(?bool, true), try Discard.run(klient.Pod));
+    try std.testing.expectEqual(@as(?bool, true), try Discard.run(klient.types.Service));
+    try std.testing.expectEqual(@as(?bool, false), try Discard.run(klient.Gateway));
 }

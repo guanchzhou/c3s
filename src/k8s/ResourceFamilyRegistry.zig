@@ -25,6 +25,7 @@ pub const Entry = struct {
     markStoppedFn: *const fn (*anyopaque) void,
     refreshFn: *const fn (*anyopaque) anyerror!void,
     setErrorFn: *const fn (*anyopaque, []const u8) anyerror!void,
+    setBusyFn: *const fn (*anyopaque, u32) void,
     allNamespacesFn: *const fn (*anyopaque) bool,
     syncFn: *const fn (*anyopaque) anyerror!void,
     taskSpecFn: *const fn (
@@ -79,6 +80,10 @@ pub const Entry = struct {
                 const typed = typedView(raw);
                 typed.table.loading = false;
                 try typed.table.setError(message);
+            }
+
+            fn setBusy(raw: *anyopaque, seconds: u32) void {
+                typedView(raw).table.busy_retry_seconds = seconds;
             }
 
             fn allNamespaces(raw: *anyopaque) bool {
@@ -136,6 +141,7 @@ pub const Entry = struct {
             .markStoppedFn = Adapter.markStopped,
             .refreshFn = Adapter.refresh,
             .setErrorFn = Adapter.setError,
+            .setBusyFn = Adapter.setBusy,
             .allNamespacesFn = Adapter.allNamespaces,
             .syncFn = Adapter.sync,
             .taskSpecFn = Adapter.taskSpec,
@@ -224,6 +230,12 @@ pub const Registry = struct {
         return true;
     }
 
+    pub fn setBusy(self: *Registry, identity: keys.ResourceIdentity, seconds: u32) void {
+        const index = self.find(identity) orelse return;
+        const entry = self.entryAt(index).?;
+        entry.setBusyFn(entry.view, seconds);
+    }
+
     pub fn markForContextRestart(self: *Registry) void {
         for (self.items()) |*entry| {
             entry.restart_pending = entry.active != null;
@@ -290,6 +302,7 @@ test "dynamic registry rebind survives entry buffer reallocation" {
         .markStoppedFn = Probe.mark,
         .refreshFn = undefined,
         .setErrorFn = undefined,
+        .setBusyFn = undefined,
         .allNamespacesFn = undefined,
         .syncFn = undefined,
         .taskSpecFn = undefined,

@@ -6,7 +6,9 @@ on:
 
 # Same sibling-checkout rule as ci.yml: build.zig.zon PATH-deps zig-klient and
 # kubectl-traffic, both public. Zig cross-compiles all four release targets
-# from Ubuntu so a tag does not spend macOS minutes.
+# from Ubuntu so a tag does not spend macOS minutes; that includes libcurl,
+# nghttp2, mbedTLS and zlib, which zig-klient fetches as pinned source tarballs
+# and the build compiles for each target. The binaries link only libc.
 permissions:
   contents: read
 

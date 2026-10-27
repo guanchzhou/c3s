@@ -134,6 +134,14 @@ pub fn WatchEvent(comptime Record: type) type {
     };
 }
 
+/// Callbacks a list source makes on the driver. Each takes the receiver context.
+pub const ListHooks = struct {
+    /// Drops rows from an abandoned attempt; the next rows start a new set.
+    restart: *const fn (*anyopaque) anyerror!void,
+    /// The server asked to retry later: seconds left in the wait, 0 when it ends.
+    busy: *const fn (*anyopaque, u32) anyerror!void,
+};
+
 pub fn Source(comptime Record: type) type {
     return struct {
         context: *anyopaque,
@@ -143,6 +151,7 @@ pub fn Source(comptime Record: type) type {
             *anyopaque,
             *const fn (*anyopaque, Record) anyerror!void,
             *const fn (*anyopaque) anyerror!void,
+            ListHooks,
         ) anyerror!ListOutcome,
         watch_fn: *const fn (
             *anyopaque,
@@ -158,8 +167,9 @@ pub fn Source(comptime Record: type) type {
             receiver_context: *anyopaque,
             receiver: *const fn (*anyopaque, Record) anyerror!void,
             chunk_end: *const fn (*anyopaque) anyerror!void,
+            hooks: ListHooks,
         ) !ListOutcome {
-            return self.list_fn(self.context, cancel, receiver_context, receiver, chunk_end);
+            return self.list_fn(self.context, cancel, receiver_context, receiver, chunk_end, hooks);
         }
 
         pub fn watch(
@@ -262,6 +272,7 @@ pub fn Driver(comptime Record: type) type {
                         self,
                         receiveListRecord,
                         flushListChunk,
+                        .{ .restart = restartList, .busy = serverBusy },
                     );
                     defer list_outcome.deinit(self.allocator);
                     if (self.cancel.isCanceled()) return .canceled;
@@ -340,6 +351,20 @@ pub fn Driver(comptime Record: type) type {
             self.list_pages +|= 1;
             self.observe(.list_page, self.list_pages, "");
             try self.flush();
+        }
+
+        fn restartList(raw: *anyopaque) anyerror!void {
+            const self: *Self = @ptrCast(@alignCast(raw));
+            self.clearPending();
+            self.list_object_count = 0;
+            self.list_pages = 0;
+            self.observe(.relist, 0, self.resource_version.bytes);
+            try self.emitSync(.list_started);
+        }
+
+        fn serverBusy(raw: *anyopaque, seconds: u32) anyerror!void {
+            const self: *Self = @ptrCast(@alignCast(raw));
+            try self.emitSync(.{ .server_busy = seconds });
         }
 
         fn receiveWatchEvent(raw: *anyopaque, event: *WatchEvent(Record)) anyerror!void {
@@ -617,6 +642,7 @@ const Scenario = enum {
     cancel_watch,
     event_then_hold,
     progress_then_transport,
+    restart_list,
 };
 
 const Script = struct {
@@ -647,10 +673,15 @@ const Script = struct {
         receiver_context: *anyopaque,
         receiver: *const fn (*anyopaque, TestRecord) anyerror!void,
         chunk_end: *const fn (*anyopaque) anyerror!void,
+        restart: ListHooks,
     ) anyerror!ListOutcome {
         const self: *Script = @ptrCast(@alignCast(raw));
         self.list_calls += 1;
         if (self.scenario == .cancel_list) return .{ .failure = .canceled };
+        if (self.scenario == .restart_list) {
+            try receiver(receiver_context, try TestRecord.make(self.allocator, "stale-pending", 0));
+            try restart.restart(receiver_context);
+        }
         if (self.scenario == .unauthorized) return .{ .failure = .unauthorized };
         if (self.scenario == .forbidden) return .{ .failure = .forbidden };
 
@@ -720,7 +751,7 @@ const Script = struct {
             .server => return .server,
             .transport => return .transport,
             .malformed => return .{ .malformed = malformedDetail("bad event") },
-            .cancel_watch => return .canceled,
+            .cancel_watch, .restart_list => return .canceled,
             .event_then_hold => {
                 var added: WatchEvent(TestRecord) = .{
                     .added = try TestRecord.make(self.allocator, "watch-1", 1),
@@ -1206,4 +1237,21 @@ test "allocation failures unwind records batches and resource versions" {
         }
     }
     try std.testing.expect(reached_success);
+}
+
+test "a list restart drops pending rows and starts a new row set" {
+    const allocator = std.testing.allocator;
+    var script = Script{ .allocator = allocator, .scenario = .restart_list };
+    var sink = Sink{ .allocator = allocator };
+    var waiter = Waiter{};
+    const outcome = try runScenario(allocator, &script, &sink, &waiter, 128, .{});
+    try std.testing.expect(outcome == .canceled);
+    try std.testing.expectEqual(@as(usize, 1), script.list_calls);
+    try std.testing.expectEqual(@as(usize, 1), sink.initial_upserts);
+    try std.testing.expectEqual(@as(usize, 1), sink.list_complete_count);
+    try std.testing.expectEqualSlices(
+        Sink.Observed,
+        &.{ .list_started, .list_started, .initial_upsert, .list_complete, .watch_connected },
+        sink.observed[0..sink.observed_len],
+    );
 }

@@ -10,6 +10,12 @@ The release workflow extracts the section matching the git tag (`vX.Y.Z` →
 
 ## [Unreleased]
 
+### Changed
+
+- Resource lists stream over one reused HTTP/2 connection per context, through zig-klient's list client. The 47 built-in resource types are read as Protobuf; custom resources and Gateway API types are read as JSON. When the client can't connect, c3s falls back to the previous transports.
+- A throttled list shows `API server busy, retrying in N s` in the table status while it waits.
+- The system curl transport now asks for HTTP/2.
+
 ## [0.4.4] - 2026-10-25
 
 ### Security

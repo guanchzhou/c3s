@@ -521,6 +521,7 @@ pub fn ResourceSubscription(
                 receiver_context: *anyopaque,
                 receiver: *const fn (*anyopaque, Record) anyerror!void,
                 chunk_end: *const fn (*anyopaque) anyerror!void,
+                hooks: list_watch.ListHooks,
             ) anyerror!list_watch.ListOutcome {
                 const self: *SourceState = @ptrCast(@alignCast(raw));
                 const Batch = struct {
@@ -528,6 +529,7 @@ pub fn ResourceSubscription(
                     receiver_context: *anyopaque,
                     receiver: *const fn (*anyopaque, Record) anyerror!void,
                     chunk_end: *const fn (*anyopaque) anyerror!void,
+                    hooks: list_watch.ListHooks,
 
                     fn receive(ctx: *@This(), objects: []const KlientType) anyerror!void {
                         for (objects) |object| {
@@ -536,12 +538,21 @@ pub fn ResourceSubscription(
                         }
                         try ctx.chunk_end(ctx.receiver_context);
                     }
+
+                    pub fn restart(ctx: *@This()) anyerror!void {
+                        try ctx.hooks.restart(ctx.receiver_context);
+                    }
+
+                    pub fn busy(ctx: *@This(), seconds: u32) anyerror!void {
+                        try ctx.hooks.busy(ctx.receiver_context, seconds);
+                    }
                 };
                 var batch = Batch{
                     .source = self,
                     .receiver_context = receiver_context,
                     .receiver = receiver,
                     .chunk_end = chunk_end,
+                    .hooks = hooks,
                 };
                 var continue_token = try self.allocator.dupe(u8, "");
                 defer self.allocator.free(continue_token);
@@ -554,17 +565,20 @@ pub fn ResourceSubscription(
                 defer pagination.deinit();
                 var page: usize = 0;
                 while (true) {
-                    const page_path = try read_transport.paginatedListPath(
-                        self.allocator,
-                        self.list_path,
-                        continue_token,
-                    );
+                    const whole_list = continue_token.len == 0;
+                    const page_path = if (whole_list)
+                        try read_transport.compactListPath(self.allocator, self.list_path)
+                    else
+                        try read_transport.paginatedListPath(self.allocator, self.list_path, continue_token);
                     defer self.allocator.free(page_path);
                     var result = stream_list.stream(
                         KlientType,
                         self.allocator,
                         self.transport,
-                        try read_transport.ReadRequest.init(page_path),
+                        if (whole_list)
+                            try read_transport.ReadRequest.list(page_path)
+                        else
+                            try read_transport.ReadRequest.init(page_path),
                         .{ .clock = .{ .ptr = self, .now_ns_fn = nowNs } },
                         &batch,
                         Batch.receive,
@@ -774,6 +788,7 @@ pub fn ResourceSubscription(
                 _: *anyopaque,
                 _: *const fn (*anyopaque, Record) anyerror!void,
                 _: *const fn (*anyopaque) anyerror!void,
+                _: list_watch.ListHooks,
             ) anyerror!list_watch.ListOutcome {
                 return error.Unused;
             }
@@ -894,6 +909,9 @@ fn classifyListError(err: anyerror) list_watch.Failure {
         error.MalformedOuterJson,
         error.ItemsNotArray,
         error.MalformedItem,
+        error.ProtobufMagicMismatch,
+        error.MalformedProtobuf,
+        error.UnsupportedContentType,
         error.MissingItems,
         error.MissingResourceVersion,
         error.ObjectTooLarge,
@@ -1079,6 +1097,7 @@ pub fn runTask14MalformedWatchGate() !void {
             _: *anyopaque,
             _: *const fn (*anyopaque, ServiceRecord) anyerror!void,
             _: *const fn (*anyopaque) anyerror!void,
+            _: list_watch.ListHooks,
         ) anyerror!list_watch.ListOutcome {
             return error.Unused;
         }
@@ -1706,6 +1725,7 @@ fn exerciseQueueRestart(
             receiver_context: *anyopaque,
             receiver: *const fn (*anyopaque, Record) anyerror!void,
             chunk_end: *const fn (*anyopaque) anyerror!void,
+            _: list_watch.ListHooks,
         ) anyerror!list_watch.ListOutcome {
             const self: *@This() = @ptrCast(@alignCast(raw));
             try receiver(receiver_context, try self.makeRecord(
@@ -2005,7 +2025,7 @@ fn exerciseQueueRestart(
     try std.testing.expectEqual(@as(usize, 2), fake.requests.items.len);
     const base_path = try Subscription.listPath(allocator, null);
     defer allocator.free(base_path);
-    const expected_path = try read_transport.paginatedListPath(allocator, base_path, "");
+    const expected_path = try read_transport.compactListPath(allocator, base_path);
     defer allocator.free(expected_path);
     for (fake.requests.items) |request| {
         try std.testing.expectEqualStrings(expected_path, request.path);
