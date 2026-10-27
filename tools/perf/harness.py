@@ -923,7 +923,7 @@ def _pty_run_child(
                         and not idle
                         and n_bytes > 0
                         and now >= 1.0
-                        and t_screen_hint is None
+                        and b"pods(all)" not in plain
                     ):
                         # c3s ignores -A; `0` toggles all-namespaces. Do not wait
                         # for Running — default ns is often empty (k8s-dev).
