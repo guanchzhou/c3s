@@ -151,16 +151,23 @@ pub const ChangeQueue = struct {
         self.closed = true;
     }
 
-    pub fn tryPush(self: *ChangeQueue, envelope: Envelope) error{ Full, Closed }!void {
+    /// `TooLarge` means the envelope can never fit, so waiting for space is futile.
+    pub fn tryPush(self: *ChangeQueue, envelope: Envelope) error{ Full, Closed, TooLarge }!void {
         return self.pushLane(envelope, .data);
     }
 
     pub fn tryPushControl(self: *ChangeQueue, envelope: Envelope) error{ Full, Closed }!void {
-        return self.pushLane(envelope, .ordinary);
+        return self.pushLane(envelope, .ordinary) catch |err| switch (err) {
+            error.TooLarge => error.Full,
+            else => |e| e,
+        };
     }
 
     pub fn tryPushCritical(self: *ChangeQueue, envelope: Envelope) error{ Full, Closed }!void {
-        return self.pushLane(envelope, .critical);
+        return self.pushLane(envelope, .critical) catch |err| switch (err) {
+            error.TooLarge => error.Full,
+            else => |e| e,
+        };
     }
 
     pub fn pop(self: *ChangeQueue) ?Envelope {
@@ -307,14 +314,19 @@ pub const ChangeQueue = struct {
         return removed;
     }
 
-    fn pushLane(self: *ChangeQueue, envelope: Envelope, lane: Lane) error{ Full, Closed }!void {
+    fn pushLane(self: *ChangeQueue, envelope: Envelope, lane: Lane) error{ Full, Closed, TooLarge }!void {
         self.mutex.lockUncancelable(self.io);
         defer self.mutex.unlock(self.io);
         if (self.closed) return error.Closed;
-        if (keys.deliveryMustSplit(envelope.owned_bytes, self.limits) and lane == .data)
-            return error.Full;
+        if (lane == .data) {
+            // A batch of several changes must arrive split; a single change or
+            // payload cannot be split and only has to fit the data lane.
+            if (envelope.change_count > 1 and keys.deliveryMustSplit(envelope.owned_bytes, self.limits))
+                return error.TooLarge;
+            if (envelope.owned_bytes > self.limits.max_data_bytes) return error.TooLarge;
+        }
         if (lane != .data and envelope.owned_bytes > self.limits.max_control_envelope_bytes)
-            return error.Full;
+            return error.TooLarge;
         if (!self.fits(lane, envelope.owned_bytes)) {
             self.drops +|= 1;
             return error.Full;
@@ -583,7 +595,7 @@ test "data byte cap is 15.75 MiB" {
     overflow.deinit(allocator);
 }
 
-test "child delivery above 256 KiB is rejected with caller ownership" {
+test "an unsplit batch above 256 KiB is rejected as too large with caller ownership" {
     const allocator = testing.allocator;
     const io = runtime.io();
     var event: std.Io.Event = .unset;
@@ -591,9 +603,27 @@ test "child delivery above 256 KiB is rejected with caller ownership" {
     defer queue.deinit();
 
     var env = try makeNotice(allocator, .{ .resource = .{ .generation = 1, .subscription_id = 1 } }, (256 << 10) + 1);
-    try testing.expectError(error.Full, queue.tryPush(env));
+    env.change_count = 2;
+    try testing.expectError(error.TooLarge, queue.tryPush(env));
     try testing.expectEqual(Envelope.State.queued, env.state);
     env.deinit(allocator);
+}
+
+test "a single change or payload above 256 KiB is accepted when the data lane has room" {
+    const allocator = testing.allocator;
+    const io = runtime.io();
+    var event: std.Io.Event = .unset;
+    var queue = ChangeQueue.init(io, allocator, Limits.default, &event, null);
+    defer queue.deinit();
+
+    var single = try makeNotice(allocator, .{ .resource = .{ .generation = 1, .subscription_id = 1 } }, 1 << 20);
+    single.change_count = 1;
+    try queue.tryPush(single);
+    try queue.tryPush(try makeNotice(allocator, .{ .yaml = .{ .generation = 1, .subscription_id = 2 } }, 1 << 20));
+
+    var huge = try makeNotice(allocator, .{ .yaml = .{ .generation = 1, .subscription_id = 3 } }, Limits.default.max_data_bytes + 1);
+    try testing.expectError(error.TooLarge, queue.tryPush(huge));
+    huge.deinit(allocator);
 }
 
 test "pop increments queue-space epoch and sets the shared Event" {
