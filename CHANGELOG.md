@@ -15,6 +15,30 @@ The release workflow extracts the section matching the git tag (`vX.Y.Z` →
 
 ## [Unreleased]
 
+## [0.5.2] - 2026-11-25
+
+### Security
+
+- Redact `kubectl.kubernetes.io/last-applied-configuration` annotations and redact Secret data in resource dumps.
+- Validate dump basenames against path traversal.
+- Strip DEL and C1 terminal escape sequences from rendered output, sanitize `Header`, `DetailView`, and `LogsView` titles, and wipe decoded Secret buffers with `secureZero`.
+- Harden `kubectl` invocations against leading-dash flag injection and validate API paths before requests.
+- Pass `--noproxy * --globoff` and verify HTTP status codes on proxy `curl` calls.
+- Clean up staged `CurlMaterial` keys on error and cap accepted response headers.
+- Write configuration files atomically with `0600` permissions.
+
+### Fixed
+
+- Fixed integer overflow in `DetailView.computeColumnStops`.
+- Fixed memory leaks and result merging in `listRBACPolicies`.
+- Fixed `TrafficRequest` handling for non-finite values, request cancellation, and p50-only latency series.
+- Retried interrupted writes on `EINTR` in `sys.writeAll`.
+- Made `global_logger` access atomic for thread-safe logging.
+
+### Performance
+
+- Used a 1 KiB stack formatting buffer in the logger to avoid heap allocations on common log lines.
+
 ## [0.5.1] - 2026-10-27
 
 ### Fixed

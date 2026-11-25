@@ -55,9 +55,21 @@ const Spec = struct {
         var arena = std.heap.ArenaAllocator.init(control.allocator);
         errdefer arena.deinit();
         const allocator = arena.allocator();
-        const frame: Frame = buildFrame(allocator, transport, self.workload, self.namespace) catch .{
-            .lines = &.{},
-            .state = .unavailable,
+        const frame: Frame = buildFrame(
+            allocator,
+            transport,
+            self.workload,
+            self.namespace,
+            &control.cancel_requested,
+        ) catch |err| switch (err) {
+            error.Canceled => {
+                arena.deinit();
+                return;
+            },
+            else => .{
+                .lines = &.{},
+                .state = .unavailable,
+            },
         };
         const payload = try control.allocator.create(TrafficPayload);
         var payload_owned = true;
@@ -131,11 +143,16 @@ const Frame = struct {
     state: TrafficState,
 };
 
+fn isCanceled(cancel_requested: ?*const std.atomic.Value(bool)) bool {
+    return if (cancel_requested) |flag| flag.load(.acquire) else false;
+}
+
 fn buildFrame(
     allocator: std.mem.Allocator,
     transport: read_transport.ReadTransport,
     workload: []const u8,
     namespace: []const u8,
+    cancel_requested: ?*const std.atomic.Value(bool),
 ) !Frame {
     var model = kt.model.TrafficModel.init(allocator, 60);
     defer model.deinit();
@@ -154,6 +171,7 @@ fn buildFrame(
     };
 
     for (directions) |direction| {
+        if (isCanceled(cancel_requested)) return error.Canceled;
         const rate_query = try kt.promql.rate(allocator, direction.promql, workload, namespace);
         const rate_path = try kt.prom_client.proxyQueryPath(allocator, target.namespace, target.service, target.port, rate_query);
         if (try fetchVector(allocator, transport, rate_path)) |value| {
@@ -161,6 +179,7 @@ fn buildFrame(
             defer vector.deinit();
             successful_queries += 1;
             for (vector.samples) |sample| {
+                if (!std.math.isFinite(sample.value)) continue;
                 try model.setRate(
                     direction.model,
                     sample.labels.get(direction.peer_label) orelse "unknown",
@@ -170,6 +189,7 @@ fn buildFrame(
             }
         }
 
+        if (isCanceled(cancel_requested)) return error.Canceled;
         const error_query = try kt.promql.errorRate(allocator, direction.promql, workload, namespace);
         const error_path = try kt.prom_client.proxyQueryPath(allocator, target.namespace, target.service, target.port, error_query);
         if (try fetchVector(allocator, transport, error_path)) |value| {
@@ -177,6 +197,7 @@ fn buildFrame(
             defer vector.deinit();
             successful_queries += 1;
             for (vector.samples) |sample| {
+                if (!std.math.isFinite(sample.value)) continue;
                 try model.setErrorRate(
                     direction.model,
                     sample.labels.get(direction.peer_label) orelse "unknown",
@@ -186,20 +207,32 @@ fn buildFrame(
             }
         }
 
+        if (isCanceled(cancel_requested)) return error.Canceled;
         const p50_query = try kt.promql.latency(allocator, direction.promql, workload, namespace, 0.5);
         const p50_path = try kt.prom_client.proxyQueryPath(allocator, target.namespace, target.service, target.port, p50_query);
-        var p50_values = std.StringHashMap(f64).init(allocator);
+        const P50Entry = struct {
+            namespace: []const u8,
+            value: f64,
+            consumed: bool = false,
+        };
+        var p50_values = std.StringHashMap(P50Entry).init(allocator);
         defer p50_values.deinit();
         if (try fetchVector(allocator, transport, p50_path)) |value| {
             var vector = value;
             defer vector.deinit();
             successful_queries += 1;
             for (vector.samples) |sample| {
+                if (!std.math.isFinite(sample.value)) continue;
                 const peer = sample.labels.get(direction.peer_label) orelse "unknown";
-                try p50_values.put(try allocator.dupe(u8, peer), sample.value);
+                const peer_ns = sample.labels.get(direction.namespace_label) orelse "";
+                try p50_values.put(try allocator.dupe(u8, peer), .{
+                    .namespace = try allocator.dupe(u8, peer_ns),
+                    .value = sample.value,
+                });
             }
         }
 
+        if (isCanceled(cancel_requested)) return error.Canceled;
         const p99_query = try kt.promql.latency(allocator, direction.promql, workload, namespace, 0.99);
         const p99_path = try kt.prom_client.proxyQueryPath(allocator, target.namespace, target.service, target.port, p99_query);
         if (try fetchVector(allocator, transport, p99_path)) |value| {
@@ -207,18 +240,36 @@ fn buildFrame(
             defer vector.deinit();
             successful_queries += 1;
             for (vector.samples) |sample| {
+                if (!std.math.isFinite(sample.value)) continue;
                 const peer = sample.labels.get(direction.peer_label) orelse "unknown";
+                const p50 = if (p50_values.getPtr(peer)) |entry| blk: {
+                    entry.consumed = true;
+                    break :blk entry.value;
+                } else 0;
                 try model.setLatency(
                     direction.model,
                     peer,
                     sample.labels.get(direction.namespace_label) orelse "",
-                    p50_values.get(peer) orelse 0,
+                    p50,
                     sample.value,
                 );
             }
         }
+
+        var remaining = p50_values.iterator();
+        while (remaining.next()) |entry| {
+            if (entry.value_ptr.consumed) continue;
+            try model.setLatency(
+                direction.model,
+                entry.key_ptr.*,
+                entry.value_ptr.namespace,
+                entry.value_ptr.value,
+                0,
+            );
+        }
     }
 
+    if (isCanceled(cancel_requested)) return error.Canceled;
     if (successful_queries == 0) return .{ .lines = &.{}, .state = .unavailable };
     model.commitTick();
     const graph = try kt.graph.render(allocator, &model, workload, namespace, 6);
@@ -251,7 +302,10 @@ fn fetchVector(
         }
     };
     var capture = Capture{ .allocator = allocator };
-    transport.get(try read_transport.ReadRequest.init(path), &capture, Capture.receive) catch return null;
+    transport.get(try read_transport.ReadRequest.init(path), &capture, Capture.receive) catch |err| {
+        if (err == error.Canceled) return error.Canceled;
+        return null;
+    };
     return capture.vector;
 }
 
@@ -298,7 +352,7 @@ test "fake transport scripts one eight-GET traffic frame" {
     defer fake.deinit();
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    const frame = try buildFrame(arena.allocator(), fake.transport(), "api", "team-a");
+    const frame = try buildFrame(arena.allocator(), fake.transport(), "api", "team-a", null);
     try std.testing.expectEqual(TrafficState.ready, frame.state);
     try std.testing.expectEqual(@as(usize, 8), fake.requests.items.len);
     for (fake.requests.items) |request| {
@@ -650,4 +704,114 @@ test "real supervisor child commits one eight-GET traffic frame onto the view" {
 
 test "sink creation failure preserves payload ownership" {
     try runTask14SinkCreateFailureOwnershipGate();
+}
+
+test "buildFrame filters non-finite metric values and retains p50-only peers" {
+    const FakeTransport = @import("FakeTransport.zig").FakeTransport;
+    const empty =
+        \\{"status":"success","data":{"resultType":"vector","result":[]}}
+    ;
+    const rate_with_nonfinite =
+        \\{"status":"success","data":{"resultType":"vector","result":[
+        \\  {"metric":{"source_workload":"nan-peer","source_workload_namespace":"team-a"},"value":[1,"NaN"]},
+        \\  {"metric":{"source_workload":"inf-peer","source_workload_namespace":"team-a"},"value":[1,"+Inf"]},
+        \\  {"metric":{"source_workload":"good-peer","source_workload_namespace":"team-a"},"value":[1,"4.0"]}
+        \\]}}
+    ;
+    const err_with_nonfinite =
+        \\{"status":"success","data":{"resultType":"vector","result":[
+        \\  {"metric":{"source_workload":"nan-err","source_workload_namespace":"team-a"},"value":[1,"-Inf"]}
+        \\]}}
+    ;
+    const p50_only =
+        \\{"status":"success","data":{"resultType":"vector","result":[
+        \\  {"metric":{"source_workload":"p50-only-peer","source_workload_namespace":"team-a"},"value":[1,"0.025"]},
+        \\  {"metric":{"source_workload":"p50-nan-peer","source_workload_namespace":"team-a"},"value":[1,"NaN"]}
+        \\]}}
+    ;
+    const p99_nonfinite =
+        \\{"status":"success","data":{"resultType":"vector","result":[
+        \\  {"metric":{"source_workload":"p99-inf-peer","source_workload_namespace":"team-a"},"value":[1,"+Inf"]}
+        \\]}}
+    ;
+    const scripts = [_]@import("FakeTransport.zig").ResponseScript{
+        .{ .body = rate_with_nonfinite },
+        .{ .body = err_with_nonfinite },
+        .{ .body = p50_only },
+        .{ .body = p99_nonfinite },
+        .{ .body = empty },
+        .{ .body = empty },
+        .{ .body = empty },
+        .{ .body = empty },
+    };
+    var fake = FakeTransport.init(std.testing.allocator, &scripts);
+    defer fake.deinit();
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const frame = try buildFrame(arena.allocator(), fake.transport(), "api", "team-a", null);
+    try std.testing.expectEqual(TrafficState.ready, frame.state);
+
+    var rendered: std.ArrayList(u8) = .empty;
+    defer rendered.deinit(std.testing.allocator);
+    for (frame.lines) |line| {
+        for (line.spans) |span| try rendered.appendSlice(std.testing.allocator, span.text);
+        try rendered.append(std.testing.allocator, '\n');
+    }
+
+    try std.testing.expect(std.mem.indexOf(u8, rendered.items, "good-peer") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rendered.items, "p50-only-peer") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rendered.items, "nan-peer") == null);
+    try std.testing.expect(std.mem.indexOf(u8, rendered.items, "inf-peer") == null);
+    try std.testing.expect(std.mem.indexOf(u8, rendered.items, "nan-err") == null);
+    try std.testing.expect(std.mem.indexOf(u8, rendered.items, "p50-nan-peer") == null);
+    try std.testing.expect(std.mem.indexOf(u8, rendered.items, "p99-inf-peer") == null);
+}
+
+test "buildFrame checks cancel_requested between HTTP calls" {
+    const CancelingTransport = struct {
+        cancel_flag: *std.atomic.Value(bool),
+        cancel_after: usize,
+        calls: usize = 0,
+
+        fn transport(self: *@This()) read_transport.ReadTransport {
+            return .{ .ptr = self, .vtable = &.{ .get = get } };
+        }
+
+        fn get(
+            raw: *anyopaque,
+            _: read_transport.ReadRequest,
+            context: *anyopaque,
+            callback: read_transport.ReadCallback,
+        ) anyerror!void {
+            const self: *@This() = @ptrCast(@alignCast(raw));
+            self.calls += 1;
+            if (self.calls >= self.cancel_after) self.cancel_flag.store(true, .release);
+            var reader = std.Io.Reader.fixed(
+                "{\"status\":\"success\",\"data\":{\"resultType\":\"vector\",\"result\":[]}}",
+            );
+            try callback(context, .{ .status = .ok }, &reader);
+        }
+    };
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    // Already canceled before the first GET -> 0 HTTP calls.
+    var already_canceled = std.atomic.Value(bool).init(true);
+    var zero_transport = CancelingTransport{ .cancel_flag = &already_canceled, .cancel_after = 99 };
+    try std.testing.expectError(
+        error.Canceled,
+        buildFrame(arena.allocator(), zero_transport.transport(), "api", "team-a", &already_canceled),
+    );
+    try std.testing.expectEqual(@as(usize, 0), zero_transport.calls);
+
+    // Canceled during the 2nd GET -> stops before the 3rd GET.
+    var mid_cancel = std.atomic.Value(bool).init(false);
+    var two_transport = CancelingTransport{ .cancel_flag = &mid_cancel, .cancel_after = 2 };
+    try std.testing.expectError(
+        error.Canceled,
+        buildFrame(arena.allocator(), two_transport.transport(), "api", "team-a", &mid_cancel),
+    );
+    try std.testing.expectEqual(@as(usize, 2), two_transport.calls);
 }

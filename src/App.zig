@@ -19,6 +19,7 @@ const perf = @import("core/perf_telemetry.zig");
 const task15 = @import("task15_diagnostics.zig");
 const Wakeup = @import("core/Wakeup.zig").Wakeup;
 const sys = @import("core/sys.zig");
+const secret_decode = @import("viewmodel/secret_decode.zig");
 const ChangeQueue = @import("k8s/ChangeQueue.zig").ChangeQueue;
 const resource_key = @import("k8s/ResourceKey.zig");
 const read_transport = @import("k8s/ReadTransport.zig");
@@ -3850,6 +3851,73 @@ pub const App = struct {
         self.prev_height = 0;
     }
 
+    fn isSafeKubectlOperand(value: []const u8) bool {
+        return value.len > 0 and value[0] != '-';
+    }
+
+    fn isSafeKubectlNamespace(ns: []const u8) bool {
+        return ns.len == 0 or ns[0] != '-';
+    }
+
+    fn kubectlEditArgs(target: []const u8, name: []const u8, namespace: []const u8) ![6][]const u8 {
+        if (!isSafeKubectlOperand(name) or !isSafeKubectlNamespace(namespace))
+            return error.InvalidKubectlOperand;
+        return .{ "kubectl", "edit", "-n", namespace, "--", target };
+    }
+
+    fn kubectlExecArgs(name: []const u8, namespace: []const u8) ![10][]const u8 {
+        if (!isSafeKubectlOperand(name) or !isSafeKubectlNamespace(namespace))
+            return error.InvalidKubectlOperand;
+        return .{ "kubectl", "exec", "-it", "-n", namespace, name, "--", "sh", "-c", "bash || sh" };
+    }
+
+    fn kubectlAttachArgs(name: []const u8, namespace: []const u8) ![7][]const u8 {
+        if (!isSafeKubectlOperand(name) or !isSafeKubectlNamespace(namespace))
+            return error.InvalidKubectlOperand;
+        return .{ "kubectl", "attach", "-it", "-n", namespace, "--", name };
+    }
+
+    fn kubectlDrainArgs(name: []const u8) ![6][]const u8 {
+        if (!isSafeKubectlOperand(name)) return error.InvalidKubectlOperand;
+        return .{ "kubectl", "drain", "--ignore-daemonsets", "--delete-emptydir-data", "--", name };
+    }
+
+    fn kubectlSetImageArgs(target: []const u8, name: []const u8, value: []const u8, namespace: []const u8) ![7][]const u8 {
+        if (!isSafeKubectlOperand(name) or !isSafeKubectlOperand(value) or !isSafeKubectlNamespace(namespace))
+            return error.InvalidKubectlOperand;
+        return .{ "set", "image", "-n", namespace, "--", target, value };
+    }
+
+    fn kubectlPatchArgs(target: []const u8, name: []const u8, namespace: []const u8, patch: []const u8) ![8][]const u8 {
+        if (!isSafeKubectlOperand(name) or !isSafeKubectlNamespace(namespace))
+            return error.InvalidKubectlOperand;
+        return .{ "patch", "-n", namespace, "--type=merge", "-p", patch, "--", target };
+    }
+
+    fn kubectlTransferArgs(src: []const u8, dst: []const u8) ![4][]const u8 {
+        if (!isSafeKubectlOperand(src) or !isSafeKubectlOperand(dst))
+            return error.InvalidKubectlOperand;
+        return .{ "cp", "--", src, dst };
+    }
+
+    fn kubectlRolloutArgs(verb: []const u8, target: []const u8, name: []const u8, namespace: []const u8) ![6][]const u8 {
+        if (!isSafeKubectlOperand(verb) or !isSafeKubectlOperand(name) or !isSafeKubectlNamespace(namespace))
+            return error.InvalidKubectlOperand;
+        return .{ "rollout", verb, "-n", namespace, "--", target };
+    }
+
+    fn kubectlScaleArgs(target: []const u8, name: []const u8, flag: []const u8, namespace: []const u8) ![6][]const u8 {
+        if (!isSafeKubectlOperand(name) or !isSafeKubectlNamespace(namespace))
+            return error.InvalidKubectlOperand;
+        return .{ "scale", flag, "-n", namespace, "--", target };
+    }
+
+    fn kubectlTriggerArgs(cronjob_name: []const u8, job_name: []const u8, from_flag: []const u8, namespace: []const u8) ![7][]const u8 {
+        if (!isSafeKubectlOperand(cronjob_name) or !isSafeKubectlOperand(job_name) or !isSafeKubectlNamespace(namespace))
+            return error.InvalidKubectlOperand;
+        return .{ "create", "job", from_flag, "-n", namespace, "--", job_name };
+    }
+
     fn runResourceEdit(self: *App) !void {
         // Refuse before selecting and formatting the target. runInteractive also
         // enforces readonly through K8sService as the non-bypassable boundary.
@@ -3862,7 +3930,12 @@ pub const App = struct {
         const info = self.getSelectedResourceFromCurrentView() orelse return;
         const target = try std.fmt.allocPrint(self.allocator, "{s}/{s}", .{ rt.resourceName(), info.name });
         defer self.allocator.free(target);
-        try self.runInteractive(&.{ "kubectl", "edit", target, "-n", info.namespace });
+        const argv = kubectlEditArgs(target, info.name, info.namespace) catch {
+            self.footer.setStatus("invalid resource operand");
+            self.dirty = true;
+            return;
+        };
+        try self.runInteractive(&argv);
     }
 
     fn runPodShell(self: *App) !void {
@@ -3876,7 +3949,12 @@ pub const App = struct {
         }
         if (!std.mem.eql(u8, self.current_view_name, "pods")) return;
         const info = self.pods_view.getSelectedResourceInfo() orelse return;
-        try self.runInteractive(&.{ "kubectl", "exec", "-it", info.name, "-n", info.namespace, "--", "sh", "-c", "bash || sh" });
+        const argv = kubectlExecArgs(info.name, info.namespace) catch {
+            self.footer.setStatus("invalid pod operand");
+            self.dirty = true;
+            return;
+        };
+        try self.runInteractive(&argv);
     }
 
     fn runPodAttach(self: *App) !void {
@@ -3889,7 +3967,12 @@ pub const App = struct {
         }
         if (!std.mem.eql(u8, self.current_view_name, "pods")) return;
         const info = self.pods_view.getSelectedResourceInfo() orelse return;
-        try self.runInteractive(&.{ "kubectl", "attach", "-it", info.name, "-n", info.namespace });
+        const argv = kubectlAttachArgs(info.name, info.namespace) catch {
+            self.footer.setStatus("invalid pod operand");
+            self.dirty = true;
+            return;
+        };
+        try self.runInteractive(&argv);
     }
 
     fn showSelectedNode(self: *App) !void {
@@ -4087,11 +4170,12 @@ pub const App = struct {
             self.dirty = true;
             return;
         }
-        try self.runInteractive(&.{
-            "kubectl",                "drain",
-            name,                     "--ignore-daemonsets",
-            "--delete-emptydir-data",
-        });
+        const argv = kubectlDrainArgs(name) catch {
+            self.footer.setStatus("invalid node operand");
+            self.dirty = true;
+            return;
+        };
+        try self.runInteractive(&argv);
         self.footer.setStatus("Drain finished");
         self.refreshCurrentView();
     }
@@ -4193,7 +4277,12 @@ pub const App = struct {
         const ns = self.pending_namespace orelse return;
         const target = try std.fmt.allocPrint(self.allocator, "{s}/{s}", .{ rt.resourceName(), name });
         defer self.allocator.free(target);
-        try self.k8s_service.runKubectl(&.{ "set", "image", target, value, "-n", ns });
+        const argv = kubectlSetImageArgs(target, name, value, ns) catch {
+            self.footer.setStatus("invalid set-image operand");
+            self.dirty = true;
+            return;
+        };
+        try self.k8s_service.runKubectl(&argv);
         self.footer.setStatus("image updated");
         self.refreshCurrentView();
     }
@@ -4269,7 +4358,12 @@ pub const App = struct {
         const info = self.getSelectedResourceFromCurrentView() orelse return;
         const target = try std.fmt.allocPrint(self.allocator, "{s}/{s}", .{ rt.resourceName(), info.name });
         defer self.allocator.free(target);
-        try self.k8s_service.runKubectl(&.{ "patch", target, "-n", info.namespace, "--type=merge", "-p", "{\"metadata\":{\"finalizers\":null}}" });
+        const argv = kubectlPatchArgs(target, info.name, info.namespace, "{\"metadata\":{\"finalizers\":null}}") catch {
+            self.footer.setStatus("invalid resource operand");
+            self.dirty = true;
+            return;
+        };
+        try self.k8s_service.runKubectl(&argv);
         self.footer.setStatus("finalizers cleared");
         self.refreshCurrentView();
     }
@@ -4279,7 +4373,12 @@ pub const App = struct {
         var it = std.mem.tokenizeScalar(u8, value, ' ');
         const src = it.next() orelse return;
         const dst = it.next() orelse return;
-        try self.k8s_service.runKubectl(&.{ "cp", src, dst });
+        const argv = kubectlTransferArgs(src, dst) catch {
+            self.footer.setStatus("invalid cp operand");
+            self.dirty = true;
+            return;
+        };
+        try self.k8s_service.runKubectl(&argv);
         self.footer.setStatus("cp complete");
     }
 
@@ -5076,7 +5175,12 @@ pub const App = struct {
         const info = self.getSelectedResourceFromCurrentView() orelse return;
         var target_buf: [256]u8 = undefined;
         const target = std.fmt.bufPrint(&target_buf, "{s}/{s}", .{ rt.resourceName(), info.name }) catch return;
-        try self.k8s_service.runKubectl(&.{ "rollout", verb, target, "-n", info.namespace });
+        const argv = kubectlRolloutArgs(verb, target, info.name, info.namespace) catch {
+            self.footer.setStatus("invalid rollout operand");
+            self.dirty = true;
+            return;
+        };
+        try self.k8s_service.runKubectl(&argv);
         self.footer.setStatus("rollout updated");
         self.refreshCurrentView();
     }
@@ -5114,7 +5218,12 @@ pub const App = struct {
         const target = std.fmt.bufPrint(&target_buf, "{s}/{s}", .{ rt.resourceName(), name }) catch return;
         var flag_buf: [40]u8 = undefined;
         const flag = std.fmt.bufPrint(&flag_buf, "--replicas={s}", .{replicas}) catch return;
-        try self.k8s_service.runKubectl(&.{ "scale", target, flag, "-n", ns });
+        const argv = kubectlScaleArgs(target, name, flag, ns) catch {
+            self.footer.setStatus("invalid scale operand");
+            self.dirty = true;
+            return;
+        };
+        try self.k8s_service.runKubectl(&argv);
         self.footer.setStatus("scaled");
         self.refreshCurrentView();
     }
@@ -5143,7 +5252,12 @@ pub const App = struct {
             "{\"spec\":{\"suspend\":true}}";
         var target_buf: [256]u8 = undefined;
         const target = std.fmt.bufPrint(&target_buf, "cronjobs/{s}", .{info.name}) catch return;
-        try self.k8s_service.runKubectl(&.{ "patch", target, "-n", info.namespace, "--type=merge", "-p", patch });
+        const argv = kubectlPatchArgs(target, info.name, info.namespace, patch) catch {
+            self.footer.setStatus("invalid cronjob operand");
+            self.dirty = true;
+            return;
+        };
+        try self.k8s_service.runKubectl(&argv);
         self.footer.setStatus(if (suspend_now) "cronjob resumed" else "cronjob suspended");
         self.refreshCurrentView();
     }
@@ -5157,7 +5271,12 @@ pub const App = struct {
         var job_buf: [80]u8 = undefined;
         const ts: u64 = @intCast(@max(clock.timestamp(), 0));
         const job_name = triggeredJobName(&job_buf, info.name, ts) catch return;
-        try self.k8s_service.runKubectl(&.{ "create", "job", job_name, from, "-n", info.namespace });
+        const argv = kubectlTriggerArgs(info.name, job_name, from, info.namespace) catch {
+            self.footer.setStatus("invalid cronjob operand");
+            self.dirty = true;
+            return;
+        };
+        try self.k8s_service.runKubectl(&argv);
         self.footer.setStatus("job created");
         self.refreshCurrentView();
     }
@@ -5173,6 +5292,13 @@ pub const App = struct {
         return std.fmt.bufPrint(buf, "{s}{s}", .{ base, suffix });
     }
 
+    fn prepareDumpData(allocator: std.mem.Allocator, rt: ResourceType, json_data: []const u8) ![]u8 {
+        if (rt == .secrets) {
+            return secret_decode.redactSecretJson(allocator, json_data);
+        }
+        return allocator.dupe(u8, json_data);
+    }
+
     fn saveSelectedResource(self: *App) !void {
         const rt = self.currentResourceType() orelse return;
         const info = self.getSelectedResourceFromCurrentView() orelse return;
@@ -5182,9 +5308,15 @@ pub const App = struct {
             return;
         };
         defer self.allocator.free(json_data);
+        const dump_data = prepareDumpData(self.allocator, rt, json_data) catch {
+            self.footer.setStatus("save failed");
+            self.dirty = true;
+            return;
+        };
+        defer self.allocator.free(dump_data);
         const xdg = @import("core/xdg.zig");
         const dir = self.config.screen_dump_dir orelse (try xdg.ensurePaths()).dumps_dir;
-        self.footer.setStatus(if (writePrivateDump(dir, info.name, clock.timestamp(), json_data))
+        self.footer.setStatus(if (writePrivateDump(dir, info.name, clock.timestamp(), dump_data))
             "saved"
         else |err| switch (err) {
             error.NameTooLong => "save path too long",
@@ -5193,10 +5325,20 @@ pub const App = struct {
         self.dirty = true;
     }
 
+    fn validDumpBasename(name: []const u8) bool {
+        if (name.len == 0) return false;
+        if (std.mem.eql(u8, name, ".") or std.mem.eql(u8, name, "..")) return false;
+        for (name) |b| {
+            if (b == '/' or b == '\\' or b == 0) return false;
+        }
+        return true;
+    }
+
     /// Saved resources include Secrets, so the dump directory is created
     /// owner-only and each file is a new 0600 file that is never written through
     /// an existing path.
     fn writePrivateDump(dir: []const u8, name: []const u8, timestamp: i64, data: []const u8) !void {
+        if (!validDumpBasename(name)) return error.InvalidDumpName;
         var dir_buf: [512]u8 = undefined;
         const dir_z = std.fmt.bufPrintSentinel(&dir_buf, "{s}", .{dir}, 0) catch return error.NameTooLong;
         if (!sys.ensurePrivateDir(dir_z)) return error.DumpDirUnavailable;
@@ -5213,6 +5355,31 @@ pub const App = struct {
             _ = std.c.unlink(path_z);
             return err;
         };
+    }
+
+    fn writeAtomicPrivateFile(allocator: std.mem.Allocator, path: []const u8, data: []const u8) !void {
+        var rand: [8]u8 = undefined;
+        runtime.io().randomSecure(&rand) catch {
+            const ts: u64 = @bitCast(clock.timestamp());
+            @memcpy(&rand, std.mem.asBytes(&ts));
+        };
+        const hex = std.fmt.bytesToHex(rand, .lower);
+        const tmp_z = try std.fmt.allocPrintSentinel(allocator, "{s}.tmp.{s}", .{ path, &hex }, 0);
+        defer allocator.free(tmp_z);
+        const dest_z = try allocator.dupeSentinel(u8, path, 0);
+        defer allocator.free(dest_z);
+
+        const fd = sys.createPrivateExclusive(tmp_z) orelse return error.ConfigWriteFailed;
+        var tmp_linked = true;
+        errdefer if (tmp_linked) {
+            _ = std.c.unlink(tmp_z);
+        };
+        {
+            defer sys.close(fd);
+            try sys.writeAll(fd, data);
+        }
+        if (std.c.rename(tmp_z, dest_z) != 0) return error.ConfigRenameFailed;
+        tmp_linked = false;
     }
 
     fn refreshCurrentView(self: *App) void {
@@ -5252,10 +5419,7 @@ pub const App = struct {
         const updated = try Config.withTheme(self.allocator, existing, theme_name);
         defer self.allocator.free(updated);
 
-        try std.Io.Dir.cwd().writeFile(runtime.io(), .{
-            .sub_path = paths.config_file,
-            .data = updated,
-        });
+        try writeAtomicPrivateFile(self.allocator, paths.config_file, updated);
 
         // Keep the in-memory name in step with what was just written.
         self.allocator.free(self.current_theme_name);
@@ -5303,10 +5467,7 @@ pub const App = struct {
             self.recent_namespaces.entries.items,
         );
         defer self.allocator.free(updated);
-        try std.Io.Dir.cwd().writeFile(runtime.io(), .{
-            .sub_path = paths.config_file,
-            .data = updated,
-        });
+        try writeAtomicPrivateFile(self.allocator, paths.config_file, updated);
     }
 
     fn switchToRecentNamespace(self: *App, slot: u8) !bool {
@@ -10683,4 +10844,143 @@ test "saved resources are owner-only and never overwrite an existing path" {
     try std.testing.expectEqual(@as(std.posix.mode_t, 0o700), dir_stat.permissions.toMode() & 0o777);
 
     try std.testing.expectError(error.DumpCreateFailed, App.writePrivateDump(dir, "db-secret", 42, "{}"));
+}
+
+test "writePrivateDump rejects invalid and traversal dump basenames" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var dir_buf: [256]u8 = undefined;
+    const dir = try std.fmt.bufPrint(&dir_buf, ".zig-cache/tmp/{s}/dumps", .{tmp.sub_path});
+
+    const bad_names = [_][]const u8{
+        "",
+        ".",
+        "..",
+        "../outside",
+        "sub/name",
+        "sub\\name",
+        "bad\x00name",
+    };
+    for (bad_names) |bad| {
+        try std.testing.expect(!App.validDumpBasename(bad));
+        try std.testing.expectError(error.InvalidDumpName, App.writePrivateDump(dir, bad, 1, "{}"));
+    }
+    try std.testing.expect(App.validDumpBasename("my-secret.v1"));
+}
+
+test "prepareDumpData redacts Secret payloads and keeps non-Secret resources intact" {
+    const a = std.testing.allocator;
+    const secret_json =
+        \\{"kind":"Secret","metadata":{"name":"db","annotations":{"kubectl.kubernetes.io/last-applied-configuration":"{\"data\":{\"pw\":\"c2VjcmV0\"}}"}},"data":{"pw":"c2VjcmV0"}}
+    ;
+    const redacted = try App.prepareDumpData(a, .secrets, secret_json);
+    defer a.free(redacted);
+    try std.testing.expect(std.mem.indexOf(u8, redacted, "c2VjcmV0") == null);
+    try std.testing.expect(std.mem.indexOf(u8, redacted, "<redacted 8 bytes>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, redacted, "REDACTED") != null);
+
+    try std.testing.expectError(secret_decode.Error.NotAnObject, App.prepareDumpData(a, .secrets, "<html>err</html>"));
+
+    const pod_json = "{\"kind\":\"Pod\",\"metadata\":{\"name\":\"web\"}}";
+    const passthrough = try App.prepareDumpData(a, .pods, pod_json);
+    defer a.free(passthrough);
+    try std.testing.expectEqualStrings(pod_json, passthrough);
+}
+
+test "writeAtomicPrivateFile writes mode 0600 atomically without leaving temp files" {
+    const a = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var path_buf: [256]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, ".zig-cache/tmp/{s}/config.yaml", .{tmp.sub_path});
+
+    try App.writeAtomicPrivateFile(a, path, "ui:\n  theme: nord\n");
+    try App.writeAtomicPrivateFile(a, path, "ui:\n  theme: dracula\n");
+
+    const cwd = std.Io.Dir.cwd();
+    const stat = try cwd.statFile(std.testing.io, path, .{});
+    try std.testing.expectEqual(@as(std.posix.mode_t, 0o600), stat.permissions.toMode() & 0o777);
+
+    const content = try cwd.readFileAlloc(std.testing.io, path, a, .limited(4096));
+    defer a.free(content);
+    try std.testing.expectEqualStrings("ui:\n  theme: dracula\n", content);
+
+    // Ensure no leftover sibling temp file remains in the directory.
+    var count: usize = 0;
+    var it = tmp.dir.iterate();
+    while (try it.next(std.testing.io)) |entry| {
+        try std.testing.expectEqualStrings("config.yaml", entry.name);
+        count += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 1), count);
+}
+
+test "kubectl argument builders reject leading dashes and place flags before --" {
+    // Reject leading '-' or empty operands across all builders.
+    try std.testing.expectError(error.InvalidKubectlOperand, App.kubectlEditArgs("pods/-p", "-p", "default"));
+    try std.testing.expectError(error.InvalidKubectlOperand, App.kubectlEditArgs("pods/p", "p", "-n"));
+    try std.testing.expectError(error.InvalidKubectlOperand, App.kubectlExecArgs("-pod", "default"));
+    try std.testing.expectError(error.InvalidKubectlOperand, App.kubectlAttachArgs("-pod", "default"));
+    try std.testing.expectError(error.InvalidKubectlOperand, App.kubectlDrainArgs("--force"));
+    try std.testing.expectError(error.InvalidKubectlOperand, App.kubectlSetImageArgs("deployments/app", "app", "--all", "default"));
+    try std.testing.expectError(error.InvalidKubectlOperand, App.kubectlSetImageArgs("deployments/-a", "-a", "c=img", "default"));
+    try std.testing.expectError(error.InvalidKubectlOperand, App.kubectlPatchArgs("pods/-p", "-p", "default", "{}"));
+    try std.testing.expectError(error.InvalidKubectlOperand, App.kubectlTransferArgs("-flag", "dst"));
+    try std.testing.expectError(error.InvalidKubectlOperand, App.kubectlTransferArgs("src", "--retries=9"));
+    try std.testing.expectError(error.InvalidKubectlOperand, App.kubectlRolloutArgs("restart", "deployments/-a", "-a", "default"));
+    try std.testing.expectError(error.InvalidKubectlOperand, App.kubectlScaleArgs("deployments/-a", "-a", "--replicas=2", "default"));
+    try std.testing.expectError(error.InvalidKubectlOperand, App.kubectlTriggerArgs("-cj", "cj-1", "--from=cronjob/-cj", "default"));
+    try std.testing.expectError(error.InvalidKubectlOperand, App.kubectlTriggerArgs("cj", "-123", "--from=cronjob/cj", "default"));
+
+    // Valid calls place flags before '--' (or before the pod operand for exec).
+    const edit = try App.kubectlEditArgs("pods/web", "web", "prod");
+    try std.testing.expectEqualStrings("-n", edit[2]);
+    try std.testing.expectEqualStrings("--", edit[4]);
+    try std.testing.expectEqualStrings("pods/web", edit[5]);
+
+    const exec = try App.kubectlExecArgs("web", "prod");
+    try std.testing.expectEqualStrings("-n", exec[3]);
+    try std.testing.expectEqualStrings("web", exec[5]);
+    try std.testing.expectEqualStrings("--", exec[6]);
+
+    const attach = try App.kubectlAttachArgs("web", "prod");
+    try std.testing.expectEqualStrings("-n", attach[3]);
+    try std.testing.expectEqualStrings("--", attach[5]);
+    try std.testing.expectEqualStrings("web", attach[6]);
+
+    const drain = try App.kubectlDrainArgs("node-1");
+    try std.testing.expectEqualStrings("--", drain[4]);
+    try std.testing.expectEqualStrings("node-1", drain[5]);
+
+    const set_img = try App.kubectlSetImageArgs("deployments/api", "api", "app=v2", "prod");
+    try std.testing.expectEqualStrings("-n", set_img[2]);
+    try std.testing.expectEqualStrings("--", set_img[4]);
+    try std.testing.expectEqualStrings("deployments/api", set_img[5]);
+    try std.testing.expectEqualStrings("app=v2", set_img[6]);
+
+    const patch = try App.kubectlPatchArgs("cronjobs/nightly", "nightly", "prod", "{}");
+    try std.testing.expectEqualStrings("--type=merge", patch[3]);
+    try std.testing.expectEqualStrings("--", patch[6]);
+    try std.testing.expectEqualStrings("cronjobs/nightly", patch[7]);
+
+    const cp = try App.kubectlTransferArgs("ns/pod:/tmp/a", "./a");
+    try std.testing.expectEqualStrings("--", cp[1]);
+    try std.testing.expectEqualStrings("ns/pod:/tmp/a", cp[2]);
+    try std.testing.expectEqualStrings("./a", cp[3]);
+
+    const rollout = try App.kubectlRolloutArgs("restart", "deployments/api", "api", "prod");
+    try std.testing.expectEqualStrings("-n", rollout[2]);
+    try std.testing.expectEqualStrings("--", rollout[4]);
+    try std.testing.expectEqualStrings("deployments/api", rollout[5]);
+
+    const scale = try App.kubectlScaleArgs("deployments/api", "api", "--replicas=3", "prod");
+    try std.testing.expectEqualStrings("--replicas=3", scale[1]);
+    try std.testing.expectEqualStrings("--", scale[4]);
+    try std.testing.expectEqualStrings("deployments/api", scale[5]);
+
+    const trigger = try App.kubectlTriggerArgs("nightly", "nightly-1", "--from=cronjob/nightly", "prod");
+    try std.testing.expectEqualStrings("--from=cronjob/nightly", trigger[2]);
+    try std.testing.expectEqualStrings("--", trigger[5]);
+    try std.testing.expectEqualStrings("nightly-1", trigger[6]);
 }

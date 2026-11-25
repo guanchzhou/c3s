@@ -9,6 +9,7 @@ const fixtures = @import("../fixtures/index.zig");
 const Logger = @import("../core/logger.zig");
 const hints_mod = @import("../model/hints.zig");
 const RecentNamespaces = @import("../model/RecentNamespaces.zig").RecentNamespaces;
+const display_text = @import("../core/display_text.zig");
 
 /// Width reserved for the k9s-style numbered namespace column, including the
 /// `<N> ` key prefix. Namespaces longer than the remainder are truncated.
@@ -79,11 +80,11 @@ pub const Header = struct {
         return Header{
             .allocator = allocator,
             .theme = theme,
-            .context = try allocator.dupe(u8, k8s_data.context),
-            .cluster = try allocator.dupe(u8, k8s_data.cluster),
-            .user = try allocator.dupe(u8, k8s_data.user),
+            .context = try display_text.sanitizeAlloc(allocator, k8s_data.context),
+            .cluster = try display_text.sanitizeAlloc(allocator, k8s_data.cluster),
+            .user = try display_text.sanitizeAlloc(allocator, k8s_data.user),
             .app_version = app_version,
-            .k8s_version = try allocator.dupe(u8, k8s_data.k8s_version),
+            .k8s_version = try display_text.sanitizeAlloc(allocator, k8s_data.k8s_version),
             .cpu_usage = k8s_data.cpu_usage,
             .mem_usage = k8s_data.mem_usage,
             .title_with_version = title_with_version,
@@ -106,11 +107,11 @@ pub const Header = struct {
         return Header{
             .allocator = allocator,
             .theme = theme,
-            .context = try allocator.dupe(u8, cluster_data.context),
-            .cluster = try allocator.dupe(u8, cluster_data.cluster),
-            .user = try allocator.dupe(u8, cluster_data.user),
+            .context = try display_text.sanitizeAlloc(allocator, cluster_data.context),
+            .cluster = try display_text.sanitizeAlloc(allocator, cluster_data.cluster),
+            .user = try display_text.sanitizeAlloc(allocator, cluster_data.user),
             .app_version = app_version,
-            .k8s_version = try allocator.dupe(u8, cluster_data.k8s_version),
+            .k8s_version = try display_text.sanitizeAlloc(allocator, cluster_data.k8s_version),
             .cpu_usage = cluster_data.cpu_usage,
             .mem_usage = cluster_data.mem_usage,
             .title_with_version = title_with_version,
@@ -488,11 +489,11 @@ pub const Header = struct {
 
         // Allocate all three before freeing any: a mid-way failure would otherwise
         // leave freed pointers in place for deinit to free again.
-        const new_context = try self.allocator.dupe(u8, context);
+        const new_context = try display_text.sanitizeAlloc(self.allocator, context);
         errdefer self.allocator.free(new_context);
-        const new_cluster = try self.allocator.dupe(u8, cluster);
+        const new_cluster = try display_text.sanitizeAlloc(self.allocator, cluster);
         errdefer self.allocator.free(new_cluster);
-        const new_user = try self.allocator.dupe(u8, user);
+        const new_user = try display_text.sanitizeAlloc(self.allocator, user);
 
         self.allocator.free(self.context);
         self.allocator.free(self.cluster);
@@ -505,7 +506,7 @@ pub const Header = struct {
     pub fn setReadonlyScope(self: *Header, readonly: bool, namespace_scope: []const u8) !void {
         self.readonly = readonly;
         if (std.mem.eql(u8, self.namespace_scope, namespace_scope)) return;
-        const replacement = try self.allocator.dupe(u8, namespace_scope);
+        const replacement = try display_text.sanitizeAlloc(self.allocator, namespace_scope);
         self.allocator.free(self.namespace_scope);
         self.namespace_scope = replacement;
     }
@@ -565,7 +566,7 @@ pub const Header = struct {
     pub fn updateK8sVersion(self: *Header, k8s_version: []const u8) !void {
         // Only update if the value actually changed
         if (std.mem.eql(u8, self.k8s_version, k8s_version)) return;
-        const duped = try self.allocator.dupe(u8, k8s_version);
+        const duped = try display_text.sanitizeAlloc(self.allocator, k8s_version);
         self.allocator.free(self.k8s_version);
         self.k8s_version = duped;
     }
@@ -651,7 +652,13 @@ pub const Header = struct {
                 self.theme.main_bg,
             );
 
-            const shown = name[0..@min(name.len, name_width)];
+            const clean_owned = if (display_text.needsSanitizing(name))
+                try display_text.sanitizeAlloc(self.allocator, name)
+            else
+                null;
+            defer if (clean_owned) |buf| self.allocator.free(buf);
+            const clean_name = clean_owned orelse name;
+            const shown = display_text.utf8Prefix(clean_name, name_width);
             try Theme.writeStringWithTheme(
                 terminal,
                 x + 4,
@@ -1600,4 +1607,35 @@ test "expanded header is tall enough that the last stat clears the bottom border
     const last_stat_row = 1 + stat_labels.len;
     const bottom_border_row = Header.expanded_height - 1;
     try testing.expect(last_stat_row < bottom_border_row);
+}
+
+test "header sanitizes context, cluster, user, k8s_version, and namespace_scope" {
+    const allocator = testing.allocator;
+    const theme = try theme_loader.defaultTheme(allocator);
+    defer theme_loader.deinitTheme(@constCast(&theme));
+
+    var header = try Header.initWithData(allocator, &theme, .{
+        .context = "prod\x1b]52;c;abc\x07",
+        .cluster = "clu\xc2\x9b2J",
+        .user = "usr\x7f1",
+        .k8s_version = "v1.33\r\n",
+        .cpu_usage = @as(u8, 10),
+        .mem_usage = @as(u8, 20),
+    });
+    defer header.deinit();
+
+    try testing.expect(!display_text.needsSanitizing(header.context));
+    try testing.expect(!display_text.needsSanitizing(header.cluster));
+    try testing.expect(!display_text.needsSanitizing(header.user));
+    try testing.expect(!display_text.needsSanitizing(header.k8s_version));
+
+    try header.updateClusterInfo("ctx\x1b[31m", "cl\x07", "me\xc2\x9b");
+    try header.setReadonlyScope(true, "ns\x1b[2J\x7f");
+    try header.updateK8sVersion("v1.34\x1b]0;pwn\x07");
+
+    try testing.expectEqualStrings("ctx?[31m", header.context);
+    try testing.expectEqualStrings("cl?", header.cluster);
+    try testing.expectEqualStrings("me?", header.user);
+    try testing.expectEqualStrings("ns?[2J?", header.namespace_scope);
+    try testing.expectEqualStrings("v1.34?]0;pwn?", header.k8s_version);
 }

@@ -64,97 +64,128 @@ pub const Logger = struct {
         self.allocator.free(self.log_file_path);
     }
 
-    pub fn debug(self: *Logger, comptime format: []const u8, args: anytype) void {
+    pub fn debug(self: *const Logger, comptime format: []const u8, args: anytype) void {
         if (@backingInt(self.level) <= @backingInt(LogLevel.debug)) {
             self.log("DEBUG", format, args);
         }
     }
 
-    pub fn info(self: *Logger, comptime format: []const u8, args: anytype) void {
+    pub fn info(self: *const Logger, comptime format: []const u8, args: anytype) void {
         if (@backingInt(self.level) <= @backingInt(LogLevel.info)) {
             self.log("INFO", format, args);
         }
     }
 
-    pub fn warn(self: *Logger, comptime format: []const u8, args: anytype) void {
+    pub fn warn(self: *const Logger, comptime format: []const u8, args: anytype) void {
         if (@backingInt(self.level) <= @backingInt(LogLevel.warn)) {
             self.log("WARN", format, args);
         }
     }
 
-    pub fn err(self: *Logger, comptime format: []const u8, args: anytype) void {
+    pub fn err(self: *const Logger, comptime format: []const u8, args: anytype) void {
         if (@backingInt(self.level) <= @backingInt(LogLevel.err)) {
             self.log("ERROR", format, args);
         }
     }
 
-    fn log(self: *Logger, level: []const u8, comptime format: []const u8, args: anytype) void {
-        if (self.log_fd) |fd| {
-            const timestamp = clock.timestamp();
-            const timestamp_str = std.fmt.allocPrint(global_allocator, "{}", .{timestamp}) catch return;
-            defer global_allocator.free(timestamp_str);
+    const FormattedLine = struct {
+        line: []const u8,
+        owned: ?[]u8,
+    };
 
-            const log_line = std.fmt.allocPrint(
-                global_allocator,
-                "[{s}] {s}: " ++ format ++ "\n",
-                .{ timestamp_str, level } ++ args,
-            ) catch return;
-            defer global_allocator.free(log_line);
-
-            // O_APPEND fd: each write appends atomically. Best-effort.
-            sys.writeAll(fd, log_line) catch {};
+    fn formatLogLine(
+        stack_buf: *[1024]u8,
+        allocator: std.mem.Allocator,
+        timestamp: i64,
+        level: []const u8,
+        comptime format: []const u8,
+        args: anytype,
+    ) !FormattedLine {
+        if (std.fmt.bufPrint(
+            stack_buf,
+            "[{d}] {s}: " ++ format ++ "\n",
+            .{ timestamp, level } ++ args,
+        )) |line| {
+            return .{ .line = line, .owned = null };
+        } else |fmt_err| switch (fmt_err) {
+            error.NoSpaceLeft => {
+                const owned = try std.fmt.allocPrint(
+                    allocator,
+                    "[{d}] {s}: " ++ format ++ "\n",
+                    .{ timestamp, level } ++ args,
+                );
+                return .{ .line = owned, .owned = owned };
+            },
         }
     }
 
-    pub fn getLogFilePath(self: *Logger) []const u8 {
+    fn log(self: *const Logger, level: []const u8, comptime format: []const u8, args: anytype) void {
+        if (self.log_fd) |fd| {
+            const timestamp = clock.timestamp();
+            var stack_buf: [1024]u8 = undefined;
+            const formatted = formatLogLine(&stack_buf, global_allocator, timestamp, level, format, args) catch return;
+            defer if (formatted.owned) |owned| global_allocator.free(owned);
+
+            // O_APPEND fd: each write appends atomically. Best-effort.
+            sys.writeAll(fd, formatted.line) catch {};
+        }
+    }
+
+    pub fn getLogFilePath(self: *const Logger) []const u8 {
         return self.log_file_path;
     }
 };
 
-// Global logger instance
-var global_logger: ?Logger = null;
+// Global logger instance synchronized via an atomic pointer.
+var global_logger: std.atomic.Value(?*Logger) = .init(null);
 
 pub fn initGlobalLogger(level: LogLevel) !void {
-    global_logger = try Logger.init(level);
+    try initGlobalLoggerAt(level, null);
 }
 
 pub fn initGlobalLoggerAt(level: LogLevel, path: ?[]const u8) !void {
-    global_logger = try Logger.initAt(level, path);
+    const logger = try global_allocator.create(Logger);
+    errdefer global_allocator.destroy(logger);
+    logger.* = try Logger.initAt(level, path);
+    if (global_logger.swap(logger, .acq_rel)) |prev| {
+        prev.deinit();
+        global_allocator.destroy(prev);
+    }
 }
 
 pub fn deinitGlobalLogger() void {
-    if (global_logger) |*logger| {
+    if (global_logger.swap(null, .acq_rel)) |logger| {
         logger.deinit();
-        global_logger = null;
+        global_allocator.destroy(logger);
     }
 }
 
 pub fn debug(comptime format: []const u8, args: anytype) void {
-    if (global_logger) |*logger| {
+    if (global_logger.load(.acquire)) |logger| {
         logger.debug(format, args);
     }
 }
 
 pub fn info(comptime format: []const u8, args: anytype) void {
-    if (global_logger) |*logger| {
+    if (global_logger.load(.acquire)) |logger| {
         logger.info(format, args);
     }
 }
 
 pub fn warn(comptime format: []const u8, args: anytype) void {
-    if (global_logger) |*logger| {
+    if (global_logger.load(.acquire)) |logger| {
         logger.warn(format, args);
     }
 }
 
 pub fn err(comptime format: []const u8, args: anytype) void {
-    if (global_logger) |*logger| {
+    if (global_logger.load(.acquire)) |logger| {
         logger.err(format, args);
     }
 }
 
 pub fn getLogFilePath() ?[]const u8 {
-    if (global_logger) |*logger| {
+    if (global_logger.load(.acquire)) |logger| {
         return logger.getLogFilePath();
     }
     return null;
@@ -294,4 +325,58 @@ test "--logFile path is honored and the log is owner-only" {
 
     const stat = try std.Io.Dir.cwd().statFile(testing.io, log_path, .{});
     try testing.expectEqual(@as(std.posix.mode_t, 0o600), stat.permissions.toMode() & 0o777);
+}
+
+test "logger formats short lines on the stack and falls back to heap for long lines" {
+    var stack_buf: [1024]u8 = undefined;
+    const short = try Logger.formatLogLine(&stack_buf, testing.failing_allocator, 12345, "INFO", "hello {s}", .{"world"});
+    try testing.expect(short.owned == null);
+    try testing.expectEqualStrings("[12345] INFO: hello world\n", short.line);
+
+    const long_msg: [1200]u8 = @splat('x');
+    const long = try Logger.formatLogLine(&stack_buf, testing.allocator, 12345, "WARN", "{s}", .{&long_msg});
+    defer if (long.owned) |owned| testing.allocator.free(owned);
+    try testing.expect(long.owned != null);
+    try testing.expect(std.mem.startsWith(u8, long.line, "[12345] WARN: "));
+    try testing.expect(std.mem.endsWith(u8, long.line, "\n"));
+    try testing.expect(long.line.len > stack_buf.len);
+}
+
+test "global logger supports concurrent writes and atomic deinit" {
+    const allocator = testing.allocator;
+
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    const tmp_path_z = try absTmpPath(allocator, &tmp_dir);
+    defer allocator.free(tmp_path_z);
+    const log_path = try std.fs.path.joinZ(allocator, &.{ tmp_path_z, "concurrent.log" });
+    defer allocator.free(log_path);
+
+    try initGlobalLoggerAt(.info, log_path);
+    errdefer deinitGlobalLogger();
+
+    const Worker = struct {
+        fn run(id: usize) void {
+            for (0..8) |i| {
+                info("worker-{d}-msg-{d}", .{ id, i });
+            }
+        }
+    };
+
+    var threads: [4]std.Thread = undefined;
+    for (&threads, 0..) |*t, idx| {
+        t.* = try std.Thread.spawn(.{}, Worker.run, .{idx});
+    }
+    for (&threads) |*t| t.join();
+
+    const log_content = try readLog(allocator);
+    defer allocator.free(log_content);
+    for (0..4) |idx| {
+        var needle_buf: [32]u8 = undefined;
+        const needle = try std.fmt.bufPrint(&needle_buf, "worker-{d}-msg-7", .{idx});
+        try testing.expect(std.mem.indexOf(u8, log_content, needle) != null);
+    }
+
+    deinitGlobalLogger();
+    try testing.expect(getLogFilePath() == null);
 }

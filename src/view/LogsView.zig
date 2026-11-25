@@ -138,7 +138,9 @@ pub const LogsView = struct {
 
     fn setContentInPlace(self: *LogsView, log_text: []const u8, pod_name: []const u8) !void {
         self.clearContent();
-        self.title = try std.fmt.allocPrint(self.allocator, "Logs({s})", .{pod_name});
+        const clean_pod_name = try display_text.sanitizeAlloc(self.allocator, pod_name);
+        defer self.allocator.free(clean_pod_name);
+        self.title = try std.fmt.allocPrint(self.allocator, "Logs({s})", .{clean_pod_name});
         self.selected_row = 0;
         self.scroll_offset = 0;
 
@@ -792,4 +794,16 @@ test "following a wrapped log lands on the last row, not the last line" {
     // 1 row + 4 rows = 5; following must park on row 4.
     try std.testing.expectEqual(@as(usize, 5), view.displayRowCount());
     try std.testing.expectEqual(@as(u32, 4), view.selected_row);
+}
+
+test "LogsView sanitizes terminal control sequences in pod title" {
+    const a = std.testing.allocator;
+    var theme = try theme_loader.defaultTheme(a);
+    defer theme_loader.deinitTheme(&theme);
+    var view = try LogsView.init(a, &theme);
+    defer view.deinit();
+
+    try view.setContent("line", "pod-\x1b]52;c;abc\x07\xc2\x9b2J\x7f");
+    try std.testing.expect(!display_text.needsSanitizing(view.title));
+    try std.testing.expectEqualStrings("Logs(pod-?]52;c;abc??2J?)", view.title);
 }

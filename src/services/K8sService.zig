@@ -397,6 +397,35 @@ pub const K8sService = struct {
         return body;
     }
 
+    fn proxyGetCurlArgv(url: []const u8) [10][]const u8 {
+        return .{
+            "curl",       "-sS",
+            "--noproxy",  "*",
+            "--globoff",  "--max-time",
+            "8",          "--write-out",
+            "\n%{http_code}", url,
+        };
+    }
+
+    fn proxyPostCurlArgv(body: []const u8, url: []const u8) [16][]const u8 {
+        return .{
+            "curl",          "-sS",
+            "--noproxy",     "*",
+            "--globoff",     "--max-time",
+            "8",             "-X",
+            "POST",          "-H",
+            "Content-Type: application/json",
+            "--data-binary", body,
+            "--write-out",   "\n%{http_code}",
+            url,
+        };
+    }
+
+    fn parseHttpStatusCode(code: u16) error{InvalidHttpStatus}!std.http.Status {
+        if (code < 100 or code > 599) return error.InvalidHttpStatus;
+        return @fromBackingInt(@intCast(code));
+    }
+
     fn proxyRequestAlloc(
         self: *K8sService,
         a: std.mem.Allocator,
@@ -406,8 +435,9 @@ pub const K8sService = struct {
     ) ![]u8 {
         const url = try std.fmt.allocPrint(self.allocator, "http://127.0.0.1:{d}{s}", .{ port, path });
         defer self.allocator.free(url);
+        const argv = proxyGetCurlArgv(url);
         const result = std.process.run(a, runtime.io(), .{
-            .argv = &.{ "curl", "-sS", "--max-time", "8", "--write-out", "\n%{http_code}", url },
+            .argv = &argv,
             .stdout_limit = .limited(128 * 1024 * 1024),
         }) catch return error.KubectlFailed;
         defer a.free(result.stderr);
@@ -447,16 +477,9 @@ pub const K8sService = struct {
         const url = try std.fmt.allocPrint(self.allocator, "http://127.0.0.1:{d}{s}", .{ port, path });
         defer self.allocator.free(url);
 
+        const argv = proxyPostCurlArgv(body, url);
         const result = std.process.run(self.allocator, runtime.io(), .{
-            .argv = &.{
-                "curl",          "-sS",
-                "--max-time",    "8",
-                "-X",            "POST",
-                "-H",            "Content-Type: application/json",
-                "--data-binary", body,
-                "--write-out",   "\n%{http_code}",
-                url,
-            },
+            .argv = &argv,
             .stdout_limit = .limited(1024 * 1024),
         }) catch return error.KubectlFailed;
         defer self.allocator.free(result.stderr);
@@ -473,7 +496,10 @@ pub const K8sService = struct {
             self.allocator.free(result.stdout);
             return error.InvalidHttpStatus;
         };
-        status_out.* = @fromBackingInt(@intCast(code));
+        status_out.* = parseHttpStatusCode(code) catch {
+            self.allocator.free(result.stdout);
+            return error.InvalidHttpStatus;
+        };
         const response = try self.allocator.dupe(u8, result.stdout[0..separator]);
         self.allocator.free(result.stdout);
         return response;
@@ -840,8 +866,9 @@ pub const K8sService = struct {
     ) ![]u8 {
         const url = try std.fmt.allocPrint(self.allocator, "http://127.0.0.1:{d}{s}", .{ port, path });
         defer self.allocator.free(url);
+        const argv = proxyGetCurlArgv(url);
         const result = std.process.run(self.allocator, runtime.io(), .{
-            .argv = &.{ "curl", "-sS", "--max-time", "8", "--write-out", "\n%{http_code}", url },
+            .argv = &argv,
             .stdout_limit = .limited(128 * 1024 * 1024),
         }) catch return error.KubectlFailed;
         defer self.allocator.free(result.stderr);
@@ -1204,6 +1231,9 @@ pub const K8sService = struct {
 
     /// Get raw JSON for any resource (for describe/yaml views)
     pub fn getRawJson(self: *K8sService, resource_type: ResourceType, name: []const u8, namespace: []const u8) ![]u8 {
+        if (!read_transport.validPathSegment(name)) return error.InvalidResourceName;
+        if (!resource_type.isClusterScoped() and !read_transport.validPathSegment(namespace))
+            return error.InvalidNamespace;
         if (!self.isConnected()) return error.NotConnected;
         var request = try self.resolveRequest(.detail);
         defer request.deinit();
@@ -1222,6 +1252,9 @@ pub const K8sService = struct {
     /// Delete any resource by type, name, namespace
     pub fn deleteResource(self: *K8sService, resource_type: ResourceType, name: []const u8, namespace: []const u8, force: bool) !void {
         try self.assertMutable();
+        if (!read_transport.validPathSegment(name)) return error.InvalidResourceName;
+        if (!resource_type.isClusterScoped() and !read_transport.validPathSegment(namespace))
+            return error.InvalidNamespace;
         if (!self.isConnected()) return error.NotConnected;
         var request = try self.resolveRequest(.command);
         defer request.deinit();
@@ -1242,8 +1275,8 @@ pub const K8sService = struct {
             // current-context, so after an in-app context switch this deleted from
             // the PREVIOUS cluster. Every other kubectl call in this file already
             // routed through it; this one did not.
-            const sub = [_][]const u8{ "delete", resource_type.resourceName(), name, "-n", namespace };
-            const sub_forced = sub ++ [_][]const u8{ "--grace-period=0", "--force" };
+            const sub = [_][]const u8{ "delete", resource_type.resourceName(), "-n", namespace, "--", name };
+            const sub_forced = [_][]const u8{ "delete", resource_type.resourceName(), "-n", namespace, "--grace-period=0", "--force", "--", name };
             const argv = try self.buildKubectlArgvResolved(&request, if (force) &sub_forced else &sub);
             defer self.allocator.free(argv);
 
@@ -1812,6 +1845,66 @@ pub const K8sService = struct {
         return results.toOwnedSlice(self.allocator);
     }
 
+    fn collectRoleBindingSubjects(
+        allocator: std.mem.Allocator,
+        crb_root: std.json.Value,
+    ) !std.StringHashMap([]const u8) {
+        var binding_map = std.StringHashMap([]const u8).init(allocator);
+        errdefer {
+            var it = binding_map.iterator();
+            while (it.next()) |entry| allocator.free(entry.value_ptr.*);
+            binding_map.deinit();
+        }
+
+        // A metav1.Status body has no "items"; .object on it would panic, so the
+        // lookup is guarded into an optional rather than nesting another block.
+        const crb_items_opt = if (crb_root == .object)
+            crb_root.object.get("items")
+        else
+            null;
+        const crb_items = crb_items_opt orelse return binding_map;
+        if (crb_items != .array) return binding_map;
+
+        for (crb_items.array.items) |binding| {
+            if (binding != .object) continue;
+            const role_ref = binding.object.get("roleRef") orelse continue;
+            if (role_ref != .object) continue;
+            const role_name = if (role_ref.object.get("name")) |v|
+                if (v == .string) v.string else continue
+            else
+                continue;
+
+            const subjects_arr = binding.object.get("subjects") orelse continue;
+            if (subjects_arr != .array) continue;
+
+            var subj_list = std.ArrayList(u8).empty;
+            defer subj_list.deinit(allocator);
+
+            for (subjects_arr.array.items) |subj| {
+                if (subj != .object) continue;
+                if (subj_list.items.len > 0) try subj_list.appendSlice(allocator, ",");
+                const subj_name = if (subj.object.get("name")) |v|
+                    if (v == .string) v.string else "?"
+                else
+                    "?";
+                try subj_list.appendSlice(allocator, subj_name);
+            }
+            if (subj_list.items.len == 0) continue;
+
+            const gop = try binding_map.getOrPut(role_name);
+            if (gop.found_existing) {
+                const old = gop.value_ptr.*;
+                const merged = try std.fmt.allocPrint(allocator, "{s},{s}", .{ old, subj_list.items });
+                allocator.free(old);
+                gop.value_ptr.* = merged;
+            } else {
+                errdefer _ = binding_map.remove(role_name);
+                gop.value_ptr.* = try allocator.dupe(u8, subj_list.items);
+            }
+        }
+        return binding_map;
+    }
+
     /// List RBAC policies (ClusterRoles + Bindings aggregated)
     pub fn listRBACPolicies(self: *K8sService) ![]PolicyInfo {
         if (!self.isConnected()) return error.NotConnected;
@@ -1848,53 +1941,14 @@ pub const K8sService = struct {
         };
         defer crb_parsed.deinit();
 
-        // Build binding map: role name -> subjects string
-        var binding_map = std.StringHashMap([]const u8).init(self.allocator);
+        // Build binding map: role name -> merged subjects string
+        var binding_map = try collectRoleBindingSubjects(self.allocator, crb_parsed.value);
         defer {
             var it = binding_map.iterator();
             while (it.next()) |entry| {
                 self.allocator.free(entry.value_ptr.*);
             }
             binding_map.deinit();
-        }
-
-        // A metav1.Status body has no "items"; .object on it would panic, so the
-        // lookup is guarded into an optional rather than nesting another block.
-        const crb_items_opt = if (crb_parsed.value == .object)
-            crb_parsed.value.object.get("items")
-        else
-            null;
-        if (crb_items_opt) |crb_items| {
-            if (crb_items == .array) {
-                for (crb_items.array.items) |binding| {
-                    if (binding != .object) continue;
-                    const role_ref = binding.object.get("roleRef") orelse continue;
-                    if (role_ref != .object) continue;
-                    const role_name = if (role_ref.object.get("name")) |v|
-                        if (v == .string) v.string else continue
-                    else
-                        continue;
-
-                    const subjects_arr = binding.object.get("subjects") orelse continue;
-                    if (subjects_arr != .array) continue;
-
-                    var subj_list = std.ArrayList(u8).empty;
-                    defer subj_list.deinit(self.allocator);
-
-                    for (subjects_arr.array.items, 0..) |subj, si| {
-                        if (subj != .object) continue;
-                        if (si > 0) try subj_list.appendSlice(self.allocator, ",");
-                        const subj_name = if (subj.object.get("name")) |v|
-                            if (v == .string) v.string else "?"
-                        else
-                            "?";
-                        try subj_list.appendSlice(self.allocator, subj_name);
-                    }
-
-                    const subj_str = try self.allocator.dupe(u8, subj_list.items);
-                    try binding_map.put(role_name, subj_str);
-                }
-            }
         }
 
         // Process ClusterRoles
@@ -2246,4 +2300,87 @@ test "identity overrides reach the session spec and force kubectl transport" {
     try std.testing.expect(spec.force_proxy);
     try std.testing.expectEqualStrings("staging", spec.kubectl_overrides.cluster.?);
     try std.testing.expectEqualStrings("admin", spec.kubectl_overrides.user.?);
+}
+
+test "getRawJson and deleteResource reject invalid name and namespace path segments" {
+    const allocator = std.testing.allocator;
+    var svc = try K8sService.init(allocator);
+    defer svc.deinit();
+
+    const invalid = [_][]const u8{
+        "",
+        ".",
+        "..",
+        "a/b",
+        "a?b",
+        "a#b",
+        "a\\b",
+        "a b",
+    };
+    for (invalid) |seg| {
+        try std.testing.expectError(error.InvalidResourceName, svc.getRawJson(.pods, seg, "default"));
+        try std.testing.expectError(error.InvalidNamespace, svc.getRawJson(.pods, "web", seg));
+        try std.testing.expectError(error.InvalidResourceName, svc.deleteResource(.pods, seg, "default", false));
+        try std.testing.expectError(error.InvalidNamespace, svc.deleteResource(.pods, "web", seg, false));
+    }
+
+    // Cluster-scoped resources validate name but ignore namespace.
+    try std.testing.expectError(error.NotConnected, svc.getRawJson(.nodes, "node-1", ""));
+    try std.testing.expectError(error.NotConnected, svc.deleteResource(.nodes, "node-1", "", false));
+    try std.testing.expectError(error.InvalidResourceName, svc.getRawJson(.nodes, "../secrets", ""));
+}
+
+test "proxy curl argv disables proxies and globbing, and status validation rejects out-of-range codes" {
+    const get_argv = K8sService.proxyGetCurlArgv("http://127.0.0.1:8001/api/v1/pods");
+    var get_has_noproxy = false;
+    var get_has_globoff = false;
+    for (get_argv, 0..) |arg, idx| {
+        if (std.mem.eql(u8, arg, "--noproxy") and idx + 1 < get_argv.len and std.mem.eql(u8, get_argv[idx + 1], "*"))
+            get_has_noproxy = true;
+        if (std.mem.eql(u8, arg, "--globoff")) get_has_globoff = true;
+    }
+    try std.testing.expect(get_has_noproxy);
+    try std.testing.expect(get_has_globoff);
+
+    const post_argv = K8sService.proxyPostCurlArgv("{}", "http://127.0.0.1:8001/apis/authorization.k8s.io/v1/selfsubjectaccessreviews");
+    var post_has_noproxy = false;
+    var post_has_globoff = false;
+    for (post_argv, 0..) |arg, idx| {
+        if (std.mem.eql(u8, arg, "--noproxy") and idx + 1 < post_argv.len and std.mem.eql(u8, post_argv[idx + 1], "*"))
+            post_has_noproxy = true;
+        if (std.mem.eql(u8, arg, "--globoff")) post_has_globoff = true;
+    }
+    try std.testing.expect(post_has_noproxy);
+    try std.testing.expect(post_has_globoff);
+
+    try std.testing.expectEqual(std.http.Status.ok, try K8sService.parseHttpStatusCode(200));
+    try std.testing.expectEqual(std.http.Status.@"continue", try K8sService.parseHttpStatusCode(100));
+    try std.testing.expectError(error.InvalidHttpStatus, K8sService.parseHttpStatusCode(0));
+    try std.testing.expectError(error.InvalidHttpStatus, K8sService.parseHttpStatusCode(99));
+    try std.testing.expectError(error.InvalidHttpStatus, K8sService.parseHttpStatusCode(600));
+    try std.testing.expectError(error.InvalidHttpStatus, K8sService.parseHttpStatusCode(2000));
+}
+
+test "collectRoleBindingSubjects merges multiple ClusterRoleBindings for the same role without leaking" {
+    const allocator = std.testing.allocator;
+    const json =
+        \\{"items":[
+        \\  {"roleRef":{"name":"cluster-admin"},"subjects":[{"name":"alice"},{"name":"bob"}]},
+        \\  {"roleRef":{"name":"cluster-admin"},"subjects":[{"name":"carol"}]},
+        \\  {"roleRef":{"name":"view"},"subjects":[{"name":"dave"}]},
+        \\  {"roleRef":{"name":"cluster-admin"},"subjects":[]}
+        \\]}
+    ;
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, json, .{});
+    defer parsed.deinit();
+
+    var map = try K8sService.collectRoleBindingSubjects(allocator, parsed.value);
+    defer {
+        var it = map.iterator();
+        while (it.next()) |entry| allocator.free(entry.value_ptr.*);
+        map.deinit();
+    }
+
+    try std.testing.expectEqualStrings("alice,bob,carol", map.get("cluster-admin").?);
+    try std.testing.expectEqualStrings("dave", map.get("view").?);
 }

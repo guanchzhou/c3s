@@ -100,9 +100,19 @@ pub const DetailView = struct {
         replacement.deinit();
     }
 
+    fn setSanitizedTitle(self: *DetailView, title: []const u8) !void {
+        const clean = try display_text.sanitizeAlloc(self.allocator, title);
+        if (std.mem.eql(u8, clean, "Detail")) {
+            self.allocator.free(clean);
+            self.title = "Detail";
+        } else {
+            self.title = clean;
+        }
+    }
+
     fn setContentJsonInPlace(self: *DetailView, json_str: []const u8, title: []const u8) !void {
         self.clearContent();
-        self.title = try self.allocator.dupe(u8, title);
+        try self.setSanitizedTitle(title);
         self.selected_row = 0;
         self.scroll_offset = 0;
         self.horizontal_scroll = 0;
@@ -219,7 +229,7 @@ pub const DetailView = struct {
 
     fn setContentTextInPlace(self: *DetailView, text: []const u8, title: []const u8) !void {
         self.clearContent();
-        self.title = try self.allocator.dupe(u8, title);
+        try self.setSanitizedTitle(title);
         self.selected_row = 0;
         self.scroll_offset = 0;
         self.horizontal_scroll = 0;
@@ -245,7 +255,7 @@ pub const DetailView = struct {
 
     fn setContentDescribeInPlace(self: *DetailView, json_str: []const u8, title: []const u8) !void {
         self.clearContent();
-        self.title = try self.allocator.dupe(u8, title);
+        try self.setSanitizedTitle(title);
         self.selected_row = 0;
         self.scroll_offset = 0;
         self.horizontal_scroll = 0;
@@ -438,6 +448,10 @@ pub const DetailView = struct {
         try self.computeColumnStops();
     }
 
+    fn colStopThreshold(nonempty: usize) u16 {
+        return @max(@as(u16, 3), @as(u16, @intCast(@min(nonempty / 8, std.math.maxInt(u16)))));
+    }
+
     /// Detect column-start offsets in space-aligned content (e.g. the aliases /
     /// api-resources table): a column starts where a non-space char follows a
     /// 2+ space gap, counted across lines and kept when common enough. Lets h/l
@@ -445,7 +459,7 @@ pub const DetailView = struct {
     fn computeColumnStops(self: *DetailView) !void {
         self.col_stops.clearRetainingCapacity();
         var counts: [256]u16 = @splat(0);
-        var nonempty: u32 = 0;
+        var nonempty: usize = 0;
         for (self.lines.items) |line| {
             if (std.mem.indexOfNone(u8, line, " ") == null) continue; // blank
             nonempty += 1;
@@ -456,7 +470,7 @@ pub const DetailView = struct {
         }
         if (nonempty == 0) return;
         try self.col_stops.append(self.allocator, 0); // first column
-        const thresh: u16 = @max(@as(u16, 3), @as(u16, @intCast(nonempty / 8)));
+        const thresh: u16 = colStopThreshold(nonempty);
         var c: usize = 1;
         while (c < 256) : (c += 1) {
             if (counts[c] < thresh) continue;
@@ -1135,4 +1149,45 @@ test "DetailView: control sequences in describe and text content are defused" {
 
     try dv.setContentJson("{\"k\":\"\xc2\x9b2J\"}", "Json");
     for (dv.lines.items) |line| try testing.expect(!display_text.needsSanitizing(line));
+}
+
+test "DetailView: titles are sanitized across json, text, and describe views" {
+    const testing = std.testing;
+    var theme = try theme_loader.defaultTheme(testing.allocator);
+    defer theme_loader.deinitTheme(&theme);
+
+    var dv = try DetailView.init(testing.allocator, &theme);
+    defer dv.deinit();
+
+    try dv.setContentJson("{}", "pod/\x1b]52;c;abc\x07");
+    try testing.expectEqualStrings("pod/?]52;c;abc?", dv.title);
+
+    try dv.setContentText("hello", "text/\xc2\x9b2J");
+    try testing.expectEqualStrings("text/?2J", dv.title);
+
+    try dv.setContentDescribe("{\"a\":1}", "desc/\x7f\r");
+    try testing.expectEqualStrings("desc/??", dv.title);
+}
+
+test "DetailView: computeColumnStops saturates threshold on >= 524288 lines" {
+    const testing = std.testing;
+    try testing.expectEqual(@as(u16, 3), DetailView.colStopThreshold(0));
+    try testing.expectEqual(@as(u16, 3), DetailView.colStopThreshold(16));
+    try testing.expectEqual(@as(u16, std.math.maxInt(u16)), DetailView.colStopThreshold(524_288));
+    try testing.expectEqual(@as(u16, std.math.maxInt(u16)), DetailView.colStopThreshold(1_000_000));
+
+    var theme = try theme_loader.defaultTheme(testing.allocator);
+    defer theme_loader.deinitTheme(&theme);
+
+    var dv = try DetailView.init(testing.allocator, &theme);
+    defer {
+        dv.lines.clearRetainingCapacity();
+        dv.deinit();
+    }
+
+    const row = "col1    col2    col3";
+    try dv.lines.ensureTotalCapacity(testing.allocator, 524_288);
+    for (0..524_288) |_| dv.lines.appendAssumeCapacity(row);
+    try dv.computeColumnStops();
+    try testing.expect(dv.col_stops.items.len >= 2);
 }

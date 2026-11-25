@@ -609,13 +609,21 @@ fn writeCurlConfig(writer: *std.Io.Writer, token: ?[]const u8) !void {
     try writer.writeAll("\"\n");
 }
 
+const max_curl_response_headers: usize = 256;
+const max_curl_response_header_bytes: usize = 64 * 1024;
+const max_curl_informational_responses: usize = 8;
+
 fn parseCurlResponseHeaders(
     reader: *std.Io.Reader,
     content_type_buffer: *[256]u8,
 ) !ResponseMeta {
+    var total_bytes: usize = 0;
+    var informational_count: usize = 0;
     while (true) {
         const raw_status_line = (try reader.takeDelimiter('\n')) orelse
             return error.InvalidHttpResponse;
+        total_bytes += raw_status_line.len + 1;
+        if (total_bytes > max_curl_response_header_bytes) return error.ResponseHeadersTooLarge;
         const status_line = std.mem.trimEnd(u8, raw_status_line, "\r");
         if (!std.mem.startsWith(u8, status_line, "HTTP/"))
             return error.InvalidHttpResponse;
@@ -627,11 +635,16 @@ fn parseCurlResponseHeaders(
 
         var retry_after_seconds: ?u32 = null;
         var content_type_len: usize = 0;
+        var header_count: usize = 0;
         while (true) {
             const raw_line = (try reader.takeDelimiter('\n')) orelse
                 return error.InvalidHttpResponse;
+            total_bytes += raw_line.len + 1;
+            if (total_bytes > max_curl_response_header_bytes) return error.ResponseHeadersTooLarge;
             const line = std.mem.trimEnd(u8, raw_line, "\r");
             if (line.len == 0) break;
+            header_count += 1;
+            if (header_count > max_curl_response_headers) return error.TooManyResponseHeaders;
             const colon = std.mem.indexOfScalar(u8, line, ':') orelse continue;
             const name = line[0..colon];
             const value = std.mem.trim(u8, line[colon + 1 ..], " \t");
@@ -642,7 +655,12 @@ fn parseCurlResponseHeaders(
                 @memcpy(content_type_buffer[0..content_type_len], value[0..content_type_len]);
             }
         }
-        if (status_code >= 100 and status_code < 200) continue;
+        if (status_code >= 100 and status_code < 200) {
+            informational_count += 1;
+            if (informational_count > max_curl_informational_responses)
+                return error.TooManyResponseHeaders;
+            continue;
+        }
         return .{
             .status = @fromBackingInt(@intCast(status_code)),
             .retry_after_seconds = retry_after_seconds,
@@ -705,6 +723,7 @@ const CurlMaterial = struct {
             .exclusive = true,
             .permissions = std.Io.File.Permissions.fromMode(0o600),
         });
+        errdefer std.Io.Dir.deleteFileAbsolute(self.io, path) catch {};
         defer file.close(self.io);
         var buffer: [4096]u8 = undefined;
         var writer = file.writerStreaming(self.io, &buffer);
@@ -1512,4 +1531,40 @@ test "pagination guard permits large valid lists and enforces page cap" {
         try std.testing.expect(try complete.advance(token));
     }
     try std.testing.expect(!try complete.advance(""));
+}
+
+test "parseCurlResponseHeaders enforces header count and total header byte caps" {
+    const allocator = std.testing.allocator;
+    var content_type: [256]u8 = undefined;
+
+    // Exceed max_curl_response_headers (256)
+    var many: std.ArrayList(u8) = .empty;
+    defer many.deinit(allocator);
+    try many.appendSlice(allocator, "HTTP/1.1 200 OK\r\n");
+    for (0..max_curl_response_headers + 1) |_| {
+        try many.appendSlice(allocator, "X-H: v\r\n");
+    }
+    try many.appendSlice(allocator, "\r\n{}");
+    var many_reader = std.Io.Reader.fixed(many.items);
+    try std.testing.expectError(
+        error.TooManyResponseHeaders,
+        parseCurlResponseHeaders(&many_reader, &content_type),
+    );
+
+    // Exceed max_curl_response_header_bytes (64 KiB) with fewer than 256 headers
+    var huge: std.ArrayList(u8) = .empty;
+    defer huge.deinit(allocator);
+    try huge.appendSlice(allocator, "HTTP/1.1 200 OK\r\n");
+    var pad: [1024]u8 = @splat('a');
+    for (0..70) |_| {
+        try huge.appendSlice(allocator, "X-Big: ");
+        try huge.appendSlice(allocator, &pad);
+        try huge.appendSlice(allocator, "\r\n");
+    }
+    try huge.appendSlice(allocator, "\r\n{}");
+    var huge_reader = std.Io.Reader.fixed(huge.items);
+    try std.testing.expectError(
+        error.ResponseHeadersTooLarge,
+        parseCurlResponseHeaders(&huge_reader, &content_type),
+    );
 }

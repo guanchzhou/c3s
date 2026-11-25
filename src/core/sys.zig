@@ -80,13 +80,26 @@ pub fn pollInputAndWakeup(
     };
 }
 
-/// Write all bytes to `fd`, retrying short writes. Returns error.WriteFailed on
-/// a write error; callers on best-effort paths (render/log) just `catch {}`.
+/// Write all bytes to `fd`, retrying short writes and EINTR. Returns
+/// error.WriteFailed on a write error; callers on best-effort paths
+/// (render/log) just `catch {}`.
 pub fn writeAll(fd: fd_t, bytes: []const u8) WriteError!void {
+    return writeAllLoop(std.c.write, std.c.errno, fd, bytes);
+}
+
+fn writeAllLoop(
+    comptime write_fn: anytype,
+    comptime errno_fn: anytype,
+    fd: fd_t,
+    bytes: []const u8,
+) WriteError!void {
     var off: usize = 0;
     while (off < bytes.len) {
-        const n = std.c.write(fd, bytes.ptr + off, bytes.len - off);
-        if (n < 0) return error.WriteFailed;
+        const n = write_fn(fd, bytes.ptr + off, bytes.len - off);
+        if (n < 0) {
+            if (errno_fn(n) == .INTR) continue;
+            return error.WriteFailed;
+        }
         if (n == 0) break;
         off += @intCast(n);
     }
@@ -211,4 +224,65 @@ test "poll reports terminal flags for either descriptor" {
     try std.testing.expectEqual(PollReadiness.wakeup, invalid_wakeup.readiness);
     try std.testing.expect(invalid_wakeup.wakeup.invalid);
     try std.testing.expect(invalid_wakeup.wakeup.isTerminal());
+}
+
+test "writeAll retries EINTR and short writes and fails on non-EINTR errors" {
+    const Harness = struct {
+        var calls: usize = 0;
+        var last_err: std.c.E = .SUCCESS;
+        var out: [32]u8 = undefined;
+        var out_len: usize = 0;
+        var fail_with: ?std.c.E = null;
+
+        fn reset() void {
+            calls = 0;
+            last_err = .SUCCESS;
+            out_len = 0;
+            fail_with = null;
+        }
+
+        fn fakeWrite(_: fd_t, ptr: [*]const u8, len: usize) isize {
+            calls += 1;
+            if (fail_with) |e| {
+                last_err = e;
+                return -1;
+            }
+            if (calls == 1 or calls == 3) {
+                last_err = .INTR;
+                return -1;
+            }
+            const chunk = @min(len, 3);
+            @memcpy(out[out_len..][0..chunk], ptr[0..chunk]);
+            out_len += chunk;
+            last_err = .SUCCESS;
+            return @intCast(chunk);
+        }
+
+        fn fakeErrno(_: isize) std.c.E {
+            return last_err;
+        }
+    };
+
+    Harness.reset();
+    try writeAllLoop(Harness.fakeWrite, Harness.fakeErrno, 0, "hello world");
+    try std.testing.expectEqualStrings("hello world", Harness.out[0..Harness.out_len]);
+    try std.testing.expectEqual(@as(usize, 6), Harness.calls);
+
+    Harness.reset();
+    Harness.fail_with = .PIPE;
+    try std.testing.expectError(
+        error.WriteFailed,
+        writeAllLoop(Harness.fakeWrite, Harness.fakeErrno, 0, "abc"),
+    );
+    try std.testing.expectEqual(@as(usize, 1), Harness.calls);
+
+    // Real pipe round-trip through writeAll.
+    var pair: [2]fd_t = undefined;
+    try std.testing.expectEqual(@as(c_int, 0), std.c.pipe(&pair));
+    defer close(pair[0]);
+    defer close(pair[1]);
+    try writeAll(pair[1], "ping");
+    var buf: [4]u8 = undefined;
+    try std.testing.expectEqual(@as(isize, 4), std.c.read(pair[0], &buf, buf.len));
+    try std.testing.expectEqualStrings("ping", &buf);
 }

@@ -130,6 +130,18 @@ pub fn redactSecretJson(allocator: std.mem.Allocator, json_str: []const u8) Erro
     try redactSecretMap(allocator, parsed.value.object.getPtr("data"), &replacements);
     try redactSecretMap(allocator, parsed.value.object.getPtr("stringData"), &replacements);
 
+    if (parsed.value.object.getPtr("metadata")) |meta| {
+        if (meta.* == .object) {
+            if (meta.object.getPtr("annotations")) |ann| {
+                if (ann.* == .object) {
+                    if (ann.object.getPtr("kubectl.kubernetes.io/last-applied-configuration")) |val| {
+                        val.* = .{ .string = "REDACTED" };
+                    }
+                }
+            }
+        }
+    }
+
     return std.json.Stringify.valueAlloc(allocator, parsed.value, .{}) catch return Error.OutOfMemory;
 }
 
@@ -178,6 +190,17 @@ fn appendDecoded(
     };
     const buf = try allocator.alloc(u8, size);
     defer allocator.free(buf);
+    try decodeAndWriteSecret(w, key, b64, buf);
+}
+
+fn decodeAndWriteSecret(
+    w: Out,
+    key: []const u8,
+    b64: []const u8,
+    buf: []u8,
+) Error!void {
+    defer std.crypto.secureZero(u8, buf);
+    const dec = std.base64.standard.Decoder;
     dec.decode(buf, b64) catch {
         try w.print("{s}  (invalid base64, {d} chars)\n\n", .{ key, b64.len });
         return;
@@ -217,13 +240,43 @@ fn isBinary(bytes: []const u8) bool {
 }
 
 /// Write text with escape-sequence introducers neutralised. Even a "text" secret can
-/// contain an ESC, and the detail view writes straight through to the terminal.
+/// contain ESC, DEL, C0, or UTF-8 C1 controls, and the detail view writes straight
+/// through to the terminal.
 fn writeSanitized(w: Out, bytes: []const u8) Error!void {
-    for (bytes) |b| {
-        if (b == 0x1b or (b < 0x20 and b != '\n' and b != '\t')) {
-            try w.writeByte('.');
-        } else {
+    var i: usize = 0;
+    while (i < bytes.len) {
+        const b = bytes[i];
+        if (b == '\n' or b == '\t') {
             try w.writeByte(b);
+            i += 1;
+        } else if (b < 0x20 or b == 0x7f) {
+            try w.writeByte('.');
+            i += 1;
+        } else if (b < 0x80) {
+            try w.writeByte(b);
+            i += 1;
+        } else {
+            const seq_len = std.unicode.utf8ByteSequenceLength(b) catch {
+                try w.writeByte('.');
+                i += 1;
+                continue;
+            };
+            if (i + seq_len > bytes.len) {
+                try w.writeByte('.');
+                i += 1;
+                continue;
+            }
+            const cp = std.unicode.utf8Decode(bytes[i .. i + seq_len]) catch {
+                try w.writeByte('.');
+                i += 1;
+                continue;
+            };
+            if (cp >= 0x80 and cp <= 0x9f) {
+                try w.writeByte('.');
+            } else {
+                try w.writeAll(bytes[i .. i + seq_len]);
+            }
+            i += seq_len;
         }
     }
 }
@@ -402,4 +455,54 @@ test "redactSecretJson redacts stringData too" {
     try testing.expect(std.mem.indexOf(u8, out, "already-text") == null);
     try testing.expect(std.mem.indexOf(u8, out, "<redacted 12 bytes>") != null);
     try testing.expect(std.mem.indexOf(u8, out, "plain") != null);
+}
+
+test "redactSecretJson redacts kubectl last-applied-configuration annotation" {
+    const a = testing.allocator;
+    const json =
+        \\{"kind":"Secret","metadata":{"name":"db","annotations":{"kubectl.kubernetes.io/last-applied-configuration":"{\"data\":{\"password\":\"aHVudGVyMg==\"}}","other":"keep-me"}},"data":{"password":"aHVudGVyMg=="}}
+    ;
+    const out = try redactSecretJson(a, json);
+    defer a.free(out);
+
+    try testing.expect(std.mem.indexOf(u8, out, "aHVudGVyMg==") == null);
+    try testing.expect(std.mem.indexOf(u8, out, "\"kubectl.kubernetes.io/last-applied-configuration\":\"REDACTED\"") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "\"other\":\"keep-me\"") != null);
+}
+
+test "decodeSecretData strips DEL and UTF-8 C1 controls while preserving valid UTF-8" {
+    const a = testing.allocator;
+    // base64 of "a\x7fb\xc2\x9b2Jc\xc2\x80d\xc2\x9fe café"
+    const raw = "a\x7fb\xc2\x9b2Jc\xc2\x80d\xc2\x9fe caf\xc3\xa9";
+    var b64_buf: [128]u8 = undefined;
+    const b64 = std.base64.standard.Encoder.encode(&b64_buf, raw);
+
+    const json = try std.fmt.allocPrint(a, "{{\"data\":{{\"k\":\"{s}\"}},\"stringData\":{{\"s\":\"x\\u007fy\\u009b2J\"}}}}", .{b64});
+    defer a.free(json);
+
+    const out = try decodeSecretData(a, json);
+    defer a.free(out);
+
+    try testing.expect(std.mem.indexOfScalar(u8, out, 0x7f) == null);
+    try testing.expect(std.mem.indexOf(u8, out, "\xc2\x9b") == null);
+    try testing.expect(std.mem.indexOf(u8, out, "\xc2\x80") == null);
+    try testing.expect(std.mem.indexOf(u8, out, "\xc2\x9f") == null);
+    try testing.expect(std.mem.indexOf(u8, out, "a.b.2Jc.d.e caf\xc3\xa9") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "x.y.2J") != null);
+}
+
+test "decodeSecretData zeroes decoded secret buffer before freeing" {
+    const secret_val = "super-unique-37-byte-secret-value-xyz";
+    var b64_buf: [128]u8 = undefined;
+    const b64 = std.base64.standard.Encoder.encode(&b64_buf, secret_val);
+
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(testing.allocator);
+    const w = Out{ .list = &out, .alloc = testing.allocator };
+
+    var scratch: [secret_val.len]u8 = @splat(0x55);
+    try decodeAndWriteSecret(w, "k", b64, &scratch);
+
+    try testing.expect(std.mem.indexOf(u8, out.items, secret_val) != null);
+    for (scratch) |b| try testing.expectEqual(@as(u8, 0), b);
 }

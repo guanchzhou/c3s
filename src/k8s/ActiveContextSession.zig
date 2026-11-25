@@ -1217,9 +1217,10 @@ pub const ActiveContextSession = struct {
         );
         defer self.allocator.free(url);
         var proxy_ready = false;
+        const probe_argv = proxyProbeCurlArgv(url);
         for (0..80) |_| {
             const probe = std.process.run(self.allocator, self.io, .{
-                .argv = &.{ "curl", "-sf", "--max-time", "0.2", url },
+                .argv = &probe_argv,
                 .stdout_limit = .limited(1024 * 1024),
             }) catch |err| {
                 emitRequestAudit(self.spec.context_name, target, null, "terminal");
@@ -1252,6 +1253,10 @@ pub const ActiveContextSession = struct {
         if (self.observer) |observer| observer.emit(event);
     }
 };
+
+fn proxyProbeCurlArgv(url: []const u8) [8][]const u8 {
+    return .{ "curl", "-sf", "--noproxy", "*", "--globoff", "--max-time", "0.2", url };
+}
 
 /// Wait for `kubectl proxy` to announce the port it bound on `fd` (its stdout),
 /// polling up to `attempts` times for `interval_ms` each.
@@ -1464,4 +1469,17 @@ test "a cloned spec keeps the command-line kubectl overrides" {
     defer owned.deinit(std.testing.allocator);
     try std.testing.expectEqualStrings("jane", owned.value.kubectl_overrides.as.?);
     try std.testing.expectEqualStrings("5s", owned.value.kubectl_overrides.request_timeout.?);
+}
+
+test "proxy readiness curl probe disables proxies and globbing" {
+    const argv = proxyProbeCurlArgv("http://127.0.0.1:43124/version");
+    var has_noproxy = false;
+    var has_globoff = false;
+    for (argv, 0..) |arg, idx| {
+        if (std.mem.eql(u8, arg, "--noproxy") and idx + 1 < argv.len and std.mem.eql(u8, argv[idx + 1], "*"))
+            has_noproxy = true;
+        if (std.mem.eql(u8, arg, "--globoff")) has_globoff = true;
+    }
+    try std.testing.expect(has_noproxy);
+    try std.testing.expect(has_globoff);
 }
