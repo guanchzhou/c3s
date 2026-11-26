@@ -10889,7 +10889,7 @@ test "prepareDumpData redacts Secret payloads and keeps non-Secret resources int
 
 test "writeAtomicPrivateFile writes mode 0600 atomically without leaving temp files" {
     const a = std.testing.allocator;
-    var tmp = std.testing.tmpDir(.{});
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
 
     var path_buf: [256]u8 = undefined;
