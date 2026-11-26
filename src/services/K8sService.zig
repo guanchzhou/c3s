@@ -399,25 +399,24 @@ pub const K8sService = struct {
 
     fn proxyGetCurlArgv(url: []const u8) [10][]const u8 {
         return .{
-            "curl",       "-sS",
-            "--noproxy",  "*",
-            "--globoff",  "--max-time",
-            "8",          "--write-out",
+            "curl",           "-sS",
+            "--noproxy",      "*",
+            "--globoff",      "--max-time",
+            "8",              "--write-out",
             "\n%{http_code}", url,
         };
     }
 
     fn proxyPostCurlArgv(body: []const u8, url: []const u8) [16][]const u8 {
         return .{
-            "curl",          "-sS",
-            "--noproxy",     "*",
-            "--globoff",     "--max-time",
-            "8",             "-X",
-            "POST",          "-H",
-            "Content-Type: application/json",
-            "--data-binary", body,
-            "--write-out",   "\n%{http_code}",
-            url,
+            "curl",                           "-sS",
+            "--noproxy",                      "*",
+            "--globoff",                      "--max-time",
+            "8",                              "-X",
+            "POST",                           "-H",
+            "Content-Type: application/json", "--data-binary",
+            body,                             "--write-out",
+            "\n%{http_code}",                 url,
         };
     }
 
